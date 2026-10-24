@@ -1,8 +1,9 @@
 """Loading and validation of the problem YAML document (``k4opt.problem/v1alpha1``).
 
-The checks are those that need no Key4hep: shape, types, ranges and syntactic duplicates.
-Whether a geometry constant exists, an evaluator or metric is defined, or the bounds are
-physically sensible is deliberately not decided here. See ``docs/problem.md``.
+:func:`parse_problem` makes the checks that need no Key4hep: shape, types, ranges and
+syntactic duplicates. :func:`load_problem` adds the resolution of the geometry targets; that
+an evaluator or metric is defined, or that the bounds are physically sensible, is
+deliberately not decided. See ``docs/problem.md``.
 """
 
 from __future__ import annotations
@@ -10,11 +11,13 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Hashable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
+from k4opt.geometry import AmbiguousTargetError, GeometrySource, TargetError
 from k4opt.problem.errors import ProblemConfigError
 from k4opt.problem.models import (
     SCHEMA_VERSION,
@@ -79,7 +82,14 @@ class _UniqueKeyLoader(yaml.SafeLoader):
 
 
 def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
-    """Read the UTF-8 YAML file ``path`` and validate it as a problem definition."""
+    """Read the UTF-8 YAML file ``path``, validate it and resolve its geometry parameters.
+
+    The geometry entry is located in the active k4geo tree (``$K4GEO`` for a relative
+    entry) and discovered once; every ``parameters[*].geometry`` must then select exactly
+    one attribute of it. Raises :class:`ProblemConfigError` for an invalid document or an
+    unresolvable target and :class:`~k4opt.geometry.GeometryError` when the geometry itself
+    cannot be located or read. The result keeps the discovered geometry for later use.
+    """
     problem_path = Path(path).expanduser()
     if not problem_path.is_file():
         raise ProblemConfigError(f"{problem_path}: problem file not found")
@@ -94,7 +104,7 @@ def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
         raise ProblemConfigError(f"{problem_path}: invalid YAML: {exc}") from exc
     except RecursionError as exc:
         raise ProblemConfigError(f"{problem_path}: YAML is nested too deeply") from exc
-    return parse_problem(data, source=problem_path)
+    return _resolve_geometry(parse_problem(data, source=problem_path), problem_path)
 
 
 def parse_problem(data: object, *, source: str | os.PathLike[str] | None = None) -> ProblemSpec:
@@ -112,6 +122,32 @@ def parse_problem(data: object, *, source: str | os.PathLike[str] | None = None)
     except RecursionError as exc:
         where = "" if source is None else f"{source}: "
         raise ProblemConfigError(f"{where}document is nested too deeply") from exc
+
+
+def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ProblemSpec:
+    """Return ``spec`` with its geometry discovered once and every parameter target resolved."""
+    source = GeometrySource(spec.geometry.entry)
+    catalog = source.discover()
+    targets = []
+    for index, parameter in enumerate(spec.parameters):
+        reference = parameter.geometry.canonical_target
+        where = f"{problem_path}: parameters[{index}].geometry: target {reference!r}"
+        try:
+            targets.append(catalog.lookup(reference))
+        except AmbiguousTargetError as exc:
+            listing = "\n".join(
+                f"  - {c.file}:{c.line} (value {c.value!r})" for c in exc.candidates
+            )
+            raise ProblemConfigError(
+                f"{where} matches {len(exc.candidates)} attributes in different files and "
+                "cannot currently be selected unambiguously from the problem "
+                f"specification:\n{listing}"
+            ) from exc
+        except TargetError as exc:
+            raise ProblemConfigError(
+                f"{where} cannot be resolved in {source.compact}: {exc}"
+            ) from exc
+    return replace(spec, _source=source, _catalog=catalog, _targets=tuple(targets))
 
 
 # --- helpers ---------------------------------------------------------------------------

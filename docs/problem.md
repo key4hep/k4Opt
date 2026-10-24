@@ -385,18 +385,38 @@ files, and eventually the executed argv.
 
 ## Validation and Python API
 
-`k4opt.problem` turns a file into immutable, typed models. It is a pure data operation: it
-needs no Key4hep stack, geometry tree or evaluator.
+`k4opt.problem` turns a file into immutable, typed models. `load_problem(path)` is the
+complete loading operation: it validates the YAML **and** resolves its geometry. It locates
+`geometry.entry` in the active k4geo tree (`$K4GEO` for a relative entry), discovers the
+geometry catalog once, including reachable XML includes, and resolves every
+`parameters[*].geometry` selector against it. It fails with a clear error if the geometry
+cannot be located or read, or if a target is missing, malformed or ambiguous. The result
+keeps the discovered geometry and the resolved targets as private state for later reuse;
+they take no part in equality, hashing or `to_dict()`, and the current XML values stay raw
+text (`5.1*mm`).
+
+`parse_problem(data)` only validates an already-decoded specification. It is pure: it
+touches neither the file system nor a geometry tree and needs no Key4hep installation.
 
 ```python
 from k4opt.problem import load_problem, parse_problem
 
-problem = load_problem("examples/problem/cld-ecal-granularity.yaml")  # UTF-8 YAML file
+problem = load_problem("problem.yaml")  # UTF-8 YAML file; geometry and targets resolved
 problem.parameters[0].bounds  # (4.0, 8.0)
 problem.evaluation.backend["ddsim"]  # ("--physics.list", "FTFP_BERT"), order preserved
 data = problem.to_dict()  # plain JSON-compatible data, a fresh copy each call
 assert parse_problem(data) == problem  # parse already-decoded data, no file needed
 ```
+
+`$K4GEO` must point at the intended installed geometry tree. `environment.key4hep` names the
+intended release or nightly, but k4Opt does not select or verify it: the geometry comes from
+the active environment, so a resolved target is neither proof that the geometry matches the
+pinned stack nor that it is physically valid. The illustrative
+[CLD example](../examples/problem/cld-ecal-granularity.yaml) loads only where a suitable CLD
+geometry is installed.
+
+A target that exists in several reachable files cannot be selected in `v1alpha1`, which has
+no per-file disambiguator; loading reports every candidate instead of choosing one.
 
 What is checked, with the location of the first problem in the message
 (`parameters[0].bounds: low must be smaller than high, ...`):
@@ -419,16 +439,15 @@ What is checked, with the location of the first problem in the message
 - Duplicate YAML mapping keys, non-string keys, YAML tags that construct Python objects,
   invalid UTF-8 and unreadable files are reported as `ProblemConfigError`.
 
-What is not checked: that the constant or target exists, that the entry file exists, that
-the Key4hep version is installed, that the evaluator, its settings or the metrics are
+What is not checked: that the Key4hep version is installed or matches the active geometry, that the evaluator, its settings or the metrics are
 defined, that units are consistent, that the backend arguments are valid or conflict with
 what the evaluator manages, and that bounds or limits make scientific sense.
 There is no fingerprint of a problem yet.
 
 ## Deferred
 
-Out of scope until later increments: resolving parameter
-targets against the geometry catalog; CLI commands; the evaluator contract, registry and
+Out of scope until later increments: candidate values and
+materialization; CLI commands; the evaluator contract, registry and
 metric metadata; running `ddsim` or `k4run`; conflict detection and argument merging;
 file and configuration capture; a problem fingerprint; optimizer integration; multi-objective strategy; non-geometry
 parameter sources; several evaluators per problem; a parameter that drives several geometry targets at once;
