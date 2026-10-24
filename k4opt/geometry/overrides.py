@@ -8,6 +8,7 @@ Values are never evaluated, converted or type-inferred.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,9 @@ from typing import Any
 from k4opt.geometry.discovery import Catalog, Parameter
 from k4opt.geometry.errors import DuplicateTargetError, InvalidTargetError, TargetError
 from k4opt.geometry.references import parse_reference
+
+#: Characters that cannot appear in an XML 1.0 document (control characters, lone surrogates).
+_XML_INVALID = re.compile("[^\t\n\r\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +41,10 @@ class Override:
                 f"override value for {self.target!r} must be a string, got "
                 f"{type(self.value).__name__} ({self.value!r}); "
                 f'quote it, e.g. value: "{self.value}"'
+            )
+        if _XML_INVALID.search(self.value):
+            raise InvalidTargetError(
+                f"override value for {self.target!r} contains characters that are not valid in XML"
             )
         if self.file is not None and not isinstance(self.file, str):
             raise InvalidTargetError(f"override file for {self.target!r} must be a string")
