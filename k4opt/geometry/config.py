@@ -91,6 +91,8 @@ def load_config(path: str | os.PathLike[str]) -> GeometryConfig:
         raise ConfigError(f"{config_path}: invalid YAML: {exc}") from exc
     except (OSError, UnicodeError) as exc:
         raise ConfigError(f"{config_path}: cannot read: {exc}") from exc
+    except RecursionError as exc:
+        raise ConfigError(f"{config_path}: YAML is nested too deeply") from exc
     return parse_config(data, config_path)
 
 

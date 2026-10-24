@@ -258,7 +258,8 @@ that installation.
 ### Fingerprint
 
 Every materialization has a `fingerprint`: a SHA-256 over the compact path, the
-content hashes of all reachable local files and resources, and the *effective*
+content hashes of all reachable local files and resources, the symlinked include
+names and the files they point at, and the *effective*
 edits (overrides that actually change a value). It contains no timestamps or
 paths, so equal fingerprints mean equal captured geometry files, and an override
 that restates the current value does not change it. Use it to deduplicate

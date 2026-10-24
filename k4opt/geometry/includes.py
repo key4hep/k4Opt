@@ -158,7 +158,8 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
 
     ``root`` must be an absolute directory and ``compact`` a root-relative POSIX
     path. Each physical file is parsed once, even when it is included several
-    times or through an include cycle.
+    times or through an include cycle; a symlinked name in another directory is followed
+    again, because its relative references resolve against that directory.
     """
     root_real = Path(os.path.realpath(root))
     entry = resolve_local_path(root, root_real, root, compact, label="geometry")
@@ -170,6 +171,7 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
     resources: dict[str, None] = {}
     file_aliases: dict[str, str] = {}
     visited_real: dict[str, str] = {}
+    scanned: set[tuple[str, Path]] = set()
 
     def note_resource(rel: str, line: int | None, locator: str, base_dir: Path, ref: str) -> None:
         found, escapes = find_resource(root, root_real, base_dir, ref)
@@ -182,15 +184,27 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
         real = os.path.realpath(lexical)
         rel = to_root_relative(root, lexical)
         if real in visited_real:
-            if rel != visited_real[real]:
-                file_aliases.setdefault(rel, visited_real[real])
-            return visited_real[real]
+            canonical = visited_real[real]
+            if rel != canonical:
+                file_aliases.setdefault(rel, canonical)
+            # relative references resolve against the lexical directory, so an alias in
+            # another directory has its own includes even though the file is the same
+            scan(canonical, lexical.parent, real, chain)
+            return canonical
         visited_real[real] = rel
         label = rel if not chain else f"{rel} (included via {' -> '.join(chain)})"
         tree = parse_xml_file(lexical, label=label)
         files.append(rel)
         trees[rel] = tree
-        base_dir = lexical.parent
+        scan(rel, lexical.parent, real, chain)
+        return rel
+
+    def scan(rel: str, base_dir: Path, real: str, chain: tuple[str, ...]) -> None:
+        """Follow the references of the parsed file ``rel`` as seen from ``base_dir``."""
+        if (real, base_dir) in scanned:
+            return
+        scanned.add((real, base_dir))
+        tree = trees[rel]
         for element in iter_elements(tree):
             ref = element.get("ref")
             if ref is None:
@@ -212,7 +226,6 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
             target = resolve_local_path(root, root_real, base_dir, ref, label=label)
             target_rel = visit(target, (*chain, here))
             edges.append(IncludeEdge(source=rel, line=line, ref=ref, target=target_rel))
-        return rel
 
     visit(entry, ())
     return IncludeGraph(
