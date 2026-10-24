@@ -137,6 +137,18 @@ def _check_result(spec: ProblemSpec, result: EvaluationResult) -> None:
             )
 
 
+def _check_identity(spec: ProblemSpec, evaluator: Evaluator) -> tuple[str, str]:
+    """Require ``evaluator`` to be the one ``spec`` declares; return its ``(name, version)``."""
+    wanted = (spec.evaluation.evaluator, spec.evaluation.version)
+    name, version = evaluator.name, evaluator.version  # read once: the record reuses them
+    if (name, version) != wanted:
+        raise EvaluationContractError(
+            f"problem declares evaluator {wanted[0]!r} version {wanted[1]!r}, "
+            f"got {name!r} version {version!r}"
+        )
+    return name, version
+
+
 def _evaluate_candidate(
     spec: ProblemSpec,
     candidate: Mapping[str, Scalar],
@@ -154,13 +166,7 @@ def _evaluate_candidate(
     through unchanged. Exceptions of the evaluator propagate.
     """
     values, key = _validate_candidate(spec, candidate)
-    wanted = (spec.evaluation.evaluator, spec.evaluation.version)
-    name, version = evaluator.name, evaluator.version  # read once: the record reuses them
-    if (name, version) != wanted:
-        raise EvaluationContractError(
-            f"problem declares evaluator {wanted[0]!r} version {wanted[1]!r}, "
-            f"got {name!r} version {version!r}"
-        )
+    name, version = _check_identity(spec, evaluator)
     request = EvaluationRequest(
         candidate=values,
         settings=spec.evaluation.settings,

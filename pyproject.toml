@@ -86,6 +86,11 @@ python_version = "3.13"
 strict = true
 files = ["k4opt"]
 
+[[tool.mypy.overrides]]
+# podio comes from the Key4hep stack and is imported only when a simulation is read
+module = ["podio", "podio.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py313"

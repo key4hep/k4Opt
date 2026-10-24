@@ -237,7 +237,8 @@ backend:
     args: ["--physics.list", "FTFP_BERT"]
 ```
 
-Rules (policy for the future implementation; none of it is implemented):
+Rules (policy; `k4opt evaluate` implements it for `ddsim` with the `calo.hit_multiplicity`
+evaluator, see [evaluators.md](evaluators.md)):
 
 1. *Ordered list, not a string or a mapping.* Order, repeated flags, values and option
    spellings are preserved exactly.
