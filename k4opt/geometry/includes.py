@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 from lxml import etree
 
 from k4opt.geometry.errors import IncludeError
-from k4opt.geometry.xmlio import iter_elements, line_of, parse_xml_file
+from k4opt.geometry.xmlio import element_locator, iter_elements, line_of, parse_xml_file
 
 #: Element tags whose ``ref`` attribute DD4hep treats as an XML file to include.
 INCLUDE_TAGS: frozenset[str] = frozenset({"include", "gdmlFile", "file", "xml"})
@@ -41,6 +41,8 @@ class ExternalInclude:
     line: int | None
     ref: str
     reason: str
+    locator: str = ""
+    """Structural XPath of the referencing element within its file."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,12 +120,17 @@ def resolve_local_path(
     return lexical
 
 
-def is_local_path(ref: str) -> bool:
-    """True when ``ref`` is a relative file path, not an external reference or a plain name.
+def looks_like_file(ref: str) -> bool:
+    """True when ``ref`` has a path separator or an extension, i.e. is not a plain name.
 
     A cheap filter, so material names such as ``ref="Si"`` never touch the filesystem.
     """
-    return classify_ref(ref) is None and ("/" in ref or "." in os.path.basename(ref))
+    return "/" in ref or "." in os.path.basename(ref)
+
+
+def is_local_path(ref: str) -> bool:
+    """True when ``ref`` is a relative file path, not an external reference or a plain name."""
+    return classify_ref(ref) is None and looks_like_file(ref)
 
 
 def find_resource(root: Path, root_real: Path, base_dir: Path, ref: str) -> tuple[str | None, bool]:
@@ -161,10 +168,10 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
     resources: dict[str, None] = {}
     visited_real: dict[str, str] = {}
 
-    def note_resource(rel: str, line: int | None, base_dir: Path, ref: str) -> None:
+    def note_resource(rel: str, line: int | None, locator: str, base_dir: Path, ref: str) -> None:
         found, escapes = find_resource(root, root_real, base_dir, ref)
         if escapes:
-            externals.append(ExternalInclude(rel, line, ref, OUTSIDE_ROOT))
+            externals.append(ExternalInclude(rel, line, ref, OUTSIDE_ROOT, locator))
         elif found is not None:
             resources.setdefault(found)
 
@@ -185,12 +192,15 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
                 continue
             tag = etree.QName(element).localname if element.tag.startswith("{") else element.tag
             line = line_of(element)
+            locator = element_locator(tree, element)
             if tag not in INCLUDE_TAGS:
-                note_resource(rel, line, base_dir, ref)
+                note_resource(rel, line, locator, base_dir, ref)
                 continue
             reason = classify_ref(ref)
             if reason is not None:
-                externals.append(ExternalInclude(file=rel, line=line, ref=ref, reason=reason))
+                externals.append(
+                    ExternalInclude(file=rel, line=line, ref=ref, reason=reason, locator=locator)
+                )
                 continue
             here = f"{rel}:{line}"
             label = here if not chain else f"{here} (included via {' -> '.join(chain)})"
