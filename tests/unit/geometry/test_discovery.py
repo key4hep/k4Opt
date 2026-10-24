@@ -397,11 +397,21 @@ def test_lookup_suggests_close_matches(mini_catalog: Catalog) -> None:
         mini_catalog.lookup("constants.SolenoidFeld")
 
 
-def test_unreadable_resource_is_a_controlled_error(tmp_path: Path) -> None:
+def test_unreadable_resource_is_a_controlled_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     geo = write_tree(
         tmp_path / "geo", {"main.xml": '<lccdd><shape name="S" ref="cad.stl"/></lccdd>'}
     )
     (geo / "cad.stl").write_text("solid x\n")
-    (geo / "cad.stl").chmod(0)
+    real_open = Path.open
+
+    def deny_stl(self: Path, *args, **kwargs):
+        # chmod cannot make a file unreadable for root, which is how CI runs
+        if self.name == "cad.stl":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_stl)
     with pytest.raises(IncludeError, match=r"cannot read .*cad\.stl"):
         GeometrySource("main.xml", root=geo).discover()
