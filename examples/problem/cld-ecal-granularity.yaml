@@ -28,8 +28,12 @@ evaluation:
 
     generator:
       particle: gamma
-      energy: {value: 10, unit: GeV}
-      vertex: {value: [0, 0, 0], unit: mm}
+      energy:
+        value: 10
+        unit: GeV
+      vertex:
+        value: [0, 0, 0]
+        unit: mm
       direction:
         distribution: uniform_solid_angle
         theta: [60, 120]
