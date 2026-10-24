@@ -724,3 +724,72 @@ def test_include_through_aliases_in_two_directories_is_followed(tmp_path: Path) 
     assert "b/local.xml" in catalog.files
     result = source.materialize([Override("constants.LB", "3")], tmp_path / "out", catalog)
     assert 'value="3"' in (result.output_root / "b/local.xml").read_text()
+
+
+def _shared_alias_geometry(tmp_path: Path, files: dict[str, str]) -> GeometrySource:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": (
+                '<lccdd><include ref="a/shared.xml"/><include ref="b/shared.xml"/></lccdd>'
+            ),
+            **files,
+        },
+    )
+    (geo / "b" / "shared.xml").symlink_to("../a/shared.xml")
+    return GeometrySource("main.xml", root=geo)
+
+
+def test_resource_override_reaches_every_alias_directory(tmp_path: Path) -> None:
+    source = _shared_alias_geometry(
+        tmp_path,
+        {
+            "a/shared.xml": '<lccdd><shape ref="local.stl"/></lccdd>',
+            "a/local.stl": "a",
+            "a/new.stl": "na",
+            "b/local.stl": "b",
+            "b/new.stl": "nb",
+        },
+    )
+    catalog = source.discover()
+    target = next(p.target for p in catalog if p.attribute == "ref" and p.value == "local.stl")
+    result = source.materialize([Override(target, "new.stl")], tmp_path / "out", catalog)
+    assert (result.output_root / "a/new.stl").read_text() == "na"
+    assert (result.output_root / "b/new.stl").read_text() == "nb"
+    assert {"a/new.stl", "b/new.stl"} <= set(result.manifest["resources"])
+
+
+def test_include_override_reaches_every_alias_directory(tmp_path: Path) -> None:
+    source = _shared_alias_geometry(
+        tmp_path,
+        {
+            "a/shared.xml": '<lccdd><include ref="local.xml"/></lccdd>',
+            "a/local.xml": "<lccdd/>",
+            "a/new.xml": "<lccdd/>",
+            "b/local.xml": "<lccdd/>",
+            "b/new.xml": "<lccdd/>",
+        },
+    )
+    catalog = source.discover()
+    target = next(p.target for p in catalog if p.attribute == "ref" and "local" in p.value)
+    result = source.materialize([Override(target, "new.xml")], tmp_path / "out", catalog)
+    assert (result.output_root / "b/new.xml").is_file()
+
+
+def test_changed_symlink_target_after_discovery_is_rejected(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a.xml"/><include ref="link.xml"/></lccdd>',
+            "a.xml": '<lccdd><constant name="X" value="1"/></lccdd>',
+            "b.xml": '<lccdd><constant name="X" value="1"/></lccdd>',
+        },
+    )
+    (geo / "link.xml").symlink_to("a.xml")
+    source = GeometrySource("main.xml", root=geo)
+    catalog = source.discover()
+    (geo / "link.xml").unlink()
+    (geo / "link.xml").symlink_to("b.xml")
+    with pytest.raises(MaterializationError, match="symlink changed since discovery"):
+        source.materialize([], tmp_path / "out", catalog)
+    assert not (tmp_path / "out").exists()
