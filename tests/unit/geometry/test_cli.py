@@ -238,6 +238,15 @@ def test_config_errors(tmp_path: Path) -> None:
     code, _, err = run("geometry", "inspect", str(tmp_path / "dup.yaml"))
     assert code == 1 and "duplicate key 'value'" in err
 
+    # merge keys keep working (explicit keys win); unhashable keys are a controlled error
+    merged = write_config(tmp_path / "m.yaml", MINI_COMPACT, root=MINI_GEO)
+    merged.write_text(merged.read_text() + "x-base: &b {a: 1}\nx-use:\n  <<: *b\n  a: 2\n")
+    code, _, err = run("geometry", "inspect", str(merged))
+    assert "duplicate key" not in err and "constructor" not in err
+    (tmp_path / "k.yaml").write_text("? [a, b]\n: 1\n")
+    code, _, err = run("geometry", "inspect", str(tmp_path / "k.yaml"))
+    assert code == 1 and "unhashable" in err
+
     (tmp_path / "c.yaml").write_text("geometry: x.xml\nroot: ./nowhere\n")
     code, _, err = run("geometry", "inspect", str(tmp_path / "c.yaml"))
     assert code == 1 and "not an existing directory" in err
