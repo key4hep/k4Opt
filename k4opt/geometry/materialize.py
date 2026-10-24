@@ -35,9 +35,12 @@ from k4opt.geometry.includes import (
     OUTSIDE_ROOT,
     ExternalInclude,
     IncludeGraph,
+    classify_ref,
     find_resource,
     is_local_path,
     looks_like_file,
+    resolve_local_path,
+    to_root_relative,
     walk_includes,
 )
 from k4opt.geometry.overrides import ResolvedOverride
@@ -61,24 +64,29 @@ STACK_ENV_VARS = ("KEY4HEP_STACK", "K4GEO")
 def compute_fingerprint(
     catalog: Catalog,
     resolved: Sequence[ResolvedOverride],
-    extra_resources: Mapping[str, str] | None = None,
+    extra_hashes: Mapping[str, str] | None = None,
 ) -> str:
-    """Deterministic identity of the geometry that ``resolved`` would produce from ``catalog``.
+    """Deterministic identity of the locally captured geometry that ``resolved`` would produce.
 
     A SHA-256 over the compact path, the content hashes of every reachable file and
     resource, and the *effective* edits (overrides that change a value). It does not
     depend on timestamps, output locations or on overrides that restate the current
-    value, so equal fingerprints mean equal geometries and can be used to deduplicate
-    or cache evaluations. ``extra_resources`` are the hashes of resources introduced by
-    the overrides (see :func:`new_resources`); they are computed when omitted, and passed
-    in by :func:`materialize` so the fingerprint uses exactly the bytes it verified.
+    value, so equal fingerprints mean equal captured geometry files and it can be used
+    to deduplicate snapshots.
+
+    It identifies the local inputs only: the content of external references (such as
+    ``${K4GEO}`` includes) and the Key4hep software stack are not part of it, so it is
+    not sufficient as an evaluation cache key by itself. ``extra_hashes`` are the hashes
+    of files and resources introduced by the overrides (see :func:`new_files`); they are
+    computed when omitted, and passed in by :func:`materialize` so the fingerprint uses
+    exactly the bytes it verified.
     """
-    if extra_resources is None:
-        extra_resources = new_resources(catalog, resolved)
+    if extra_hashes is None:
+        extra_hashes = new_files(catalog, resolved).hashes
     payload = {
         "compact": catalog.compact,
         "files": dict(sorted(catalog.file_hashes.items())),
-        "resources": dict(sorted({**catalog.resource_hashes, **extra_resources}.items())),
+        "resources": dict(sorted({**catalog.resource_hashes, **extra_hashes}.items())),
         "edits": sorted(
             (r.file, r.locator, r.attribute, r.new_value) for r in resolved if r.changed
         ),
@@ -87,26 +95,83 @@ def compute_fingerprint(
     return sha256_bytes(canonical.encode("ascii"))
 
 
-def new_resources(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> dict[str, str]:
-    """Resource files that only the edited ``ref`` attributes point at, with their hashes.
+@dataclass(frozen=True, slots=True)
+class Additions:
+    """Local files that only the edited ``ref`` attributes make reachable."""
 
-    Discovery records the resources referenced by the unmodified geometry; an override
-    that redirects a ``ref`` to another existing local file makes that file part of the
-    geometry, so it must be copied and covered by the fingerprint too.
+    files: Mapping[str, str]
+    """XML files reached through a redirected include, with their hashes."""
+    resources: Mapping[str, str]
+    """Non-XML resources, with their hashes."""
+    aliases: Mapping[str, str]
+    """Symlinked names of the added files, mapped to the file they point at."""
+    externals: tuple[ExternalInclude, ...]
+    """References from the added files to files outside the geometry root."""
+
+    @property
+    def hashes(self) -> dict[str, str]:
+        return {**self.files, **self.resources}
+
+
+def new_files(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> Additions:
+    """Files that only the edited ``ref`` attributes point at, with their hashes.
+
+    Discovery records the files reachable from the unmodified geometry; an override
+    that redirects a ``ref`` to another existing local file makes that file (and, for an
+    include, everything it includes) part of the geometry, so it must be copied and
+    covered by the fingerprint too.
     """
     root_real = Path(os.path.realpath(catalog.root))
-    found: dict[str, str] = {}
+    known = {*catalog.file_hashes, *catalog.resource_hashes}
+    files: dict[str, str] = {}
+    resources: dict[str, str] = {}
+    aliases: dict[str, str] = {}
+    externals: list[ExternalInclude] = []
+
+    real_files = {os.path.realpath(catalog.root / f): f for f in catalog.files}
+
+    def add(into: dict[str, str], rel: str) -> None:
+        if rel in known or rel in files or rel in resources:
+            return
+        real = os.path.realpath(catalog.root / rel)
+        if into is files and real in real_files:  # another name of a file already reachable
+            aliases[rel] = real_files[real]
+            return
+        if into is files:
+            real_files[real] = rel
+        try:
+            into[rel] = sha256_file(catalog.root / rel)
+        except OSError as exc:
+            raise MaterializationError(f"cannot read {rel}: {exc}") from exc
+
     for item in resolved:
-        if not item.changed or item.attribute != "ref" or item.parameter.tag in INCLUDE_TAGS:
+        if not item.changed or item.attribute != "ref":
             continue
         base_dir = (catalog.root / item.file).parent
-        rel, escapes = find_resource(catalog.root, root_real, base_dir, item.new_value)
+        if item.parameter.tag in INCLUDE_TAGS:
+            if classify_ref(item.new_value) is not None:
+                continue  # external; reported by the walk of the snapshot
+            try:
+                target = resolve_local_path(
+                    catalog.root, root_real, base_dir, item.new_value, label=item.file
+                )
+                graph = walk_includes(catalog.root, to_root_relative(catalog.root, target))
+            except IncludeError as exc:
+                raise MaterializationError(f"{item.target}: {exc}") from exc
+            for rel in graph.files:
+                add(files, rel)
+            for rel in graph.resources:
+                add(resources, rel)
+            aliases.update({a: f for a, f in graph.file_aliases.items() if a not in known})
+            externals.extend(e for e in graph.externals if e.reason == OUTSIDE_ROOT)
+            continue
+        found, escapes = find_resource(catalog.root, root_real, base_dir, item.new_value)
         if escapes:
             raise MaterializationError(
                 f"{item.target}: resource {item.new_value!r} lies outside the geometry root; "
                 "a relocatable snapshot cannot reference it"
             )
-        if rel is None and is_local_path(item.new_value):
+        if found is None and is_local_path(item.new_value):
             # only when the old value was evidently a file (found, or an external path such as
             # ${CAD}/x.stl); a plain name may be a symbolic reference rather than a file
             was_resource, _ = find_resource(catalog.root, root_real, base_dir, item.old_value)
@@ -115,16 +180,9 @@ def new_resources(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> dic
                     f"{item.target}: resource {item.new_value!r} does not exist "
                     f"(relative to {item.file}); the snapshot would reference a missing file"
                 )
-        if (
-            rel is not None
-            and rel not in catalog.file_hashes
-            and rel not in catalog.resource_hashes
-        ):
-            try:
-                found[rel] = sha256_file(catalog.root / rel)
-            except OSError as exc:
-                raise MaterializationError(f"cannot read resource {rel}: {exc}") from exc
-    return found
+        if found is not None:
+            add(resources, found)
+    return Additions(files, resources, aliases, tuple(externals))
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,8 +273,8 @@ def materialize(
 ) -> MaterializationResult:
     """Copy the reachable files of ``source`` to ``output`` with ``resolved`` applied."""
     out = check_output_location(source.root, output)
-    extra = new_resources(catalog, resolved)
-    if MANIFEST_NAME in {*catalog.files, *catalog.resources, *extra}:
+    extra = new_files(catalog, resolved)
+    if MANIFEST_NAME in {*catalog.files, *catalog.resources, *extra.hashes}:
         raise MaterializationError(
             f"{MANIFEST_NAME} is part of the geometry but is the name of the generated manifest"
         )
@@ -230,8 +288,9 @@ def materialize(
         raise MaterializationError(f"materialization failed: {exc}") from exc
     try:
         snapshot = staging / "snapshot"
-        _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources, *extra])
-        _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes, **extra})
+        _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources, *extra.hashes])
+        _link_aliases(snapshot, {**catalog.file_aliases, **extra.aliases})
+        _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes, **extra.hashes})
         changed = _apply_edits(source.root, snapshot, [r for r in resolved if r.changed])
         graph = _verify_snapshot(snapshot, source.compact)
         manifest = _build_manifest(source, catalog, out, resolved, changed, graph, extra)
@@ -280,7 +339,7 @@ def _publish(snapshot: Path, out: Path) -> None:
         code = ctypes.get_errno()
         if code in (errno.EEXIST, errno.ENOTEMPTY):
             raise MaterializationError(f"output {out} already exists; choose a new directory")
-        if code not in (errno.ENOSYS, errno.EINVAL):
+        if code not in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
             raise OSError(code, os.strerror(code), str(out))
     if os.path.lexists(out):
         raise MaterializationError(f"output {out} already exists; choose a new directory")
@@ -305,6 +364,16 @@ def _copy_closure(source_root: Path, snapshot: Path, files: Sequence[str]) -> No
         shutil.copy2(source_root / rel, destination)
         # installed geometries are often read-only; the snapshot must stay editable
         destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+
+
+def _link_aliases(snapshot: Path, aliases: Mapping[str, str]) -> None:
+    """Recreate symlinked include names as relative links, so edits reach every name."""
+    for alias, target in aliases.items():
+        link = snapshot / alias
+        if os.path.lexists(link):
+            continue
+        link.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(os.path.relpath(snapshot / target, link.parent), link)
 
 
 def _verify_snapshot(snapshot: Path, compact: str) -> IncludeGraph:
@@ -388,7 +457,10 @@ def _verify_edit(
 
 
 def _externals(
-    catalog: Catalog, graph: IncludeGraph, resolved: Sequence[ResolvedOverride]
+    catalog: Catalog,
+    graph: IncludeGraph,
+    resolved: Sequence[ResolvedOverride],
+    extra: Additions,
 ) -> list[ExternalInclude]:
     """External references of the *generated* geometry.
 
@@ -403,7 +475,7 @@ def _externals(
         for e in catalog.externals
         if e.reason == OUTSIDE_ROOT and e.file in reachable and (e.file, e.locator) not in edited
     ]
-    return [e for e in graph.externals if e.reason != OUTSIDE_ROOT] + kept
+    return [e for e in graph.externals if e.reason != OUTSIDE_ROOT] + kept + list(extra.externals)
 
 
 def _build_manifest(
@@ -413,7 +485,7 @@ def _build_manifest(
     resolved: Sequence[ResolvedOverride],
     changed: Sequence[ChangedFile],
     graph: IncludeGraph,
-    extra: Mapping[str, str],
+    extra: Additions,
 ) -> dict[str, Any]:
     from k4opt import __version__
 
@@ -422,7 +494,7 @@ def _build_manifest(
         "schema": MANIFEST_SCHEMA,
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "k4opt_version": __version__,
-        "fingerprint": compute_fingerprint(catalog, resolved, extra),
+        "fingerprint": compute_fingerprint(catalog, resolved, extra.hashes),
         "environment": {k: os.environ[k] for k in STACK_ENV_VARS if k in os.environ},
         "source": {
             "root": str(source.root),
@@ -431,10 +503,10 @@ def _build_manifest(
         },
         "output": {"root": str(out), "compact": source.compact},
         "reachable_files": list(graph.files),
-        "resources": [*catalog.resources, *extra],
+        "resources": [*catalog.resources, *extra.resources],
         "external_includes": [
             {"file": e.file, "line": e.line, "ref": e.ref, "reason": e.reason}
-            for e in _externals(catalog, graph, resolved)
+            for e in _externals(catalog, graph, resolved, extra)
         ],
         "changes": [r.to_dict() for r in resolved],
         "files": [c.to_dict() for c in changed],

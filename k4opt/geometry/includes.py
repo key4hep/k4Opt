@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from lxml import etree
@@ -65,6 +65,8 @@ class IncludeGraph:
     externals: tuple[ExternalInclude, ...]
     resources: tuple[str, ...]
     """Local non-XML files referenced by ``ref`` attributes (root-relative, discovery order)."""
+    file_aliases: dict[str, str] = field(default_factory=dict)
+    """Other root-relative names (symlinks) under which a parsed file is referenced, by file."""
 
 
 def classify_ref(ref: str) -> str | None:
@@ -166,6 +168,7 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
     edges: list[IncludeEdge] = []
     externals: list[ExternalInclude] = []
     resources: dict[str, None] = {}
+    file_aliases: dict[str, str] = {}
     visited_real: dict[str, str] = {}
 
     def note_resource(rel: str, line: int | None, locator: str, base_dir: Path, ref: str) -> None:
@@ -177,9 +180,11 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
 
     def visit(lexical: Path, chain: tuple[str, ...]) -> str:
         real = os.path.realpath(lexical)
-        if real in visited_real:
-            return visited_real[real]
         rel = to_root_relative(root, lexical)
+        if real in visited_real:
+            if rel != visited_real[real]:
+                file_aliases.setdefault(rel, visited_real[real])
+            return visited_real[real]
         visited_real[real] = rel
         label = rel if not chain else f"{rel} (included via {' -> '.join(chain)})"
         tree = parse_xml_file(lexical, label=label)
@@ -216,4 +221,5 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
         edges=tuple(edges),
         externals=tuple(externals),
         resources=tuple(r for r in resources if r not in trees),
+        file_aliases={a: f for a, f in file_aliases.items() if a not in trees},
     )

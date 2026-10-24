@@ -247,7 +247,7 @@ def test_override_breaking_an_include_is_rejected(
     # overriding an include ref is technically addressable, but the snapshot must stay consistent
     before = tree_digest(MINI_GEO)
     output = tmp_path / "out"
-    with pytest.raises(MaterializationError, match="not self-consistent"):
+    with pytest.raises(MaterializationError, match="not found"):
         mini_source.materialize([Override("lccdd.include[3].ref", "does_not_exist.xml")], output)
     assert not output.exists()
     assert _no_leftovers(tmp_path)
@@ -546,3 +546,101 @@ def test_fingerprint_uses_the_verified_resource_bytes(
     result = source.materialize([override], tmp_path / "out", catalog)
     assert (result.output_root / "compact/det_v1/cad/other.stl").read_text() == "ORIGINAL\n"
     assert result.fingerprint == expected
+
+
+def test_symlinked_include_alias_is_kept_in_snapshot(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="part.xml"/><include ref="part_link.xml"/></lccdd>',
+            "part.xml": '<lccdd><constant name="X" value="1"/></lccdd>',
+        },
+    )
+    (geo / "part_link.xml").symlink_to("part.xml")
+    source = GeometrySource("main.xml", root=geo)
+    catalog = source.discover()
+    assert dict(catalog.file_aliases) == {"part_link.xml": "part.xml"}
+
+    result = source.materialize([Override("constants.X", "2")], tmp_path / "out", catalog)
+    link = result.output_root / "part_link.xml"
+    assert link.is_symlink() and not os.path.isabs(os.readlink(link))
+    assert 'value="2"' in link.read_text()
+    assert result.fingerprint == source.fingerprint([Override("constants.X", "2")], catalog)
+
+
+def test_redirected_include_brings_new_xml_closure(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="part.xml"/></lccdd>',
+            "part.xml": '<lccdd><constant name="X" value="1"/></lccdd>',
+            "alt.xml": '<lccdd><include ref="sub/deep.xml"/><constant name="Y" value="1"/></lccdd>',
+            "sub/deep.xml": '<lccdd><constant name="Z" value="1"/></lccdd>',
+        },
+    )
+    source = GeometrySource("main.xml", root=geo)
+    catalog = source.discover()
+    target = next(p.target for p in catalog if p.attribute == "ref")
+    override = Override(target, "alt.xml")
+    result = source.materialize([override], tmp_path / "out", catalog)
+
+    out = result.output_root
+    assert (out / "alt.xml").is_file() and (out / "sub/deep.xml").is_file()
+    assert result.fingerprint == source.fingerprint([override], catalog)
+    assert source.fingerprint([override], catalog) != source.fingerprint([], catalog)
+
+    (geo / "sub/deep.xml").write_text('<lccdd><constant name="Z" value="2"/></lccdd>')
+    assert source.fingerprint([override], catalog) != result.fingerprint
+
+
+def test_redirected_include_to_missing_file_rejected(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="part.xml"/></lccdd>',
+            "part.xml": '<lccdd><constant name="X" value="1"/></lccdd>',
+        },
+    )
+    source = GeometrySource("main.xml", root=geo)
+    target = next(p.target for p in source.discover() if p.attribute == "ref")
+    with pytest.raises(MaterializationError, match="not found"):
+        source.materialize([Override(target, "nope.xml")], tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_publish_falls_back_when_renameat2_is_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Unsupported:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.renameat2 = self
+
+        def __call__(self, *_args) -> int:
+            materialize_module.ctypes.set_errno(materialize_module.errno.EOPNOTSUPP)
+            return -1
+
+    monkeypatch.setattr(materialize_module.ctypes, "CDLL", Unsupported)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    materialize_module._publish(snapshot, tmp_path / "out")
+    assert (tmp_path / "out").is_dir() and not snapshot.exists()
+
+
+def test_redirected_include_to_symlink_of_reachable_file_is_linked(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="part.xml"/><include ref="other.xml"/></lccdd>',
+            "part.xml": '<lccdd><constant name="X" value="1"/></lccdd>',
+            "other.xml": '<lccdd><constant name="Y" value="1"/></lccdd>',
+        },
+    )
+    (geo / "part_link.xml").symlink_to("part.xml")
+    source = GeometrySource("main.xml", root=geo)
+    catalog = source.discover()
+    target = next(p.target for p in catalog if p.attribute == "ref" and p.value == "other.xml")
+    result = source.materialize(
+        [Override(target, "part_link.xml"), Override("constants.X", "2")], tmp_path / "out", catalog
+    )
+    link = result.output_root / "part_link.xml"
+    assert link.is_symlink() and 'value="2"' in link.read_text()
