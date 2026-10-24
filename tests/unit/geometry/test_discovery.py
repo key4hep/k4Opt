@@ -395,3 +395,13 @@ def test_filter_is_case_insensitive_substring(mini_catalog: Catalog) -> None:
 def test_lookup_suggests_close_matches(mini_catalog: Catalog) -> None:
     with pytest.raises(UnknownTargetError, match=r"did you mean: constants\.SolenoidField"):
         mini_catalog.lookup("constants.SolenoidFeld")
+
+
+def test_unreadable_resource_is_a_controlled_error(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo", {"main.xml": '<lccdd><shape name="S" ref="cad.stl"/></lccdd>'}
+    )
+    (geo / "cad.stl").write_text("solid x\n")
+    (geo / "cad.stl").chmod(0)
+    with pytest.raises(IncludeError, match=r"cannot read .*cad\.stl"):
+        GeometrySource("main.xml", root=geo).discover()

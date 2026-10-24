@@ -33,7 +33,7 @@ from typing import Any, overload
 
 from lxml import etree
 
-from k4opt.geometry.errors import AmbiguousTargetError, UnknownTargetError
+from k4opt.geometry.errors import AmbiguousTargetError, IncludeError, UnknownTargetError
 from k4opt.geometry.includes import ExternalInclude, IncludeEdge, walk_includes
 from k4opt.geometry.references import CONSTANTS_PREFIX, Step, is_name, is_value, parse_reference
 from k4opt.geometry.xmlio import element_locator, iter_elements, line_of, sha256_file
@@ -409,8 +409,11 @@ def discover(root: Path, compact: str) -> Catalog:
             if text != entry.text:
                 aliases[text].append(parameter)
 
-    file_hashes = {rel: sha256_file(root / rel) for rel in graph.files}
-    resource_hashes = {rel: sha256_file(root / rel) for rel in graph.resources}
+    try:
+        file_hashes = {rel: sha256_file(root / rel) for rel in graph.files}
+        resource_hashes = {rel: sha256_file(root / rel) for rel in graph.resources}
+    except OSError as exc:
+        raise IncludeError(f"cannot read {exc.filename or root}: {exc.strerror or exc}") from exc
     return Catalog(
         root=root,
         compact=compact,
