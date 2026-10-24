@@ -42,7 +42,7 @@ def test_environment_variables_are_expanded(monkeypatch: pytest.MonkeyPatch) -> 
     # the fixtures live inside this repository, so the git checkout is the detected root
     expected_root = git_toplevel(REAL_MINI_GEO) or REAL_MINI_GEO / "compact" / "det_v1"
     assert source.root == expected_root
-    assert source.compact.endswith("compact/det_v1/det_v1.xml")
+    assert source.compact == (REAL_MINI_GEO / MINI_COMPACT).relative_to(source.root).as_posix()
     assert source.compact_path == REAL_MINI_GEO / MINI_COMPACT
 
 

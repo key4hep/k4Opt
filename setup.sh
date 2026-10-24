@@ -60,9 +60,11 @@ if ! python -c "import pytest; pytest.__version__" &>/dev/null; then
         pytest pytest-cov coverage pluggy iniconfig packaging pygments
 fi
 
-# (Re)install the git hook on every run: the hook records the interpreter that
+# (Re)install the git hook on every run (not in CI, where nobody commits): the hook records the interpreter that
 # installed it, so a hook created under a different stack or venv goes stale.
-if (cd "${K4OPT_REPO}" && python -m pre_commit install --install-hooks > /dev/null); then
+if [ -n "${CI:-}" ]; then
+    echo "ℹ️  CI detected: skipping the git hook installation."
+elif (cd "${K4OPT_REPO}" && python -m pre_commit install --install-hooks > /dev/null); then
     echo "✅ Pre-commit hooks installed."
 else
     echo "⚠️  Could not install the pre-commit hooks; run 'python -m pre_commit install' manually."

@@ -58,6 +58,7 @@ jobs:
             --volume /cvmfs:/cvmfs:shared \
             --volume ${{ github.workspace }}:/workspace \
             --workdir /workspace \
+            -e CI=true \
             ${{ env.CONTAINER_IMAGE }} bash -c "
             set -e
 
