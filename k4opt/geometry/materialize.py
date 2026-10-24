@@ -28,7 +28,7 @@ from lxml import etree
 from k4opt.errors import K4OptError
 from k4opt.geometry.discovery import Catalog
 from k4opt.geometry.errors import IncludeError, MaterializationError
-from k4opt.geometry.includes import walk_includes
+from k4opt.geometry.includes import INCLUDE_TAGS, find_resource, walk_includes
 from k4opt.geometry.overrides import ResolvedOverride
 from k4opt.geometry.source import GeometrySource
 from k4opt.geometry.xmlio import (
@@ -59,13 +59,38 @@ def compute_fingerprint(catalog: Catalog, resolved: Sequence[ResolvedOverride]) 
     payload = {
         "compact": catalog.compact,
         "files": dict(sorted(catalog.file_hashes.items())),
-        "resources": dict(sorted(catalog.resource_hashes.items())),
+        "resources": dict(
+            sorted({**catalog.resource_hashes, **new_resources(catalog, resolved)}.items())
+        ),
         "edits": sorted(
             (r.file, r.locator, r.attribute, r.new_value) for r in resolved if r.changed
         ),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return sha256_bytes(canonical.encode("ascii"))
+
+
+def new_resources(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> dict[str, str]:
+    """Resource files that only the edited ``ref`` attributes point at, with their hashes.
+
+    Discovery records the resources referenced by the unmodified geometry; an override
+    that redirects a ``ref`` to another existing local file makes that file part of the
+    geometry, so it must be copied and covered by the fingerprint too.
+    """
+    root_real = Path(os.path.realpath(catalog.root))
+    found: dict[str, str] = {}
+    for item in resolved:
+        if not item.changed or item.attribute != "ref" or item.parameter.tag in INCLUDE_TAGS:
+            continue
+        base_dir = (catalog.root / item.file).parent
+        rel, _ = find_resource(catalog.root, root_real, base_dir, item.new_value)
+        if (
+            rel is not None
+            and rel not in catalog.file_hashes
+            and rel not in catalog.resource_hashes
+        ):
+            found[rel] = sha256_file(catalog.root / rel)
+    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +157,7 @@ def check_output_location(source_root: Path, output: str | os.PathLike[str]) -> 
     """Validate the requested output directory and return it as an absolute path."""
     out = Path(os.path.abspath(os.fspath(output)))
     if out.exists() or out.is_symlink():
-        raise MaterializationError(f"output {out} already exists; choose a new directory")
+        raise MaterializationError(f"output {out} already exists; choose a new directory") from None
     if _is_within(source_root, out) or out == source_root:
         raise MaterializationError(f"output {out} lies inside the source tree {source_root}")
     ancestor = out.parent
@@ -156,13 +181,15 @@ def materialize(
 ) -> MaterializationResult:
     """Copy the reachable files of ``source`` to ``output`` with ``resolved`` applied."""
     out = check_output_location(source.root, output)
+    extra = new_resources(catalog, resolved)
+
     out.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".k4opt-tmp", dir=out.parent))
     reserved = False
     try:
         snapshot = staging / "snapshot"
-        _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources])
-        _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes})
+        _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources, *extra])
+        _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes, **extra})
         changed = _apply_edits(source.root, snapshot, [r for r in resolved if r.changed])
         reachable = _verify_snapshot(snapshot, source.compact)
         manifest = _build_manifest(source, catalog, out, resolved, changed, reachable)

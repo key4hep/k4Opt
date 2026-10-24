@@ -294,36 +294,6 @@ def test_doctype_and_entity_references_survive_an_edit(tmp_path: Path) -> None:
     assert "&note;" in text and 'value="2"' in text
 
 
-def test_output_appearing_before_publication_is_not_replaced(
-    mini_source: GeometrySource, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    output = tmp_path / "out"
-    real_verify = materialize_module._verify_snapshot
-
-    def create_output_then_verify(*args, **kwargs):
-        output.mkdir()  # a concurrent worker wins the race
-        return real_verify(*args, **kwargs)
-
-    monkeypatch.setattr(materialize_module, "_verify_snapshot", create_output_then_verify)
-    with pytest.raises(MaterializationError, match="already exists"):
-        mini_source.materialize(OVERRIDES, output)
-    assert list(output.iterdir()) == []
-    assert _no_leftovers(tmp_path)
-
-
-def test_noop_override_does_not_rewrite_xml(mini_source: GeometrySource, tmp_path: Path) -> None:
-    catalog = mini_source.discover()
-    same = Override("constants.InnerTracker_Barrel_radius_1", "400*mm")
-    assert mini_source.resolve([same], catalog)[0].changed is False
-    result = mini_source.materialize([same], tmp_path / "out", catalog)
-    assert result.files == ()
-    assert (
-        tree_digest(result.output_root).items()
-        >= {k: v for k, v in tree_digest(MINI_GEO).items() if k in catalog.files}.items()
-    )
-    assert result.fingerprint == mini_source.fingerprint([], catalog)
-
-
 def _copied_geometry(tmp_path: Path) -> tuple[Path, GeometrySource]:
     geo = tmp_path / "geo"
     shutil.copytree(MINI_GEO, geo)
@@ -342,3 +312,52 @@ def test_change_to_untouched_file_or_resource_detected(tmp_path: Path) -> None:
         assert not (tmp_path / "out").exists()
         assert _no_leftovers(tmp_path)
         path.write_bytes(original)
+
+
+def test_noop_override_does_not_rewrite_xml(mini_source: GeometrySource, tmp_path: Path) -> None:
+    catalog = mini_source.discover()
+    same = Override("constants.InnerTracker_Barrel_radius_1", "400*mm")
+    assert mini_source.resolve([same], catalog)[0].changed is False
+    result = mini_source.materialize([same], tmp_path / "out", catalog)
+    assert result.files == ()
+    assert (
+        tree_digest(result.output_root).items()
+        >= {k: v for k, v in tree_digest(MINI_GEO).items() if k in catalog.files}.items()
+    )
+    assert result.fingerprint == mini_source.fingerprint([], catalog)
+
+
+def test_redirected_resource_reference_is_copied_and_fingerprinted(tmp_path: Path) -> None:
+    geo, source = _copied_geometry(tmp_path)
+    (geo / "compact/det_v1/cad/other.stl").write_text("solid other\nendsolid other\n")
+    catalog = source.discover()
+    target = next(
+        p.target for p in catalog if p.attribute == "ref" and p.value == "cad/support.stl"
+    )
+    override = Override(target, "cad/other.stl")
+    result = source.materialize([override], tmp_path / "out", catalog)
+    assert (
+        (result.output_root / "compact/det_v1/cad/other.stl").read_text().startswith("solid other")
+    )
+    assert result.fingerprint == source.fingerprint([override], catalog)
+
+    # the fingerprint covers the new resource's content
+    (geo / "compact/det_v1/cad/other.stl").write_text("solid other2\nendsolid other2\n")
+    assert source.fingerprint([override], catalog) != result.fingerprint
+
+
+def test_output_appearing_before_publication_is_not_replaced(
+    mini_source: GeometrySource, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "out"
+    real_verify = materialize_module._verify_snapshot
+
+    def create_output_then_verify(*args, **kwargs):
+        output.mkdir()  # a concurrent worker wins the race
+        return real_verify(*args, **kwargs)
+
+    monkeypatch.setattr(materialize_module, "_verify_snapshot", create_output_then_verify)
+    with pytest.raises(MaterializationError, match="already exists"):
+        mini_source.materialize(OVERRIDES, output)
+    assert list(output.iterdir()) == []
+    assert _no_leftovers(tmp_path)
