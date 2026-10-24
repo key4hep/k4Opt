@@ -148,41 +148,45 @@ def new_files(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> Additio
     for item in resolved:
         if not item.changed or item.attribute != "ref":
             continue
-        base_dir = (catalog.root / item.file).parent
-        if item.parameter.tag in INCLUDE_TAGS:
-            if classify_ref(item.new_value) is not None:
-                continue  # external; reported by the walk of the snapshot
-            try:
-                target = resolve_local_path(
-                    catalog.root, root_real, base_dir, item.new_value, label=item.file
-                )
-                graph = walk_includes(catalog.root, to_root_relative(catalog.root, target))
-            except IncludeError as exc:
-                raise MaterializationError(f"{item.target}: {exc}") from exc
-            for rel in graph.files:
-                add(files, rel)
-            for rel in graph.resources:
-                add(resources, rel)
-            aliases.update({a: f for a, f in graph.file_aliases.items() if a not in known})
-            externals.extend(e for e in graph.externals if e.reason == OUTSIDE_ROOT)
-            continue
-        found, escapes = find_resource(catalog.root, root_real, base_dir, item.new_value)
-        if escapes:
-            raise MaterializationError(
-                f"{item.target}: resource {item.new_value!r} lies outside the geometry root; "
-                "a relocatable snapshot cannot reference it"
-            )
-        if found is None and is_local_path(item.new_value):
-            # only when the old value was evidently a file (found, or an external path such as
-            # ${CAD}/x.stl); a plain name may be a symbolic reference rather than a file
-            was_resource, _ = find_resource(catalog.root, root_real, base_dir, item.old_value)
-            if was_resource is not None or looks_like_file(item.old_value):
+        # relative references resolve against the directory of the name a file is reached by,
+        # so an edit has to be resolved from every name (symlink) the edited file has
+        names = [item.file, *(a for a, f in catalog.file_aliases.items() if f == item.file)]
+        for base_dir in dict.fromkeys((catalog.root / n).parent for n in names):
+            if item.parameter.tag in INCLUDE_TAGS:
+                if classify_ref(item.new_value) is not None:
+                    break  # external; reported by the walk of the snapshot
+                try:
+                    target = resolve_local_path(
+                        catalog.root, root_real, base_dir, item.new_value, label=item.file
+                    )
+                    graph = walk_includes(catalog.root, to_root_relative(catalog.root, target))
+                except IncludeError as exc:
+                    raise MaterializationError(f"{item.target}: {exc}") from exc
+                for rel in graph.files:
+                    add(files, rel)
+                for rel in graph.resources:
+                    add(resources, rel)
+                aliases.update({a: f for a, f in graph.file_aliases.items() if a not in known})
+                externals.extend(e for e in graph.externals if e.reason == OUTSIDE_ROOT)
+                continue
+            found, escapes = find_resource(catalog.root, root_real, base_dir, item.new_value)
+            if escapes:
                 raise MaterializationError(
-                    f"{item.target}: resource {item.new_value!r} does not exist "
-                    f"(relative to {item.file}); the snapshot would reference a missing file"
+                    f"{item.target}: resource {item.new_value!r} lies outside the geometry "
+                    "root; a relocatable snapshot cannot reference it"
                 )
-        if found is not None:
-            add(resources, found)
+            if found is None and is_local_path(item.new_value):
+                # only when the old value was evidently a file (found, or an external path such
+                # as ${CAD}/x.stl); a plain name may be a symbolic reference rather than a file
+                was_resource, _ = find_resource(catalog.root, root_real, base_dir, item.old_value)
+                if was_resource is not None or looks_like_file(item.old_value):
+                    raise MaterializationError(
+                        f"{item.target}: resource {item.new_value!r} does not exist "
+                        f"(relative to {os.path.relpath(base_dir, catalog.root)}); "
+                        "the snapshot would reference a missing file"
+                    )
+            if found is not None:
+                add(resources, found)
     return Additions(files, resources, aliases, tuple(externals))
 
 
@@ -289,6 +293,7 @@ def materialize(
         raise MaterializationError(f"materialization failed: {exc}") from exc
     try:
         snapshot = staging / "snapshot"
+        _verify_aliases(source.root, {**catalog.file_aliases, **extra.aliases})
         _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources, *extra.hashes])
         _link_aliases(snapshot, {**catalog.file_aliases, **extra.aliases})
         _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes, **extra.hashes})
@@ -353,6 +358,16 @@ def _verify_copies(snapshot: Path, expected: Mapping[str, str]) -> None:
         if sha256_file(snapshot / rel) != digest:
             raise MaterializationError(
                 f"{rel} changed since discovery (hash mismatch); "
+                "rerun discovery before materializing"
+            )
+
+
+def _verify_aliases(source_root: Path, aliases: Mapping[str, str]) -> None:
+    """Every symlinked include name must still point at the file it did at discovery."""
+    for alias, target in aliases.items():
+        if os.path.realpath(source_root / alias) != os.path.realpath(source_root / target):
+            raise MaterializationError(
+                f"{alias} no longer resolves to {target} (symlink changed since discovery); "
                 "rerun discovery before materializing"
             )
 
