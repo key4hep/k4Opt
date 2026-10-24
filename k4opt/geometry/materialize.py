@@ -12,6 +12,7 @@ removed and neither source nor destination is touched.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -164,6 +165,7 @@ def materialize(
 
     out.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".k4opt-tmp", dir=out.parent))
+    reserved = False
     try:
         snapshot = staging / "snapshot"
         _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources])
@@ -173,15 +175,24 @@ def materialize(
         (snapshot / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
+        # Claim the destination atomically first: mkdir fails if it appeared since the check,
+        # whereas renaming a directory over an existing empty one would silently replace it.
+        try:
+            out.mkdir()
+        except FileExistsError:
+            raise MaterializationError(
+                f"output {out} already exists; choose a new directory"
+            ) from None
+        reserved = True
         os.rename(snapshot, out)
     except K4OptError:
-        shutil.rmtree(staging, ignore_errors=True)
+        _discard(staging, out, reserved)
         raise
     except (OSError, shutil.Error) as exc:
-        shutil.rmtree(staging, ignore_errors=True)
+        _discard(staging, out, reserved)
         raise MaterializationError(f"materialization failed: {exc}") from exc
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        _discard(staging, out, reserved)
         raise
     shutil.rmtree(staging, ignore_errors=True)
 
@@ -197,6 +208,14 @@ def materialize(
         ),
         manifest=manifest,
     )
+
+
+def _discard(staging: Path, out: Path, reserved: bool) -> None:
+    """Remove the staging directory and, if the snapshot was never moved into it, ``out``."""
+    shutil.rmtree(staging, ignore_errors=True)
+    if reserved:
+        with contextlib.suppress(OSError):
+            out.rmdir()
 
 
 def _copy_closure(source_root: Path, snapshot: Path, files: Sequence[str]) -> None:

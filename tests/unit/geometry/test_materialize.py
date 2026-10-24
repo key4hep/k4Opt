@@ -292,3 +292,20 @@ def test_doctype_and_entity_references_survive_an_edit(tmp_path: Path) -> None:
     text = (result.output_root / "main.xml").read_text(encoding="utf-8")
     assert "<!DOCTYPE lccdd [" in text and '<!ENTITY note "kept as written">' in text
     assert "&note;" in text and 'value="2"' in text
+
+
+def test_output_appearing_before_publication_is_not_replaced(
+    mini_source: GeometrySource, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "out"
+    real_verify = materialize_module._verify_snapshot
+
+    def create_output_then_verify(*args, **kwargs):
+        output.mkdir()  # a concurrent worker wins the race
+        return real_verify(*args, **kwargs)
+
+    monkeypatch.setattr(materialize_module, "_verify_snapshot", create_output_then_verify)
+    with pytest.raises(MaterializationError, match="already exists"):
+        mini_source.materialize(OVERRIDES, output)
+    assert list(output.iterdir()) == []
+    assert _no_leftovers(tmp_path)
