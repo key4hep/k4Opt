@@ -89,7 +89,7 @@ def load_config(path: str | os.PathLike[str]) -> GeometryConfig:
         data = yaml.load(config_path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise ConfigError(f"{config_path}: invalid YAML: {exc}") from exc
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise ConfigError(f"{config_path}: cannot read: {exc}") from exc
     return parse_config(data, config_path)
 

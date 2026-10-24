@@ -243,6 +243,9 @@ def test_config_errors(tmp_path: Path) -> None:
     merged.write_text(merged.read_text() + "x-base: &b {a: 1}\nx-use:\n  <<: *b\n  a: 2\n")
     code, _, err = run("geometry", "inspect", str(merged))
     assert "duplicate key" not in err and "constructor" not in err
+    (tmp_path / "u.yaml").write_bytes(b"geometry: \xff\xfe\n")
+    code, _, err = run("geometry", "inspect", str(tmp_path / "u.yaml"))
+    assert code == 1 and "cannot read" in err
     (tmp_path / "k.yaml").write_text("? [a, b]\n: 1\n")
     code, _, err = run("geometry", "inspect", str(tmp_path / "k.yaml"))
     assert code == 1 and "unhashable" in err
