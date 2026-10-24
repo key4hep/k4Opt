@@ -169,7 +169,7 @@ def materialize(
     try:
         snapshot = staging / "snapshot"
         _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources])
-        changed = _apply_edits(source.root, snapshot, resolved)
+        changed = _apply_edits(source.root, snapshot, [r for r in resolved if r.changed])
         reachable = _verify_snapshot(snapshot, source.compact)
         manifest = _build_manifest(source, catalog, out, resolved, changed, reachable)
         (snapshot / MANIFEST_NAME).write_text(
