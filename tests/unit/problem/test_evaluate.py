@@ -327,3 +327,28 @@ def test_evaluation_package_stays_independent_of_problem() -> None:
         [sys.executable, "-c", code], check=False, cwd=Path(__file__).parents[3]
     )
     assert result.returncode == 0
+
+
+def test_float_and_int_with_different_values_have_different_keys(doc: dict[str, Any]) -> None:
+    s = make(doc, param("x", "continuous", bounds=[0, 10**30]))
+    ref = "constants.x"
+    exact = _evaluate_candidate(s, {ref: 10**23}, Toy()).candidate_key
+    rounded = _evaluate_candidate(s, {ref: 1e23}, Toy()).candidate_key
+    assert 10**23 != 1e23
+    assert exact != rounded
+    assert _evaluate_candidate(s, {ref: 2**60}, Toy()).candidate_key == (
+        _evaluate_candidate(s, {ref: float(2**60)}, Toy()).candidate_key
+    )
+    assert _evaluate_candidate(s, {ref: 0.1}, Toy()).candidate_key == (
+        _evaluate_candidate(s, {ref: 0.1}, Toy()).candidate_key
+    )
+
+
+def test_record_keeps_the_identity_that_was_validated(spec: ProblemSpec) -> None:
+    class Shifty(Toy):
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            self.name, self.version = "changed", "9"
+            return super().evaluate(request)
+
+    record = _evaluate_candidate(spec, {CELL: 5.0}, Shifty())
+    assert (record.evaluator_name, record.evaluator_version) == (Toy.name, Toy.version)

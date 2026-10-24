@@ -32,10 +32,11 @@ def _is_number(value: object) -> bool:
 
 
 def _canonical_number(value: int | float) -> str:
-    """A stable text for a number, equal for ``1``, ``1.0`` and ``1e0``; exact for huge ints."""
-    # Decimal(int) is exact, and shortest-repr text of a float gives its usual decimal value;
-    # normalize() is avoided because it rounds to the context precision.
-    number = Decimal(value) if isinstance(value, int) else Decimal(repr(value))
+    """A stable text for a number, equal for ``1``, ``1.0`` and ``1e0``; exact for any value."""
+    # Both conversions are exact, so equal text means equal numerical value (10**23 differs
+    # from 1e23, which is rounded). normalize() is avoided because it rounds to the context
+    # precision.
+    number = Decimal(value) if isinstance(value, int) else Decimal.from_float(value)
     sign, digits, exponent = number.as_tuple()
     assert isinstance(exponent, int)
     text = "".join(map(str, digits)).lstrip("0")
@@ -154,10 +155,11 @@ def _evaluate_candidate(
     """
     values, key = _validate_candidate(spec, candidate)
     wanted = (spec.evaluation.evaluator, spec.evaluation.version)
-    if (evaluator.name, evaluator.version) != wanted:
+    name, version = evaluator.name, evaluator.version  # read once: the record reuses them
+    if (name, version) != wanted:
         raise EvaluationContractError(
             f"problem declares evaluator {wanted[0]!r} version {wanted[1]!r}, "
-            f"got {evaluator.name!r} version {evaluator.version!r}"
+            f"got {name!r} version {version!r}"
         )
     request = EvaluationRequest(
         candidate=values,
@@ -176,4 +178,4 @@ def _evaluate_candidate(
             f"evaluator must return an EvaluationResult, got {type(result).__name__}"
         )
     _check_result(spec, result)
-    return EvaluationRecord(request, result, evaluator.name, evaluator.version, key, elapsed)
+    return EvaluationRecord(request, result, name, version, key, elapsed)
