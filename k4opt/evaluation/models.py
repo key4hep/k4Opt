@@ -214,3 +214,53 @@ class EvaluationResult:
         if self.message is not None and not isinstance(self.message, str):
             raise EvaluationContractError("message must be a string")
         object.__setattr__(self, "provenance", _json_mapping(self.provenance, "provenance"))
+
+
+type CandidateKey = tuple[tuple[str, str, str, str], ...]
+"""Identity of a candidate within one problem: per parameter ``(reference, kind, tag, value)``."""
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationRecord:
+    """One attempted evaluation, as observed by the framework that ran it.
+
+    ``request`` and ``result`` are the actual objects exchanged with the evaluator, kept
+    unchanged; nothing of them is copied into other fields. ``evaluator_name`` and
+    ``evaluator_version`` are those of the evaluator object that ran (the caller verified
+    that they match the problem). ``candidate_key`` identifies the candidate within the
+    problem that defined it: it is scoped to that problem definition and is neither a
+    cross-problem hash nor a complete cache key. ``elapsed_seconds`` is the wall-clock
+    duration of the ``evaluate()`` call, measured with ``time.perf_counter()``; it is not
+    CPU time, memory use or an estimate.
+
+    ``result.provenance`` is what the evaluator chose to report; ``candidate_key`` and
+    ``elapsed_seconds`` are what the framework observed. Neither is proof of the software
+    environment actually used.
+    """
+
+    request: EvaluationRequest
+    result: EvaluationResult
+    evaluator_name: str
+    evaluator_version: str
+    candidate_key: CandidateKey
+    elapsed_seconds: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, EvaluationRequest):
+            raise EvaluationContractError("request must be an EvaluationRequest")
+        if not isinstance(self.result, EvaluationResult):
+            raise EvaluationContractError("result must be an EvaluationResult")
+        _name(self.evaluator_name, "evaluator_name")
+        _name(self.evaluator_version, "evaluator_version")
+        if not isinstance(self.candidate_key, tuple) or not all(
+            isinstance(part, tuple) and len(part) == 4 and all(isinstance(x, str) for x in part)
+            for part in self.candidate_key
+        ):
+            raise EvaluationContractError(
+                "candidate_key must be a tuple of (reference, kind, tag, value) string tuples"
+            )
+        if _real(self.elapsed_seconds, "elapsed_seconds") < 0:
+            raise EvaluationContractError(
+                f"elapsed_seconds must not be negative, got {self.elapsed_seconds!r}"
+            )
+        object.__setattr__(self, "elapsed_seconds", float(self.elapsed_seconds))

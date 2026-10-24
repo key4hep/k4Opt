@@ -387,6 +387,11 @@ geometry snapshot fingerprint (see [Fingerprint](geometry.md#fingerprint)), eval
 identity and version, ordered backend arguments, hashes of relevant input and steering
 files, and eventually the executed argv.
 
+A candidate evaluated against a problem is checked against the parameter domains above by an
+internal bridge that produces an `EvaluationRecord`; see
+[Evaluation contract](evaluation.md#problem-evaluator-record). It is not yet a user-facing
+workflow.
+
 ## Validation and Python API
 
 `k4opt.problem` turns a file into immutable, typed models. `load_problem(path)` is the

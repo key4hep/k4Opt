@@ -3,7 +3,7 @@
 `k4opt.evaluation` defines how anything that measures a candidate (a simulation, a
 reconstruction, an analysis, a cost model) talks to k4opt: **one protocol, one request, one
 result**. This is the contract only. Nothing runs `ddsim` or `k4run`, looks an evaluator up
-by the name in `problem.yaml`, or records results; `load_problem()` still only resolves the
+by the name in `problem.yaml`, or persists results; `load_problem()` still only resolves the
 geometry. An evaluator can be written and tested without Key4hep and without a problem file.
 
 ## The protocol
@@ -82,17 +82,69 @@ Violations raise `EvaluationContractError` (a `K4OptError`) when the object is b
 workflow instruction, and the set of stages is not enumerated. One evaluator may report
 `simulation` and `analysis` metrics together, or produce only artifacts.
 
-## Evaluator-supplied versus framework-captured
+## Problem, evaluator, record
 
-`EvaluationResult` carries only what the evaluator reports. Software versions, hashes of
-inputs, executed commands, timings and the candidate identity are not collected
-automatically; a future **`EvaluationRecord`** will add what k4opt itself observes. The two
-are different objects and not interchangeable. The record is not implemented.
+- **Problem** (`k4opt.problem`): the declared parameter domains and the requested objective and
+  constraint metrics.
+- **Evaluator**: user-written code that accepts an `EvaluationRequest` and returns an
+  `EvaluationResult`; the documentation of its version defines what its metrics mean.
+- **`EvaluationRecord`**: the request and result of **one attempted evaluation**, plus what the
+  framework observed.
+
+| `EvaluationRecord` field | Source |
+| --- | --- |
+| `request`, `result` | the actual objects exchanged with the evaluator, unchanged |
+| `evaluator_name`, `evaluator_version` | the evaluator object that ran, checked against the problem before the call |
+| `candidate_key` | framework-computed, see below |
+| `elapsed_seconds` | wall-clock time around the single `evaluate()` call (`time.perf_counter()`); not CPU time, memory or an estimate |
+
+`result.provenance` is **evaluator-supplied**; the record's identity and elapsed time are
+**framework-observed**. Neither proves which software environment ran: the problem's
+`environment.key4hep` is a declared pin, and no executed command, input hash or version is
+recorded yet.
+
+`candidate_key` is a tuple with one `(reference, kind, tag, value)` entry per parameter, in the
+problem's parameter order. It is problem-aware: `True`, `1` and `1.0` are not interchangeable
+by Python equality here, so a categorical boolean, a categorical string `"1"` and a numeric `1`
+stay distinct, while continuous `1`, `1.0` and `-0.0`/`0.0` (or numeric choices `1` and `1.0`)
+agree. Numbers are written as exact decimal text, so huge integers are never forced through
+`float`. The key is scoped to one problem definition; it is not a cross-problem hash, a
+geometry fingerprint or a complete evaluation-cache key.
+
+### Internal bridge (not the physicist-facing workflow)
+
+`k4opt.problem._evaluate._evaluate_candidate(spec, candidate, evaluator, *, inputs=None,
+workdir=None)` connects a `ProblemSpec` to an explicitly supplied evaluator. It is private,
+meant for tests and a future runner; the user-facing entry point will take only the problem
+YAML.
+
+```python
+record = _evaluate_candidate(spec, {"constants.ECal_cell_size": 6.0}, CellCount())
+```
+
+In order, it:
+
+1. validates the candidate (`CandidateError` otherwise): exactly one value per declared
+   parameter, keyed by `parameter.geometry.canonical_target`; continuous `int`/finite `float`
+   within inclusive bounds; integer a real `int` (no `bool`, no rounding) within bounds;
+   categorical one of the choices by kind (strings need a string, booleans a boolean, numbers
+   compare numerically). Units are never interpreted or converted;
+2. requires `evaluator.name` and `evaluator.version` to equal `evaluation.evaluator` and
+   `evaluation.version` (`EvaluationContractError` otherwise), before anything runs;
+3. builds the `EvaluationRequest` from the validated candidate plus `settings`, `events`,
+   `seed` and the exact ordered `backend` arguments; `inputs` and `workdir` are passed through
+   unchanged and nothing is created, inspected or materialized;
+4. calls `evaluate()` exactly once. Exceptions of the evaluator propagate;
+5. for a `valid` result, requires every `(stage, metric)` of any objective or constraint to be
+   measured (extra metrics are fine) and, where a constraint declares a `unit`, the
+   measurement's `unit` to be equal. A violation is an `EvaluationContractError`: an
+   inconsistent evaluator, not a violated constraint. Whether a value satisfies `min`/`max` is
+   not judged. `invalid` and `failed` results are kept as returned, even without metrics.
 
 ## Deliberately deferred
 
 An evaluator registry or lookup by name, mapping `problem.yaml` to an implementation and
-validating its metric names, running `ddsim`/`k4run`, geometry snapshots for a candidate,
+validating its metric names, running `ddsim`/`k4run`, geometry snapshots for a candidate, a public execution API,
 chaining artifacts between evaluators (callers do it by hand, as the tests show), execution
-cost, retries and scheduling, fingerprints and caching, the persisted `EvaluationRecord`,
+cost, retries and scheduling, fingerprints and caching, persisting or serializing the `EvaluationRecord`,
 and aggregation, significance or constraint judgment.
