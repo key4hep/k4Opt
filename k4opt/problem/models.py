@@ -10,19 +10,17 @@ nor the object handed out by :meth:`ProblemSpec.to_dict` aliases the stored stat
 
 from __future__ import annotations
 
-import math
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, NamedTuple
+from typing import Literal
 
+from k4opt.frozen import FrozenMap, Json, thaw
+from k4opt.frozen import freeze as _freeze_json
 from k4opt.geometry import Catalog, GeometrySource
 from k4opt.geometry import Parameter as GeometryParameter
 from k4opt.problem.errors import ProblemConfigError
 
 SCHEMA_VERSION = "k4opt.problem/v1alpha1"
-
-type Json = bool | int | float | str | tuple[Json, ...] | Mapping[str, Json] | None
-"""A JSON-compatible value as stored in a model: sequences are tuples, mappings read-only."""
 
 type Number = int | float
 
@@ -30,126 +28,14 @@ Channel = Literal["release", "nightly"]
 ParameterKind = Literal["continuous", "integer", "categorical"]
 Direction = Literal["minimize", "maximize"]
 
-_MAX_DEPTH = 64
-_MAX_VALUES = 1_000_000
-
-
-class _FrozenMap[V](Mapping[str, V]):
-    """A read-only, hashable mapping that keeps insertion order."""
-
-    __slots__ = ("_items",)
-
-    def __init__(self, items: Mapping[str, V]) -> None:
-        self._items = dict(items)
-
-    def __getitem__(self, key: str) -> V:
-        return self._items[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._items)
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-    def __hash__(self) -> int:
-        # equal mappings compare equal whatever their key order, so they must hash alike
-        return hash(frozenset(self._items.items()))
-
-    def __repr__(self) -> str:
-        return f"{self._items!r}"
-
 
 def freeze(value: object, path: str) -> Json:
     """Return an immutable copy of a JSON-compatible ``value``.
 
-    Accepts ``None``, booleans, integers, finite floats, strings, lists (or tuples) and
-    mappings with string keys, nested to a bounded depth. Anything else, including
-    non-finite numbers, dates, bytes, sets and self-referencing structures, raises
-    :class:`ProblemConfigError` naming ``path``. A value shared by several YAML aliases is
-    frozen once, yet counts with its full size and depth at every place it is used; a
-    document whose aliases expand to more than ``_MAX_VALUES`` values is refused, so that
-    serializing or hashing the result stays cheap.
+    The shared :func:`k4opt.frozen.freeze`, reporting a :class:`ProblemConfigError` that
+    names ``path``.
     """
-    return _freeze(value, path, _Walk(), 0).value
-
-
-class _Frozen(NamedTuple):
-    value: Json
-    size: int  # number of values it expands to
-    height: int  # levels of containers it spans: 0 for a scalar
-
-
-class _Walk:
-    """Bookkeeping of one :func:`freeze` call."""
-
-    def __init__(self) -> None:
-        self.active: set[int] = set()  # containers being frozen now: a hit is a cycle
-        self.done: dict[int, _Frozen] = {}  # containers already frozen, by identity
-
-
-def _freeze(value: object, path: str, walk: _Walk, depth: int) -> _Frozen:
-    if value is None or isinstance(value, (str, bool, int)):
-        return _Frozen(value, 1, 0)
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ProblemConfigError(f"{path}: non-finite number {value!r} is not allowed")
-        return _Frozen(value, 1, 0)
-    if isinstance(value, (list, tuple, Mapping)):
-        if id(value) in walk.done:  # an alias of a container that was already frozen
-            done = walk.done[id(value)]
-            if depth + done.height > _MAX_DEPTH:
-                raise ProblemConfigError(f"{path}: nested deeper than {_MAX_DEPTH} levels")
-            return done
-        if depth >= _MAX_DEPTH:
-            raise ProblemConfigError(f"{path}: nested deeper than {_MAX_DEPTH} levels")
-        if id(value) in walk.active:
-            raise ProblemConfigError(f"{path}: contains itself (recursive YAML alias)")
-        walk.active.add(id(value))
-        try:
-            size, height = 1, 1
-            frozen: Json
-            if isinstance(value, Mapping):
-                items: dict[str, Json] = {}
-                for key, item in value.items():
-                    if not isinstance(key, str):
-                        raise ProblemConfigError(
-                            f"{path}: mapping keys must be strings, got {key!r}"
-                        )
-                    child = _freeze(item, f"{path}.{key}", walk, depth + 1)
-                    items[key] = child.value
-                    size += child.size
-                    height = max(height, child.height + 1)
-                frozen = _FrozenMap(items)
-            else:
-                elements: list[Json] = []
-                for index, item in enumerate(value):
-                    child = _freeze(item, f"{path}[{index}]", walk, depth + 1)
-                    elements.append(child.value)
-                    size += child.size
-                    height = max(height, child.height + 1)
-                frozen = tuple(elements)
-            if size > _MAX_VALUES:
-                raise ProblemConfigError(
-                    f"{path}: aliases expand to more than {_MAX_VALUES} values"
-                )
-        finally:
-            walk.active.discard(id(value))
-        result = _Frozen(frozen, size, height)
-        walk.done[id(value)] = result
-        return result
-    raise ProblemConfigError(
-        f"{path}: unsupported value of type {type(value).__name__}; "
-        "allowed: null, booleans, numbers, strings, lists and mappings with string keys"
-    )
-
-
-def thaw(value: Json) -> object:
-    """Return a plain, mutable ``dict``/``list`` copy of a value produced by :func:`freeze`."""
-    if isinstance(value, Mapping):
-        return {key: thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [thaw(item) for item in value]
-    return value
+    return _freeze_json(value, path, ProblemConfigError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,8 +135,8 @@ class Evaluation:
     version: str
     events: int | None = None
     seed: int | None = None
-    settings: Mapping[str, Json] = field(default_factory=lambda: _FrozenMap({}))
-    backend: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: _FrozenMap({}))
+    settings: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    backend: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
         # Direct construction gets the same defensive copy as parsing does.
@@ -260,7 +146,7 @@ class Evaluation:
         object.__setattr__(
             self,
             "backend",
-            _FrozenMap({name: tuple(args) for name, args in self.backend.items()}),
+            FrozenMap({name: tuple(args) for name, args in self.backend.items()}),
         )
 
     def to_dict(self) -> dict[str, object]:

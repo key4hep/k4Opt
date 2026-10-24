@@ -17,6 +17,7 @@ from typing import Any, cast
 
 import yaml
 
+from k4opt.frozen import Json
 from k4opt.geometry import AmbiguousTargetError, GeometrySource, TargetError
 from k4opt.problem.errors import ProblemConfigError
 from k4opt.problem.models import (
@@ -28,7 +29,6 @@ from k4opt.problem.models import (
     Evaluation,
     GeometrySelector,
     GeometrySpec,
-    Json,
     Key4hepStack,
     Number,
     Objective,
