@@ -16,7 +16,7 @@ API, command group, documentation and tests.
 | Component | Purpose | Status |
 | --- | --- | --- |
 | [`k4opt.geometry`](docs/geometry.md) | Discover addressable parameters of a DD4hep XML geometry, override them, materialize modified geometries | available |
-| problem definition | Declare which parameters vary and within which bounds, and what is evaluated | next |
+| problem definition | Declare which parameters vary and within which bounds, and what is evaluated. A [draft specification](docs/problem.md) can be loaded and validated (`k4opt.problem`); evaluators, metrics and the CLI are **proposed, not yet implemented** | in progress |
 | evaluation | Run a configuration through simulation / reconstruction / analysis and record a standard result | planned |
 | optimization | Drive the evaluation with existing optimization libraries | planned |
 
