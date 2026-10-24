@@ -34,14 +34,14 @@ if [ ! -f ~/.local/bin/cvmfs-venv ]; then
 fi
 
 if [ ! -d "${K4OPT_REPO}/py-venv" ]; then
-    cvmfs-venv "${K4OPT_REPO}/py-venv"
+    cvmfs-venv "${K4OPT_REPO}/py-venv" || return 1
 else
     echo "✅ Virtual environment 'py-venv' already exists. Skipping creation."
 fi
 
-if [ -z "$VIRTUAL_ENV" ]; then
+if [ "${VIRTUAL_ENV:-}" != "${K4OPT_REPO}/py-venv" ]; then
     echo "🔄 Activating virtual environment..."
-    . "${K4OPT_REPO}/py-venv/bin/activate"
+    . "${K4OPT_REPO}/py-venv/bin/activate" || return 1
 else
     echo "✅ Virtual environment is already active."
 fi
@@ -50,8 +50,8 @@ fi
 # by pip: they come from the Key4hep stack, and resolving them would make pip
 # parse the metadata of every installed package (some are broken on CVMFS).
 # --ignore-installed keeps pip from even looking at the stack's copies.
-pip install --quiet --no-dependencies --ignore-installed -r "${K4OPT_REPO}/requirements.txt"
-pip install --quiet --no-build-isolation --no-deps --ignore-installed -e "${K4OPT_REPO}"
+pip install --quiet --no-dependencies --ignore-installed -r "${K4OPT_REPO}/requirements.txt" || return 1
+pip install --quiet --no-build-isolation --no-deps --ignore-installed -e "${K4OPT_REPO}" || return 1
 
 # Some nightlies ship an unusable pytest package; fill the gap, again without
 # dependency resolution.
