@@ -462,3 +462,44 @@ def test_publish_fallback_without_renameat2_still_refuses_existing_output(
     out.rmdir()
     materialize_module._publish(snapshot, out)
     assert out.is_dir() and not snapshot.exists()
+
+
+def test_external_resource_redirected_to_missing_local_file_rejected(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {"d.xml": '<lccdd><shape name="Support" ref="${CAD_DIR}/support.stl"/></lccdd>'},
+    )
+    source = GeometrySource("d.xml", root=geo)
+    with pytest.raises(MaterializationError, match="does not exist"):
+        source.materialize([Override("Support.ref", "cad/missing.stl")], tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+    # a plain name is not assumed to be a file
+    source.materialize([Override("Support.ref", "SomeName")], tmp_path / "out")
+
+
+def test_manifest_keeps_unchanged_external_with_the_same_value(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "d.xml": """
+                <lccdd>
+                  <shape name="A" ref="../outside.stl"/>
+                  <shape name="B" ref="../outside.stl"/>
+                </lccdd>
+            """
+        },
+    )
+    (tmp_path / "outside.stl").write_text("solid x\nendsolid x\n")
+    source = GeometrySource("d.xml", root=geo)
+    result = source.materialize([Override("A.ref", "${X}/new.stl")], tmp_path / "out")
+    externals = [(e["ref"], e["line"]) for e in result.manifest["external_includes"]]
+    assert externals == [("../outside.stl", 3)]
+
+
+def test_unwritable_output_location_is_a_controlled_error(
+    mini_source: GeometrySource, tmp_path: Path
+) -> None:
+    blocker = tmp_path / "file"
+    blocker.write_text("not a directory")
+    with pytest.raises(MaterializationError, match="materialization failed"):
+        mini_source.materialize(OVERRIDES, blocker / "out")

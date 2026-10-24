@@ -37,6 +37,7 @@ from k4opt.geometry.includes import (
     IncludeGraph,
     find_resource,
     is_local_path,
+    looks_like_file,
     walk_includes,
 )
 from k4opt.geometry.overrides import ResolvedOverride
@@ -100,8 +101,10 @@ def new_resources(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> dic
                 "a relocatable snapshot cannot reference it"
             )
         if rel is None and is_local_path(item.new_value):
+            # only when the old value was evidently a file (found, or an external path such as
+            # ${CAD}/x.stl); a plain name may be a symbolic reference rather than a file
             was_resource, _ = find_resource(catalog.root, root_real, base_dir, item.old_value)
-            if was_resource is not None:
+            if was_resource is not None or looks_like_file(item.old_value):
                 raise MaterializationError(
                     f"{item.target}: resource {item.new_value!r} does not exist "
                     f"(relative to {item.file}); the snapshot would reference a missing file"
@@ -111,7 +114,10 @@ def new_resources(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> dic
             and rel not in catalog.file_hashes
             and rel not in catalog.resource_hashes
         ):
-            found[rel] = sha256_file(catalog.root / rel)
+            try:
+                found[rel] = sha256_file(catalog.root / rel)
+            except OSError as exc:
+                raise MaterializationError(f"cannot read resource {rel}: {exc}") from exc
     return found
 
 
@@ -209,8 +215,13 @@ def materialize(
             f"{MANIFEST_NAME} is part of the geometry but is the name of the generated manifest"
         )
 
-    out.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".k4opt-tmp", dir=out.parent))
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".k4opt-tmp", dir=out.parent)
+        )
+    except OSError as exc:
+        raise MaterializationError(f"materialization failed: {exc}") from exc
     try:
         snapshot = staging / "snapshot"
         _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources, *extra])
@@ -379,9 +390,11 @@ def _externals(
     the root depend on where the geometry lives, so those are taken from the source
     catalog, minus the ones an override has since replaced.
     """
-    edited = {(r.file, r.old_value) for r in resolved if r.changed}
+    edited = {(r.file, r.locator) for r in resolved if r.changed and r.attribute == "ref"}
     kept = [
-        e for e in catalog.externals if e.reason == OUTSIDE_ROOT and (e.file, e.ref) not in edited
+        e
+        for e in catalog.externals
+        if e.reason == OUTSIDE_ROOT and (e.file, e.locator) not in edited
     ]
     return [e for e in graph.externals if e.reason != OUTSIDE_ROOT] + kept
 
