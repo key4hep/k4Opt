@@ -52,8 +52,12 @@ evaluation:
       ecal_barrel: ECalBarrelCollection
     generator:
       particle: gamma
-      energy: {value: 10, unit: GeV}
-      vertex: {value: [0, 0, 0], unit: mm}
+      energy:
+        value: 10
+        unit: GeV
+      vertex:
+        value: [0, 0, 0]
+        unit: mm
       direction:
         distribution: uniform_solid_angle
         theta: [60, 120]
@@ -438,7 +442,7 @@ baseline for validating bounds and constraint limits); reconstruction and analys
   XML holds `5.1*mm`. The proposal is that k4Opt composes the replacement string from the
   value and the declared unit; the exact rule is undecided.
 - **Quantity notation in `settings`.** The draft convention is a number with an explicit
-  `unit` (`energy: {value: 10, unit: GeV}`, or a shared `unit` for a group such as
+  `unit` (`energy` with `value: 10` and `unit: GeV`, or a shared `unit` for a group such as
   `theta`/`phi`), never a quoted expression. The evaluator contract may still refine it.
 - **Constraint units.** `unit` on a constraint states the unit of `min`/`max`; whether
   the evaluator may convert or must match exactly is undecided.
