@@ -270,3 +270,10 @@ def test_geometry_usage_errors_exit_2() -> None:
     with pytest.raises(SystemExit) as info:
         run("geometry")  # an action is required
     assert info.value.code == 2
+
+
+def test_very_deep_yaml_is_a_clean_error(tmp_path: Path) -> None:
+    deep = "[" * 5000 + "]" * 5000
+    (tmp_path / "deep.yaml").write_text(f"geometry: x.xml\noverrides: {deep}\n")
+    code, _, err = run("geometry", "inspect", str(tmp_path / "deep.yaml"))
+    assert code == 1 and "nested too deeply" in err

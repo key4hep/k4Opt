@@ -644,3 +644,83 @@ def test_redirected_include_to_symlink_of_reachable_file_is_linked(tmp_path: Pat
     )
     link = result.output_root / "part_link.xml"
     assert link.is_symlink() and 'value="2"' in link.read_text()
+
+
+def _alias_geometry(root: Path, target: str) -> GeometrySource:
+    geo = write_tree(
+        root,
+        {
+            "main.xml": (
+                '<lccdd><include ref="a.xml"/><include ref="b.xml"/>'
+                '<include ref="link.xml"/></lccdd>'
+            ),
+            "a.xml": '<lccdd><constant name="A" value="1"/></lccdd>',
+            "b.xml": '<lccdd><constant name="B" value="2"/></lccdd>',
+        },
+    )
+    (geo / "link.xml").symlink_to(target)
+    return GeometrySource("main.xml", root=geo)
+
+
+def test_fingerprint_depends_on_where_an_include_alias_points(tmp_path: Path) -> None:
+    a = _alias_geometry(tmp_path / "ga", "a.xml")
+    b = _alias_geometry(tmp_path / "gb", "b.xml")
+    assert a.fingerprint([]) != b.fingerprint([])
+    assert a.materialize([], tmp_path / "oa").fingerprint == a.fingerprint([])
+
+
+def test_alias_introduced_by_override_is_in_the_fingerprint(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="part.xml"/></lccdd>',
+            "part.xml": '<lccdd><constant name="X" value="1"/></lccdd>',
+            "other.xml": '<lccdd><constant name="Y" value="1"/></lccdd>',
+        },
+    )
+    (geo / "l1.xml").symlink_to("other.xml")
+    (geo / "l2.xml").symlink_to("part.xml")
+    source = GeometrySource("main.xml", root=geo)
+    catalog = source.discover()
+    target = next(p.target for p in catalog if p.attribute == "ref")
+    assert source.fingerprint([Override(target, "l1.xml")], catalog) != source.fingerprint(
+        [Override(target, "l2.xml")], catalog
+    )
+
+
+def test_external_reference_of_a_redirected_include_is_listed_once(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a.xml"/><include ref="b.xml"/></lccdd>',
+            "a.xml": '<lccdd><constant name="A" value="1"/></lccdd>',
+            "b.xml": '<lccdd><shape name="s" ref="../external.stl"/></lccdd>',
+            "../external.stl": "x\n",
+        },
+    )
+    source = GeometrySource("main.xml", root=geo)
+    catalog = source.discover()
+    target = next(p.target for p in catalog if p.attribute == "ref" and "a.xml" in p.value)
+    result = source.materialize([Override(target, "b.xml")], tmp_path / "out", catalog)
+    refs = [(e["file"], e["ref"]) for e in result.manifest["external_includes"]]
+    assert len(refs) == len(set(refs))
+
+
+def test_include_through_aliases_in_two_directories_is_followed(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": (
+                '<lccdd><include ref="a/shared.xml"/><include ref="b/shared.xml"/></lccdd>'
+            ),
+            "a/shared.xml": '<lccdd><include ref="local.xml"/></lccdd>',
+            "a/local.xml": '<lccdd><constant name="LA" value="1"/></lccdd>',
+            "b/local.xml": '<lccdd><constant name="LB" value="2"/></lccdd>',
+        },
+    )
+    (geo / "b" / "shared.xml").symlink_to("../a/shared.xml")
+    source = GeometrySource("main.xml", root=geo)
+    catalog = source.discover()
+    assert "b/local.xml" in catalog.files
+    result = source.materialize([Override("constants.LB", "3")], tmp_path / "out", catalog)
+    assert 'value="3"' in (result.output_root / "b/local.xml").read_text()

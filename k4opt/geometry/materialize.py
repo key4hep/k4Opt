@@ -64,29 +64,30 @@ STACK_ENV_VARS = ("KEY4HEP_STACK", "K4GEO")
 def compute_fingerprint(
     catalog: Catalog,
     resolved: Sequence[ResolvedOverride],
-    extra_hashes: Mapping[str, str] | None = None,
+    extra: Additions | None = None,
 ) -> str:
     """Deterministic identity of the locally captured geometry that ``resolved`` would produce.
 
     A SHA-256 over the compact path, the content hashes of every reachable file and
-    resource, and the *effective* edits (overrides that change a value). It does not
-    depend on timestamps, output locations or on overrides that restate the current
-    value, so equal fingerprints mean equal captured geometry files and it can be used
-    to deduplicate snapshots.
+    resource, the symlinked include names and where they point, and the *effective* edits
+    (overrides that change a value). It does not depend on timestamps, output locations or
+    on overrides that restate the current value, so equal fingerprints mean equal captured
+    geometry files and it can be used to deduplicate snapshots.
 
     It identifies the local inputs only: the content of external references (such as
     ``${K4GEO}`` includes) and the Key4hep software stack are not part of it, so it is
-    not sufficient as an evaluation cache key by itself. ``extra_hashes`` are the hashes
-    of files and resources introduced by the overrides (see :func:`new_files`); they are
-    computed when omitted, and passed in by :func:`materialize` so the fingerprint uses
+    not sufficient as an evaluation cache key by itself. ``extra`` are the files,
+    resources and symlinked names introduced by the overrides (see :func:`new_files`); they
+    are computed when omitted, and passed in by :func:`materialize` so the fingerprint uses
     exactly the bytes it verified.
     """
-    if extra_hashes is None:
-        extra_hashes = new_files(catalog, resolved).hashes
+    if extra is None:
+        extra = new_files(catalog, resolved)
     payload = {
         "compact": catalog.compact,
         "files": dict(sorted(catalog.file_hashes.items())),
-        "resources": dict(sorted({**catalog.resource_hashes, **extra_hashes}.items())),
+        "resources": dict(sorted({**catalog.resource_hashes, **extra.hashes}.items())),
+        "aliases": dict(sorted({**catalog.file_aliases, **extra.aliases}.items())),
         "edits": sorted(
             (r.file, r.locator, r.attribute, r.new_value) for r in resolved if r.changed
         ),
@@ -475,7 +476,10 @@ def _externals(
         for e in catalog.externals
         if e.reason == OUTSIDE_ROOT and e.file in reachable and (e.file, e.locator) not in edited
     ]
-    return [e for e in graph.externals if e.reason != OUTSIDE_ROOT] + kept + list(extra.externals)
+    combined = (
+        [e for e in graph.externals if e.reason != OUTSIDE_ROOT] + kept + list(extra.externals)
+    )
+    return list(dict.fromkeys(combined))  # a file reached by several redirects is listed once
 
 
 def _build_manifest(
@@ -494,7 +498,7 @@ def _build_manifest(
         "schema": MANIFEST_SCHEMA,
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "k4opt_version": __version__,
-        "fingerprint": compute_fingerprint(catalog, resolved, extra.hashes),
+        "fingerprint": compute_fingerprint(catalog, resolved, extra),
         "environment": {k: os.environ[k] for k in STACK_ENV_VARS if k in os.environ},
         "source": {
             "root": str(source.root),
