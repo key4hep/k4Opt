@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from k4opt import ConfigError, K4OptError
 from k4opt.problem import ProblemConfigError, load_problem, parse_problem
@@ -40,7 +41,8 @@ def reject(data: object, message: str) -> None:
 
 
 def test_loads_the_checked_in_example() -> None:
-    problem = load_problem(EXAMPLE)
+    # the CLD geometry is not part of the repository, so only the parse is checked
+    problem = parse_problem(yaml.safe_load(EXAMPLE.read_text()), source=EXAMPLE)
     assert problem.name == "cld-ecal-granularity"
     assert problem.environment.key4hep.channel == "nightly"
     assert problem.environment.key4hep.version == "2026-10-20"
@@ -705,7 +707,7 @@ objectives:
     metric: b
     stage: analysis
 """
-    problem = load_problem(write(text))
+    problem = parse_problem(yaml.safe_load(text))
     assert [(o.stage, o.metric) for o in problem.objectives] == [
         ("simulation", "a"),
         ("analysis", "b"),

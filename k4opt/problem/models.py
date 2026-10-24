@@ -1,8 +1,9 @@
 """Immutable domain models of a parsed optimization problem.
 
 The models describe the draft ``k4opt.problem/v1alpha1`` format of ``docs/problem.md``.
-They hold declarative data only: nothing here resolves geometry targets, looks up an
-evaluator or metric, or touches the Key4hep stack. Evaluator-owned content (``settings``
+They hold declarative data only: nothing here looks up an evaluator or metric or touches
+the Key4hep stack; :func:`k4opt.problem.load_problem` attaches the resolved geometry targets
+to the :class:`ProblemSpec` as private runtime state. Evaluator-owned content (``settings``
 and backend arguments) is stored as an immutable copy, so neither the caller's YAML data
 nor the object handed out by :meth:`ProblemSpec.to_dict` aliases the stored state.
 """
@@ -14,6 +15,8 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Literal, NamedTuple
 
+from k4opt.geometry import Catalog, GeometrySource
+from k4opt.geometry import Parameter as GeometryParameter
 from k4opt.problem.errors import ProblemConfigError
 
 SCHEMA_VERSION = "k4opt.problem/v1alpha1"
@@ -310,10 +313,10 @@ class Constraint:
 class ProblemSpec:
     """A validated problem definition (``k4opt.problem/v1alpha1``).
 
-    Built by :func:`k4opt.problem.load_problem` or :func:`k4opt.problem.parse_problem`.
-    Validation is limited to what can be known without Key4hep: nothing here claims that a
-    constant exists, that an evaluator or metric is defined, or that the ranges make
-    scientific sense.
+    Built by :func:`k4opt.problem.load_problem`, which also resolves the geometry targets,
+    or by :func:`k4opt.problem.parse_problem`, which only validates the document. Nothing
+    here claims that an evaluator or metric is defined, or that the ranges make scientific
+    sense.
     """
 
     environment: Environment
@@ -323,6 +326,14 @@ class ProblemSpec:
     objectives: tuple[Objective, ...]
     constraints: tuple[Constraint, ...] = ()
     name: str | None = None
+    # Runtime state of a loaded problem (see load_problem): the geometry discovered once and
+    # the attribute each parameter targets, in the order of ``parameters``. Private, left out
+    # of equality, hashing, repr and to_dict(); empty for a problem from parse_problem.
+    _source: GeometrySource | None = field(default=None, kw_only=True, repr=False, compare=False)
+    _catalog: Catalog | None = field(default=None, kw_only=True, repr=False, compare=False)
+    _targets: tuple[GeometryParameter, ...] = field(
+        default=(), kw_only=True, repr=False, compare=False
+    )
 
     def to_dict(self) -> dict[str, object]:
         """Plain JSON-compatible data in schema order; a fresh copy on every call.
