@@ -120,6 +120,24 @@ def _looks_like_path(ref: str) -> bool:
     return "/" in ref or "." in os.path.basename(ref)
 
 
+def find_resource(root: Path, root_real: Path, base_dir: Path, ref: str) -> tuple[str | None, bool]:
+    """Locate the local file a non-include ``ref`` points at.
+
+    Returns ``(root-relative path, False)`` for an existing file inside the root,
+    ``(None, True)`` for an existing file outside it, and ``(None, False)`` when
+    ``ref`` is not a local path to an existing file (e.g. a material name).
+    """
+    if classify_ref(ref) is not None or not _looks_like_path(ref):
+        return None, False
+    lexical = Path(os.path.normpath(base_dir / ref))
+    if not lexical.is_file():
+        return None, False
+    real = Path(os.path.realpath(lexical))
+    if not _is_within(root, lexical) or not _is_within(root_real, real):
+        return None, True
+    return to_root_relative(root, lexical), False
+
+
 def walk_includes(root: Path, compact: str) -> IncludeGraph:
     """Parse ``compact`` and every reachable local include below ``root``.
 
@@ -138,16 +156,11 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
     visited_real: dict[str, str] = {}
 
     def note_resource(rel: str, line: int | None, base_dir: Path, ref: str) -> None:
-        if classify_ref(ref) is not None or not _looks_like_path(ref):
-            return
-        lexical = Path(os.path.normpath(base_dir / ref))
-        if not lexical.is_file():
-            return
-        real = Path(os.path.realpath(lexical))
-        if not _is_within(root, lexical) or not _is_within(root_real, real):
+        found, escapes = find_resource(root, root_real, base_dir, ref)
+        if escapes:
             externals.append(ExternalInclude(rel, line, ref, "file outside the geometry root"))
-            return
-        resources.setdefault(to_root_relative(root, lexical))
+        elif found is not None:
+            resources.setdefault(found)
 
     def visit(lexical: Path, chain: tuple[str, ...]) -> str:
         real = os.path.realpath(lexical)
