@@ -5,6 +5,8 @@ own public API, errors and command group:
 
 * :mod:`k4opt.geometry` - discover and override parameters in DD4hep XML detector
   descriptions and materialize modified geometries.
+* :mod:`k4opt.problem` - load and validate the declarative definition of an optimization
+  problem.
 
 Shared pieces live at the top level: :mod:`k4opt.errors` and the ``k4opt`` command
 (:mod:`k4opt.cli`).
