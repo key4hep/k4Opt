@@ -7,6 +7,8 @@ own public API, errors and command group:
   descriptions and materialize modified geometries.
 * :mod:`k4opt.problem` - load and validate the declarative definition of an optimization
   problem.
+* :mod:`k4opt.evaluation` - the contract an evaluator implements: request, result,
+  measurements.
 
 Shared pieces live at the top level: :mod:`k4opt.errors` and the ``k4opt`` command
 (:mod:`k4opt.cli`).

@@ -330,7 +330,11 @@ who wants to minimize multiplicity at a required position resolution swaps the t
 
 ## Concepts and boundaries (future)
 
-None of these exist as code yet. They are named so the YAML sections have a clear home.
+Apart from the evaluator *contract*, none of these exist as code yet. They are named so the
+YAML sections have a clear home. The contract (`Evaluator`, `EvaluationRequest`,
+`EvaluationResult`, `Measurement`) is implemented in `k4opt.evaluation`, see
+[evaluation.md](evaluation.md); the evaluator name, metric binding, registry and execution
+below are still not, and `load_problem()` neither resolves nor runs an evaluator.
 
 | Concept | Role |
 | --- | --- |
@@ -447,8 +451,8 @@ There is no fingerprint of a problem yet.
 ## Deferred
 
 Out of scope until later increments: candidate values and
-materialization; CLI commands; the evaluator contract, registry and
-metric metadata; running `ddsim` or `k4run`; conflict detection and argument merging;
+materialization; CLI commands; the evaluator registry, the binding of `evaluation.evaluator` and metrics to an
+implementation, and metric metadata (the bare contract exists, see [evaluation.md](evaluation.md)); running `ddsim` or `k4run`; conflict detection and argument merging;
 file and configuration capture; a problem fingerprint; optimizer integration; multi-objective strategy; non-geometry
 parameter sources; several evaluators per problem; a parameter that drives several geometry targets at once;
 metrics that are not simulated measurements (for example cost or channel-count models);

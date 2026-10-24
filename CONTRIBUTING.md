@@ -8,6 +8,7 @@ problem definition, evaluation and optimization components will sit beside it.
     k4opt/
       __init__.py      version + K4OptError, nothing else
       errors.py        error base classes shared by all components
+      frozen.py        immutable copies of JSON-like data, shared by components that store it
       cli.py           the `k4opt` command; each component adds a command group
       <component>/     public API in __init__.py; errors.py, cli.py (register()), ...
     tests/

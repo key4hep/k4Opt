@@ -8,7 +8,8 @@ from typing import Any, cast
 
 import pytest
 
-from k4opt.problem import Evaluation, ProblemConfigError, models, parse_problem
+from k4opt import frozen as frozen_module
+from k4opt.problem import Evaluation, ProblemConfigError, parse_problem
 from k4opt.problem.models import freeze, thaw
 
 
@@ -139,14 +140,14 @@ def _alias_tower(depth: int) -> list[object]:
 
 def test_shared_values_are_frozen_once(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = 0
-    original = models._freeze
+    original = frozen_module._freeze
 
     def counting(*args: Any) -> Any:
         nonlocal calls
         calls += 1
         return original(*args)
 
-    monkeypatch.setattr(models, "_freeze", counting)
+    monkeypatch.setattr(frozen_module, "_freeze", counting)
     freeze({"tower": _alias_tower(17)}, "p")
     assert calls < 100  # one visit per distinct container, not 2**17
 
