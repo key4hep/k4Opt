@@ -29,6 +29,9 @@ INCLUDE_TAGS: frozenset[str] = frozenset({"include", "gdmlFile", "file", "xml"})
 #: Reason recorded for a ``ref`` that points at an existing file outside the geometry root.
 OUTSIDE_ROOT = "file outside the geometry root"
 
+#: Deepest include chain followed; deeper nesting is an IncludeError, not a RecursionError.
+MAX_INCLUDE_DEPTH = 100
+
 _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
 
 
@@ -172,6 +175,7 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
     file_aliases: dict[str, str] = {}
     visited_real: dict[str, str] = {}
     scanned: set[tuple[str, Path]] = set()
+    active: set[tuple[str, str]] = set()
 
     def note_resource(rel: str, line: int | None, locator: str, base_dir: Path, ref: str) -> None:
         found, escapes = find_resource(root, root_real, base_dir, ref)
@@ -204,6 +208,23 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
         if (real, base_dir) in scanned:
             return
         scanned.add((real, base_dir))
+        # a directory symlink that loops back (``loop -> .``) yields ever longer lexical
+        # directories for one physical (file, directory); stop when it is already being scanned
+        physical = (real, os.path.realpath(base_dir))
+        if physical in active:
+            return
+        if len(chain) >= MAX_INCLUDE_DEPTH:
+            raise IncludeError(
+                f"{rel}: includes nested deeper than {MAX_INCLUDE_DEPTH} levels "
+                f"(included via {' -> '.join(chain[:3])} -> ...)"
+            )
+        active.add(physical)
+        try:
+            follow(rel, base_dir, chain)
+        finally:
+            active.discard(physical)
+
+    def follow(rel: str, base_dir: Path, chain: tuple[str, ...]) -> None:
         tree = trees[rel]
         for element in iter_elements(tree):
             ref = element.get("ref")

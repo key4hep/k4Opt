@@ -139,6 +139,32 @@ def test_symlink_inside_root_is_followed(tmp_path: Path) -> None:
     assert catalog.lookup("constants.B").file == "alias/b.xml"
 
 
+def test_deep_include_chain_is_an_include_error(tmp_path: Path) -> None:
+    files = {"geo/main.xml": '<lccdd><include ref="0.xml"/></lccdd>'}
+    for i in range(500):
+        files[f"geo/{i}.xml"] = f'<lccdd><include ref="{i + 1}.xml"/></lccdd>'
+    files["geo/500.xml"] = "<lccdd/>"
+    write_tree(tmp_path, files)
+    with pytest.raises(IncludeError, match="nested deeper"):
+        GeometrySource("main.xml", root=tmp_path / "geo").discover()
+
+
+def test_cyclic_directory_symlink_is_an_include_cycle(tmp_path: Path) -> None:
+    write_tree(
+        tmp_path,
+        {
+            "geo/main.xml": '<lccdd><include ref="dir/a.xml"/></lccdd>',
+            "geo/dir/a.xml": (
+                '<lccdd><include ref="loop/a.xml"/>'
+                '<define><constant name="A" value="1"/></define></lccdd>'
+            ),
+        },
+    )
+    os.symlink(".", tmp_path / "geo" / "dir" / "loop")
+    catalog = GeometrySource("main.xml", root=tmp_path / "geo").discover()
+    assert catalog.lookup("constants.A").file == "dir/a.xml"
+
+
 def test_include_of_directory_or_malformed_xml_rejected(tmp_path: Path) -> None:
     write_tree(
         tmp_path,
