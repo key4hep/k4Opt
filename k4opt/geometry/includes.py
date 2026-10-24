@@ -26,6 +26,9 @@ from k4opt.geometry.xmlio import iter_elements, line_of, parse_xml_file
 #: Element tags whose ``ref`` attribute DD4hep treats as an XML file to include.
 INCLUDE_TAGS: frozenset[str] = frozenset({"include", "gdmlFile", "file", "xml"})
 
+#: Reason recorded for a ``ref`` that points at an existing file outside the geometry root.
+OUTSIDE_ROOT = "file outside the geometry root"
+
 _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
 
 
@@ -161,7 +164,7 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
     def note_resource(rel: str, line: int | None, base_dir: Path, ref: str) -> None:
         found, escapes = find_resource(root, root_real, base_dir, ref)
         if escapes:
-            externals.append(ExternalInclude(rel, line, ref, "file outside the geometry root"))
+            externals.append(ExternalInclude(rel, line, ref, OUTSIDE_ROOT))
         elif found is not None:
             resources.setdefault(found)
 

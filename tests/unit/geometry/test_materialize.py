@@ -409,3 +409,56 @@ def test_manifest_name_collision_rejected(tmp_path: Path) -> None:
     with pytest.raises(MaterializationError, match="name of the generated manifest"):
         source.materialize([Override("constants.X", "2")], tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_read_only_source_files_can_be_edited(tmp_path: Path) -> None:
+    geo, source = _copied_geometry(tmp_path)
+    for path in geo.rglob("*"):
+        if path.is_file():
+            path.chmod(0o444)
+    result = source.materialize(OVERRIDES, tmp_path / "out")
+    assert "405*mm" in (result.output_root / "compact/det_v1/tracker.xml").read_text()
+    shutil.rmtree(tmp_path / "out")  # the snapshot is a normal, deletable tree
+
+
+def test_redirect_to_resource_outside_root_rejected(tmp_path: Path) -> None:
+    geo, source = _copied_geometry(tmp_path)
+    (tmp_path / "outside.stl").write_text("solid outside\nendsolid outside\n")
+    catalog = source.discover()
+    target = next(
+        p.target for p in catalog if p.attribute == "ref" and p.value == "cad/support.stl"
+    )
+    value = os.path.relpath(tmp_path / "outside.stl", geo / "compact/det_v1")
+    with pytest.raises(MaterializationError, match="outside the geometry root"):
+        source.materialize([Override(target, value)], tmp_path / "out", catalog)
+    assert not (tmp_path / "out").exists()
+
+
+def test_manifest_externals_describe_the_generated_geometry(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {"d.xml": '<lccdd><include ref="${LIB_A}/old.xml"/><constant name="X" value="1"/></lccdd>'},
+    )
+    source = GeometrySource("d.xml", root=geo)
+    target = next(p.target for p in source.discover() if p.attribute == "ref")
+    result = source.materialize([Override(target, "${LIB_B}/new.xml")], tmp_path / "out")
+    assert [e["ref"] for e in result.manifest["external_includes"]] == ["${LIB_B}/new.xml"]
+
+
+def test_publish_fallback_without_renameat2_still_refuses_existing_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class NoRenameat2:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+    monkeypatch.setattr(materialize_module.ctypes, "CDLL", NoRenameat2)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(MaterializationError, match="already exists"):
+        materialize_module._publish(snapshot, out)
+    out.rmdir()
+    materialize_module._publish(snapshot, out)
+    assert out.is_dir() and not snapshot.exists()

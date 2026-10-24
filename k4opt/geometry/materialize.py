@@ -17,6 +17,7 @@ import errno
 import json
 import os
 import shutil
+import stat
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -29,7 +30,15 @@ from lxml import etree
 from k4opt.errors import K4OptError
 from k4opt.geometry.discovery import Catalog
 from k4opt.geometry.errors import IncludeError, MaterializationError
-from k4opt.geometry.includes import INCLUDE_TAGS, find_resource, is_local_path, walk_includes
+from k4opt.geometry.includes import (
+    INCLUDE_TAGS,
+    OUTSIDE_ROOT,
+    ExternalInclude,
+    IncludeGraph,
+    find_resource,
+    is_local_path,
+    walk_includes,
+)
 from k4opt.geometry.overrides import ResolvedOverride
 from k4opt.geometry.source import GeometrySource
 from k4opt.geometry.xmlio import (
@@ -85,7 +94,12 @@ def new_resources(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> dic
             continue
         base_dir = (catalog.root / item.file).parent
         rel, escapes = find_resource(catalog.root, root_real, base_dir, item.new_value)
-        if rel is None and not escapes and is_local_path(item.new_value):
+        if escapes:
+            raise MaterializationError(
+                f"{item.target}: resource {item.new_value!r} lies outside the geometry root; "
+                "a relocatable snapshot cannot reference it"
+            )
+        if rel is None and is_local_path(item.new_value):
             was_resource, _ = find_resource(catalog.root, root_real, base_dir, item.old_value)
             if was_resource is not None:
                 raise MaterializationError(
@@ -202,8 +216,8 @@ def materialize(
         _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources, *extra])
         _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes, **extra})
         changed = _apply_edits(source.root, snapshot, [r for r in resolved if r.changed])
-        reachable = _verify_snapshot(snapshot, source.compact)
-        manifest = _build_manifest(source, catalog, out, resolved, changed, reachable, extra)
+        graph = _verify_snapshot(snapshot, source.compact)
+        manifest = _build_manifest(source, catalog, out, resolved, changed, graph, extra)
         (snapshot / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
@@ -238,7 +252,8 @@ def _publish(snapshot: Path, out: Path) -> None:
 
     ``rename(2)`` onto an existing *empty* directory succeeds silently, so where the
     platform offers ``renameat2(RENAME_NOREPLACE)`` it is used; elsewhere a plain rename
-    (which still refuses a non-empty destination) is the best available.
+    preceded by an existence check, is the best available (filesystems such as NFS lack
+    ``RENAME_NOREPLACE``, so failing closed there would make the tool unusable).
     """
     renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
     if renameat2 is not None:
@@ -250,6 +265,8 @@ def _publish(snapshot: Path, out: Path) -> None:
             raise MaterializationError(f"output {out} already exists; choose a new directory")
         if code not in (errno.ENOSYS, errno.EINVAL):
             raise OSError(code, os.strerror(code), str(out))
+    if os.path.lexists(out):
+        raise MaterializationError(f"output {out} already exists; choose a new directory")
     os.rename(snapshot, out)
 
 
@@ -269,12 +286,14 @@ def _copy_closure(source_root: Path, snapshot: Path, files: Sequence[str]) -> No
         destination = snapshot / rel
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_root / rel, destination)
+        # installed geometries are often read-only; the snapshot must stay editable
+        destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
 
 
-def _verify_snapshot(snapshot: Path, compact: str) -> tuple[str, ...]:
+def _verify_snapshot(snapshot: Path, compact: str) -> IncludeGraph:
     """Re-walk the include graph of the edited snapshot; every local include must still resolve."""
     try:
-        return walk_includes(snapshot, compact).files
+        return walk_includes(snapshot, compact)
     except IncludeError as exc:
         raise MaterializationError(f"generated snapshot is not self-consistent: {exc}") from exc
 
@@ -351,13 +370,29 @@ def _verify_edit(
             )
 
 
+def _externals(
+    catalog: Catalog, graph: IncludeGraph, resolved: Sequence[ResolvedOverride]
+) -> list[ExternalInclude]:
+    """External references of the *generated* geometry.
+
+    Include-style references come from the edited snapshot. References to files outside
+    the root depend on where the geometry lives, so those are taken from the source
+    catalog, minus the ones an override has since replaced.
+    """
+    edited = {(r.file, r.old_value) for r in resolved if r.changed}
+    kept = [
+        e for e in catalog.externals if e.reason == OUTSIDE_ROOT and (e.file, e.ref) not in edited
+    ]
+    return [e for e in graph.externals if e.reason != OUTSIDE_ROOT] + kept
+
+
 def _build_manifest(
     source: GeometrySource,
     catalog: Catalog,
     out: Path,
     resolved: Sequence[ResolvedOverride],
     changed: Sequence[ChangedFile],
-    reachable: Sequence[str],
+    graph: IncludeGraph,
     extra: Mapping[str, str],
 ) -> dict[str, Any]:
     from k4opt import __version__
@@ -375,11 +410,11 @@ def _build_manifest(
             "git": git.to_dict() if git else None,
         },
         "output": {"root": str(out), "compact": source.compact},
-        "reachable_files": list(reachable),
+        "reachable_files": list(graph.files),
         "resources": [*catalog.resources, *extra],
         "external_includes": [
             {"file": e.file, "line": e.line, "ref": e.ref, "reason": e.reason}
-            for e in catalog.externals
+            for e in _externals(catalog, graph, resolved)
         ],
         "changes": [r.to_dict() for r in resolved],
         "files": [c.to_dict() for c in changed],
