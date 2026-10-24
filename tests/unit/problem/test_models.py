@@ -187,3 +187,28 @@ def test_equal_specs_hash_equally_whatever_the_key_order(doc: dict[str, Any]) ->
 def test_different_specs_are_still_different(doc: dict[str, Any]) -> None:
     other = {**doc, "evaluation": {**doc["evaluation"], "seed": 43}}
     assert parse_problem(doc) != parse_problem(other)
+
+
+def _nested(levels: int, leaf: object) -> object:
+    node = leaf
+    for _ in range(levels):
+        node = [node]
+    return node
+
+
+@pytest.mark.parametrize("shallow_first", [True, False])
+def test_depth_of_a_shared_value_is_checked_at_every_use(shallow_first: bool) -> None:
+    shared = _nested(40, "x")  # 40 levels deep on its own
+    near, far = ("near", "far") if shallow_first else ("far", "near")
+    document: dict[str, object] = {}
+    for name in (near, far):
+        document[name] = shared if name == "near" else _nested(30, shared)  # 71 levels
+    with pytest.raises(ProblemConfigError, match="nested deeper"):
+        freeze(document, "p")
+
+
+def test_shared_value_within_the_depth_limit_is_fine_in_any_order() -> None:
+    shared = _nested(20, "x")
+    for order in (("a", "b"), ("b", "a")):
+        document = {name: shared if name == "a" else _nested(20, shared) for name in order}
+        assert thaw(freeze(document, "p")) == {"a": shared, "b": _nested(20, shared)}

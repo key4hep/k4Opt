@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from k4opt.problem.errors import ProblemConfigError
 
@@ -63,10 +63,17 @@ def freeze(value: object, path: str) -> Json:
     mappings with string keys, nested to a bounded depth. Anything else, including
     non-finite numbers, dates, bytes, sets and self-referencing structures, raises
     :class:`ProblemConfigError` naming ``path``. A value shared by several YAML aliases is
-    frozen once; a document whose aliases expand to more than ``_MAX_VALUES`` values is
-    refused, so that serializing or hashing the result stays cheap.
+    frozen once, yet counts with its full size and depth at every place it is used; a
+    document whose aliases expand to more than ``_MAX_VALUES`` values is refused, so that
+    serializing or hashing the result stays cheap.
     """
-    return _freeze(value, path, _Walk(), 0)[0]
+    return _freeze(value, path, _Walk(), 0).value
+
+
+class _Frozen(NamedTuple):
+    value: Json
+    size: int  # number of values it expands to
+    height: int  # levels of containers it spans: 0 for a scalar
 
 
 class _Walk:
@@ -74,27 +81,29 @@ class _Walk:
 
     def __init__(self) -> None:
         self.active: set[int] = set()  # containers being frozen now: a hit is a cycle
-        self.done: dict[int, tuple[Json, int]] = {}  # frozen container, size once expanded
+        self.done: dict[int, _Frozen] = {}  # containers already frozen, by identity
 
 
-def _freeze(value: object, path: str, walk: _Walk, depth: int) -> tuple[Json, int]:
-    """Freeze ``value``; the second item is the number of values it expands to."""
+def _freeze(value: object, path: str, walk: _Walk, depth: int) -> _Frozen:
     if value is None or isinstance(value, (str, bool, int)):
-        return value, 1
+        return _Frozen(value, 1, 0)
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ProblemConfigError(f"{path}: non-finite number {value!r} is not allowed")
-        return value, 1
+        return _Frozen(value, 1, 0)
     if isinstance(value, (list, tuple, Mapping)):
         if id(value) in walk.done:  # an alias of a container that was already frozen
-            return walk.done[id(value)]
+            done = walk.done[id(value)]
+            if depth + done.height > _MAX_DEPTH:
+                raise ProblemConfigError(f"{path}: nested deeper than {_MAX_DEPTH} levels")
+            return done
         if depth >= _MAX_DEPTH:
             raise ProblemConfigError(f"{path}: nested deeper than {_MAX_DEPTH} levels")
         if id(value) in walk.active:
             raise ProblemConfigError(f"{path}: contains itself (recursive YAML alias)")
         walk.active.add(id(value))
         try:
-            size = 1
+            size, height = 1, 1
             frozen: Json
             if isinstance(value, Mapping):
                 items: dict[str, Json] = {}
@@ -103,15 +112,18 @@ def _freeze(value: object, path: str, walk: _Walk, depth: int) -> tuple[Json, in
                         raise ProblemConfigError(
                             f"{path}: mapping keys must be strings, got {key!r}"
                         )
-                    items[key], count = _freeze(item, f"{path}.{key}", walk, depth + 1)
-                    size += count
+                    child = _freeze(item, f"{path}.{key}", walk, depth + 1)
+                    items[key] = child.value
+                    size += child.size
+                    height = max(height, child.height + 1)
                 frozen = _FrozenMap(items)
             else:
                 elements: list[Json] = []
                 for index, item in enumerate(value):
-                    element, count = _freeze(item, f"{path}[{index}]", walk, depth + 1)
-                    elements.append(element)
-                    size += count
+                    child = _freeze(item, f"{path}[{index}]", walk, depth + 1)
+                    elements.append(child.value)
+                    size += child.size
+                    height = max(height, child.height + 1)
                 frozen = tuple(elements)
             if size > _MAX_VALUES:
                 raise ProblemConfigError(
@@ -119,8 +131,9 @@ def _freeze(value: object, path: str, walk: _Walk, depth: int) -> tuple[Json, in
                 )
         finally:
             walk.active.discard(id(value))
-        walk.done[id(value)] = (frozen, size)
-        return frozen, size
+        result = _Frozen(frozen, size, height)
+        walk.done[id(value)] = result
+        return result
     raise ProblemConfigError(
         f"{path}: unsupported value of type {type(value).__name__}; "
         "allowed: null, booleans, numbers, strings, lists and mappings with string keys"
