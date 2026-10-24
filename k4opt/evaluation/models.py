@@ -10,7 +10,7 @@ the search domain. Nested caller-owned data is copied on construction.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -119,10 +119,11 @@ class EvaluationRequest:
         backend: dict[str, tuple[str, ...]] = {}
         for tool, args in self.backend_args.items():
             _name(tool, "backend_args tool")
-            # a bare string would silently become a tuple of characters
-            if isinstance(args, str) or not isinstance(args, Iterable):
+            # only an ordered sequence keeps the arguments: a str would become characters, a
+            # dict its keys, a set an arbitrary order
+            if not isinstance(args, (list, tuple)):
                 raise EvaluationContractError(
-                    f"backend_args[{tool!r}] must be a sequence of strings"
+                    f"backend_args[{tool!r}] must be a list or tuple of strings"
                 )
             args = tuple(args)
             for index, arg in enumerate(args):
@@ -192,10 +193,8 @@ class EvaluationResult:
             raise EvaluationContractError(
                 f"status must be one of {', '.join(_STATUSES)}, got {self.status!r}"
             )
-        if isinstance(self.measurements, (str, Mapping)) or not isinstance(
-            self.measurements, Iterable
-        ):
-            raise EvaluationContractError("measurements must be a sequence of Measurement")
+        if not isinstance(self.measurements, (list, tuple)):
+            raise EvaluationContractError("measurements must be a list or tuple of Measurement")
         measurements = tuple(self.measurements)
         seen: set[tuple[str, str]] = set()
         for index, measurement in enumerate(measurements):
