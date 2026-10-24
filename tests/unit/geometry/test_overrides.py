@@ -27,6 +27,12 @@ def test_override_requires_string_value_and_valid_target() -> None:
     assert override.file is None
 
 
+@pytest.mark.parametrize("value", ["a\x00b", "\ud800", "\x08", "\ufffe"])
+def test_override_value_must_be_valid_xml_text(value: str) -> None:
+    with pytest.raises(InvalidTargetError, match="not valid in XML"):
+        Override(target="constants.X", value=value)
+
+
 def test_resolve_binds_old_and_new_values(
     mini_source: GeometrySource, mini_catalog: Catalog
 ) -> None:
