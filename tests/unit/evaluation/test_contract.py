@@ -192,7 +192,7 @@ def test_duplicate_stage_metric_is_rejected() -> None:
 def test_measurements_must_be_measurements() -> None:
     with pytest.raises(EvaluationContractError, match=r"measurements\[0\]"):
         EvaluationResult("valid", [("s", "m", 1)])  # type: ignore[arg-type]
-    with pytest.raises(EvaluationContractError, match="sequence"):
+    with pytest.raises(EvaluationContractError, match="list or tuple"):
         EvaluationResult("valid", Measurement("s", "m", 1))  # type: ignore[arg-type]
 
 
@@ -290,7 +290,7 @@ def test_backend_args_are_preserved_exactly() -> None:
 
 
 def test_backend_args_reject_bare_strings_and_non_strings() -> None:
-    with pytest.raises(EvaluationContractError, match="sequence of strings"):
+    with pytest.raises(EvaluationContractError, match="list or tuple of strings"):
         EvaluationRequest(backend_args={"ddsim": "--physics.list FTFP_BERT"})  # type: ignore[dict-item]
     with pytest.raises(EvaluationContractError, match=r"\[1\] must be a string"):
         EvaluationRequest(backend_args={"ddsim": ("-N", 5)})  # type: ignore[dict-item]
@@ -337,7 +337,12 @@ def test_package_does_not_pull_in_problem_or_geometry() -> None:
         "bad = [m for m in sys.modules if m.startswith(banned)];"
         "sys.exit(1 if bad else 0)"
     )
-    assert subprocess.run([sys.executable, "-I", "-c", code], check=False).returncode == 0
+    assert (
+        subprocess.run(
+            [sys.executable, "-c", code], check=False, cwd=Path(__file__).parents[3]
+        ).returncode
+        == 0
+    )
 
 
 @pytest.mark.parametrize("field", ["candidate", "settings", "inputs", "backend_args"])
@@ -355,3 +360,17 @@ def test_result_mappings_must_be_mappings(field: str) -> None:
 def test_message_must_be_text() -> None:
     with pytest.raises(EvaluationContractError, match="message"):
         EvaluationResult("failed", message=cast(Any, ValueError("boom")))
+
+
+@pytest.mark.parametrize(
+    "args", [{"--physics.list": "FTFP_BERT"}, {"-v", "-N"}, iter(["-v"]), "-v"]
+)
+def test_backend_args_must_be_ordered_sequences(args: Any) -> None:
+    with pytest.raises(EvaluationContractError, match="list or tuple of strings"):
+        EvaluationRequest(backend_args={"ddsim": args})
+
+
+@pytest.mark.parametrize("measurements", [{Measurement("s", "m", 1)}, iter([]), {"a": 1}])
+def test_measurements_must_be_ordered_sequences(measurements: Any) -> None:
+    with pytest.raises(EvaluationContractError, match="list or tuple"):
+        EvaluationResult("valid", measurements)
