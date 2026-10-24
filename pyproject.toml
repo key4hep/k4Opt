@@ -1,0 +1,111 @@
+[project]
+name = "k4opt"
+version = "0.1.0"
+description = "Detector optimization framework for Key4hep"
+authors = [{name = "Joshua Falco Beirer", email = "jbeirer@cern.ch"}]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+keywords = ["key4hep", "dd4hep", "detector", "optimization", "geometry", "hep"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Typing :: Typed",
+]
+# Intended to run inside the Key4hep environment: the stack decides the runtime
+# versions, so only the oldest versions that k4opt is tested with are declared.
+dependencies = [
+    "lxml>=6.0",
+    "pyyaml>=6.0.2",
+]
+
+[project.urls]
+Repository = "https://github.com/key4hep/k4Opt"
+Issues = "https://github.com/key4hep/k4Opt/issues"
+
+[project.scripts]
+k4opt = "k4opt.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["k4opt*"]
+
+[tool.setuptools.package-data]
+k4opt = ["py.typed"]
+
+# Development tools are pinned to current releases; runtime dependencies above are not.
+[project.optional-dependencies]
+test = ["pytest>=9.1", "pytest-cov>=7.1"]
+dev = [
+    "pytest>=9.1",
+    "pytest-cov>=7.1",
+    "ruff>=0.17.2",
+    "mypy>=2.4",
+    "types-PyYAML>=6.0.12",
+    "lxml-stubs>=0.5.1",
+    "pre-commit>=4.7",
+    "codespell>=2.4.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# key4hep's CVMFS pytest bundles GaudiTesting, which emits DartMeasurement
+# XML blobs to stdout for every test. Irrelevant here — block all three.
+# --import-mode=importlib lets tests/unit/<component> and tests/integration/<component>
+# share test basenames (e.g. test_cli.py) without __init__.py files.
+addopts = "-ra --tb=short --strict-markers --strict-config --import-mode=importlib -p no:collect_for_ctest -p no:ctest_measurements_reporter -p no:gaudi_fixtures"
+filterwarnings = ["error"]
+markers = [
+    "integration: needs a k4geo tree (K4GEO from the Key4hep stack, or K4GEO_DIR)",
+]
+
+[tool.coverage.run]
+source = ["k4opt"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["k4opt"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["py-venv"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "PT",       # pytest style
+    "PERF",     # performance
+    "RUF",      # ruff-specific
+]
+ignore = ["RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "PT018"]  # compound asserts are deliberate in tests

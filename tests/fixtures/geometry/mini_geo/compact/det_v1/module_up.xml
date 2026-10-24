@@ -1,0 +1,6 @@
+<lccdd>
+    <!-- Build slices bottom-up: sensor first -->
+    <module_component thickness="0.100*mm"  material="Silicon"          info="Module: Sensor"               sensitive="true" />
+    <module_component thickness="0.200*mm"  material="Aluminium"        info="Power bus: Conductor"         sensitive="false"/>
+    <module_component thickness="0.150*mm"  material="Kapton"           info="Power bus: Insulating layer"  sensitive="false"/>
+</lccdd>

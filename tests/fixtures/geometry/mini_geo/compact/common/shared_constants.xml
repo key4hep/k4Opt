@@ -1,0 +1,5 @@
+<define>
+  <constant name="SharedThickness" value="1*mm"/>
+  <constant name="Tracker_cooling_gap" value="7*mm"/>
+  <include ref="common_extra.xml"/>
+</define>

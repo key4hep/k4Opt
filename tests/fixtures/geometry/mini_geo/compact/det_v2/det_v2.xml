@@ -1,0 +1,7 @@
+<lccdd>
+  <!-- A sibling detector version that det_v1 never includes: must not appear in its catalog -->
+  <define>
+    <constant name="SolenoidField" value="3*tesla"/>
+    <constant name="OnlyInV2" value="42"/>
+  </define>
+</lccdd>

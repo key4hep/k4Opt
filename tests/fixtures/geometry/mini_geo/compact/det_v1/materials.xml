@@ -1,0 +1,13 @@
+<materials>
+  <!-- a tiny subset of DD4hep materials -->
+  <material name="Air">
+    <D type="density" unit="g/cm3" value="0.0012"/>
+    <fraction n="0.754" ref="N"/>
+    <fraction n="0.234" ref="O"/>
+    <fraction n="0.012" ref="Ar"/>
+  </material>
+  <material name="Silicon">
+    <D type="density" value="2.33" unit="g/cm3"/>
+    <composite n="1" ref="Si"/>
+  </material>
+</materials>

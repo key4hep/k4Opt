@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lccdd xmlns:compact="http://www.lcsim.org/schemas/compact/1.0"
+       xmlns:xs="http://www.w3.org/2001/XMLSchema"
+       xs:noNamespaceSchemaLocation="http://www.lcsim.org/schemas/compact/1.0/compact.xsd">
+
+  <info name="det_v1" title="Mini detector v1" author="k4opt tests" status="test" version="1">
+    <comment>Small but realistic fixture for k4opt tests</comment>
+  </info>
+
+  <includes>
+    <gdmlFile ref="materials.xml"/>
+    <gdmlFile ref="../common/shared_constants.xml"/> <!-- include outside this version directory -->
+  </includes>
+
+  <define>
+    <constant name="world_side" value="6100*mm"/>
+    <constant name="SolenoidField" value="2*tesla"/>
+    <constant name="DetID_NOTUSED"          value=" 0"/>
+    <constant name="Pixel array" value="1"/>
+    <constant name="GlobalTrackerReadoutID" type="string" value="system:5,side:-2,layer:6,module:11,sensor:8"/>
+  </define>
+
+  <!-- resolved by DD4hep at runtime from the installation, not a local file -->
+  <include ref="${DD4hepINSTALL}/DDDetectors/compact/detector_types.xml"/>
+  <include ref="display.xml"/>
+  <include ref="tracker.xml"/>
+  <include ref="display.xml"/>
+
+  <fields>
+    <field name="GlobalSolenoid" type="solenoid"
+           inner_field="SolenoidField"
+           outer_field="-1.0*tesla"
+           zmax="100*mm"
+           outer_radius="200*mm"/>
+  </fields>
+</lccdd>

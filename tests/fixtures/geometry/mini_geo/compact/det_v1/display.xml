@@ -1,0 +1,6 @@
+<lccdd>
+  <display>
+    <vis name="ITVis" alpha="1.0" r="0.5" g="0.5" b="0.5" showDaughters="true" visible="true"/>
+    <vis name="InnerTrackerModuleVis" alpha="1.0" r="0.9" g="0.1" b="0.1" showDaughters="true" visible="true"/>
+  </display>
+</lccdd>

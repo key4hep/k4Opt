@@ -1,0 +1,33 @@
+# Example k4opt configuration for the CLD detector shipped with Key4hep.
+#
+# `geometry` names the compact file the way k4Bench does: relative to $K4GEO
+# (set when the Key4hep stack is sourced, e.g. via `source setup.sh`). An
+# absolute path or one using environment variables ($K4GEO/..., $MYGEO/...) is
+# accepted as well. Nothing else is needed to describe the geometry.
+#
+#   k4opt geometry inspect examples/geometry/cld.yaml --filter InnerTracker
+#   k4opt geometry apply   examples/geometry/cld.yaml --output ./generated/cld-test --dry-run
+#   k4opt geometry apply   examples/geometry/cld.yaml --output ./generated/cld-test
+
+geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+
+# To work on your own k4geo checkout instead of the installed one, point `root`
+# at it (relative to this file); `geometry` is then relative to `root`:
+# root: ../../k4geo
+
+# Values are literal replacement strings for the XML attribute: always quote them.
+# These two values are technical examples only, not validated detector variants.
+overrides:
+  # <constant name="InnerTracker_Barrel_radius_1" value="400*mm"/> in InnerTracker_o2_v08.xml
+  - target: constants.InnerTracker_Barrel_radius_1
+    value: "405*mm"
+
+  # <detector name="InnerTrackerBarrel"> / <layer id="1"> / <rphi_layout nphi="43*2" .../>
+  - target: InnerTrackerBarrel.layer[id=1].rphi_layout.nphi
+    value: "90"
+
+  # A constant defined in more than one reachable file (flag "A" in `inspect`) needs a
+  # file discriminator; HCal_cell_size is defined in both the HCal barrel and endcap files:
+  # - target: constants.HCal_cell_size
+  #   file: FCCee/CLD/compact/CLD_o2_v09/HCalBarrel_o1_v01_01.xml
+  #   value: "30*mm"

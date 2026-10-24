@@ -1,0 +1,93 @@
+name: Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9
+
+jobs:
+  # The same hooks developers run on commit (ruff, mypy, codespell, shellcheck, actionlint, ...)
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Run pre-commit on all files
+        run: |
+          python -m pip install -r requirements.txt
+          pre-commit run --all-files --show-diff-on-failure --color=always
+
+  # Unit and integration tests inside the Key4hep stack, so $K4GEO is a real k4geo tree
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cvmfs-contrib/github-action-cvmfs@v5
+
+      - name: Build and test
+        run: |
+          docker run --rm \
+            --device /dev/fuse \
+            --cap-add SYS_ADMIN \
+            --volume /cvmfs:/cvmfs:shared \
+            --volume ${{ github.workspace }}:/workspace \
+            --workdir /workspace \
+            ${{ env.CONTAINER_IMAGE }} bash -c "
+            set -e
+
+            echo '::group::Set-up key4hep'
+            source setup.sh
+            echo '::endgroup::'
+
+            echo '::group::Install k4opt'
+            pip install --no-build-isolation --no-deps '.[test]'
+            echo '::endgroup::'
+
+            echo '::group::Run unit tests'
+            python -m pytest tests/unit --cov --cov-report= --junitxml=junit-unit.xml -o junit_family=legacy
+            echo '::endgroup::'
+
+            echo '::group::Run integration tests (against \$K4GEO from the stack)'
+            python -m pytest tests/integration --cov --cov-append --cov-report=xml:/workspace/coverage.xml --junitxml=junit-integration.xml -o junit_family=legacy
+            echo '::endgroup::'
+          "
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: key4hep/k4Opt
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: junit-unit.xml,junit-integration.xml
+          report_type: test_results

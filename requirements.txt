@@ -1,0 +1,15 @@
+# Development tools, fully pinned and installed without dependency resolution
+# (pip install --no-dependencies --ignore-installed -r requirements.txt): the resolver
+# would otherwise inspect the metadata of every package in the Key4hep stack, some of
+# which is broken. All of pre-commit's dependencies are therefore listed here, so the
+# git hook works from any shell (an IDE's git panel) without sourcing the stack.
+pre-commit==4.7.0
+cfgv==3.5.0
+identify==2.6.20
+nodeenv==1.11.0
+virtualenv==21.14.13
+distlib==0.4.4
+filelock==4.2.4
+platformdirs==4.13.5
+codespell==2.4.3
+pyyaml==6.0.3
