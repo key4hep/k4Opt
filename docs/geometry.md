@@ -223,8 +223,11 @@ configuration: no entity expansion, no DTD loading, no network access.
 2. Copies the reachable files, and only those (the geometry file, every local
    XML it includes, and local resource files they reference), into a temporary
    sibling of the output directory, keeping their root-relative layout so
-   relative includes keep working. Symlinks are followed; nothing else from the
-   tree is copied, so the snapshot of a 60 MB k4geo installation is a few dozen
+   relative includes keep working. Symlinks are followed; a file included under
+   several names (symlinks) is copied once and the other names become relative
+   links in the snapshot. A redirected include (or resource) `ref` also brings
+   along the file it points at and everything that file includes. Nothing else
+   from the tree is copied, so the snapshot of a 60 MB k4geo installation is a few dozen
    XML files.
 3. Re-parses each affected file from the copy, checks that the current value is
    the one discovery recorded, sets the new value, serializes, re-parses the
@@ -255,10 +258,17 @@ that installation.
 ### Fingerprint
 
 Every materialization has a `fingerprint`: a SHA-256 over the compact path, the
-content hashes of all reachable files and resources, and the *effective* edits
-(overrides that actually change a value). It contains no timestamps or paths, so
-equal fingerprints mean equal geometries, and an override that restates the
-current value does not change it. Use it to deduplicate or cache evaluations:
+content hashes of all reachable local files and resources, and the *effective*
+edits (overrides that actually change a value). It contains no timestamps or
+paths, so equal fingerprints mean equal captured geometry files, and an override
+that restates the current value does not change it. Use it to deduplicate
+snapshots.
+
+The fingerprint identifies the locally captured inputs only. It does not cover
+the content of external references (such as `${K4GEO}` includes) or the Key4hep
+software stack, so two evaluations with equal fingerprints may still differ. It
+is not sufficient as an evaluation cache key on its own; a cache key must also
+include the software environment and any external dependencies that matter.
 
 ```python
 fingerprint = source.fingerprint(overrides, catalog)  # without writing anything

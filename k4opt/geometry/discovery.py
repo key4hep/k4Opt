@@ -109,6 +109,7 @@ class Catalog(Sequence[Parameter]):
         edges: Iterable[IncludeEdge] = (),
         resources: Iterable[str] = (),
         resource_hashes: Mapping[str, str] | None = None,
+        file_aliases: Mapping[str, str] | None = None,
         aliases: Mapping[str, Iterable[Parameter]] | None = None,
         unaddressable: Iterable[Unaddressable] = (),
     ) -> None:
@@ -123,6 +124,7 @@ class Catalog(Sequence[Parameter]):
         self._edges = tuple(edges)
         self._resources = tuple(resources)
         self._resource_hashes = dict(resource_hashes or {})
+        self._file_aliases = dict(file_aliases or {})
         self._unaddressable = tuple(unaddressable)
         by_target: dict[str, list[Parameter]] = defaultdict(list)
         for parameter in self._parameters:
@@ -190,6 +192,11 @@ class Catalog(Sequence[Parameter]):
     def resources(self) -> tuple[str, ...]:
         """Local non-XML files referenced from the geometry (e.g. CAD models), root-relative."""
         return self._resources
+
+    @property
+    def file_aliases(self) -> Mapping[str, str]:
+        """Symlinked names under which a reachable file is also included, mapped to that file."""
+        return MappingProxyType(self._file_aliases)
 
     @property
     def unaddressable(self) -> tuple[Unaddressable, ...]:
@@ -424,6 +431,7 @@ def discover(root: Path, compact: str) -> Catalog:
         edges=graph.edges,
         resources=graph.resources,
         resource_hashes=resource_hashes,
+        file_aliases=graph.file_aliases,
         aliases=aliases,
         unaddressable=unaddressable,
     )
