@@ -309,3 +309,16 @@ def test_output_appearing_before_publication_is_not_replaced(
         mini_source.materialize(OVERRIDES, output)
     assert list(output.iterdir()) == []
     assert _no_leftovers(tmp_path)
+
+
+def test_noop_override_does_not_rewrite_xml(mini_source: GeometrySource, tmp_path: Path) -> None:
+    catalog = mini_source.discover()
+    same = Override("constants.InnerTracker_Barrel_radius_1", "400*mm")
+    assert mini_source.resolve([same], catalog)[0].changed is False
+    result = mini_source.materialize([same], tmp_path / "out", catalog)
+    assert result.files == ()
+    assert (
+        tree_digest(result.output_root).items()
+        >= {k: v for k, v in tree_digest(MINI_GEO).items() if k in catalog.files}.items()
+    )
+    assert result.fingerprint == mini_source.fingerprint([], catalog)
