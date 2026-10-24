@@ -503,3 +503,46 @@ def test_unwritable_output_location_is_a_controlled_error(
     blocker.write_text("not a directory")
     with pytest.raises(MaterializationError, match="materialization failed"):
         mini_source.materialize(OVERRIDES, blocker / "out")
+
+
+def test_manifest_externals_skip_files_made_unreachable(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a.xml"/><include ref="b.xml"/></lccdd>',
+            "a.xml": '<lccdd><shape name="A" ref="../outside.stl"/></lccdd>',
+            "b.xml": '<lccdd><constant name="X" value="1"/></lccdd>',
+        },
+    )
+    (tmp_path / "outside.stl").write_text("solid x\nendsolid x\n")
+    source = GeometrySource("main.xml", root=geo)
+    catalog = source.discover()
+    assert [e.ref for e in catalog.externals] == ["../outside.stl"]
+    first_include = next(p.target for p in catalog if p.attribute == "ref" and p.value == "a.xml")
+    result = source.materialize([Override(first_include, "b.xml")], tmp_path / "out", catalog)
+    assert result.manifest["external_includes"] == []
+
+
+def test_fingerprint_uses_the_verified_resource_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    geo, source = _copied_geometry(tmp_path)
+    other = geo / "compact/det_v1/cad/other.stl"
+    other.write_text("ORIGINAL\n")
+    catalog = source.discover()
+    target = next(
+        p.target for p in catalog if p.attribute == "ref" and p.value == "cad/support.stl"
+    )
+    override = Override(target, "cad/other.stl")
+    expected = source.fingerprint([override], catalog)
+
+    real_verify = materialize_module._verify_snapshot
+
+    def mutate_then_verify(*args, **kwargs):
+        other.write_text("MUTATED\n")  # the source changes after the copy was verified
+        return real_verify(*args, **kwargs)
+
+    monkeypatch.setattr(materialize_module, "_verify_snapshot", mutate_then_verify)
+    result = source.materialize([override], tmp_path / "out", catalog)
+    assert (result.output_root / "compact/det_v1/cad/other.stl").read_text() == "ORIGINAL\n"
+    assert result.fingerprint == expected
