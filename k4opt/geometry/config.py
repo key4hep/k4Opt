@@ -18,7 +18,7 @@ replacement text is always exactly what the user wrote.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,11 +40,14 @@ class _UniqueKeyLoader(yaml.SafeLoader):
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
         seen: set[Any] = set()
         for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue  # `<<: *anchor` is expanded by the base class; explicit keys win
             key = self.construct_object(key_node, deep=True)
-            if key in seen:
+            if isinstance(key, Hashable) and key in seen:
                 raise yaml.YAMLError(f"duplicate key {key!r} (line {key_node.start_mark.line + 1})")
-            seen.add(key)
-        return super().construct_mapping(node, deep)
+            if isinstance(key, Hashable):
+                seen.add(key)
+        return super().construct_mapping(node, deep)  # rejects unhashable keys itself
 
 
 @dataclass(frozen=True, slots=True)
