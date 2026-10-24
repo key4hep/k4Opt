@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pickle
+from collections.abc import Mapping
 from typing import Any, cast
 
 import pytest
 
-from k4opt.problem import Evaluation, ProblemConfigError, parse_problem
+from k4opt.problem import Evaluation, ProblemConfigError, models, parse_problem
 from k4opt.problem.models import freeze, thaw
 
 
@@ -126,3 +127,63 @@ def test_freeze_rejects_cycles_and_excessive_depth() -> None:
 def test_shared_but_acyclic_values_are_fine() -> None:
     shared = {"x": 1}
     assert thaw(freeze({"a": shared, "b": shared}, "p")) == {"a": {"x": 1}, "b": {"x": 1}}
+
+
+def _alias_tower(depth: int) -> list[object]:
+    """A list whose two items are the same list, nested ``depth`` times (like YAML aliases)."""
+    node: list[object] = ["x", "x"]
+    for _ in range(depth):
+        node = [node, node]
+    return node
+
+
+def test_shared_values_are_frozen_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    original = models._freeze
+
+    def counting(*args: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(models, "_freeze", counting)
+    freeze({"tower": _alias_tower(17)}, "p")
+    assert calls < 100  # one visit per distinct container, not 2**17
+
+
+def test_aliases_that_expand_too_far_are_refused() -> None:
+    with pytest.raises(ProblemConfigError, match="aliases expand to more than"):
+        freeze({"tower": _alias_tower(40)}, "p")
+
+
+def test_aliases_below_the_limit_are_kept_and_shared_results_are_equal() -> None:
+    frozen = freeze({"tower": _alias_tower(10)}, "p")
+    assert isinstance(frozen, Mapping)
+    tower = frozen["tower"]
+    assert isinstance(tower, tuple)
+    assert tower[0] == tower[1]
+    assert len(thaw(frozen)["tower"]) == 2  # type: ignore[index]
+
+
+def test_alias_tower_in_a_document_parses_quickly(doc: dict[str, Any]) -> None:
+    doc["evaluation"]["settings"] = {"tower": _alias_tower(17)}
+    problem = parse_problem(doc)
+    assert parse_problem(doc) == problem
+
+
+def test_equal_specs_hash_equally_whatever_the_key_order(doc: dict[str, Any]) -> None:
+    doc["evaluation"]["settings"] = {"x": 1, "y": {"a": 1, "b": 2}}
+    first = parse_problem(doc)
+    doc["evaluation"]["settings"] = {"y": {"b": 2, "a": 1}, "x": 1}
+    second = parse_problem(doc)
+    assert first == second
+    assert hash(first) == hash(second)
+    assert len({first, second}) == 1
+    # insertion order is still what iteration and serialization show
+    assert list(second.evaluation.settings) == ["y", "x"]
+    assert list(second.to_dict()["evaluation"]["settings"]) == ["y", "x"]  # type: ignore[index]
+
+
+def test_different_specs_are_still_different(doc: dict[str, Any]) -> None:
+    other = {**doc, "evaluation": {**doc["evaluation"], "seed": 43}}
+    assert parse_problem(doc) != parse_problem(other)
