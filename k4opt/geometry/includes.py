@@ -115,9 +115,12 @@ def resolve_local_path(
     return lexical
 
 
-def _looks_like_path(ref: str) -> bool:
-    """Cheap filter so material names such as ``ref="Si"`` never touch the filesystem."""
-    return "/" in ref or "." in os.path.basename(ref)
+def is_local_path(ref: str) -> bool:
+    """True when ``ref`` is a relative file path, not an external reference or a plain name.
+
+    A cheap filter, so material names such as ``ref="Si"`` never touch the filesystem.
+    """
+    return classify_ref(ref) is None and ("/" in ref or "." in os.path.basename(ref))
 
 
 def find_resource(root: Path, root_real: Path, base_dir: Path, ref: str) -> tuple[str | None, bool]:
@@ -127,7 +130,7 @@ def find_resource(root: Path, root_real: Path, base_dir: Path, ref: str) -> tupl
     ``(None, True)`` for an existing file outside it, and ``(None, False)`` when
     ``ref`` is not a local path to an existing file (e.g. a material name).
     """
-    if classify_ref(ref) is not None or not _looks_like_path(ref):
+    if not is_local_path(ref):
         return None, False
     lexical = Path(os.path.normpath(base_dir / ref))
     if not lexical.is_file():

@@ -340,6 +340,10 @@ def test_redirected_resource_reference_is_copied_and_fingerprinted(tmp_path: Pat
         (result.output_root / "compact/det_v1/cad/other.stl").read_text().startswith("solid other")
     )
     assert result.fingerprint == source.fingerprint([override], catalog)
+    assert set(result.manifest["resources"]) == {
+        "compact/det_v1/cad/support.stl",
+        "compact/det_v1/cad/other.stl",
+    }
 
     # the fingerprint covers the new resource's content
     (geo / "compact/det_v1/cad/other.stl").write_text("solid other2\nendsolid other2\n")
@@ -361,3 +365,47 @@ def test_output_appearing_before_publication_is_not_replaced(
         mini_source.materialize(OVERRIDES, output)
     assert list(output.iterdir()) == []
     assert _no_leftovers(tmp_path)
+
+
+def test_redirect_to_missing_resource_rejected(tmp_path: Path) -> None:
+    _, source = _copied_geometry(tmp_path)
+    catalog = source.discover()
+    target = next(
+        p.target for p in catalog if p.attribute == "ref" and p.value == "cad/support.stl"
+    )
+    for value in ("cad/missing.stl", "../outside/missing.stl"):
+        with pytest.raises(MaterializationError, match="does not exist"):
+            source.materialize([Override(target, value)], tmp_path / "out", catalog)
+        assert not (tmp_path / "out").exists()
+    # external references and symbolic names are still accepted
+    for value in ("${DD4hepINSTALL}/cad/support.stl", "SomeName"):
+        source.materialize([Override(target, value)], tmp_path / "out", catalog)
+        shutil.rmtree(tmp_path / "out")
+
+
+def test_publish_never_replaces_an_existing_empty_directory(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "f").write_text("x")
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(MaterializationError, match="already exists"):
+        materialize_module._publish(snapshot, out)
+    assert list(out.iterdir()) == [] and (snapshot / "f").is_file()
+    out.rmdir()
+    materialize_module._publish(snapshot, out)
+    assert (out / "f").read_text() == "x"
+
+
+def test_manifest_name_collision_rejected(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "d.xml": '<lccdd><shape ref="k4opt-manifest.json"/><constant name="X" value="1"/></lccdd>'  # noqa: E501
+        },
+    )
+    (geo / "k4opt-manifest.json").write_text("{}")
+    source = GeometrySource("d.xml", root=geo)
+    with pytest.raises(MaterializationError, match="name of the generated manifest"):
+        source.materialize([Override("constants.X", "2")], tmp_path / "out")
+    assert not (tmp_path / "out").exists()
