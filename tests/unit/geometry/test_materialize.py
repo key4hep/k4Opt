@@ -322,3 +322,23 @@ def test_noop_override_does_not_rewrite_xml(mini_source: GeometrySource, tmp_pat
         >= {k: v for k, v in tree_digest(MINI_GEO).items() if k in catalog.files}.items()
     )
     assert result.fingerprint == mini_source.fingerprint([], catalog)
+
+
+def _copied_geometry(tmp_path: Path) -> tuple[Path, GeometrySource]:
+    geo = tmp_path / "geo"
+    shutil.copytree(MINI_GEO, geo)
+    return geo, GeometrySource(MINI_COMPACT, root=geo)
+
+
+def test_change_to_untouched_file_or_resource_detected(tmp_path: Path) -> None:
+    geo, source = _copied_geometry(tmp_path)
+    catalog = source.discover()
+    for rel in ("compact/det_v1/materials.xml", "compact/det_v1/cad/support.stl"):
+        path = geo / rel
+        original = path.read_bytes()
+        path.write_bytes(original + b"\n")
+        with pytest.raises(MaterializationError, match="changed since discovery"):
+            source.materialize([], tmp_path / "out", catalog)
+        assert not (tmp_path / "out").exists()
+        assert _no_leftovers(tmp_path)
+        path.write_bytes(original)

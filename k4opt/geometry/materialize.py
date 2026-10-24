@@ -156,19 +156,13 @@ def materialize(
 ) -> MaterializationResult:
     """Copy the reachable files of ``source`` to ``output`` with ``resolved`` applied."""
     out = check_output_location(source.root, output)
-    for rel in sorted({r.file for r in resolved}):
-        if sha256_file(source.root / rel) != catalog.file_hashes.get(rel):
-            raise MaterializationError(
-                f"{rel} changed since discovery (hash mismatch); "
-                "rerun discovery before materializing"
-            )
-
     out.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".k4opt-tmp", dir=out.parent))
     reserved = False
     try:
         snapshot = staging / "snapshot"
         _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources])
+        _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes})
         changed = _apply_edits(source.root, snapshot, [r for r in resolved if r.changed])
         reachable = _verify_snapshot(snapshot, source.compact)
         manifest = _build_manifest(source, catalog, out, resolved, changed, reachable)
@@ -216,6 +210,16 @@ def _discard(staging: Path, out: Path, reserved: bool) -> None:
     if reserved:
         with contextlib.suppress(OSError):
             out.rmdir()
+
+
+def _verify_copies(snapshot: Path, expected: Mapping[str, str]) -> None:
+    """Every staged file must still match the hash recorded at discovery."""
+    for rel, digest in expected.items():
+        if sha256_file(snapshot / rel) != digest:
+            raise MaterializationError(
+                f"{rel} changed since discovery (hash mismatch); "
+                "rerun discovery before materializing"
+            )
 
 
 def _copy_closure(source_root: Path, snapshot: Path, files: Sequence[str]) -> None:
