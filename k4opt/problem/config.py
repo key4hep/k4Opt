@@ -176,7 +176,7 @@ def _number(value: object, path: str) -> Number:
     if not _is_number(value):
         raise _fail(path, f"must be a number, got {type(value).__name__} {_show(value)}")
     assert isinstance(value, (int, float))
-    if not math.isfinite(value):
+    if isinstance(value, float) and not math.isfinite(value):  # an int is always finite
         raise _fail(path, f"must be finite, got {value!r}")
     return value
 

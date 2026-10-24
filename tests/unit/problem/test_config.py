@@ -710,3 +710,20 @@ objectives:
         ("simulation", "a"),
         ("analysis", "b"),
     ]
+
+
+@pytest.mark.parametrize("huge", [10**400, -(10**400)], ids=["positive", "negative"])
+def test_huge_integers_are_ordinary_numbers(doc: dict[str, Any], huge: int) -> None:
+    doc["parameters"][0]["bounds"] = sorted([huge, 0])
+    doc["constraints"] = [{"stage": "s", "metric": "m", "max": 10**400}]
+    doc["evaluation"]["seed"] = huge
+    problem = parse_problem(doc)
+    assert problem.constraints[0].max == 10**400
+    assert parse_problem(problem.to_dict()) == problem
+
+
+def test_huge_integer_next_to_a_float_bound(doc: dict[str, Any]) -> None:
+    doc["parameters"][0]["bounds"] = [1.5, 10**400]
+    assert parse_problem(doc).parameters[0].bounds == (1.5, 10**400)
+    doc["parameters"][0]["bounds"] = [10**400, 1.5]
+    reject(doc, "low must be smaller than high")
