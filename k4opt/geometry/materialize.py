@@ -12,7 +12,8 @@ removed and neither source nor destination is touched.
 
 from __future__ import annotations
 
-import contextlib
+import ctypes
+import errno
 import json
 import os
 import shutil
@@ -28,7 +29,7 @@ from lxml import etree
 from k4opt.errors import K4OptError
 from k4opt.geometry.discovery import Catalog
 from k4opt.geometry.errors import IncludeError, MaterializationError
-from k4opt.geometry.includes import INCLUDE_TAGS, find_resource, walk_includes
+from k4opt.geometry.includes import INCLUDE_TAGS, find_resource, is_local_path, walk_includes
 from k4opt.geometry.overrides import ResolvedOverride
 from k4opt.geometry.source import GeometrySource
 from k4opt.geometry.xmlio import (
@@ -83,7 +84,14 @@ def new_resources(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> dic
         if not item.changed or item.attribute != "ref" or item.parameter.tag in INCLUDE_TAGS:
             continue
         base_dir = (catalog.root / item.file).parent
-        rel, _ = find_resource(catalog.root, root_real, base_dir, item.new_value)
+        rel, escapes = find_resource(catalog.root, root_real, base_dir, item.new_value)
+        if rel is None and not escapes and is_local_path(item.new_value):
+            was_resource, _ = find_resource(catalog.root, root_real, base_dir, item.old_value)
+            if was_resource is not None:
+                raise MaterializationError(
+                    f"{item.target}: resource {item.new_value!r} does not exist "
+                    f"(relative to {item.file}); the snapshot would reference a missing file"
+                )
         if (
             rel is not None
             and rel not in catalog.file_hashes
@@ -182,38 +190,32 @@ def materialize(
     """Copy the reachable files of ``source`` to ``output`` with ``resolved`` applied."""
     out = check_output_location(source.root, output)
     extra = new_resources(catalog, resolved)
+    if MANIFEST_NAME in {*catalog.files, *catalog.resources, *extra}:
+        raise MaterializationError(
+            f"{MANIFEST_NAME} is part of the geometry but is the name of the generated manifest"
+        )
 
     out.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".k4opt-tmp", dir=out.parent))
-    reserved = False
     try:
         snapshot = staging / "snapshot"
         _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources, *extra])
         _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes, **extra})
         changed = _apply_edits(source.root, snapshot, [r for r in resolved if r.changed])
         reachable = _verify_snapshot(snapshot, source.compact)
-        manifest = _build_manifest(source, catalog, out, resolved, changed, reachable)
+        manifest = _build_manifest(source, catalog, out, resolved, changed, reachable, extra)
         (snapshot / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
-        # Claim the destination atomically first: mkdir fails if it appeared since the check,
-        # whereas renaming a directory over an existing empty one would silently replace it.
-        try:
-            out.mkdir()
-        except FileExistsError:
-            raise MaterializationError(
-                f"output {out} already exists; choose a new directory"
-            ) from None
-        reserved = True
-        os.rename(snapshot, out)
+        _publish(snapshot, out)
     except K4OptError:
-        _discard(staging, out, reserved)
+        shutil.rmtree(staging, ignore_errors=True)
         raise
     except (OSError, shutil.Error) as exc:
-        _discard(staging, out, reserved)
+        shutil.rmtree(staging, ignore_errors=True)
         raise MaterializationError(f"materialization failed: {exc}") from exc
     except BaseException:
-        _discard(staging, out, reserved)
+        shutil.rmtree(staging, ignore_errors=True)
         raise
     shutil.rmtree(staging, ignore_errors=True)
 
@@ -231,12 +233,24 @@ def materialize(
     )
 
 
-def _discard(staging: Path, out: Path, reserved: bool) -> None:
-    """Remove the staging directory and, if the snapshot was never moved into it, ``out``."""
-    shutil.rmtree(staging, ignore_errors=True)
-    if reserved:
-        with contextlib.suppress(OSError):
-            out.rmdir()
+def _publish(snapshot: Path, out: Path) -> None:
+    """Move ``snapshot`` to ``out`` atomically, never replacing anything already there.
+
+    ``rename(2)`` onto an existing *empty* directory succeeds silently, so where the
+    platform offers ``renameat2(RENAME_NOREPLACE)`` it is used; elsewhere a plain rename
+    (which still refuses a non-empty destination) is the best available.
+    """
+    renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if renameat2 is not None:
+        at_fdcwd, noreplace = -100, 1
+        if renameat2(at_fdcwd, os.fsencode(snapshot), at_fdcwd, os.fsencode(out), noreplace) == 0:
+            return
+        code = ctypes.get_errno()
+        if code in (errno.EEXIST, errno.ENOTEMPTY):
+            raise MaterializationError(f"output {out} already exists; choose a new directory")
+        if code not in (errno.ENOSYS, errno.EINVAL):
+            raise OSError(code, os.strerror(code), str(out))
+    os.rename(snapshot, out)
 
 
 def _verify_copies(snapshot: Path, expected: Mapping[str, str]) -> None:
@@ -344,6 +358,7 @@ def _build_manifest(
     resolved: Sequence[ResolvedOverride],
     changed: Sequence[ChangedFile],
     reachable: Sequence[str],
+    extra: Mapping[str, str],
 ) -> dict[str, Any]:
     from k4opt import __version__
 
@@ -361,7 +376,7 @@ def _build_manifest(
         },
         "output": {"root": str(out), "compact": source.compact},
         "reachable_files": list(reachable),
-        "resources": list(catalog.resources),
+        "resources": [*catalog.resources, *extra],
         "external_includes": [
             {"file": e.file, "line": e.line, "ref": e.ref, "reason": e.reason}
             for e in catalog.externals
