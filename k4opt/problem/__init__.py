@@ -15,7 +15,7 @@ Typical use::
 """
 
 from k4opt.problem.config import load_problem, parse_problem
-from k4opt.problem.errors import ProblemConfigError
+from k4opt.problem.errors import CandidateError, ProblemConfigError
 from k4opt.problem.models import (
     SCHEMA_VERSION,
     Constraint,
@@ -31,6 +31,7 @@ from k4opt.problem.models import (
 
 __all__ = [
     "SCHEMA_VERSION",
+    "CandidateError",
     "Constraint",
     "Environment",
     "Evaluation",

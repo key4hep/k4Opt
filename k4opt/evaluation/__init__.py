@@ -4,12 +4,19 @@ An :class:`Evaluator` receives an :class:`EvaluationRequest` (candidate values, 
 prepared input files) and returns an :class:`EvaluationResult` (a status, zero or more
 :class:`Measurement` objects, named artifacts). The contract does not depend on a problem
 file, a geometry or the Key4hep stack, and does not prescribe stages. Running evaluators,
-looking them up by the name in ``problem.yaml`` and recording results are not part of it.
+looking them up by the name in ``problem.yaml`` and persisting results are not part of it.
+An :class:`EvaluationRecord` pairs one request and result with what the framework observed.
 See ``docs/evaluation.md``.
 
 Typical use::
 
-    from k4opt.evaluation import EvaluationRequest, EvaluationResult, Measurement
+    from k4opt.evaluation import (
+    CandidateKey,
+    EvaluationRecord,
+    EvaluationRequest,
+    EvaluationResult,
+    Measurement,
+)
 
     class Constant:
         name = "demo.constant"
@@ -20,11 +27,19 @@ Typical use::
 """
 
 from k4opt.evaluation.errors import EvaluationContractError
-from k4opt.evaluation.models import EvaluationRequest, EvaluationResult, Measurement
+from k4opt.evaluation.models import (
+    CandidateKey,
+    EvaluationRecord,
+    EvaluationRequest,
+    EvaluationResult,
+    Measurement,
+)
 from k4opt.evaluation.protocol import Evaluator
 
 __all__ = [
+    "CandidateKey",
     "EvaluationContractError",
+    "EvaluationRecord",
     "EvaluationRequest",
     "EvaluationResult",
     "Evaluator",

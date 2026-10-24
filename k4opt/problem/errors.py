@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from k4opt.errors import ConfigError
+from k4opt.errors import ConfigError, K4OptError
 
 
 class ProblemConfigError(ConfigError):
@@ -11,4 +11,11 @@ class ProblemConfigError(ConfigError):
     The message starts with the location of the offending value inside the document
     (``parameters[0].bounds``), preceded by the file path when the document was loaded
     from a file.
+    """
+
+
+class CandidateError(K4OptError):
+    """A candidate does not fit the problem it is evaluated for.
+
+    The message names the offending parameter reference(s).
     """

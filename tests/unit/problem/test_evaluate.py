@@ -1,0 +1,329 @@
+"""One candidate -> evaluator -> EvaluationRecord, with toy evaluators and no Key4hep."""
+
+from __future__ import annotations
+
+import copy
+import subprocess
+import sys
+from dataclasses import FrozenInstanceError
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from k4opt.errors import K4OptError
+from k4opt.evaluation import (
+    EvaluationContractError,
+    EvaluationRecord,
+    EvaluationRequest,
+    EvaluationResult,
+    Measurement,
+)
+from k4opt.problem import CandidateError, ProblemSpec, parse_problem
+from k4opt.problem._evaluate import _evaluate_candidate
+
+CELL = "constants.ECal_cell_size"
+
+
+class Toy:
+    name = "calo.single_particle_shower"
+    version = "1"
+
+    def __init__(self, result: EvaluationResult | None = None) -> None:
+        self.calls: list[EvaluationRequest] = []
+        self.result = result or EvaluationResult(
+            "valid",
+            (
+                Measurement("simulation", "a.rms", 1.5, unit="mm", uncertainty=0.1),
+                Measurement("simulation", "a.cells", 50, unit="1"),
+                Measurement("analysis", "extra", 3),
+            ),
+            provenance={"who": "toy"},
+        )
+
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        self.calls.append(request)
+        return self.result
+
+
+def make(doc: dict[str, Any], *parameters: dict[str, Any]) -> ProblemSpec:
+    doc = copy.deepcopy(doc)
+    if parameters:
+        doc["parameters"] = list(parameters)
+    return parse_problem(doc)
+
+
+def param(name: str, kind: str, **extra: Any) -> dict[str, Any]:
+    return {"geometry": {"constant": name}, "type": kind, **extra}
+
+
+@pytest.fixture
+def spec(doc: dict[str, Any]) -> ProblemSpec:
+    return make(doc)
+
+
+def test_success_builds_request_and_record(spec: ProblemSpec, tmp_path: Path) -> None:
+    toy = Toy()
+    geometry = tmp_path / "compact.xml"
+    record = _evaluate_candidate(
+        spec, {CELL: 6}, toy, inputs={"geometry": geometry}, workdir=tmp_path
+    )
+    assert len(toy.calls) == 1
+    request = toy.calls[0]
+    assert record.request is request
+    assert dict(request.candidate) == {CELL: 6}
+    assert request.events == 1000 and request.seed == 42
+    assert dict(request.settings) == dict(spec.evaluation.settings)
+    assert dict(request.backend_args) == {"ddsim": ("--physics.list", "FTFP_BERT")}
+    assert request.inputs["geometry"] is geometry and request.workdir is tmp_path
+    assert record.result is toy.result
+    assert (record.evaluator_name, record.evaluator_version) == (Toy.name, Toy.version)
+    assert record.elapsed_seconds >= 0
+    assert record.candidate_key == ((CELL, "continuous", "num", "6e0"),)
+    with pytest.raises(FrozenInstanceError):
+        record.elapsed_seconds = 1.0  # type: ignore[misc]
+
+
+def test_backend_args_order_and_repetition_exact(doc: dict[str, Any]) -> None:
+    doc["evaluation"]["backend"] = {
+        "ddsim": {"args": ["-a", "b", "-a", "c"]},
+        "k4run": {"args": []},
+    }
+    toy = Toy()
+    _evaluate_candidate(parse_problem(doc), {CELL: 5.0}, toy)
+    assert tuple(toy.calls[0].backend_args["ddsim"]) == ("-a", "b", "-a", "c")
+    assert list(toy.calls[0].backend_args) == ["ddsim", "k4run"]
+
+
+@pytest.mark.parametrize(
+    ("candidate", "match"),
+    [
+        ({}, CELL),
+        ({CELL: 5.0, "constants.Other": 1}, "constants.Other"),
+        ({CELL: 5.0, 3: 1}, "keys must be strings"),
+        ([(CELL, 5.0)], "mapping"),
+        ({CELL: "5"}, CELL),
+        ({CELL: True}, CELL),
+        ({CELL: float("nan")}, "finite"),
+        ({CELL: float("inf")}, "finite"),
+        ({CELL: 3.99}, "bounds"),
+        ({CELL: 8.01}, "bounds"),
+    ],
+)
+def test_bad_candidates_never_reach_the_evaluator(
+    spec: ProblemSpec, candidate: Any, match: str, tmp_path: Path
+) -> None:
+    toy = Toy()
+    with pytest.raises(CandidateError, match=match):
+        _evaluate_candidate(spec, candidate, toy, workdir=tmp_path / "w")
+    assert toy.calls == []
+    assert not (tmp_path / "w").exists()
+
+
+def test_candidate_error_is_k4opt_error() -> None:
+    assert issubclass(CandidateError, K4OptError)
+
+
+def test_continuous_bounds_inclusive_and_numeric_equivalence(spec: ProblemSpec) -> None:
+    keys = {_evaluate_candidate(spec, {CELL: v}, Toy()).candidate_key for v in (4, 4.0, 4.00)}
+    assert len(keys) == 1
+    assert _evaluate_candidate(spec, {CELL: 8.0}, Toy()).candidate_key[0][3] == "8e0"
+
+
+def test_negative_zero_and_zero(doc: dict[str, Any]) -> None:
+    s = make(doc, param("x", "continuous", bounds=[-1, 1]))
+    keys = {_evaluate_candidate(s, {"constants.x": v}, Toy()).candidate_key for v in (0, 0.0, -0.0)}
+    assert keys == {(("constants.x", "continuous", "num", "0"),)}
+
+
+def test_integer_parameter(doc: dict[str, Any]) -> None:
+    s = make(doc, param("n", "integer", bounds=[1, 10**400]))
+    ref = "constants.n"
+    for good in (1, 10, 10**400):
+        record = _evaluate_candidate(s, {ref: good}, Toy())
+        assert record.request.candidate[ref] == good  # no float conversion, no overflow
+    assert _evaluate_candidate(s, {ref: 10**400}, Toy()).candidate_key[0][3] == "1e400"
+    for bad in (True, 1.0, 2.5, "1", 0, 10**400 + 1):
+        with pytest.raises(CandidateError, match=ref):
+            _evaluate_candidate(s, {ref: bad}, Toy())
+
+
+def test_huge_continuous_int_stays_exact(doc: dict[str, Any]) -> None:
+    s = make(doc, param("x", "continuous", bounds=[0, 10**400]))
+    a = _evaluate_candidate(s, {"constants.x": 10**399 + 1}, Toy()).candidate_key
+    b = _evaluate_candidate(s, {"constants.x": 10**399}, Toy()).candidate_key
+    assert a != b
+
+
+def test_categorical_kinds(doc: dict[str, Any]) -> None:
+    s = make(
+        doc,
+        param("s", "categorical", choices=["1", "a"]),
+        param("b", "categorical", choices=[True, False]),
+        param("n", "categorical", choices=[1, 2.5]),
+    )
+    base = {"constants.s": "1", "constants.b": True, "constants.n": 1}
+    record = _evaluate_candidate(s, base, Toy())
+    assert [part[2:] for part in record.candidate_key] == [
+        ("str", "1"),
+        ("bool", "true"),
+        ("num", "1e0"),
+    ]
+    same = _evaluate_candidate(s, {**base, "constants.n": 1.0}, Toy())
+    assert same.candidate_key == record.candidate_key
+    for bad in (
+        {"constants.s": 1},
+        {"constants.s": "b"},
+        {"constants.b": 1},
+        {"constants.b": "true"},
+        {"constants.n": True},
+        {"constants.n": "1"},
+        {"constants.n": 3},
+        {"constants.n": float("nan")},
+    ):
+        with pytest.raises(CandidateError):
+            _evaluate_candidate(s, {**base, **bad}, Toy())
+
+
+def test_bool_choice_not_confused_with_numeric_one(doc: dict[str, Any]) -> None:
+    sb = make(doc, param("p", "categorical", choices=[True, False]))
+    sn = make(doc, param("p", "categorical", choices=[0, 1]))
+    assert _evaluate_candidate(sb, {"constants.p": True}, Toy()).candidate_key != (
+        _evaluate_candidate(sn, {"constants.p": 1}, Toy()).candidate_key
+    )
+    with pytest.raises(CandidateError):
+        _evaluate_candidate(sn, {"constants.p": True}, Toy())
+
+
+def test_key_and_request_follow_problem_order(doc: dict[str, Any]) -> None:
+    s = make(doc, param("b", "integer", bounds=[0, 5]), param("a", "integer", bounds=[0, 5]))
+    record = _evaluate_candidate(s, {"constants.a": 1, "constants.b": 2}, Toy())
+    assert list(record.request.candidate) == ["constants.b", "constants.a"]
+    assert [part[0] for part in record.candidate_key] == ["constants.b", "constants.a"]
+
+
+def test_kind_is_part_of_the_key(doc: dict[str, Any]) -> None:
+    c = make(doc, param("p", "continuous", bounds=[0, 5]))
+    i = make(doc, param("p", "integer", bounds=[0, 5]))
+    assert _evaluate_candidate(c, {"constants.p": 1}, Toy()).candidate_key != (
+        _evaluate_candidate(i, {"constants.p": 1}, Toy()).candidate_key
+    )
+
+
+@pytest.mark.parametrize(("attr", "value"), [("name", "other"), ("version", "2")])
+def test_evaluator_mismatch_fails_before_evaluation(
+    spec: ProblemSpec, attr: str, value: str
+) -> None:
+    toy = Toy()
+    setattr(toy, attr, value)
+    with pytest.raises(EvaluationContractError, match=value):
+        _evaluate_candidate(spec, {CELL: 5.0}, toy)
+    assert toy.calls == []
+
+
+def test_valid_result_missing_metric_is_a_contract_error(spec: ProblemSpec) -> None:
+    toy = Toy(EvaluationResult("valid", (Measurement("simulation", "a.rms", 1.0),)))
+    with pytest.raises(EvaluationContractError, match=r"simulation/a\.cells"):
+        _evaluate_candidate(spec, {CELL: 5.0}, toy)
+    # same metric name in another stage does not satisfy the requirement
+    toy = Toy(
+        EvaluationResult(
+            "valid",
+            (Measurement("simulation", "a.rms", 1.0), Measurement("analysis", "a.cells", 1)),
+        )
+    )
+    with pytest.raises(EvaluationContractError, match=r"simulation/a\.cells"):
+        _evaluate_candidate(spec, {CELL: 5.0}, toy)
+
+
+def test_constraint_unit_must_match_when_declared(doc: dict[str, Any]) -> None:
+    doc["constraints"] = [{"stage": "simulation", "metric": "a.cells", "max": 100, "unit": "1"}]
+    s = parse_problem(doc)
+    for unit in ("mm", None):
+        toy = Toy(
+            EvaluationResult(
+                "valid",
+                (
+                    Measurement("simulation", "a.rms", 1.0),
+                    Measurement("simulation", "a.cells", 5, unit=unit),
+                ),
+            )
+        )
+        with pytest.raises(EvaluationContractError, match="unit"):
+            _evaluate_candidate(s, {CELL: 5.0}, toy)
+    _evaluate_candidate(s, {CELL: 5.0}, Toy())
+
+
+def test_constraint_value_is_not_judged(spec: ProblemSpec) -> None:
+    result = EvaluationResult(
+        "valid",
+        (Measurement("simulation", "a.rms", 1.0), Measurement("simulation", "a.cells", 1e9)),
+    )
+    assert _evaluate_candidate(spec, {CELL: 5.0}, Toy(result)).result is result
+
+
+@pytest.mark.parametrize("status", ["invalid", "failed"])
+def test_non_valid_results_are_preserved(spec: ProblemSpec, status: Any) -> None:
+    result = EvaluationResult(status, message="boom", provenance={"k": 1})
+    record = _evaluate_candidate(spec, {CELL: 5.0}, Toy(result))
+    assert record.result is result
+    assert record.result.status == status and record.result.measurements == ()
+
+
+def test_evaluator_exceptions_propagate(spec: ProblemSpec) -> None:
+    class Broken(Toy):
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            raise RuntimeError("bug")
+
+    with pytest.raises(RuntimeError, match="bug"):
+        _evaluate_candidate(spec, {CELL: 5.0}, Broken())
+
+
+def test_non_result_return_is_rejected(spec: ProblemSpec) -> None:
+    class Wrong(Toy):
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            return None  # type: ignore[return-value]
+
+    with pytest.raises(EvaluationContractError, match="EvaluationResult"):
+        _evaluate_candidate(spec, {CELL: 5.0}, Wrong())
+
+
+def test_record_validates_fields(spec: ProblemSpec) -> None:
+    record = _evaluate_candidate(spec, {CELL: 5.0}, Toy())
+
+    def build(**changes: Any) -> EvaluationRecord:
+        fields: dict[str, Any] = {
+            "request": record.request,
+            "result": record.result,
+            "evaluator_name": "n",
+            "evaluator_version": "1",
+            "candidate_key": record.candidate_key,
+            "elapsed_seconds": 0.0,
+        }
+        return EvaluationRecord(**{**fields, **changes})
+
+    build()
+    for bad in (
+        {"elapsed_seconds": -1.0},
+        {"elapsed_seconds": float("nan")},
+        {"elapsed_seconds": True},
+        {"candidate_key": [("a", "b", "c", "d")]},
+        {"candidate_key": (("a",),)},
+        {"evaluator_name": " "},
+        {"result": None},
+        {"request": None},
+    ):
+        with pytest.raises(EvaluationContractError):
+            build(**bad)
+
+
+def test_evaluation_package_stays_independent_of_problem() -> None:
+    code = (
+        "import sys, k4opt.evaluation;"
+        "banned = ('k4opt.problem', 'k4opt.geometry', 'lxml');"
+        "sys.exit(1 if [m for m in sys.modules if m.startswith(banned)] else 0)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], check=False, cwd=Path(__file__).parents[3]
+    )
+    assert result.returncode == 0
