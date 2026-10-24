@@ -231,6 +231,13 @@ def test_config_errors(tmp_path: Path) -> None:
     code, _, err = run("geometry", "inspect", str(tmp_path / "missing.yaml"))
     assert code == 1 and "not found" in err
 
+    (tmp_path / "dup.yaml").write_text(
+        f"geometry: {MINI_COMPACT}\noverrides:\n"
+        '  - target: constants.SolenoidField\n    value: "1"\n    value: "2"\n'
+    )
+    code, _, err = run("geometry", "inspect", str(tmp_path / "dup.yaml"))
+    assert code == 1 and "duplicate key 'value'" in err
+
     (tmp_path / "c.yaml").write_text("geometry: x.xml\nroot: ./nowhere\n")
     code, _, err = run("geometry", "inspect", str(tmp_path / "c.yaml"))
     assert code == 1 and "not an existing directory" in err

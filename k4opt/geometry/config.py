@@ -34,6 +34,19 @@ _TOP_KEYS = {"geometry", "root", "overrides"}
 _OVERRIDE_KEYS = {"target", "value", "file"}
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """``yaml.safe_load`` that rejects duplicate mapping keys instead of keeping the last one."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        seen: set[Any] = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise yaml.YAMLError(f"duplicate key {key!r} (line {key_node.start_mark.line + 1})")
+            seen.add(key)
+        return super().construct_mapping(node, deep)
+
+
 @dataclass(frozen=True, slots=True)
 class GeometryConfig:
     """A parsed configuration: the geometry source plus the requested overrides."""
@@ -70,7 +83,7 @@ def load_config(path: str | os.PathLike[str]) -> GeometryConfig:
     if not config_path.is_file():
         raise ConfigError(f"configuration file {config_path} not found")
     try:
-        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        data = yaml.load(config_path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise ConfigError(f"{config_path}: invalid YAML: {exc}") from exc
     except OSError as exc:
