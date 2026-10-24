@@ -20,6 +20,10 @@ if [ -z "$KEY4HEP_STACK" ]; then
     else
         source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
     fi
+    if [ -z "$KEY4HEP_STACK" ]; then
+        echo "❌ Sourcing the Key4hep stack failed."
+        return 1
+    fi
 else
     echo "✅ KEY4HEP_STACK is already set. Skipping Key4HEP environment setup."
 fi
@@ -29,7 +33,11 @@ mkdir -p ~/.local/bin
 export PATH=~/.local/bin:"${PATH}"
 
 if [ ! -f ~/.local/bin/cvmfs-venv ]; then
-    curl -sL https://raw.githubusercontent.com/jbeirer/cvmfs-venv/main/cvmfs-venv.sh -o ~/.local/bin/cvmfs-venv
+    curl -fsL https://raw.githubusercontent.com/jbeirer/cvmfs-venv/main/cvmfs-venv.sh -o ~/.local/bin/cvmfs-venv || {
+        rm -f ~/.local/bin/cvmfs-venv
+        echo "❌ Could not download cvmfs-venv."
+        return 1
+    }
     chmod +x ~/.local/bin/cvmfs-venv
 fi
 
@@ -57,7 +65,7 @@ pip install --quiet --no-build-isolation --no-deps --ignore-installed -e "${K4OP
 # dependency resolution.
 if ! python -c "import pytest; pytest.__version__" &>/dev/null; then
     pip install --quiet --no-dependencies --ignore-installed \
-        pytest pytest-cov coverage pluggy iniconfig packaging pygments
+        pytest pytest-cov coverage pluggy iniconfig packaging pygments || return 1
 fi
 
 # (Re)install the git hook on every run (not in CI, where nobody commits): the hook records the interpreter that
