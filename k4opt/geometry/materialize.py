@@ -58,21 +58,27 @@ MANIFEST_SCHEMA = "k4opt.manifest/1"
 STACK_ENV_VARS = ("KEY4HEP_STACK", "K4GEO")
 
 
-def compute_fingerprint(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> str:
+def compute_fingerprint(
+    catalog: Catalog,
+    resolved: Sequence[ResolvedOverride],
+    extra_resources: Mapping[str, str] | None = None,
+) -> str:
     """Deterministic identity of the geometry that ``resolved`` would produce from ``catalog``.
 
     A SHA-256 over the compact path, the content hashes of every reachable file and
     resource, and the *effective* edits (overrides that change a value). It does not
     depend on timestamps, output locations or on overrides that restate the current
     value, so equal fingerprints mean equal geometries and can be used to deduplicate
-    or cache evaluations.
+    or cache evaluations. ``extra_resources`` are the hashes of resources introduced by
+    the overrides (see :func:`new_resources`); they are computed when omitted, and passed
+    in by :func:`materialize` so the fingerprint uses exactly the bytes it verified.
     """
+    if extra_resources is None:
+        extra_resources = new_resources(catalog, resolved)
     payload = {
         "compact": catalog.compact,
         "files": dict(sorted(catalog.file_hashes.items())),
-        "resources": dict(
-            sorted({**catalog.resource_hashes, **new_resources(catalog, resolved)}.items())
-        ),
+        "resources": dict(sorted({**catalog.resource_hashes, **extra_resources}.items())),
         "edits": sorted(
             (r.file, r.locator, r.attribute, r.new_value) for r in resolved if r.changed
         ),
@@ -388,13 +394,14 @@ def _externals(
 
     Include-style references come from the edited snapshot. References to files outside
     the root depend on where the geometry lives, so those are taken from the source
-    catalog, minus the ones an override has since replaced.
+    catalog, minus the ones an override has replaced or made unreachable.
     """
     edited = {(r.file, r.locator) for r in resolved if r.changed and r.attribute == "ref"}
+    reachable = set(graph.files)
     kept = [
         e
         for e in catalog.externals
-        if e.reason == OUTSIDE_ROOT and (e.file, e.locator) not in edited
+        if e.reason == OUTSIDE_ROOT and e.file in reachable and (e.file, e.locator) not in edited
     ]
     return [e for e in graph.externals if e.reason != OUTSIDE_ROOT] + kept
 
@@ -415,7 +422,7 @@ def _build_manifest(
         "schema": MANIFEST_SCHEMA,
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "k4opt_version": __version__,
-        "fingerprint": compute_fingerprint(catalog, resolved),
+        "fingerprint": compute_fingerprint(catalog, resolved, extra),
         "environment": {k: os.environ[k] for k in STACK_ENV_VARS if k in os.environ},
         "source": {
             "root": str(source.root),
