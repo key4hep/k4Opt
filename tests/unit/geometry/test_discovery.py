@@ -216,6 +216,25 @@ def test_absolute_and_url_refs_are_external(tmp_path: Path) -> None:
     ]
 
 
+def test_absolute_resource_refs_are_reported_as_external(tmp_path: Path) -> None:
+    write_tree(
+        tmp_path,
+        {
+            "geo/main.xml": (
+                '<lccdd><shape ref="/external/support.stl"/><shape ref="${HERE}/b.stl"/>'
+                '<shape ref="Si"/><shape ref="/"/></lccdd>'
+            ),
+        },
+    )
+    catalog = GeometrySource("main.xml", root=tmp_path / "geo").discover()
+    assert catalog.resources == ()
+    assert [(e.ref, e.reason) for e in catalog.externals] == [
+        ("/external/support.stl", "absolute path"),
+        ("${HERE}/b.stl", "environment variable or placeholder reference"),
+        ("/", "absolute path"),
+    ]
+
+
 def test_external_entities_are_not_expanded(tmp_path: Path) -> None:
     secret = tmp_path / "secret.txt"
     secret.write_text("TOP-SECRET", encoding="utf-8")

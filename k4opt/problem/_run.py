@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -76,8 +77,13 @@ def _parse_value(parameter: Parameter, text: str) -> Scalar:
         for choice in numeric:
             if exact == choice:
                 return choice
-        for choice in numeric:  # a float choice such as 1e23 is not the decimal 10**23
-            if isinstance(choice, float) and float(text) == choice:
+        for choice in numeric:  # a float choice such as 1e23 is not the decimal 10**23 ...
+            # ... so also accept its shortest decimal spelling, never a rounded neighbor
+            if (
+                isinstance(choice, float)
+                and math.isfinite(choice)
+                and exact == Decimal(repr(choice))
+            ):
                 return choice
         # never round an unmatched value into a neighboring choice
         raise CandidateError(f"{reference}: {text!r} is not one of {list(choices)!r}")
@@ -206,6 +212,13 @@ def _check_metrics(spec: ProblemSpec, evaluator: CaloHitMultiplicity) -> None:
             f"evaluator {evaluator.name!r} does not measure {', '.join(unsupported)}; "
             f"supported: {', '.join(supported)}"
         )
+    for constraint in spec.constraints:
+        unit = evaluator.metrics[(constraint.stage, constraint.metric)]
+        if constraint.unit is not None and constraint.unit != unit:
+            raise EvaluationContractError(
+                f"constraint on {constraint.stage}/{constraint.metric} declares unit "
+                f"{constraint.unit!r} but the evaluator measures it in {unit!r}"
+            )
 
 
 def run_candidate(

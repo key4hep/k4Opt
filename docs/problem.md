@@ -197,8 +197,8 @@ Combining several evaluators in one problem is deferred.
 
 **Evaluator.** The default is a standard evaluator referenced by name and version, not an
 arbitrary Python path and not a user-written script. The evaluator owns the metric
-definitions and the interpretation of backend output. Evaluators are not implemented and
-there is no registry yet.
+definitions and the interpretation of backend output. One evaluator is implemented,
+`calo.hit_multiplicity`; there is no registry yet.
 
 **Events and seed.** `events` and `seed` are common evaluation controls so that different
 evaluators do not each invent their own names. Both are optional and only valid where the
@@ -294,7 +294,7 @@ A non-empty list. Each item:
 | Key | Meaning |
 | --- | --- |
 | `stage` | Scientific classification of the measurement: `simulation` now; `reconstruction` and `analysis` possible later. It is not a request to run a particular pipeline step, and it does not create separate problem types. |
-| `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.mean_hit_cells` (proposed). The part before the dot is a role from the evaluator's `readouts` setting, so a metric stays unambiguous when several collections are involved and collection names appear only once, in `settings`. |
+| `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.mean_hit_cells` (measured by `calo.hit_multiplicity`). The part before the dot is a role from the evaluator's `readouts` setting, so a metric stays unambiguous when several collections are involved and collection names appear only once, in `settings`. |
 | `direction` | `minimize` or `maximize`. |
 
 `stage` and `metric` are separate fields, not a combined `simulation.some_metric` string.

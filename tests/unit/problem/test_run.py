@@ -233,6 +233,21 @@ def test_an_unmeasurable_metric_is_rejected_before_any_side_effect(
     assert "materialize" not in guard
 
 
+def test_a_constraint_unit_mismatch_is_rejected_before_any_side_effect(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["constraints"] = [
+        {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells", "max": 11, "unit": "mm"}
+    ]
+    problem_file.write_text(yaml.safe_dump(doc))
+    with pytest.raises(EvaluationContractError, match="declares unit 'mm'"):
+        run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
+    assert not (tmp_path / "a").exists()
+    assert "materialize" not in guard
+    assert fake.calls == []
+
+
 def test_an_existing_output_is_never_overwritten(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
@@ -342,6 +357,19 @@ def test_a_value_that_only_rounds_to_a_choice_is_rejected(doc: dict[str, Any]) -
         with pytest.raises(CandidateError, match="not one of"):
             _parse_candidate(spec, [f"constants.n={text}"])
     assert _parse_candidate(spec, ["constants.n=1.0"]) == {"constants.n": 1}
+
+
+def test_a_decimal_that_rounds_to_a_float_choice_is_rejected(doc: dict[str, Any]) -> None:
+    doc["parameters"][0] = {
+        "geometry": {"constant": "n"},
+        "type": "categorical",
+        "choices": [2.0**53, 0.1],
+    }
+    spec = parse_problem(doc)
+    with pytest.raises(CandidateError, match="not one of"):
+        _parse_candidate(spec, [f"constants.n={2**53 + 1}"])
+    assert _parse_candidate(spec, ["constants.n=0.1"]) == {"constants.n": 0.1}
+    assert _parse_candidate(spec, [f"constants.n={2**53}"]) == {"constants.n": 2.0**53}
 
 
 @pytest.mark.parametrize("text", [str(2**53 + 1), str(10**400), f"-{2**53 + 1}"])
