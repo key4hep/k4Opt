@@ -185,7 +185,10 @@ referenced by the `ref` attribute of `<include>`, `<gdmlFile>`, `<file>` and
 `<xml>` elements, wherever they appear. Each physical file is parsed once;
 cycles and repeated includes are safe. Relative references resolve against the
 including file's directory. `ref` attributes on other elements that point at an
-existing local file (e.g. a CAD `.stl` model) are recorded as *resources*.
+existing local file (e.g. a CAD `.stl` model) are recorded as *resources*. Such an
+attribute that is an absolute path, URL or `$` reference to a file (e.g.
+`/external/support.stl`) is left untouched and listed as external, like an
+unresolved include; the file itself is not part of the fingerprint.
 
 References are **left intact and reported as external**, and their targets are
 not part of the catalog, when they contain `$` (e.g.

@@ -178,6 +178,12 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
     active: set[tuple[str, str]] = set()
 
     def note_resource(rel: str, line: int | None, locator: str, base_dir: Path, ref: str) -> None:
+        reason = classify_ref(ref)
+        if reason is not None:
+            # left untouched and outside the fingerprint, but visible in the manifest
+            if ref.strip() and looks_like_file(ref):
+                externals.append(ExternalInclude(rel, line, ref, reason, locator))
+            return
         found, escapes = find_resource(root, root_real, base_dir, ref)
         if escapes:
             externals.append(ExternalInclude(rel, line, ref, OUTSIDE_ROOT, locator))

@@ -493,7 +493,8 @@ def test_manifest_keeps_unchanged_external_with_the_same_value(tmp_path: Path) -
     source = GeometrySource("d.xml", root=geo)
     result = source.materialize([Override("A.ref", "${X}/new.stl")], tmp_path / "out")
     externals = [(e["ref"], e["line"]) for e in result.manifest["external_includes"]]
-    assert externals == [("../outside.stl", 3)]
+    # the override's own external value is listed too; B keeps its unchanged outside file
+    assert externals == [("${X}/new.stl", 2), ("../outside.stl", 3)]
 
 
 def test_unwritable_output_location_is_a_controlled_error(

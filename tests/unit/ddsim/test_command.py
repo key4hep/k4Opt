@@ -63,6 +63,18 @@ def test_units_are_carried_into_the_expressions() -> None:
     assert "--gun.phiMin=-1*rad" in generated
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_numbers_are_rejected(bad: float) -> None:
+    energy = copy.deepcopy(GENERATOR)
+    energy["energy"]["value"] = bad
+    with pytest.raises(DdsimError, match="finite"):
+        generator_args(energy)  # a plain dict, as the public API accepts
+    vertex = copy.deepcopy(GENERATOR)
+    vertex["vertex"]["value"] = [0, bad, 0]
+    with pytest.raises(DdsimError, match="finite"):
+        generator_args(vertex)
+
+
 def test_vertex_defaults_to_the_origin_explicitly() -> None:
     generator = copy.deepcopy(GENERATOR)
     del generator["vertex"]

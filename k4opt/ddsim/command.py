@@ -66,6 +66,8 @@ def _mapping(
 def _number(value: Json, path: str) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise _fail(path, f"must be a number, got {value!r}")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise _fail(path, f"must be finite, got {value!r}")
     return value
 
 
