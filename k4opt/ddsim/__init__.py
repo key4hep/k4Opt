@@ -22,12 +22,12 @@ Typical use::
     print(run.error or run.output)
 """
 
-from k4opt.ddsim.command import DIRECTION_DISTRIBUTION
+from k4opt.ddsim.command import DIRECTION_DISTRIBUTIONS
 from k4opt.ddsim.errors import DdsimError
 from k4opt.ddsim.run import SimulationRun, check_arguments, simulate
 
 __all__ = [
-    "DIRECTION_DISTRIBUTION",
+    "DIRECTION_DISTRIBUTIONS",
     "DdsimError",
     "SimulationRun",
     "check_arguments",

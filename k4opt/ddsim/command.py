@@ -15,7 +15,8 @@ from pathlib import Path
 from k4opt.ddsim.errors import DdsimError
 from k4opt.frozen import Json
 
-DIRECTION_DISTRIBUTION = "uniform_solid_angle"
+# ddsim's own --gun.distribution values that are driven by theta and phi ranges
+DIRECTION_DISTRIBUTIONS = ("cos(theta)", "uniform")
 
 _ENERGY_UNITS = ("MeV", "GeV", "TeV")
 _LENGTH_UNITS = ("mm", "cm", "m")
@@ -91,10 +92,10 @@ def generator_args(generator: Json) -> tuple[str, ...]:
     """The ``ddsim`` particle-gun arguments for ``settings.generator``.
 
     ``particle``, ``energy`` and ``direction`` are required, ``vertex`` defaults to the
-    origin. ``energy`` is the total energy of the primary. ``direction`` with the only
-    supported distribution ``uniform_solid_angle`` is flat in cos(theta) between ``theta`` and
-    flat in phi between ``phi``. Unknown keys and other distributions are errors; nothing falls
-    back to another distribution.
+    origin. ``energy`` is the total energy of the primary. ``direction.distribution`` is passed
+    to ``--gun.distribution`` as ddsim names it: ``cos(theta)`` is flat in cos(theta), whereas
+    ``uniform`` is flat in theta; ``theta`` and ``phi`` give the ranges. Unknown keys and
+    other distributions are errors; nothing falls back to another distribution.
     """
     top = _mapping(
         generator,
@@ -135,11 +136,12 @@ def generator_args(generator: Json) -> tuple[str, ...]:
         ("distribution", "theta", "phi", "unit"),
         ("distribution", "theta", "phi", "unit"),
     )
-    if direction["distribution"] != DIRECTION_DISTRIBUTION:
+    distribution = direction["distribution"]
+    if not isinstance(distribution, str) or distribution not in DIRECTION_DISTRIBUTIONS:
         raise _fail(
             "generator.direction.distribution",
-            f"only {DIRECTION_DISTRIBUTION!r} (flat in cos(theta) and phi) is supported, "
-            f"got {direction['distribution']!r}",
+            f"must be one of {list(DIRECTION_DISTRIBUTIONS)} (ddsim --gun.distribution), "
+            f"got {distribution!r}",
         )
     angle_unit = _unit(direction["unit"], "generator.direction.unit", tuple(_ANGLE_UNITS))
     half_turn = _ANGLE_UNITS[angle_unit]
@@ -162,7 +164,7 @@ def generator_args(generator: Json) -> tuple[str, ...]:
         "--gun.multiplicity=1",
         f"--gun.energy={_quantity(energy_value, energy_unit)}",
         f"--gun.position={position}",
-        "--gun.distribution=cos(theta)",
+        f"--gun.distribution={distribution}",
         f"--gun.thetaMin={_quantity(theta_min, angle_unit)}",
         f"--gun.thetaMax={_quantity(theta_max, angle_unit)}",
         f"--gun.phiMin={_quantity(phi_min, angle_unit)}",

@@ -61,7 +61,7 @@ evaluation:
         value: [0, 0, 0]
         unit: mm
       direction:
-        distribution: uniform_solid_angle
+        distribution: uniform
         theta: [60, 120]
         phi: [0, 360]
         unit: deg
@@ -215,7 +215,7 @@ example are illustrative only. In the example:
 | `generator.particle` | primary particle species (`gamma`) |
 | `generator.energy` | primary energy, `value` with an explicit `unit` |
 | `generator.vertex` | production point of the primary, `value` (x, y, z) with an explicit `unit`; here the origin. A fixed vertex keeps the true entry point on the ECAL surface well defined, which `position_rms` relies on |
-| `generator.direction.distribution` | `uniform_solid_angle`: uniform in cos(theta) and in phi, **not** uniform in theta |
+| `generator.direction.distribution` | ddsim's `--gun.distribution`, `cos(theta)` or `uniform`. `cos(theta)` is uniform in cos(theta), i.e. in solid angle; `uniform` is uniform in theta |
 | `generator.direction.theta`, `.phi` | inclusive angular range; `unit` gives the angle unit |
 
 Samples and simulation mode belong in `settings` as well, because they define the

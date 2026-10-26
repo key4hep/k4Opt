@@ -46,7 +46,7 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
             "particle": "gamma",
             "energy": {"value": 10, "unit": "GeV"},
             "direction": {
-                "distribution": "uniform_solid_angle",
+                "distribution": "uniform",
                 "theta": [60, 120],
                 "phi": [0, 360],
                 "unit": "deg",

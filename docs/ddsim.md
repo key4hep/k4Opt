@@ -35,11 +35,10 @@ Unknown keys are errors.
 | `particle` | `--gun.particle` |
 | `energy` | `value` and `unit` (`MeV`, `GeV`, `TeV`): the *total* energy, `--gun.energy` |
 | `vertex` | optional `value` `[x, y, z]` and `unit` (`mm`, `cm`, `m`); default origin, always passed explicitly |
-| `direction` | `distribution: uniform_solid_angle`, `theta` and `phi` as `[low, high]` and `unit` (`deg`, `rad`); theta within 0 to a half turn, phi at most a full turn |
+| `direction` | `distribution` (`cos(theta)` or `uniform`, passed to `--gun.distribution`), `theta` and `phi` as `[low, high]` and `unit` (`deg`, `rad`); theta within 0 to a half turn, phi at most a full turn |
 
-One primary per event (`--gun.multiplicity=1`). `uniform_solid_angle` is flat in cos(theta) and
-phi and is the only distribution; it becomes `--gun.distribution=cos(theta)`, not `uniform`,
-which is flat in theta. Checked on the nightly: of 4000 events with theta in 10-170 degrees,
+One primary per event (`--gun.multiplicity=1`). `cos(theta)` is flat in cos(theta) (isotropic
+in solid angle) and phi, whereas `uniform` is flat in theta. Checked on the nightly: of 4000 events with theta in 10-170 degrees,
 50.2 % fell in |cos(theta)| < 0.5 (flat in cos: 50.8 %) against 37 % for `uniform`. Another
 distribution is an error, never a fallback.
 

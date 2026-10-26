@@ -17,7 +17,7 @@ GENERATOR: dict[str, Any] = {
     "energy": {"value": 10, "unit": "GeV"},
     "vertex": {"value": [0, 0, 0], "unit": "mm"},
     "direction": {
-        "distribution": "uniform_solid_angle",
+        "distribution": "uniform",
         "theta": [60, 120],
         "phi": [0, 360],
         "unit": "deg",
@@ -36,7 +36,7 @@ def test_generator_arguments_with_units() -> None:
         "--gun.multiplicity=1",
         "--gun.energy=10*GeV",
         "--gun.position=0*mm 0*mm 0*mm",
-        "--gun.distribution=cos(theta)",
+        "--gun.distribution=uniform",
         "--gun.thetaMin=60*deg",
         "--gun.thetaMax=120*deg",
         "--gun.phiMin=0*deg",
@@ -44,11 +44,11 @@ def test_generator_arguments_with_units() -> None:
     )
 
 
-def test_uniform_solid_angle_is_flat_in_cos_theta_never_flat_in_theta() -> None:
-    # ddsim's 'uniform' is flat in theta; only 'cos(theta)' is flat in cos(theta)
-    generated = args(GENERATOR)
-    assert "--gun.distribution=cos(theta)" in generated
-    assert not any("uniform" in a for a in generated)
+@pytest.mark.parametrize("distribution", ["cos(theta)", "uniform"])
+def test_the_distribution_is_passed_to_ddsim_unchanged(distribution: str) -> None:
+    generator = copy.deepcopy(GENERATOR)
+    generator["direction"]["distribution"] = distribution
+    assert f"--gun.distribution={distribution}" in args(generator)
 
 
 def test_units_are_carried_into_the_expressions() -> None:
@@ -85,8 +85,8 @@ def edit(path: str, value: object) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("path", "value", "message"),
     [
-        ("direction.distribution", "uniform", "uniform_solid_angle"),
-        ("direction.distribution", "eta", "uniform_solid_angle"),
+        ("direction.distribution", "eta", "cos"),
+        ("direction.distribution", "uniform_solid_angle", "cos"),
         ("direction.distribution", KeyError, "missing"),
         ("direction.unit", "grad", "unit"),
         ("direction.theta", [120, 60], "smaller"),
