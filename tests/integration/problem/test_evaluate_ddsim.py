@@ -61,8 +61,20 @@ def evaluate(problem: Path, size: str, output: Path) -> dict[str, Any]:
     return summary
 
 
+def _geometry_files() -> dict[Path, str]:
+    root = Path(os.environ["K4GEO"]) / Path(CLD_COMPACT).parent
+    return {path: path.read_text() for path in sorted(root.glob("*.xml"))}
+
+
 @pytest.fixture(scope="module")
-def runs(problem: Path, tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict[str, Any]]:
+def installed_before(stack: None) -> dict[Path, str]:
+    return _geometry_files()
+
+
+@pytest.fixture(scope="module")
+def runs(
+    problem: Path, installed_before: dict[Path, str], tmp_path_factory: pytest.TempPathFactory
+) -> dict[str, dict[str, Any]]:
     base = tmp_path_factory.mktemp("runs")
     return {size: evaluate(problem, size, base / size) for size in ("4.0", "8.0")}
 
@@ -79,13 +91,14 @@ def test_two_candidates_give_distinct_modified_geometries(
     for size, run in runs.items():
         (change,) = run["geometry"]["changes"]
         assert change["new_value"] == f"{size}*mm"
-        snapshot = Path(run["geometry"]["compact"]).parent / "ECalBarrel_o2_v01_03.xml"
-        assert f'name="ECal_cell_size" value="{size}*mm"' in snapshot.read_text()
+        snapshots = Path(run["geometry"]["compact"]).parent.glob("ECalBarrel*.xml")
+        assert any(f'name="ECal_cell_size" value="{size}*mm"' in f.read_text() for f in snapshots)
 
 
-def test_the_installed_geometry_is_untouched(runs: dict[str, dict[str, Any]]) -> None:
-    installed = Path(os.environ["K4GEO"]) / Path(CLD_COMPACT).parent / "ECalBarrel_o2_v01_03.xml"
-    assert 'name="ECal_cell_size" value="5.1*mm"' in installed.read_text()
+def test_the_installed_geometry_is_untouched(
+    runs: dict[str, dict[str, Any]], installed_before: dict[Path, str]
+) -> None:
+    assert _geometry_files() == installed_before
 
 
 def test_ddsim_simulated_the_materialized_geometry(runs: dict[str, dict[str, Any]]) -> None:

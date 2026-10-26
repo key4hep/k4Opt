@@ -1,11 +1,13 @@
 # Problem specification (draft `k4opt.problem/v1alpha1`)
 
 > **Status: draft.** The file format below can be loaded and statically validated by
-> `k4opt.problem` (see [Validation and Python API](#validation-and-python-api)). Everything
-> else is **proposed, not implemented**: no evaluator, no metric, no registry, no
-> `ddsim`/`k4run` invocation, no optimizer, and no `k4opt problem` CLI command. Parsing a
-> file does not check that its evaluator, metrics or geometry targets exist. Everything
-> here may change.
+> `k4opt.problem` (see [Validation and Python API](#validation-and-python-api)). One
+> vertical slice is implemented: `k4opt evaluate` runs a single candidate with the
+> `calo.hit_multiplicity` evaluator through `ddsim` (see [evaluators](evaluators.md)); before
+> it simulates, it checks that the declared objectives and constraints are metrics of that
+> evaluator. Everything else is **proposed, not implemented**: no evaluator registry, no
+> `k4run` invocation, no optimizer. Parsing a file alone does not check that its evaluator,
+> metrics or geometry targets exist. Everything here may change.
 
 k4opt aims to standardize **optimization problems, measurement definitions and evaluation
 records**. It does not replace the Key4hep tools that do the work (`ddsim`, `k4run`, ...).

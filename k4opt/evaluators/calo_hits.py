@@ -122,6 +122,8 @@ class CaloHitMultiplicity:
 
     name = "calo.hit_multiplicity"
     version = "1"
+    #: the ``(stage, metric)`` pairs a valid result reports
+    metrics = frozenset({("simulation", "ecal_barrel.mean_hit_cells")})
 
     def check(self, request: EvaluationRequest) -> None:
         """Raise if the request cannot be simulated (:class:`EvaluationContractError` or

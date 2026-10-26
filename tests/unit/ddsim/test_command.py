@@ -200,3 +200,33 @@ def test_seed_is_optional() -> None:
 def test_a_user_argument_competing_with_a_managed_option_is_rejected(conflict: str) -> None:
     with pytest.raises(DdsimError, match="manages"):
         build(("--physics.list", "FTFP_BERT", conflict))
+
+
+def test_plain_python_lists_are_accepted() -> None:
+    assert generator_args(GENERATOR) == args(GENERATOR)
+
+
+@pytest.mark.parametrize("events", [0, -4, True, 2.0, "3"])
+def test_invalid_event_counts_are_rejected(events: Any) -> None:
+    with pytest.raises(DdsimError, match="events"):
+        ddsim_arguments(
+            compact=Path("c.xml"),
+            output=Path("o.root"),
+            events=events,
+            seed=None,
+            generator=GENERATOR,
+            user_args=(),
+        )
+
+
+@pytest.mark.parametrize("seed", [True, 1.5, "1"])
+def test_invalid_seeds_are_rejected(seed: Any) -> None:
+    with pytest.raises(DdsimError, match="seed"):
+        ddsim_arguments(
+            compact=Path("c.xml"),
+            output=Path("o.root"),
+            events=1,
+            seed=seed,
+            generator=GENERATOR,
+            user_args=(),
+        )

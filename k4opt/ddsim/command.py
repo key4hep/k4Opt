@@ -79,7 +79,7 @@ def _quantity(value: int | float, unit: str) -> str:
 
 
 def _range(value: Json, path: str) -> tuple[int | float, int | float]:
-    if not isinstance(value, tuple) or len(value) != 2:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise _fail(path, f"must be a list [low, high], got {value!r}")
     low, high = _number(value[0], f"{path}[0]"), _number(value[1], f"{path}[1]")
     if not low < high:
@@ -121,7 +121,7 @@ def generator_args(generator: Json) -> tuple[str, ...]:
         ("value", "unit"),
     )
     coordinates = vertex["value"]
-    if not isinstance(coordinates, tuple) or len(coordinates) != 3:
+    if not isinstance(coordinates, (list, tuple)) or len(coordinates) != 3:
         raise _fail("generator.vertex.value", f"must be a list [x, y, z], got {coordinates!r}")
     length_unit = _unit(vertex["unit"], "generator.vertex.unit", _LENGTH_UNITS)
     position = " ".join(
@@ -201,8 +201,13 @@ def ddsim_arguments(
     """The arguments of ``ddsim`` (without the executable): managed ones, then ``user_args``.
 
     ``user_args`` are appended unchanged and in order; one that sets an option managed by
-    k4opt raises :class:`DdsimError` instead of silently winning or losing.
+    k4opt raises :class:`DdsimError` instead of silently winning or losing. ``events`` must be
+    a positive integer and ``seed`` an integer or ``None``.
     """
+    if isinstance(events, bool) or not isinstance(events, int) or events < 1:
+        raise DdsimError(f"events must be a positive integer, got {events!r}")
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+        raise DdsimError(f"seed must be an integer, got {seed!r}")
     for arg in user_args:
         if managed_conflict(arg):
             raise DdsimError(

@@ -221,6 +221,18 @@ def test_another_evaluator_is_rejected_before_any_side_effect(
     assert "materialize" not in guard
 
 
+def test_an_unmeasurable_metric_is_rejected_before_any_side_effect(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["objectives"][0]["metric"] = "nonexistent"
+    problem_file.write_text(yaml.safe_dump(doc))
+    with pytest.raises(EvaluationContractError, match="simulation/nonexistent"):
+        run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
+    assert not (tmp_path / "a").exists()
+    assert "materialize" not in guard
+
+
 def test_an_existing_output_is_never_overwritten(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:

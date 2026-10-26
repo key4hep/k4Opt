@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
-from k4opt.evaluation import EvaluationRecord, EvaluationRequest
+from k4opt.evaluation import EvaluationContractError, EvaluationRecord, EvaluationRequest
 from k4opt.evaluation.models import Scalar
 from k4opt.evaluators import CaloHitMultiplicity
 from k4opt.frozen import thaw
@@ -193,6 +193,21 @@ def _summary(
     }
 
 
+def _check_metrics(spec: ProblemSpec, evaluator: CaloHitMultiplicity) -> None:
+    """Reject objectives and constraints the evaluator cannot measure, before any simulation."""
+    declared = [(o.stage, o.metric) for o in spec.objectives]
+    declared += [(c.stage, c.metric) for c in spec.constraints]
+    unsupported = [
+        f"{s}/{m}" for s, m in dict.fromkeys(declared) if (s, m) not in evaluator.metrics
+    ]
+    if unsupported:
+        supported = sorted(f"{s}/{m}" for s, m in evaluator.metrics)
+        raise EvaluationContractError(
+            f"evaluator {evaluator.name!r} does not measure {', '.join(unsupported)}; "
+            f"supported: {', '.join(supported)}"
+        )
+
+
 def run_candidate(
     problem_path: str | os.PathLike[str],
     assignments: Sequence[str],
@@ -223,6 +238,7 @@ def run_candidate(
             backend_args=spec.evaluation.backend,
         )
     )
+    _check_metrics(spec, evaluator)
     overrides = _overrides(spec, values)
 
     run_dir = Path(os.path.abspath(output))
