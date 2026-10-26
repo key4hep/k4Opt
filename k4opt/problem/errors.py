@@ -14,6 +14,10 @@ class ProblemConfigError(ConfigError):
     """
 
 
+class RunError(K4OptError):
+    """The run directory of ``k4opt evaluate`` already exists."""
+
+
 class CandidateError(K4OptError):
     """A candidate does not fit the problem it is evaluated for.
 

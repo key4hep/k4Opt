@@ -1,7 +1,7 @@
 """The ``k4opt`` command: dispatches to the command groups of each component.
 
 Each component contributes one command group by exposing ``register(commands)``
-in its own ``cli`` module (``k4opt geometry ...`` today). Exit codes: 0 success,
+in its own ``cli`` module (``k4opt geometry ...``, ``k4opt evaluate``). Exit codes: 0 success,
 1 expected k4opt error (message on stderr), 2 usage error.
 """
 
@@ -15,6 +15,7 @@ from typing import TextIO
 from k4opt import __version__
 from k4opt.errors import K4OptError
 from k4opt.geometry import cli as geometry_cli
+from k4opt.problem import cli as problem_cli
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"k4opt {__version__}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     geometry_cli.register(commands)
+    problem_cli.register(commands)
     return parser
 
 

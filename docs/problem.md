@@ -1,11 +1,13 @@
 # Problem specification (draft `k4opt.problem/v1alpha1`)
 
 > **Status: draft.** The file format below can be loaded and statically validated by
-> `k4opt.problem` (see [Validation and Python API](#validation-and-python-api)). Everything
-> else is **proposed, not implemented**: no evaluator, no metric, no registry, no
-> `ddsim`/`k4run` invocation, no optimizer, and no `k4opt problem` CLI command. Parsing a
-> file does not check that its evaluator, metrics or geometry targets exist. Everything
-> here may change.
+> `k4opt.problem` (see [Validation and Python API](#validation-and-python-api)). One
+> vertical slice is implemented: `k4opt evaluate` runs a single candidate with the
+> `calo.hit_multiplicity` evaluator through `ddsim` (see [evaluators](evaluators.md)); before
+> it simulates, it checks that the declared objectives and constraints are metrics of that
+> evaluator. Everything else is **proposed, not implemented**: no evaluator registry, no
+> `k4run` invocation, no optimizer. Parsing a file alone does not check that its evaluator,
+> metrics or geometry targets exist. Everything here may change.
 
 k4opt aims to standardize **optimization problems, measurement definitions and evaluation
 records**. It does not replace the Key4hep tools that do the work (`ddsim`, `k4run`, ...).
@@ -59,7 +61,7 @@ evaluation:
         value: [0, 0, 0]
         unit: mm
       direction:
-        distribution: uniform_solid_angle
+        distribution: uniform
         theta: [60, 120]
         phi: [0, 360]
         unit: deg
@@ -213,7 +215,7 @@ example are illustrative only. In the example:
 | `generator.particle` | primary particle species (`gamma`) |
 | `generator.energy` | primary energy, `value` with an explicit `unit` |
 | `generator.vertex` | production point of the primary, `value` (x, y, z) with an explicit `unit`; here the origin. A fixed vertex keeps the true entry point on the ECAL surface well defined, which `position_rms` relies on |
-| `generator.direction.distribution` | `uniform_solid_angle`: uniform in cos(theta) and in phi, **not** uniform in theta |
+| `generator.direction.distribution` | ddsim's `--gun.distribution`, `cos(theta)` or `uniform`. `cos(theta)` is uniform in cos(theta), i.e. in solid angle; `uniform` is uniform in theta |
 | `generator.direction.theta`, `.phi` | inclusive angular range; `unit` gives the angle unit |
 
 Samples and simulation mode belong in `settings` as well, because they define the
@@ -237,7 +239,8 @@ backend:
     args: ["--physics.list", "FTFP_BERT"]
 ```
 
-Rules (policy for the future implementation; none of it is implemented):
+Rules (policy; `k4opt evaluate` implements it for `ddsim` with the `calo.hit_multiplicity`
+evaluator, see [evaluators.md](evaluators.md)):
 
 1. *Ordered list, not a string or a mapping.* Order, repeated flags, values and option
    spellings are preserved exactly.

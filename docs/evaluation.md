@@ -2,9 +2,9 @@
 
 `k4opt.evaluation` defines how anything that measures a candidate (a simulation, a
 reconstruction, an analysis, a cost model) talks to k4opt: **one protocol, one request, one
-result**. This is the contract only. Nothing runs `ddsim` or `k4run`, looks an evaluator up
-by the name in `problem.yaml`, or persists results; `load_problem()` still only resolves the
-geometry. An evaluator can be written and tested without Key4hep and without a problem file.
+result**. This is the contract only: it does not run anything, look an evaluator up by the name in
+`problem.yaml` or persist results. The evaluator that ships with k4opt and `k4opt evaluate` are
+described in [evaluators.md](evaluators.md). An evaluator can be written and tested without Key4hep and without a problem file.
 
 ## The protocol
 
@@ -144,7 +144,7 @@ In order, it:
 ## Deliberately deferred
 
 An evaluator registry or lookup by name, mapping `problem.yaml` to an implementation and
-validating its metric names, running `ddsim`/`k4run`, geometry snapshots for a candidate, a public execution API,
+validating its metric names, `k4run`, a public execution API (`k4opt evaluate` is the one internal vertical slice),
 chaining artifacts between evaluators (callers do it by hand, as the tests show), execution
 cost, retries and scheduling, fingerprints and caching, persisting or serializing the `EvaluationRecord`,
 and aggregation, significance or constraint judgment.

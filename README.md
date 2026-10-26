@@ -5,8 +5,8 @@ A detector optimization framework for [Key4hep](https://key4hep.github.io/key4he
 k4opt is being built to let detector experts define, evaluate, compare and share
 detector optimization problems for the Key4hep chain (generation, simulation,
 reconstruction, analysis), starting from the detector descriptions in
-[k4geo](https://github.com/key4hep/k4geo). It is in early development: **only the
-geometry component exists so far, and there is no optimizer yet.**
+[k4geo](https://github.com/key4hep/k4geo). It is in early development: **geometry handling and a first end-to-end evaluation
+(one candidate, simulated with `ddsim`) exist; there is no optimizer yet.**
 
 ## Components
 
@@ -16,8 +16,10 @@ API, command group, documentation and tests.
 | Component | Purpose | Status |
 | --- | --- | --- |
 | [`k4opt.geometry`](docs/geometry.md) | Discover addressable parameters of a DD4hep XML geometry, override them, materialize modified geometries | available |
-| problem definition | Declare which parameters vary and within which bounds, and what is evaluated. A [draft specification](docs/problem.md) can be loaded, validated and its geometry targets resolved (`k4opt.problem.load_problem`, against the active `$K4GEO`); evaluators, metrics and the CLI are **proposed, not yet implemented** | in progress |
-| [`k4opt.evaluation`](docs/evaluation.md) | The contract an evaluator implements (request, result, measurements). Running evaluators and recording results are **not implemented** | contract only |
+| problem definition | Declare which parameters vary and within which bounds, and what is evaluated. A [draft specification](docs/problem.md) can be loaded, validated and its geometry targets resolved (`k4opt.problem.load_problem`, against the active `$K4GEO`); a single candidate can be evaluated (`k4opt evaluate`); a general evaluator registry and further metrics are **proposed, not yet implemented** | in progress |
+| [`k4opt.evaluation`](docs/evaluation.md) | The contract an evaluator implements (request, result, measurements). Only the first evaluator and a per-run `summary.json` exist; a general runner and result store are **not implemented** | contract only |
+| [`k4opt.ddsim`](docs/ddsim.md) | Run `ddsim` with a particle gun on a prepared geometry: command from the problem settings, protected options, logs | first vertical slice |
+| [`k4opt.evaluators`](docs/evaluators.md) | One evaluator, `calo.hit_multiplicity` (ddsim, then distinct ECAL barrel cells hit), behind `k4opt evaluate PROBLEM --param REF=VALUE --output DIR`. A smoke test of the flow, not a performance study | first vertical slice |
 | optimization | Drive the evaluation with existing optimization libraries | planned |
 
 The planned components are directions, not commitments; their shape depends on
