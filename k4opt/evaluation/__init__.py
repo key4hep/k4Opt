@@ -18,10 +18,10 @@ Typical use::
     class Constant(Evaluator):
         name = "demo.constant"
         version = "1"
-        requires = "analysis"  # the stage of the metrics below
 
         def evaluate(self, request):
-            return {"answer": 42}
+            # no `requires`: nothing runs first, so the metric names its stage itself
+            return {("analysis", "answer"): 42}
 """
 
 from k4opt.evaluation.base import Evaluator, metric_units, result_from, with_defaults

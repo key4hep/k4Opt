@@ -147,6 +147,19 @@ def test_returned_values_become_measurements_with_the_declared_units() -> None:
     assert rms.uncertainty is None  # a number: just the value
 
 
+def test_an_evaluator_without_a_stage_names_the_stage_of_its_metrics() -> None:
+    # the package documentation's example: nothing runs first, so there is no `requires`
+    class Constant(Evaluator):
+        name, version = "demo.constant", "1"
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            return {("analysis", "answer"): 42}
+
+    evaluator = Constant()
+    (m,) = result_from(evaluator, evaluator.evaluate(EvaluationRequest())).measurements
+    assert (m.stage, m.metric, m.value, m.unit) == ("analysis", "answer", 42, None)
+
+
 def test_an_evaluation_result_is_passed_through() -> None:
     result = EvaluationResult.invalid("no")
     assert result_from(Counter(), result) is result

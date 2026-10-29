@@ -75,12 +75,16 @@ def read_collection(path: Path, collection: str, value_type: str) -> Iterator[An
     empty collection is yielded like any other. A collection that is missing in an event, or
     holds another type, raises :class:`EvaluationFailed` when that event is reached, never an
     empty result. Each list keeps its event in memory, so lists can be kept and used after the
-    next event is read.
+    next event is read. A file that ends before the number of events it records raises once the
+    last event was read.
     """
     if "::" not in value_type:
         value_type = f"edm4hep::{value_type}"
     with _unreadable(path):
-        for index, event in enumerate(_frames(path)):
+        frames = _frames(path)
+        entries, read = len(frames), 0
+        for index, event in enumerate(frames):
+            read = index + 1
             if collection not in event.getAvailableCollections():
                 raise EvaluationFailed(
                     f"collection {collection!r} is missing in event {index} of {path.name}"
@@ -93,3 +97,7 @@ def read_collection(path: Path, collection: str, value_type: str) -> Iterator[An
                 )
             # read here, where a failing reader is reported, not where the caller uses them
             yield _Elements(elements, event)
+        # the event count checked by k4opt is the number of entries the file records; a damaged
+        # file can stop earlier without raising
+        if read != entries:
+            raise EvaluationFailed(f"{path.name} records {entries} events, but {read} were read")

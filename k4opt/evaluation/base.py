@@ -20,7 +20,7 @@ class adds what most evaluators would write anyway:
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from typing import Any, NoReturn
 
 from k4opt.evaluation.errors import EvaluationContractError, EvaluationFailed, EvaluationInvalid
@@ -28,7 +28,7 @@ from k4opt.evaluation.models import EvaluationRequest, EvaluationResult, Measure
 from k4opt.frozen import Json
 
 type MetricKey = str | tuple[str, str]
-type Values = Mapping[MetricKey, int | float | Sequence[int | float]]
+type Values = Mapping[MetricKey, int | float | list[int | float] | tuple[int | float, ...]]
 """What ``evaluate`` may return instead of an :class:`EvaluationResult`."""
 
 
@@ -108,7 +108,7 @@ def result_from(evaluator: object, returned: EvaluationResult | Values) -> Evalu
         if isinstance(value, (list, tuple)):
             measurements.append(Measurement.from_samples(stage, metric, value, unit))
         else:
-            measurements.append(Measurement(stage, metric, value, unit))  # type: ignore[arg-type]
+            measurements.append(Measurement(stage, metric, value, unit))
     return EvaluationResult.valid(measurements)
 
 
