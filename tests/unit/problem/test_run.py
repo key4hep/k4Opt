@@ -17,7 +17,12 @@ import yaml
 from k4opt.cli import main
 from k4opt.ddsim import DdsimError
 from k4opt.errors import K4OptError
-from k4opt.evaluation import EvaluationContractError, metric_units, result_from
+from k4opt.evaluation import (
+    EvaluationContractError,
+    EvaluationRequest,
+    metric_units,
+    result_from,
+)
 from k4opt.geometry import GeometrySource, Override
 from k4opt.problem import CandidateError, load_problem, parse_problem
 from k4opt.problem._run import SUMMARY_NAME, RunOutcome, _parse_candidate, _xml_value
@@ -25,7 +30,7 @@ from k4opt.problem._run import run_candidate as _run_candidate
 from k4opt.problem.errors import RunError
 from tests.support import simulation
 from tests.support.common import tree_digest
-from tests.support.evaluators import CALO_HIT_MULTIPLICITY, calo_hit_multiplicity
+from tests.support.evaluators import CELL_COUNT, calo_photon, cell_count
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.simulation import COLLECTION, events_with
 
@@ -36,8 +41,8 @@ EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
 def run_candidate(
     problem: Path, assignments: list[str], output: Path, **changes: Any
 ) -> RunOutcome:
-    """``run_candidate`` with the example evaluator unless the test passes another."""
-    changes.setdefault("evaluator", calo_hit_multiplicity())
+    """``run_candidate`` with the test evaluator unless the test passes another."""
+    changes.setdefault("evaluator", cell_count())
     return _run_candidate(problem, assignments, output, **changes)
 
 
@@ -52,7 +57,7 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
     doc["parameters"][0]["bounds"] = [100.0, 600.0]
     evaluation = doc["evaluation"]
-    evaluation.update(evaluator="calo.hit_multiplicity", events=3, seed=5)
+    evaluation.update(evaluator="test.cell_count", events=3, seed=5)
     evaluation["settings"] = {"collection": COLLECTION}
     evaluation["generation"] = {
         "particle": "gamma",
@@ -146,7 +151,7 @@ def test_summary_is_written_and_truthful(
 
     assert on_disk["status"] == "valid"
     assert on_disk["candidate"] == {RADIUS: 450.0}
-    assert on_disk["evaluator"] == {"name": "calo.hit_multiplicity", "version": "1"}
+    assert on_disk["evaluator"] == {"name": "test.cell_count", "version": "1"}
     (measurement,) = on_disk["measurements"]
     assert measurement["metric"] == "ecal_barrel.mean_hit_cells"
     assert measurement["value"] == 3.0  # distinct cells per event: 3, 2, 4
@@ -159,7 +164,7 @@ def test_summary_is_written_and_truthful(
     assert on_disk["simulation"]["command"][0] == "/stack/bin/ddsim"
     assert on_disk["simulation"]["returncode"] == 0
     assert on_disk["settings"] == {"collection": COLLECTION}
-    assert on_disk["provenance"] == {}  # the example evaluator reports none of its own
+    assert on_disk["provenance"] == {}  # the test evaluator reports none of its own
     # the files of the stages, named <stage>.<role>: what the real-ddsim test reads back
     paths = on_disk["paths"]
     assert paths["run_dir"] == str(tmp_path / "a")
@@ -502,16 +507,21 @@ def test_text_values_are_read_by_the_parameter_kind(
 
 
 def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> None:
-    problem = parse_problem(yaml.safe_load((EXAMPLES / "cld-ecal-hit-count.yaml").read_text()))
-    evaluator = calo_hit_multiplicity()
+    problem = parse_problem(yaml.safe_load((EXAMPLES / "cld-ecal-granularity.yaml").read_text()))
+    evaluator = calo_photon()
     assert (problem.evaluation.evaluator, problem.evaluation.version) == (
         evaluator.name,
         evaluator.version,
     )
     assert [(o.stage, o.metric) for o in problem.objectives] == [
-        ("simulation", "ecal_barrel.mean_hit_cells")
+        ("simulation", "ecal_barrel.angular_residual"),
+        ("simulation", "ecal_barrel.fired_cells"),
     ]
-    assert metric_units(evaluator) == {("simulation", "ecal_barrel.mean_hit_cells"): "1"}
+    assert metric_units(evaluator) == {
+        ("simulation", "ecal_barrel.angular_residual"): "mrad",
+        ("simulation", "ecal_barrel.fired_cells"): "1",
+    }
+    evaluator.check(EvaluationRequest(settings=problem.evaluation.settings))
 
 
 # --- the command ---------------------------------------------------------------------------
@@ -519,7 +529,7 @@ def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> Non
 
 def evaluate(*argv: str) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    code = main(["evaluate", "--evaluator", CALO_HIT_MULTIPLICITY, *argv], stdout=out, stderr=err)
+    code = main(["evaluate", "--evaluator", CELL_COUNT, *argv], stdout=out, stderr=err)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -646,10 +656,10 @@ def test_the_command_reports_an_unloadable_evaluator_without_creating_anything(
 
 
 class Spy:
-    """The example evaluator, recording the requests of check() and evaluate()."""
+    """The test evaluator, recording the requests of check() and evaluate()."""
 
     def __init__(self) -> None:
-        self.inner: Any = calo_hit_multiplicity()
+        self.inner: Any = cell_count()
         self.name, self.version = self.inner.name, self.inner.version
         self.requires, self.metrics = self.inner.requires, self.inner.metrics
         self.checked: list[Any] = []

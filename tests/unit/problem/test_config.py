@@ -16,7 +16,7 @@ from k4opt import ConfigError, K4OptError
 from k4opt.problem import ProblemConfigError, load_problem, parse_problem
 
 Write = Callable[..., Path]
-EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-hit-count.yaml"
+EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-granularity.yaml"
 
 
 @pytest.fixture
@@ -43,23 +43,24 @@ def reject(data: object, message: str) -> None:
 def test_loads_the_checked_in_example() -> None:
     # the CLD geometry is not part of the repository, so only the parse is checked
     problem = parse_problem(yaml.safe_load(EXAMPLE.read_text()), source=EXAMPLE)
-    assert problem.name == "cld-ecal-hit-count"
+    assert problem.name == "cld-ecal-granularity"
     assert problem.environment.key4hep.channel == "nightly"
     assert problem.environment.key4hep.version == "2026-10-20"
     assert problem.geometry.entry == "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml"
     (parameter,) = problem.parameters
     assert parameter.geometry.constant == "ECal_cell_size"
     assert parameter.geometry.canonical_target == "constants.ECal_cell_size"
-    assert (parameter.kind, parameter.bounds, parameter.unit) == ("continuous", (4.0, 8.0), "mm")
+    assert (parameter.kind, parameter.bounds, parameter.unit) == ("continuous", (2.5, 20.0), "mm")
     evaluation = problem.evaluation
-    assert (evaluation.evaluator, evaluation.version) == ("calo.hit_multiplicity", "1")
-    assert (evaluation.events, evaluation.seed) == (100, 42)
+    assert (evaluation.evaluator, evaluation.version) == ("calo.photon", "1")
+    assert (evaluation.events, evaluation.seed) == (1000, 42)
     assert evaluation.backend["ddsim"] == ("--physics.list", "FTFP_BERT")
     generator: Any = evaluation.generation
     assert generator["particle"] == "gamma"
-    assert generator["direction"]["theta"] == (60, 120)
+    assert generator["direction"]["theta"] == (80, 100)
     assert [(o.stage, o.metric, o.direction) for o in problem.objectives] == [
-        ("simulation", "ecal_barrel.mean_hit_cells", "minimize")
+        ("simulation", "ecal_barrel.angular_residual", "minimize"),
+        ("simulation", "ecal_barrel.fired_cells", "minimize"),
     ]
     assert problem.constraints == ()
     assert parse_problem(problem.to_dict()) == problem
@@ -640,7 +641,7 @@ def test_invalid_utf8(write: Write) -> None:
 
 
 def test_error_names_the_file_and_location(write: Write) -> None:
-    path = write(good_yaml().replace("bounds: [4.0, 8.0]", "bounds: [8.0, 4.0]"))
+    path = write(good_yaml().replace("bounds: [2.5, 20.0]", "bounds: [20.0, 2.5]"))
     with pytest.raises(ProblemConfigError) as info:
         load_problem(path)
     assert str(info.value).startswith(f"{path}: parameters[0].bounds: low must be smaller")
@@ -719,7 +720,7 @@ def test_recursive_aliases_are_rejected(write: Write) -> None:
 
 
 def test_recursive_alias_in_a_schema_object_is_a_clean_error(write: Write) -> None:
-    text = good_yaml().replace("bounds: [4.0, 8.0]", "bounds: &a [*a, 1]")
+    text = good_yaml().replace("bounds: [2.5, 20.0]", "bounds: &a [*a, 1]")
     with pytest.raises(ProblemConfigError, match="bounds"):
         load_problem(write(text))
 

@@ -15,27 +15,77 @@ from k4opt.evaluation import edm4hep
 
 COLLECTION = "ECalBarrelCollection"
 HIT_TYPE = "edm4hep::SimCalorimeterHit"
+PARTICLE_TYPE = "edm4hep::MCParticle"
 DDSIM = "/stack/bin/ddsim"
 _run = subprocess.run
+
+type Triple = tuple[float, float, float]
+
+
+@dataclass
+class Vector:
+    x: float
+    y: float
+    z: float
 
 
 @dataclass
 class Hit:
     cell: int
+    energy: float = 1.0  # GeV
+    position: Triple = (0.0, 0.0, 0.0)  # mm
 
     def getCellID(self) -> int:  # noqa: N802 - podio's spelling
         return self.cell
 
+    def getEnergy(self) -> float:  # noqa: N802
+        return self.energy
 
-class Hits(list[Any]):
-    """A podio-like collection of hits."""
+    def getPosition(self) -> Vector:  # noqa: N802
+        return Vector(*self.position)
 
-    def __init__(self, cells: Sequence[int], type_name: str = HIT_TYPE) -> None:
-        super().__init__(Hit(c) for c in cells)
+
+@dataclass
+class Particle:
+    momentum: Triple  # GeV
+    vertex: Triple = (0.0, 0.0, 0.0)  # mm
+    status: int = 1  # generator status: 1 for the particle of the gun
+    decayed_in_tracker: bool = False
+
+    def getGeneratorStatus(self) -> int:  # noqa: N802
+        return self.status
+
+    def getMomentum(self) -> Vector:  # noqa: N802
+        return Vector(*self.momentum)
+
+    def getVertex(self) -> Vector:  # noqa: N802
+        return Vector(*self.vertex)
+
+    def isDecayedInTracker(self) -> bool:  # noqa: N802
+        return self.decayed_in_tracker
+
+
+class Collection(list[Any]):
+    """A podio-like collection: a list that knows the type of its elements."""
+
+    def __init__(self, elements: Sequence[Any], type_name: str) -> None:
+        super().__init__(elements)
         self.type_name = type_name
 
     def getValueTypeName(self) -> str:  # noqa: N802
         return self.type_name
+
+
+class Hits(Collection):
+    """Calorimeter hits, given as cell IDs or as ``Hit``."""
+
+    def __init__(self, cells: Sequence[int | Hit], type_name: str = HIT_TYPE) -> None:
+        super().__init__([c if isinstance(c, Hit) else Hit(c) for c in cells], type_name)
+
+
+class Particles(Collection):
+    def __init__(self, particles: Sequence[Particle], type_name: str = PARTICLE_TYPE) -> None:
+        super().__init__(particles, type_name)
 
 
 class Event:
