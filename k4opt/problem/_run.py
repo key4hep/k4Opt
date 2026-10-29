@@ -273,7 +273,7 @@ def run_candidate(
         check_stage(spec, stage)
     check = getattr(evaluator, "check", None)
     if check is not None:
-        check(_request(spec, values))
+        check(_request(spec, values, evaluator=evaluator))
     _check_metrics(spec, evaluator)
     overrides = _overrides(spec, values)
 

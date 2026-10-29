@@ -17,16 +17,14 @@ class CellCount(Evaluator):
     name = "demo.cell_count"  # counterpart of evaluation.evaluator
     version = "1"  # counterpart of evaluation.version
     requires = "simulation"  # the pipeline stage to read (optional)
-    settings = {"collection": str}  # evaluation.settings: keys and types (optional)
+    settings = {"collection": str, "min_hits": 1}  # evaluation.settings (optional)
     metrics = {"ecal.cells": "1"}  # metric -> unit; the stage is `requires` (optional)
 
     def evaluate(self, request):
-        hits = request.read(
-            "simulation", request.settings["collection"], "edm4hep::SimCalorimeterHit"
-        )
+        hits = self.read(request, request.settings["collection"], "SimCalorimeterHit")
         cells = [len({hit.getCellID() for hit in event}) for event in hits]
-        if max(cells) == 0:
-            self.invalid("no hits in any event")  # also: self.fail("...")
+        if max(cells) < request.settings["min_hits"]:
+            self.invalid("too few hits")  # also: self.fail("...")
         return {"ecal.cells": cells}  # a list: its mean with the standard error; a number: itself
 ```
 
@@ -43,13 +41,15 @@ What the optional parts do:
 
 - `requires = "simulation"`: the framework runs that stage from the problem and passes the file
   it produced as `request.inputs["simulation"]`; the evaluator never builds a command, starts a
-  tool or handles its failures (see [Stages](#stages)). `request.read(stage, collection, type)`
+  tool or handles its failures (see [Stages](#stages)). `self.read(request, collection, type)`
   reads a collection of that file (see [Reading EDM4hep files](#reading-edm4hep-files)).
-- `settings`: a mapping of key to type (`str`, `int`, `float`, `bool`). Every key is required,
-  unknown keys and wrong types are an `EvaluationContractError`, raised before anything is
-  created or run (a `bool` is not an `int`, an `int` is a `float`). Override `check(request)`
-  for rules beyond that and call `super().check(request)`; plain evaluators can define `check`
-  alone.
+- `settings`: a mapping of key to a type (`str`, `int`, `float`, `bool`) for a required setting
+  or to a default value for an optional one (`"min_hits": 1` is an optional `int`). Unknown keys,
+  missing required keys and wrong types are an `EvaluationContractError`, raised before anything
+  is created or run (a `bool` is not an `int`, an `int` is a `float`). The request an evaluator
+  gets carries the defaults, so `request.settings` (and the record) show the settings that were
+  used. Override `check(request)` for rules beyond that and call `super().check(request)`; plain
+  evaluators can define `check` alone.
 - `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
   holds every returned measurement of those metrics to the declared unit, so one metric identity
   never carries two units. A metric of another stage is written `("analysis", "rms")`.
@@ -134,12 +134,13 @@ measurements: build the result by hand to keep diagnostics.
 
 ### Reading EDM4hep files
 
-`request.read(stage, collection, value_type)` is `read_collection` on the file of a stage.
+`self.read(request, collection, value_type)` is `read_collection` on the file of the stage in
+`requires`, and `request.read(stage, collection, value_type)` on the file of any stage.
 `read_collection(path, collection, value_type)` yields the collection of each event of an
 EDM4hep file; `count_events(path)` counts the events. `podio` comes from the Key4hep stack and
 is imported only when a file is opened, so `k4opt.evaluation` imports without it. A file that
 cannot be opened, a missing `events` category or collection, an element type other than
-`value_type` and every exception of the C++ reader are an `EvaluationFailed`: a collection is
+`value_type` (`"SimCalorimeterHit"` means `"edm4hep::SimCalorimeterHit"`) and every exception of the C++ reader are an `EvaluationFailed`: a collection is
 never silently read as empty. An existing but empty collection is yielded like any other.
 
 Violations raise `EvaluationContractError` (a `K4OptError`) when the object is built.

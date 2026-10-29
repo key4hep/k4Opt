@@ -452,6 +452,36 @@ def test_an_evaluator_may_return_plain_values(
     assert "simulation.edm4hep" in record.result.artifacts  # the stage's files are still added
 
 
+def test_the_declared_defaults_reach_check_and_evaluate(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    seen: list[Any] = []
+
+    class Tuned(Evaluator):
+        name = "calo.single_particle_shower"
+        version = "1"
+        requires = "simulation"
+        settings = {"collection": str, "threshold": 0.5}
+        metrics = {"a.rms": "mm", "a.cells": "1"}
+
+        def check(self, request: EvaluationRequest) -> None:
+            seen.append(request.settings)
+            super().check(request)
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            seen.append(request.settings)
+            return {"a.rms": 1.0, "a.cells": 5}
+
+    record = _evaluate_candidate(
+        spec, {CELL: 6}, Tuned(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    assert record.result.status is Status.VALID
+    wanted = {"collection": "ECalBarrelCollection", "threshold": 0.5}
+    assert seen == [wanted, wanted]
+    assert record.request.settings == wanted  # the record shows the settings that were used
+
+
 def test_the_bridge_runs_check_before_any_stage(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

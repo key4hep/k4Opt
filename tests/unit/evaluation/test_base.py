@@ -17,6 +17,7 @@ from k4opt.evaluation import (
     Status,
     metric_units,
     result_from,
+    with_defaults,
 )
 from tests.support import simulation
 from tests.support.simulation import COLLECTION, HIT_TYPE, events_with
@@ -142,3 +143,60 @@ def test_request_read_reads_the_file_of_a_stage(monkeypatch: pytest.MonkeyPatch)
 def test_request_read_of_a_stage_without_a_file_is_a_contract_error() -> None:
     with pytest.raises(EvaluationContractError, match=r"inputs\['simulation'\]"):
         EvaluationRequest().read("simulation", COLLECTION, HIT_TYPE)
+
+
+class Tuned(Evaluator):
+    name = "demo.tuned"
+    version = "1"
+    requires = "simulation"
+    settings = {"collection": str, "threshold": 0.5, "rings": 3, "strict": False}
+
+    def evaluate(self, request: EvaluationRequest) -> Any:
+        return {"n": 1}
+
+
+def tuned(**settings: Any) -> EvaluationRequest:
+    return EvaluationRequest(settings=settings)
+
+
+def test_a_default_makes_a_setting_optional() -> None:
+    Tuned().check(tuned(collection="C"))
+    Tuned().check(tuned(collection="C", threshold=2, rings=4, strict=True))  # an int is a float
+
+
+def test_a_default_still_fixes_the_type_and_a_required_key_stays_required() -> None:
+    with pytest.raises(EvaluationContractError, match=r"settings\.rings: expected int"):
+        Tuned().check(tuned(collection="C", rings=2.5))
+    with pytest.raises(EvaluationContractError, match=r"settings\.strict: expected bool"):
+        Tuned().check(tuned(collection="C", strict=1))
+    with pytest.raises(EvaluationContractError, match=r"missing \['collection'\]"):
+        Tuned().check(tuned(threshold=1.0))
+    with pytest.raises(EvaluationContractError, match=r"unknown \['extra'\]"):
+        Tuned().check(tuned(collection="C", extra=1))
+
+
+def test_with_defaults_adds_only_the_missing_optional_settings() -> None:
+    merged = with_defaults(Tuned(), {"collection": "C", "rings": 5})
+    assert merged == {"collection": "C", "rings": 5, "threshold": 0.5, "strict": False}
+
+
+def test_with_defaults_leaves_other_evaluators_alone() -> None:
+    class Plain:
+        name, version = "demo.plain", "1"
+
+    assert with_defaults(Plain(), {"a": 1}) == {"a": 1}
+    assert with_defaults(Counter(), {"collection": "C"}) == {"collection": "C"}  # no defaults
+
+
+def test_self_read_uses_the_required_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+    simulation.install_events(monkeypatch, events_with([1, 2], [3]))
+    request = EvaluationRequest(inputs={"simulation": Path("events.root")})
+    assert [len(h) for h in Counter().read(request, COLLECTION, "SimCalorimeterHit")] == [2, 1]
+
+
+def test_self_read_needs_requires() -> None:
+    class Stageless(Evaluator):
+        name, version = "demo.stageless", "1"
+
+    with pytest.raises(EvaluationContractError, match="requires"):
+        Stageless().read(EvaluationRequest(), COLLECTION, "SimCalorimeterHit")

@@ -57,11 +57,14 @@ def count_events(path: Path) -> int:
 def read_collection(path: Path, collection: str, value_type: str) -> Iterator[Any]:
     """The collection ``collection`` of each event of ``path``, in file order.
 
-    ``value_type`` is the podio type of its elements, for example
-    ``"edm4hep::SimCalorimeterHit"``. An existing but empty collection is yielded like any
-    other. A collection that is missing in an event, or holds another type, raises
-    :class:`EvaluationFailed` when that event is reached, never an empty result.
+    ``value_type`` is the podio type of its elements, ``"SimCalorimeterHit"`` or
+    ``"edm4hep::SimCalorimeterHit"`` (the ``edm4hep::`` prefix is implied). An existing but
+    empty collection is yielded like any other. A collection that is missing in an event, or
+    holds another type, raises :class:`EvaluationFailed` when that event is reached, never an
+    empty result.
     """
+    if "::" not in value_type:
+        value_type = f"edm4hep::{value_type}"
     with _unreadable(path):
         for index, event in enumerate(_events(path)):
             if collection not in event.getAvailableCollections():

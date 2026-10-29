@@ -24,7 +24,7 @@ Typical use::
             return {"answer": 42}
 """
 
-from k4opt.evaluation.base import Evaluator, metric_units, result_from
+from k4opt.evaluation.base import Evaluator, metric_units, result_from, with_defaults
 from k4opt.evaluation.edm4hep import count_events, read_collection
 from k4opt.evaluation.errors import (
     EvaluationContractError,
@@ -61,4 +61,5 @@ __all__ = [
     "metric_units",
     "read_collection",
     "result_from",
+    "with_defaults",
 ]

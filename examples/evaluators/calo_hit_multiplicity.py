@@ -24,9 +24,7 @@ class CaloHitMultiplicity(Evaluator):
     metrics = {"ecal_barrel.mean_hit_cells": "1"}
 
     def evaluate(self, request):
-        hits = request.read(
-            "simulation", request.settings["collection"], "edm4hep::SimCalorimeterHit"
-        )
+        hits = self.read(request, request.settings["collection"], "SimCalorimeterHit")
         cells = [len({hit.getCellID() for hit in event}) for event in hits]
         if max(cells) == 0:
             self.invalid("no hits in any event")

@@ -28,6 +28,7 @@ from k4opt.evaluation import (
     Status,
     metric_units,
     result_from,
+    with_defaults,
 )
 from k4opt.evaluation.models import Scalar
 from k4opt.frozen import Json
@@ -188,11 +189,15 @@ def _request(
     values: Mapping[str, Scalar],
     inputs: Mapping[str, Path] | None = None,
     workdir: Path | None = None,
+    evaluator: EvaluatorProtocol | None = None,
 ) -> EvaluationRequest:
-    """The request an evaluator receives, for ``check()`` and ``evaluate()`` alike."""
+    """The request an evaluator receives, for ``check()`` and ``evaluate()`` alike.
+
+    ``settings`` are those of the problem plus the defaults the evaluator declares.
+    """
     return EvaluationRequest(
         candidate=values,
-        settings=spec.evaluation.settings,
+        settings=with_defaults(evaluator, spec.evaluation.settings),
         inputs=inputs or {},
         workdir=workdir,
         events=spec.evaluation.events,
@@ -232,7 +237,7 @@ def _evaluate_candidate(
     name, version = _check_identity(spec, evaluator)
     check = getattr(evaluator, "check", None)
     if check is not None:
-        check(_request(spec, values))
+        check(_request(spec, values, evaluator=evaluator))
     inputs = dict(inputs or {})
     required = getattr(evaluator, "requires", None)
     plan = [] if required is None else check_stage(spec, required, inputs)
@@ -261,7 +266,7 @@ def _evaluate_candidate(
     }
     if observed and required is not None:
         stages[required] = {**stages[required], **observed}
-    request = _request(spec, values, inputs, workdir)
+    request = _request(spec, values, inputs, workdir, evaluator)
     try:
         returned = (
             EvaluationResult.failed(error) if error is not None else evaluator.evaluate(request)
