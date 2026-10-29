@@ -6,7 +6,8 @@ class adds what most evaluators would write anyway:
 
 * ``settings = {"collection": str, "threshold": 0.5}`` declares the evaluator's settings: a type
   for a required key, a default value for an optional one. ``check`` rejects missing and
-  unknown keys and wrong types before anything runs, and the request carries the defaults;
+  unknown keys, wrong types and blank required text before anything runs, and the request
+  carries the defaults;
 * ``metrics = {"hit_cells": "1"}`` maps each metric to its unit; its stage is ``requires``,
   or the metric is written ``(stage, metric)``;
 * ``evaluate`` may return ``{"hit_cells": 3.2}`` or ``{"hit_cells": [3, 4, 2]}`` (a number, or
@@ -124,6 +125,9 @@ class Evaluator:
                 raise EvaluationContractError(
                     f"settings.{key}: expected {kinds[key].__name__}, got {value!r}"
                 )
+            # a required text (a collection name, say) cannot be blank; an optional one may be
+            if isinstance(value, str) and not value.strip() and self.settings[key] is str:
+                raise EvaluationContractError(f"settings.{key}: must not be blank")
 
     def read(self, request: EvaluationRequest, collection: str, value_type: str) -> Iterator[Any]:
         """The collection of each event of the file of the stage in ``requires``."""

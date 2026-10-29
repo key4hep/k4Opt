@@ -164,6 +164,17 @@ def test_a_default_makes_a_setting_optional() -> None:
     Tuned().check(tuned(collection="C", threshold=2, rings=4, strict=True))  # an int is a float
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_required_text_cannot_be_blank_but_an_optional_one_can(blank: str) -> None:
+    class Named(Evaluator):
+        name, version = "demo.named", "1"
+        settings = {"collection": str, "label": "x"}
+
+    with pytest.raises(EvaluationContractError, match=r"settings\.collection: must not be blank"):
+        Named().check(EvaluationRequest(settings={"collection": blank}))
+    Named().check(EvaluationRequest(settings={"collection": "C", "label": blank}))
+
+
 def test_a_default_still_fixes_the_type_and_a_required_key_stays_required() -> None:
     with pytest.raises(EvaluationContractError, match=r"settings\.rings: expected int"):
         Tuned().check(tuned(collection="C", rings=2.5))

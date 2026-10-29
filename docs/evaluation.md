@@ -45,8 +45,8 @@ What the optional parts do:
   reads a collection of that file (see [Reading EDM4hep files](#reading-edm4hep-files)).
 - `settings`: a mapping of key to a type (`str`, `int`, `float`, `bool`) for a required setting
   or to a default value for an optional one (`"min_hits": 1` is an optional `int`). Unknown keys,
-  missing required keys and wrong types are an `EvaluationContractError`, raised before anything
-  is created or run (a `bool` is not an `int`, an `int` is a `float`). The request an evaluator
+  missing required keys, wrong types and a blank required `str` are an `EvaluationContractError`,
+  raised before anything is created or run (a `bool` is not an `int`, an `int` is a `float`). The request an evaluator
   gets carries the defaults, so `request.settings` (and the record) show the settings that were
   used. Override `check(request)` for rules beyond that and call `super().check(request)`; plain
   evaluators can define `check` alone.

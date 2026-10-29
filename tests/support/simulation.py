@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -75,7 +75,7 @@ class FakeDdsim:
 
 def install_events(monkeypatch: pytest.MonkeyPatch, events: Sequence[Any] | None = None) -> None:
     """Make k4opt read ``events`` instead of an EDM4hep file; no ddsim is involved."""
-    monkeypatch.setattr(edm4hep, "_events", lambda path: iter(events or []))
+    monkeypatch.setattr(edm4hep, "_frames", lambda path: list(events or []))
 
 
 def install(
@@ -89,14 +89,14 @@ def install(
     monkeypatch.setattr(ddsim_run.subprocess, "run", fake)
     monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: DDSIM)
 
-    def read(path: Path) -> Iterator[Any]:
+    def read(path: Path) -> list[Any]:
         if events is not None:
-            return iter(events)
+            return list(events)
         argv = fake.calls[-1][0]
         requested = int(
             next(a for a in argv if a.startswith("--numberOfEvents=")).partition("=")[2]
         )
-        return iter(events_with(*[[1]] * requested))
+        return events_with(*[[1]] * requested)
 
-    monkeypatch.setattr(edm4hep, "_events", read)
+    monkeypatch.setattr(edm4hep, "_frames", read)
     return fake

@@ -80,14 +80,42 @@ def test_c_plus_plus_exceptions_of_the_reader_are_failures(
         list(read_collection(PATH, COLLECTION, HIT_TYPE))
 
 
+def test_counting_asks_the_reader_for_its_entries_and_reads_no_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Frames:
+        def __len__(self) -> int:
+            return 7
+
+        def __iter__(self) -> Any:
+            raise AssertionError("counting must not read the frames")
+
+    monkeypatch.setattr(edm4hep, "_frames", lambda path: Frames())
+    assert count_events(PATH) == 7
+
+
+def test_c_plus_plus_exceptions_while_iterating_a_collection_are_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Elements:
+        def getValueTypeName(self) -> str:  # noqa: N802
+            return HIT_TYPE
+
+        def __iter__(self) -> Any:
+            raise CppException("corrupt buffer")
+
+    simulation.install_events(monkeypatch, [Event(**{COLLECTION: Elements()})])
+    with pytest.raises(EvaluationFailed, match="CppException: corrupt buffer"):
+        list(read_collection(PATH, COLLECTION, HIT_TYPE))
+
+
 def test_c_plus_plus_exceptions_when_opening_are_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def opening(path: Path) -> Any:
         raise CppException("incompatible file")
-        yield  # pragma: no cover
 
-    monkeypatch.setattr(edm4hep, "_events", opening)
+    monkeypatch.setattr(edm4hep, "_frames", opening)
     with pytest.raises(EvaluationFailed, match=r"cannot read events\.edm4hep\.root.*incompatible"):
         count_events(PATH)
 

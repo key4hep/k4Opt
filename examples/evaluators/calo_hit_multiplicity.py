@@ -17,15 +17,18 @@ from k4opt.evaluation import Evaluator
 
 
 class CaloHitMultiplicity(Evaluator):
-    name = "calo.hit_multiplicity"
-    version = "1"
-    requires = "simulation"
-    settings = {"collection": str}
-    metrics = {"ecal_barrel.mean_hit_cells": "1"}
+    name = "calo.hit_multiplicity"  # must match evaluation.evaluator in the problem file
+    version = "1"  # and evaluation.version
+    requires = "simulation"  # k4opt runs generation and ddsim first and checks the event count
+    settings = {"collection": str}  # evaluation.settings: the collection to read (required)
+    metrics = {"ecal_barrel.mean_hit_cells": "1"}  # metric -> unit; its stage is `requires`
 
     def evaluate(self, request):
+        # one list of hits per event, from the EDM4hep file of the simulation stage
         hits = self.read(request, request.settings["collection"], "SimCalorimeterHit")
+        # distinct cells hit in each event (several hits can share a cell)
         cells = [len({hit.getCellID() for hit in event}) for event in hits]
         if max(cells) == 0:
-            self.invalid("no hits in any event")
+            self.invalid("no hits in any event")  # ran, but the result is unusable
+        # a list is averaged: its mean with the standard error becomes the measurement
         return {"ecal_barrel.mean_hit_cells": cells}

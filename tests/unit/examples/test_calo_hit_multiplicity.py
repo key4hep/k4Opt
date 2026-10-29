@@ -107,6 +107,8 @@ def test_no_hits_in_any_event_is_invalid_not_a_zero_mean(
     [
         {},
         {"collection": 3},
+        {"collection": ""},
+        {"collection": "   "},
         {"readouts": {"ecal_barrel": COLLECTION}},
         {**SETTINGS, "extra": 1},
         {**SETTINGS, "generator": {"particle": "gamma"}},  # configures the simulation stage

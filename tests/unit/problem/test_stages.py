@@ -383,10 +383,9 @@ def test_an_unreadable_simulation_output_fails_before_the_evaluator(
 ) -> None:
     def broken(path: Path) -> Any:
         raise RuntimeError("truncated file")
-        yield  # pragma: no cover
 
     simulation.install(monkeypatch)
-    monkeypatch.setattr(edm4hep, "_events", broken)
+    monkeypatch.setattr(edm4hep, "_frames", broken)
     reader = Reader()
     record = _evaluate_candidate(
         spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
