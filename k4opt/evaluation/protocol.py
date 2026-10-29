@@ -1,13 +1,15 @@
-"""The evaluator protocol."""
+"""The evaluator protocol: what k4opt needs of an evaluator, whether or not it subclasses
+:class:`~k4opt.evaluation.base.Evaluator`."""
 
 from __future__ import annotations
 
 from typing import Protocol
 
+from k4opt.evaluation.base import Values
 from k4opt.evaluation.models import EvaluationRequest, EvaluationResult
 
 
-class Evaluator(Protocol):
+class EvaluatorProtocol(Protocol):
     """Anything that turns an :class:`EvaluationRequest` into an :class:`EvaluationResult`.
 
     There is one calling convention for every scientific procedure: a simulation, a
@@ -25,7 +27,7 @@ class Evaluator(Protocol):
     @property
     def version(self) -> str: ...
 
-    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResult | Values:
         """Evaluate one candidate.
 
         Report a scientific or execution problem through ``status`` (``invalid`` or

@@ -7,57 +7,27 @@ command line::
         --evaluator examples/evaluators/calo_hit_multiplicity.py:CaloHitMultiplicity \\
         --param constants.ECal_cell_size=6.0 --output runs/cld-ecal-6mm
 
-It only reads. ``requires = "simulation"`` asks k4opt to run generation and ``ddsim`` first, to
-check that the EDM4hep file holds the requested events and to hand it over as
-``request.inputs["simulation"]``. Whatever is wrong with the file is an
-``EvaluationFailed`` raised by ``read_collection``; k4opt turns it into a ``failed`` result.
-The one measurement is ``simulation`` / ``ecal_barrel.mean_hit_cells``; see
-``docs/evaluators.md`` for the definition. The metric is a technical observable, not a
-detector-performance measure.
+It only reads: ``requires = "simulation"`` makes k4opt run generation and ``ddsim`` first, check
+that the EDM4hep file holds the requested events and hand it over. The one measurement is
+``simulation`` / ``ecal_barrel.mean_hit_cells``, defined in ``docs/evaluators.md``. The metric is
+a technical observable, not a detector-performance measure.
 """
 
-from __future__ import annotations
-
-from k4opt.evaluation import (
-    EvaluationContractError,
-    EvaluationInvalid,
-    EvaluationRequest,
-    EvaluationResult,
-    Measurement,
-    read_collection,
-)
+from k4opt.evaluation import Evaluator
 
 
-class CaloHitMultiplicity:
-    """Mean number of distinct ECAL barrel cells hit per simulated event.
-
-    Reads ``request.inputs["simulation"]``, the EDM4hep file of the simulation stage it
-    ``requires``; ``request.settings["collection"]`` names the collection.
-    """
-
+class CaloHitMultiplicity(Evaluator):
     name = "calo.hit_multiplicity"
     version = "1"
     requires = "simulation"
-    #: the ``(stage, metric)`` pairs a valid result reports, with their units
-    metrics = {("simulation", "ecal_barrel.mean_hit_cells"): "1"}
+    settings = {"collection": str}
+    metrics = {"ecal_barrel.mean_hit_cells": "1"}
 
-    def check(self, request: EvaluationRequest) -> None:
-        """Called by k4opt before anything runs: reject settings that cannot be evaluated."""
-        if not isinstance(request.settings.get("collection"), str) or len(request.settings) != 1:
-            raise EvaluationContractError("settings: expected exactly 'collection: <name>'")
-
-    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
-        collection = request.settings["collection"]
-        events = read_collection(
-            request.inputs["simulation"], collection, "edm4hep::SimCalorimeterHit"
+    def evaluate(self, request):
+        hits = request.read(
+            "simulation", request.settings["collection"], "edm4hep::SimCalorimeterHit"
         )
-        cells_per_event = [len({hit.getCellID() for hit in hits}) for hits in events]
-        if max(cells_per_event) == 0:
-            raise EvaluationInvalid(f"no hits in {collection!r} in any event")
-        return EvaluationResult.valid(
-            [
-                Measurement.from_samples(
-                    "simulation", "ecal_barrel.mean_hit_cells", cells_per_event, "1"
-                )
-            ]
-        )
+        cells = [len({hit.getCellID() for hit in event}) for event in hits]
+        if max(cells) == 0:
+            self.invalid("no hits in any event")
+        return {"ecal_barrel.mean_hit_cells": cells}

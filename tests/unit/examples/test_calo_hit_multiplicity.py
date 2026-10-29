@@ -16,6 +16,7 @@ from k4opt.evaluation import (
     EvaluationInvalid,
     EvaluationRequest,
     Status,
+    result_from,
 )
 from tests.support import simulation
 from tests.support.evaluators import calo_hit_multiplicity
@@ -35,7 +36,8 @@ def evaluate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_events: list[Event], **changes: Any
 ) -> Any:
     simulation.install_events(monkeypatch, fake_events)
-    return calo_hit_multiplicity().evaluate(request(tmp_path, **changes))
+    evaluator = calo_hit_multiplicity()
+    return result_from(evaluator, evaluator.evaluate(request(tmp_path, **changes)))
 
 
 def test_the_evaluator_asks_for_the_simulation_stage() -> None:

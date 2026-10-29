@@ -10,7 +10,7 @@ from pathlib import Path
 from types import ModuleType
 
 from k4opt.evaluation.errors import EvaluatorLoadError
-from k4opt.evaluation.protocol import Evaluator
+from k4opt.evaluation.protocol import EvaluatorProtocol
 
 
 def _load_file(path: Path) -> ModuleType:
@@ -43,7 +43,7 @@ def _load_file(path: Path) -> ModuleType:
     return module
 
 
-def load_evaluator(reference: str) -> Evaluator:
+def load_evaluator(reference: str) -> EvaluatorProtocol:
     """Create the evaluator that ``reference`` names, ``FILE.py:Class`` or ``module:Class``.
 
     ``FILE.py`` is a path (a leading ``~`` is expanded) and its directory is added to
@@ -86,5 +86,5 @@ def load_evaluator(reference: str) -> Evaluator:
             f"{attribute} is not an evaluator: needs name, version and an evaluate() method"
             + (f" (missing {', '.join(missing)})" if missing else "")
         )
-    result: Evaluator = evaluator
+    result: EvaluatorProtocol = evaluator
     return result

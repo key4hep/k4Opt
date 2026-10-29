@@ -22,7 +22,8 @@ from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRecord,
     EvaluationResult,
-    Evaluator,
+    EvaluatorProtocol,
+    metric_units,
 )
 from k4opt.evaluation.models import Scalar
 from k4opt.frozen import thaw
@@ -221,12 +222,12 @@ def _summary(
     }
 
 
-def _check_metrics(spec: ProblemSpec, evaluator: Evaluator) -> None:
+def _check_metrics(spec: ProblemSpec, evaluator: EvaluatorProtocol) -> None:
     """Reject objectives and constraints the evaluator cannot measure, before any simulation.
 
     An evaluator that does not declare ``metrics`` is not checked here; its results still are.
     """
-    metrics = getattr(evaluator, "metrics", None)
+    metrics = metric_units(evaluator)
     if metrics is None:
         return
     declared = [(o.stage, o.metric) for o in spec.objectives]
@@ -252,7 +253,7 @@ def run_candidate(
     assignments: Sequence[str],
     output: str | os.PathLike[str],
     *,
-    evaluator: Evaluator,
+    evaluator: EvaluatorProtocol,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 

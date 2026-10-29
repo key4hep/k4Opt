@@ -20,6 +20,7 @@ from k4opt.evaluation import (
     EvaluationInvalid,
     EvaluationRequest,
     EvaluationResult,
+    Evaluator,
     Measurement,
     Status,
     edm4hep,
@@ -425,6 +426,30 @@ def test_an_evaluator_that_raises_an_outcome_gets_that_result(
     assert record.result.message == str(error)
     assert record.result.measurements == ()
     assert "simulation" in record.result.provenance["stages"]  # type: ignore[operator]
+
+
+def test_an_evaluator_may_return_plain_values(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+
+    class Plain(Evaluator):
+        name = "calo.single_particle_shower"
+        version = "1"
+        requires = "simulation"
+        metrics = {"a.rms": "mm", "a.cells": "1"}
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            return {"a.rms": 1.5, "a.cells": [4, 6]}
+
+    record = _evaluate_candidate(
+        spec, {CELL: 6}, Plain(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    assert record.result.status is Status.VALID
+    rms, cells = record.result.measurements
+    assert (rms.stage, rms.metric, rms.value, rms.unit) == ("simulation", "a.rms", 1.5, "mm")
+    assert (cells.value, cells.uncertainty) == (5, 1)
+    assert "simulation.edm4hep" in record.result.artifacts  # the stage's files are still added
 
 
 def test_the_bridge_runs_check_before_any_stage(

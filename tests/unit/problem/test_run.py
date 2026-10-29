@@ -15,7 +15,7 @@ import yaml
 from k4opt.cli import main
 from k4opt.ddsim import DdsimError
 from k4opt.errors import K4OptError
-from k4opt.evaluation import EvaluationContractError
+from k4opt.evaluation import EvaluationContractError, metric_units
 from k4opt.geometry import GeometrySource, Override
 from k4opt.problem import CandidateError, load_problem, parse_problem
 from k4opt.problem._run import SUMMARY_NAME, RunOutcome, _parse_candidate, _xml_value
@@ -498,7 +498,7 @@ def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> Non
     assert [(o.stage, o.metric) for o in problem.objectives] == [
         ("simulation", "ecal_barrel.mean_hit_cells")
     ]
-    assert set(evaluator.metrics) >= {("simulation", "ecal_barrel.mean_hit_cells")}  # type: ignore[attr-defined]
+    assert metric_units(evaluator) == {("simulation", "ecal_barrel.mean_hit_cells"): "1"}
 
 
 # --- the command ---------------------------------------------------------------------------
