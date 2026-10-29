@@ -57,7 +57,7 @@ def _real(value: object, what: str) -> int | float:
     return number
 
 
-def _paths(value: Mapping[str, Path], what: str) -> FrozenMap[Path]:
+def _paths(value: Mapping[str, Path], what: str) -> FrozenMap[str, Path]:
     if not isinstance(value, Mapping):
         raise EvaluationContractError(f"{what} must be a mapping of names to paths")
     for name, path in value.items():
@@ -69,7 +69,7 @@ def _paths(value: Mapping[str, Path], what: str) -> FrozenMap[Path]:
     return FrozenMap(value)
 
 
-def _json_mapping(value: Mapping[str, Json], what: str) -> FrozenMap[Json]:
+def _json_mapping(value: Mapping[str, Json], what: str) -> FrozenMap[str, Json]:
     if not isinstance(value, Mapping):
         raise EvaluationContractError(f"{what} must be a mapping")
     frozen = freeze(value, what, EvaluationContractError)

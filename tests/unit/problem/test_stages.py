@@ -409,6 +409,34 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
     assert candidate.reads == {"calo.single_particle_shower": ("generation", "simulation")}
 
 
+def test_a_reader_cannot_change_the_candidate_or_its_stages(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # an optimizer reads these records, so which evaluator owns a metric, or what a stage did,
+    # must stay as recorded
+    simulation.install(monkeypatch)
+    candidate = evaluate(
+        spec, {CELL: 6}, Reader(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    stages = candidate.stages
+    assert candidate.owners
+    mappings: list[Any] = [
+        candidate.owners,
+        candidate.reads,
+        stages.provenance,
+        stages.provenance["simulation"],
+        stages.outputs,
+        stages.artifacts,
+        stages.artifacts["simulation"],
+        stages.errors,
+        stages.seconds,
+    ]
+    for mapping in mappings:
+        with pytest.raises(TypeError):
+            mapping[next(iter(mapping), "new")] = "changed"
+    assert isinstance(stages.provenance["simulation"]["argv"], tuple)  # type: ignore[index]
+
+
 def test_a_failed_stage_is_a_failed_record_and_the_evaluator_never_runs(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

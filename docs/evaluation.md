@@ -294,7 +294,8 @@ In order, it:
 
 The `CandidateRecord` holds one `EvaluationRecord` per evaluator in problem order, the stages
 (each recorded once), which evaluator owns each objective and constraint metric, and the time of
-the whole evaluation. Its `status` is the candidate's:
+the whole evaluation. Like the records it holds, it cannot be changed once made. Its `status` is
+the candidate's:
 
 | Evaluators | Candidate | Meaning |
 | --- | --- | --- |

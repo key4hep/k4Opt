@@ -38,7 +38,7 @@ from pathlib import Path
 
 from k4opt.ddsim import check_arguments, simulate
 from k4opt.evaluation import EvaluationContractError, EvaluationFailed, count_events
-from k4opt.frozen import Json
+from k4opt.frozen import FrozenMap, Json, freeze
 from k4opt.problem.models import ProblemSpec
 
 
@@ -316,15 +316,26 @@ class StageRecords:
     none), ``artifacts`` to its files by role, ``errors`` to why it cannot be read (it failed, its
     output is incomplete, or it did not run because an earlier stage failed) and ``seconds`` to
     the wall time k4opt spent on it: running it and checking its output. ``provided`` names the
-    stages the caller supplied; their files do not depend on the stages before them.
+    stages the caller supplied; their files do not depend on the stages before them. All of it
+    is stored as read-only copies.
     """
 
-    provenance: Mapping[str, Mapping[str, Json]] = field(default_factory=dict)
-    outputs: Mapping[str, Path] = field(default_factory=dict)
-    artifacts: Mapping[str, Mapping[str, Path]] = field(default_factory=dict)
-    errors: Mapping[str, str] = field(default_factory=dict)
-    seconds: Mapping[str, float] = field(default_factory=dict)
+    provenance: Mapping[str, Mapping[str, Json]] = field(default_factory=lambda: FrozenMap({}))
+    outputs: Mapping[str, Path] = field(default_factory=lambda: FrozenMap({}))
+    artifacts: Mapping[str, Mapping[str, Path]] = field(default_factory=lambda: FrozenMap({}))
+    errors: Mapping[str, str] = field(default_factory=lambda: FrozenMap({}))
+    seconds: Mapping[str, float] = field(default_factory=lambda: FrozenMap({}))
     provided: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        provenance = freeze(self.provenance, "stage provenance", EvaluationContractError)
+        artifacts = {name: FrozenMap(files) for name, files in self.artifacts.items()}
+        object.__setattr__(self, "provenance", provenance)
+        object.__setattr__(self, "outputs", FrozenMap(self.outputs))
+        object.__setattr__(self, "artifacts", FrozenMap(artifacts))
+        object.__setattr__(self, "errors", FrozenMap(self.errors))
+        object.__setattr__(self, "seconds", FrozenMap(self.seconds))
+        object.__setattr__(self, "provided", frozenset(self.provided))
 
     def chain(self, stage: str | None) -> list[str]:
         """``stage`` and the recorded stages it needs, in pipeline order; empty for ``None``.
@@ -370,6 +381,11 @@ def run_stages(
     or its output turns out unusable, the stages after it do not run. Raises
     :class:`EvaluationContractError` before anything runs if a stage lacks the geometry or the
     workdir it needs.
+
+    ``context`` must already have passed :func:`check_stages` for the same ``targets``, with the
+    stages ``inputs`` supplies as ``provided``; the preflight of a candidate does that before any
+    file is prepared. It is not checked again here: a missing sample is then a failed stage, not
+    a contract error.
     """
     plan = plan_stages(*targets, provided=inputs)
     check_run_inputs(plan, inputs, workdir)

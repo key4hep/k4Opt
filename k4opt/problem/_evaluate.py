@@ -34,6 +34,7 @@ from k4opt.evaluation import (
     result_from,
     with_defaults,
 )
+from k4opt.frozen import FrozenMap
 from k4opt.problem._stages import StageContext, StageRecords, check_stages, run_stages
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
@@ -402,7 +403,8 @@ class CandidateRecord:
     only that evaluator's own work; ``stages`` holds the pipeline stages they read, each recorded
     once, and ``reads`` the stages each evaluator read. ``owners`` maps every metric an objective
     or constraint names to the evaluator that measures it. ``elapsed_seconds`` is the wall time
-    of the whole evaluation: the stages, the evaluator calls and k4opt's checks.
+    of the whole evaluation: the stages, the evaluator calls and k4opt's checks. Its mappings are
+    read-only copies, so a reader cannot change which evaluator owns a metric.
     """
 
     candidate_key: CandidateKey
@@ -411,6 +413,12 @@ class CandidateRecord:
     owners: Mapping[MetricKey, str]
     reads: Mapping[str, tuple[str, ...]]
     elapsed_seconds: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "records", tuple(self.records))
+        object.__setattr__(self, "owners", FrozenMap(self.owners))
+        reads = {name: tuple(stages) for name, stages in self.reads.items()}
+        object.__setattr__(self, "reads", FrozenMap(reads))
 
     @property
     def status(self) -> Status:
