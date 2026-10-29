@@ -51,9 +51,13 @@ class Particle:
     vertex: Triple = (0.0, 0.0, 0.0)  # mm
     status: int = 1  # generator status: 1 for the particle of the gun
     decayed_in_tracker: bool = False
+    pdg: int = 22  # a photon
 
     def getGeneratorStatus(self) -> int:  # noqa: N802
         return self.status
+
+    def getPDG(self) -> int:  # noqa: N802
+        return self.pdg
 
     def getMomentum(self) -> Vector:  # noqa: N802
         return Vector(*self.momentum)

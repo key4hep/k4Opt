@@ -43,10 +43,12 @@ k4opt = ["py.typed"]
 
 # Development tools are pinned to current releases; runtime dependencies above are not.
 [project.optional-dependencies]
-test = ["pytest>=9.1", "pytest-cov>=7.1"]
+# numpy: the example evaluator uses it (k4opt itself does not)
+test = ["pytest>=9.1", "pytest-cov>=7.1", "numpy>=2.2"]
 dev = [
     "pytest>=9.1",
     "pytest-cov>=7.1",
+    "numpy>=2.2",
     "ruff>=0.17.2",
     "mypy>=2.4",
     "types-PyYAML>=6.0.12",

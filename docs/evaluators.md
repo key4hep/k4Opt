@@ -50,10 +50,10 @@ framework's simulation stage ([ddsim](ddsim.md)) wrote, and runs no tool. The st
 `evaluation.generation` (a particle gun or a sample file) and `backend.ddsim.args`; the
 evaluator itself uses only `settings`.
 
-**Selection.** In each event the photon is the one `MCParticles` entry with generator status 1.
-A photon that converted in the tracker (`isDecayedInTracker()`, about 9 % of the 10 GeV photons
-in CLD) reaches the calorimeter as an electron and a positron; its event is left out of both
-metrics.
+**Selection.** In each event the photon is the one `MCParticles` entry with generator status 1;
+it must be a photon (PDG 22), since both metrics are defined for photons. A photon that
+converted in the tracker (`isDecayedInTracker()`, about 9 % of the 10 GeV photons in CLD)
+reaches the calorimeter as an electron and a positron; its event is left out of both metrics.
 
 **Metrics**, both in the `simulation` stage:
 
@@ -75,12 +75,12 @@ told apart, the main reason for fine cells in particle flow; that needs reconstr
 
 **Status.** The result is `failed` for an unreadable file, a collection (`settings.collection` or
 `MCParticles`) that is missing in any event or has another element type (`read_collection`
-raises `EvaluationFailed`), an event without exactly one generated particle, or an event count
-different from `events` (the stage checks it, see [the flow](evaluation.md#problem-evaluator-record)),
-and `invalid` if no photon reached the calorimeter and fired a cell (`EvaluationInvalid`). A
-`ddsim` that is not found, not started, exits nonzero or writes no output is a `failed` result of
-the stage. Misuse (unsupported settings, conflicting arguments, a missing `generation`) raises
-before anything runs.
+raises `EvaluationFailed`), an event without exactly one generated particle or whose generated
+particle is not a photon, or an event count different from `events` (the stage checks it, see
+[the flow](evaluation.md#problem-evaluator-record)), and `invalid` if no photon reached the
+calorimeter and fired a cell (`EvaluationInvalid`). A `ddsim` that is not found, not started,
+exits nonzero or writes no output is a `failed` result of the stage. Misuse (unsupported
+settings, conflicting arguments, a missing `generation`) raises before anything runs.
 
 **Settings** (unknown keys are errors): `collection` is the collection to read (required, the
 only key). The threshold is part of the metric definition, so another threshold is another

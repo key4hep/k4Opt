@@ -151,6 +151,7 @@ def test_nothing_to_measure_is_invalid_not_a_zero(
         ),
         ([event([cell(0)], PHOTON, PHOTON)], "one generated particle per event, found 2"),
         ([event([cell(0)], Particle((1.0, 0.0, 0.0), status=0))], "found 0"),
+        ([event([cell(0)], Particle((10.0, 0.0, 0.0), pdg=11))], "expected a photon .* PDG 11"),
     ],
 )
 def test_an_unusable_simulation_output_fails_never_gives_a_value(

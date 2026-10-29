@@ -20,6 +20,7 @@ from k4opt.evaluation import Evaluator
 
 # a cell fires above half the most probable energy a MIP leaves in 0.5 mm of silicon
 THRESHOLD = 70e-6  # GeV, the energy unit of EDM4hep
+PHOTON = 22  # PDG code
 
 
 class CaloPhoton(Evaluator):
@@ -45,6 +46,10 @@ class CaloPhoton(Evaluator):
             if len(primaries) != 1:
                 self.fail(f"expected one generated particle per event, found {len(primaries)}")
             photon = primaries[0]
+            # the metrics are defined for photons; any other particle would give values that
+            # look valid but measure something else
+            if photon.getPDG() != PHOTON:
+                self.fail(f"expected a photon (PDG {PHOTON}), generated PDG {photon.getPDG()}")
             # a photon that converted in the tracker arrives as an electron and a positron
             if photon.isDecayedInTracker():
                 continue
