@@ -352,3 +352,54 @@ def test_record_keeps_the_identity_that_was_validated(spec: ProblemSpec) -> None
 
     record = _evaluate_candidate(spec, {CELL: 5.0}, Shifty())
     assert (record.evaluator_name, record.evaluator_version) == (Toy.name, Toy.version)
+
+
+# --- units are those the evaluator declares for its metrics (review) ---
+
+
+class Declaring(Toy):
+    """A toy evaluator that advertises the unit of each metric it reports."""
+
+    metrics = {("simulation", "a.rms"): "mm", ("simulation", "a.cells"): "1"}
+
+
+def returning(*measurements: Measurement, status: str = "valid") -> Declaring:
+    if status == "valid":
+        return Declaring(EvaluationResult.valid(measurements))
+    return Declaring(EvaluationResult.invalid("checks failed", measurements))
+
+
+RMS_MM = Measurement("simulation", "a.rms", 1.5, unit="mm")
+CELLS = Measurement("simulation", "a.cells", 50, unit="1")
+
+
+def test_a_unit_that_matches_the_declared_one_is_accepted(spec: ProblemSpec) -> None:
+    record = _evaluate_candidate(spec, {CELL: 6}, returning(RMS_MM, CELLS))
+    assert record.result.status == "valid"
+
+
+@pytest.mark.parametrize("unit", ["cm", None])
+def test_an_objective_in_another_unit_than_declared_is_rejected(
+    spec: ProblemSpec, unit: str | None
+) -> None:
+    # a.rms is only an objective here: no constraint carries a unit to compare it with
+    wrong = Measurement("simulation", "a.rms", 0.15, unit=unit)
+    with pytest.raises(EvaluationContractError, match=r"simulation/a\.rms.*declares 'mm'"):
+        _evaluate_candidate(spec, {CELL: 6}, returning(wrong, CELLS))
+
+
+def test_diagnostic_measurements_of_an_invalid_result_are_checked_too(spec: ProblemSpec) -> None:
+    wrong = Measurement("simulation", "a.cells", 50, unit="mm")
+    with pytest.raises(EvaluationContractError, match=r"simulation/a\.cells.*declares '1'"):
+        _evaluate_candidate(spec, {CELL: 6}, returning(wrong, status="invalid"))
+
+
+def test_a_metric_the_evaluator_does_not_declare_is_not_unit_checked(spec: ProblemSpec) -> None:
+    extra = Measurement("analysis", "extra", 3, unit="whatever")
+    record = _evaluate_candidate(spec, {CELL: 6}, returning(RMS_MM, CELLS, extra))
+    assert len(record.result.measurements) == 3
+
+
+def test_an_evaluator_without_declared_metrics_is_not_unit_checked(spec: ProblemSpec) -> None:
+    result = EvaluationResult.valid([Measurement("simulation", "a.rms", 1.0, unit="parsec"), CELLS])
+    assert _evaluate_candidate(spec, {CELL: 6}, Toy(result)).result.status == "valid"

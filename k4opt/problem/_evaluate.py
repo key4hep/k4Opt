@@ -123,6 +123,24 @@ def _validate_candidate(
     return values, tuple(key)
 
 
+def _check_units(evaluator: Evaluator, result: EvaluationResult) -> None:
+    """Every measurement of a metric the evaluator declares must carry the declared unit.
+
+    Whatever the status: diagnostic values of an ``invalid`` result are recorded too. An
+    evaluator that declares no ``metrics``, and metrics it does not declare, are not checked.
+    """
+    declared = getattr(evaluator, "metrics", None)
+    if declared is None:
+        return
+    for m in result.measurements:
+        unit = declared.get((m.stage, m.metric))
+        if (m.stage, m.metric) in declared and m.unit != unit:
+            raise EvaluationContractError(
+                f"measurement {m.stage}/{m.metric} has unit {m.unit!r} but evaluator "
+                f"{evaluator.name!r} declares {unit!r}"
+            )
+
+
 def _check_result(spec: ProblemSpec, result: EvaluationResult) -> None:
     """A ``valid`` result must report every metric the problem refers to, in its unit."""
     if result.status is not Status.VALID:
@@ -252,5 +270,6 @@ def _evaluate_candidate(
             artifacts={**artifacts, **result.artifacts},
             provenance={**result.provenance, "stages": stages},
         )
+    _check_units(evaluator, result)
     _check_result(spec, result)
     return EvaluationRecord(request, result, name, version, key, elapsed)

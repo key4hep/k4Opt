@@ -46,7 +46,8 @@ the file it produced as `request.inputs["simulation"]`; the evaluator never buil
 starts a tool or handles its failures (see [Stages](#stages)). An optional
 `check(request)` may raise `EvaluationContractError` for settings it cannot evaluate, and an
 optional `metrics` mapping of `(stage, metric)` to unit lets `k4opt evaluate` reject an
-unsupported objective before anything runs.
+unsupported objective before anything runs, and then holds every returned measurement of those
+metrics to the declared unit, so one metric identity never carries two units.
 
 ## Request
 
@@ -214,6 +215,9 @@ In order, it:
    measurement's `unit` to be equal. A violation is an `EvaluationContractError`: an
    inconsistent evaluator, not a violated constraint. Whether a value satisfies `min`/`max` is
    not judged. `invalid` and `failed` results are kept as returned.
+6. if the evaluator declares `metrics`, every measurement of a declared metric, whatever the
+   status, must carry the declared unit (`EvaluationContractError` otherwise); metrics it does
+   not declare are not checked.
 
 ## Deliberately deferred
 
