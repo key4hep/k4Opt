@@ -1,4 +1,4 @@
-"""The calo.hit_multiplicity evaluator reading fake podio events; no ddsim is involved."""
+"""The example evaluator calo.hit_multiplicity reading fake podio events; no ddsim is involved."""
 
 from __future__ import annotations
 
@@ -11,9 +11,8 @@ from typing import Any
 import pytest
 
 from k4opt.evaluation import EvaluationContractError, EvaluationRequest, Status
-from k4opt.evaluators import CaloHitMultiplicity, calo_hits
-from k4opt.evaluators.calo_hits import mean_and_error, read_cell_counts
 from tests.support import simulation
+from tests.support.evaluators import calo_hit_multiplicity, calo_hits
 from tests.support.simulation import COLLECTION, Event, Hits, events_with
 
 SETTINGS: dict[str, Any] = {"readouts": {"ecal_barrel": COLLECTION}}
@@ -34,32 +33,32 @@ def evaluate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_events: list[Event], **changes: Any
 ) -> Any:
     simulation.install_events(monkeypatch, fake_events)
-    return CaloHitMultiplicity().evaluate(request(tmp_path, **changes))
+    return calo_hit_multiplicity().evaluate(request(tmp_path, **changes))
 
 
 def test_the_evaluator_asks_for_the_simulation_stage() -> None:
-    assert CaloHitMultiplicity.requires == "simulation"
+    assert calo_hit_multiplicity().requires == "simulation"
 
 
 def test_mean_and_standard_error_of_the_mean() -> None:
-    mean, error = mean_and_error([2, 4, 4, 4, 5, 5, 7, 9])
+    mean, error = calo_hits.mean_and_error([2, 4, 4, 4, 5, 5, 7, 9])
     assert mean == 5
     assert error == pytest.approx(math.sqrt(32 / 7) / math.sqrt(8))  # s with ddof=1
 
 
 def test_a_single_event_has_no_uncertainty_not_a_zero_one() -> None:
-    assert mean_and_error([12]) == (12, None)
+    assert calo_hits.mean_and_error([12]) == (12, None)
 
 
 def test_identical_events_have_a_zero_standard_error() -> None:
-    assert mean_and_error([5, 5, 5]) == (5, 0)
+    assert calo_hits.mean_and_error([5, 5, 5]) == (5, 0)
 
 
 def test_counts_distinct_cell_ids_including_duplicates_and_empty_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     simulation.install_events(monkeypatch, events_with([1, 1, 2], [], [5, 6, 7, 5, 6]))
-    assert read_cell_counts(Path("x.root"), COLLECTION) == [2, 0, 3]
+    assert calo_hits.read_cell_counts(Path("x.root"), COLLECTION) == [2, 0, 3]
 
 
 def test_valid_run_reports_the_mean_of_distinct_cells(
@@ -150,7 +149,7 @@ def test_c_plus_plus_exceptions_when_opening_the_file_are_failed(
         yield  # pragma: no cover
 
     monkeypatch.setattr(calo_hits, "_open_events", opening)
-    result = CaloHitMultiplicity().evaluate(request(tmp_path))
+    result = calo_hit_multiplicity().evaluate(request(tmp_path))
     assert result.status is Status.FAILED
     assert "incompatible file" in (result.message or "")
 
@@ -161,7 +160,7 @@ def test_unreadable_output_is_failed(tmp_path: Path, monkeypatch: pytest.MonkeyP
         yield  # pragma: no cover
 
     monkeypatch.setattr(calo_hits, "_open_events", broken)
-    result = CaloHitMultiplicity().evaluate(request(tmp_path))
+    result = calo_hit_multiplicity().evaluate(request(tmp_path))
     assert result.status is Status.FAILED
     assert "truncated" in (result.message or "")
 
@@ -197,9 +196,9 @@ def test_unsupported_settings_raise(
 ) -> None:
     simulation.install_events(monkeypatch, events_with([1], [2], [3]))
     with pytest.raises(EvaluationContractError):
-        CaloHitMultiplicity().check(request(tmp_path, settings=settings))
+        calo_hit_multiplicity().check(request(tmp_path, settings=settings))
     with pytest.raises(EvaluationContractError):
-        CaloHitMultiplicity().evaluate(request(tmp_path, settings=settings))
+        calo_hit_multiplicity().evaluate(request(tmp_path, settings=settings))
 
 
 @pytest.mark.parametrize("inputs", [{}, "missing"])
@@ -210,7 +209,7 @@ def test_a_missing_simulation_file_raises(
     if inputs == "missing":
         inputs = {"simulation": tmp_path / "gone.root"}
     with pytest.raises(EvaluationContractError, match="inputs"):
-        CaloHitMultiplicity().evaluate(request(tmp_path, inputs=inputs))
+        calo_hit_multiplicity().evaluate(request(tmp_path, inputs=inputs))
 
 
 def test_importing_the_evaluator_does_not_import_podio() -> None:

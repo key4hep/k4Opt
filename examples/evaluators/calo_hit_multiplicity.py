@@ -1,9 +1,18 @@
-"""The ``calo.hit_multiplicity`` evaluator: distinct cells hit in the simulated ECAL barrel.
+"""Example evaluator ``calo.hit_multiplicity``: distinct cells hit in the simulated ECAL barrel.
 
-Reads the EDM4hep file of the simulation stage (run by the framework). The one
-measurement is ``simulation`` / ``ecal_barrel.mean_hit_cells``; see ``docs/evaluation.md`` for
-the definition. ``podio`` comes from the Key4hep stack and is imported only when a file is
-read, so this module imports without it.
+A complete, working evaluator to copy from. It is not part of the k4opt package; name it on the
+command line::
+
+    k4opt evaluate examples/problem/cld-ecal-hit-count.yaml \\
+        --evaluator examples/evaluators/calo_hit_multiplicity.py:CaloHitMultiplicity \\
+        --param constants.ECal_cell_size=6.0 --output runs/cld-ecal-6mm
+
+It only reads. ``requires = "simulation"`` asks k4opt to run generation and ``ddsim`` first and
+to hand over the EDM4hep file as ``request.inputs["simulation"]``; the evaluator starts no tool
+and handles none of their failures. The one measurement is ``simulation`` /
+``ecal_barrel.mean_hit_cells``; see ``docs/evaluators.md`` for the definition. ``podio`` comes
+from the Key4hep stack and is imported only when a file is read, so this module imports without
+it. The metric is a technical observable, not a detector-performance measure.
 """
 
 from __future__ import annotations
@@ -15,9 +24,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from k4opt.evaluation.errors import EvaluationContractError
-from k4opt.evaluation.models import EvaluationRequest, EvaluationResult, Measurement
-from k4opt.frozen import Json
+from k4opt.evaluation import (
+    EvaluationContractError,
+    EvaluationRequest,
+    EvaluationResult,
+    Measurement,
+)
 
 HIT_TYPE = "edm4hep::SimCalorimeterHit"
 
@@ -92,7 +104,7 @@ def read_cell_counts(path: Path, collection: str) -> list[int]:
     return counts
 
 
-def _readout(settings: Mapping[str, Json]) -> str:
+def _readout(settings: Mapping[str, Any]) -> str:
     unknown = [key for key in settings if key != "readouts"]
     if unknown:
         raise EvaluationContractError(
@@ -137,7 +149,7 @@ class CaloHitMultiplicity:
             raise EvaluationContractError(
                 f"inputs['simulation'] must be an existing EDM4hep file, got {events_file!r}"
             )
-        provenance: dict[str, Json] = {
+        provenance: dict[str, Any] = {
             "collection": collection,
             "events_requested": request.events,
         }

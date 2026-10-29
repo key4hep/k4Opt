@@ -6,13 +6,19 @@ the stage produced as ``request.inputs[stage]``. An evaluator therefore never bu
 starts a tool or handles that tool's failures.
 
 * ``generation``: where the primary particles come from, ``evaluation.generation``. A
-  ``sample`` file is checked and hashed and handed on as ``inputs["generation"]``; a
-  ``particle_gun`` has no file (``ddsim`` generates it).
+  ``sample`` file is checked and hashed and handed on as ``inputs["generation"]``; a particle
+  gun has no file (``ddsim`` generates it).
 * ``simulation``: ``ddsim`` on the prepared geometry; needs ``generation``.
+
+A file the caller supplies as ``inputs[stage]`` is authoritative: that stage is not run, the
+stages that only it needs are not run either, and the file replaces what the problem says (a
+supplied ``generation`` file is simulated even if the problem describes a particle gun).
 """
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import hashlib
 import os
 from collections.abc import Callable, Collection, Mapping
@@ -56,15 +62,43 @@ def _particle_gun(spec: ProblemSpec) -> Json:
     return None if "sample" in generation or not generation else generation
 
 
-def _sha256(path: Path) -> str:
+@functools.lru_cache(maxsize=32)
+def _sha256(path: str, size: int, mtime_ns: int) -> str:
+    """SHA-256 of a file; ``size`` and ``mtime_ns`` only key the cache, so a changed file
+    is hashed again but the same sample is read once per run of candidates, not once each."""
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with Path(path).open("rb") as handle:
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
 
 
-def _check_generation(spec: ProblemSpec) -> None:
+def file_identity(path: Path) -> dict[str, Json]:
+    """``bytes`` and ``sha256`` of the file at ``path``; raises :class:`OSError`."""
+    status = path.stat()
+    return {
+        "bytes": status.st_size,
+        "sha256": _sha256(str(path), status.st_size, status.st_mtime_ns),
+    }
+
+
+def provided_provenance(path: Path) -> dict[str, Json]:
+    """What is recorded for an input the caller supplied instead of running its stage."""
+    provenance: dict[str, Json] = {"provided": str(path)}
+    # an unusable file is the evaluator's to report; the record still names it
+    with contextlib.suppress(OSError):
+        provenance |= file_identity(path)
+    return provenance
+
+
+def _primaries(spec: ProblemSpec, supplied: Path | None) -> tuple[Json, Path | None]:
+    """``(particle_gun, sample)`` for ddsim; a supplied generation file wins over the problem."""
+    if supplied is not None:
+        return None, supplied
+    return _particle_gun(spec), sample_path(spec)
+
+
+def _check_generation(spec: ProblemSpec, provided: Collection[str]) -> None:
     if not spec.evaluation.generation:
         raise EvaluationContractError(
             "evaluation.generation: set a particle gun or a sample to say where the particles "
@@ -82,28 +116,27 @@ def _run_generation(spec: ProblemSpec, inputs: Mapping[str, Path], workdir: Path
         assert isinstance(gun, Mapping)
         return StageOutcome(provenance={"particle_gun": gun})
     try:
-        provenance: dict[str, Json] = {
-            "sample": str(sample),
-            "bytes": sample.stat().st_size,
-            "sha256": _sha256(sample),
-        }
+        provenance = {"sample": str(sample), **file_identity(sample)}
     except OSError as exc:
         return StageOutcome(error=f"cannot read the sample {sample}: {exc}")
     return StageOutcome({"generation": sample}, provenance=provenance)
 
 
-def _check_simulation(spec: ProblemSpec) -> None:
+def _check_simulation(spec: ProblemSpec, provided: Collection[str]) -> None:
     evaluation = spec.evaluation
     if evaluation.events is None:
         raise EvaluationContractError("events is required to simulate")
     unknown = [tool for tool in evaluation.backend if tool != "ddsim"]
     if unknown:
         raise EvaluationContractError(f"backend: unsupported tool(s) {unknown}; only 'ddsim'")
+    particle_gun, sample = _primaries(
+        spec, Path("generation") if "generation" in provided else None
+    )
     check_arguments(
         events=evaluation.events,
         seed=evaluation.seed,
-        particle_gun=_particle_gun(spec),
-        sample=sample_path(spec),
+        particle_gun=particle_gun,
+        sample=sample,
         args=evaluation.backend.get("ddsim", ()),
     )
 
@@ -111,13 +144,14 @@ def _check_simulation(spec: ProblemSpec) -> None:
 def _run_simulation(spec: ProblemSpec, inputs: Mapping[str, Path], workdir: Path) -> StageOutcome:
     evaluation = spec.evaluation
     assert evaluation.events is not None  # checked by _check_simulation
+    particle_gun, sample = _primaries(spec, inputs.get("generation"))
     run = simulate(
         compact=inputs["geometry"],
         workdir=workdir / "simulation",
         events=evaluation.events,
         seed=evaluation.seed,
-        particle_gun=_particle_gun(spec),
-        sample=inputs.get("generation"),
+        particle_gun=particle_gun,
+        sample=sample,
         args=evaluation.backend.get("ddsim", ()),
     )
     provenance: dict[str, Json] = {
@@ -133,7 +167,7 @@ def _run_simulation(spec: ProblemSpec, inputs: Mapping[str, Path], workdir: Path
 @dataclass(frozen=True, slots=True)
 class _Stage:
     needs: tuple[str, ...]
-    check: Callable[[ProblemSpec], None]
+    check: Callable[[ProblemSpec, Collection[str]], None]
     run: Callable[[ProblemSpec, Mapping[str, Path], Path], StageOutcome]
 
 
@@ -173,7 +207,7 @@ def check_stage(spec: ProblemSpec, stage: str, provided: Collection[str] = ()) -
     """
     plan = plan_stages(stage, provided)
     for name in plan:
-        _STAGES[name].check(spec)
+        _STAGES[name].check(spec, provided)
     return plan
 
 

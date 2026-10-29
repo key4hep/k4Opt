@@ -1,18 +1,24 @@
 # Evaluators and `k4opt evaluate`
 
-`k4opt.evaluators` holds the evaluators that ship with k4opt. They are ordinary implementations of
-the [evaluation contract](evaluation.md); the contract does not depend on them and users add
-their own the same way. An evaluator only reads: the framework runs the pipeline
-[stage](evaluation.md#stages) it `requires`. There is no registry: `k4opt evaluate` uses `calo.hit_multiplicity`
-for a problem that declares it and rejects any other evaluator name.
+k4opt ships no evaluators: an evaluator is an ordinary class implementing the
+[evaluation contract](evaluation.md), written by the physicist. An evaluator only reads: the
+framework runs the pipeline [stage](evaluation.md#stages) it `requires`.
+[`examples/evaluators/calo_hit_multiplicity.py`](../examples/evaluators/calo_hit_multiplicity.py)
+is a complete, working one to copy from. There is no registry: `k4opt evaluate` is told which
+evaluator to use, and its name and version must be those the problem declares.
 
 ## `k4opt evaluate`
 
 ```bash
 k4opt evaluate examples/problem/cld-ecal-hit-count.yaml \
+  --evaluator examples/evaluators/calo_hit_multiplicity.py:CaloHitMultiplicity \
   --param constants.ECal_cell_size=6.0 \
   --output runs/cld-ecal-6mm
 ```
+
+`--evaluator FILE.py:Class` (or `package.module:Class`) names the evaluator; the file is
+executed as ordinary Python ([`load_evaluator`](evaluation.md#loading-an-evaluator)), so name
+only code you trust.
 
 One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`).
 `--param REFERENCE=VALUE` uses the canonical reference of the problem file and is repeated for
@@ -35,7 +41,7 @@ error exits with status 1 and creates nothing. Then, in order:
 The command prints status, metric with uncertainty, events, fingerprint and the paths. Exit
 status is 0 only for `valid`; `invalid` and `failed` print the reason on stderr and exit 1.
 
-## `calo.hit_multiplicity` version 1
+## The example evaluator `calo.hit_multiplicity` version 1
 
 `requires = "simulation"`: it reads `request.inputs["simulation"]`, the EDM4hep file the
 framework's simulation stage ([ddsim](ddsim.md)) wrote, and runs no tool. The stage uses `events`

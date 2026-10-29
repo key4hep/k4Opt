@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from k4opt.cli import main
+from tests.support.evaluators import CALO_HIT_MULTIPLICITY
 from tests.support.geometry import CLD_COMPACT
 
 pytestmark = pytest.mark.integration
@@ -51,7 +52,16 @@ def problem(tmp_path_factory: pytest.TempPathFactory, stack: None) -> Path:
 def evaluate(problem: Path, size: str, output: Path) -> dict[str, Any]:
     out, err = io.StringIO(), io.StringIO()
     code = main(
-        ["evaluate", str(problem), "--param", f"{CELL}={size}", "--output", str(output)],
+        [
+            "evaluate",
+            str(problem),
+            "--evaluator",
+            CALO_HIT_MULTIPLICITY,
+            "--param",
+            f"{CELL}={size}",
+            "--output",
+            str(output),
+        ],
         stdout=out,
         stderr=err,
     )

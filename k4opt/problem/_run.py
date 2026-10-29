@@ -25,7 +25,6 @@ from k4opt.evaluation import (
     Evaluator,
 )
 from k4opt.evaluation.models import Scalar
-from k4opt.evaluators import CaloHitMultiplicity
 from k4opt.frozen import thaw
 from k4opt.geometry import Override
 from k4opt.problem._evaluate import _check_identity, _evaluate_candidate, _validate_candidate
@@ -242,7 +241,7 @@ def run_candidate(
     assignments: Sequence[str],
     output: str | os.PathLike[str],
     *,
-    evaluator: Evaluator | None = None,
+    evaluator: Evaluator,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
@@ -250,7 +249,6 @@ def run_candidate(
     output location before anything is created. Execution problems are reported as a
     ``failed`` or ``invalid`` result in the outcome.
     """
-    evaluator = evaluator or CaloHitMultiplicity()
     problem_path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
     spec = load_problem(problem_path)
     assert spec._source is not None

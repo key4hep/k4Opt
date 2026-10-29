@@ -25,7 +25,7 @@ M = Measurement("s", "m", 1)  # any measurement, for results that only need to b
 
 
 class FakeSimulation:
-    """Reads a prepared input, writes an artifact and reports how many events it wrote."""
+    """Reads a prepared input and writes an artifact; it has no metric to report."""
 
     name = "fake.simulation"
     version = "1"
@@ -36,10 +36,7 @@ class FakeSimulation:
         out = request.workdir / "events.txt"
         geometry = request.inputs["geometry"].read_text()
         out.write_text(f"{request.events} events, seed {request.seed}, {geometry}")
-        return EvaluationResult.valid(
-            [Measurement("simulation", "events_written", request.events or 0, unit="1")],
-            artifacts={"events": out},
-        )
+        return EvaluationResult.valid(artifacts={"events": out})
 
 
 @dataclass(frozen=True)
@@ -80,7 +77,7 @@ def test_artifacts_pass_between_stages_by_hand(tmp_path: Path) -> None:
         ),
     )
     assert produced.status is Status.VALID
-    assert produced.measurements == (Measurement("simulation", "events_written", 25, unit="1"),)
+    assert produced.measurements == ()
     assert produced.artifacts["events"] == work / "events.txt"
 
     measured = run(FakeAnalysis(), EvaluationRequest(inputs=dict(produced.artifacts)))
@@ -162,9 +159,9 @@ def test_result_defaults_and_statuses() -> None:
     assert EvaluationResult("valid", (Measurement("s", "m", 1),)).status is Status.VALID
 
 
-def test_valid_result_needs_a_measurement() -> None:
-    with pytest.raises(EvaluationContractError, match="at least one measurement"):
-        EvaluationResult.valid([])
+def test_a_valid_result_may_only_produce_artifacts() -> None:
+    result = EvaluationResult.valid(artifacts={"events": Path("events.root")})
+    assert result.status is Status.VALID and result.measurements == ()
 
 
 @pytest.mark.parametrize("make", [EvaluationResult.invalid, EvaluationResult.failed])
@@ -180,10 +177,11 @@ def test_failed_result_carries_no_invented_numbers() -> None:
     assert result.message == "ddsim exited with 1"
 
 
-@pytest.mark.parametrize("status", ["invalid", "failed"])
-def test_invalid_and_failed_results_carry_no_measurements(status: str) -> None:
-    with pytest.raises(EvaluationContractError, match=f"{status} result must not have"):
-        EvaluationResult(status, (Measurement("simulation", "containment", 0.4),), message="x")  # type: ignore[arg-type]
+@pytest.mark.parametrize("make", [EvaluationResult.invalid, EvaluationResult.failed])
+def test_invalid_and_failed_results_may_keep_diagnostic_measurements(make: Any) -> None:
+    result = make("too leaky", [Measurement("simulation", "containment", 0.4)])
+    assert result.measurements == (Measurement("simulation", "containment", 0.4),)
+    assert result.message == "too leaky"
 
 
 def test_measurements_given_as_a_list_are_stored_as_a_tuple() -> None:
@@ -394,3 +392,22 @@ def test_backend_args_must_be_ordered_sequences(args: Any) -> None:
 def test_measurements_must_be_ordered_sequences(measurements: Any) -> None:
     with pytest.raises(EvaluationContractError, match="list or tuple"):
         EvaluationResult("valid", measurements)
+
+
+# --- the generation context of a request ---
+
+
+def test_the_generation_context_is_copied_and_read_only() -> None:
+    gun: dict[str, Any] = {"particle": "gamma", "energy": {"value": 10, "unit": "GeV"}}
+    request = EvaluationRequest(generation=gun)
+    gun["energy"]["value"] = 1
+    assert request.generation == {"particle": "gamma", "energy": {"value": 10, "unit": "GeV"}}
+    with pytest.raises(TypeError):
+        request.generation["particle"] = "mu-"  # type: ignore[index]
+    assert not EvaluationRequest().generation
+    assert EvaluationRequest(generation={"sample": "zh.hepmc"}).generation == {"sample": "zh.hepmc"}
+
+
+def test_the_generation_context_must_be_a_mapping() -> None:
+    with pytest.raises(EvaluationContractError, match="generation"):
+        EvaluationRequest(generation=[("sample", "zh.hepmc")])  # type: ignore[arg-type]

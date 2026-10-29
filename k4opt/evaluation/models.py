@@ -81,6 +81,9 @@ class EvaluationRequest:
     is neither created nor checked here. ``backend_args`` maps a tool name to its raw
     arguments, kept exactly as given, including order and repetition, and never parsed.
     ``events`` (positive) and ``seed`` are the optional controls of ``evaluation``.
+    ``generation`` is the problem's ``evaluation.generation``, a particle gun or
+    ``{"sample": path}`` exactly as written (a relative path is not resolved here); an
+    evaluator that runs its own workflow can read the conditions of the measurement from it.
 
     Every field is optional so that a toy evaluator needs little setup.
     """
@@ -92,6 +95,7 @@ class EvaluationRequest:
     events: int | None = None
     seed: int | None = None
     backend_args: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: FrozenMap({}))
+    generation: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidate, Mapping):
@@ -107,6 +111,7 @@ class EvaluationRequest:
                 )
         object.__setattr__(self, "candidate", FrozenMap(self.candidate))
         object.__setattr__(self, "settings", _json_mapping(self.settings, "settings"))
+        object.__setattr__(self, "generation", _json_mapping(self.generation, "generation"))
         object.__setattr__(self, "inputs", _paths(self.inputs, "inputs"))
         if self.workdir is not None and not isinstance(self.workdir, Path):
             raise EvaluationContractError("workdir must be a pathlib.Path")
@@ -177,9 +182,12 @@ class EvaluationResult:
 
     Build one with :meth:`valid`, :meth:`invalid` or :meth:`failed`. ``status`` separates
     three outcomes that are never collapsed into a number: ``valid`` (the evaluation ran and
-    its result is scientifically usable; it carries at least one measurement), ``invalid`` (it
-    ran, but the result is not usable, for example the evaluator's own checks failed) and
-    ``failed`` (the execution failed); the last two carry a ``message`` and no measurements.
+    its result is scientifically usable), ``invalid`` (it ran, but the result is not usable, for
+    example the evaluator's own checks failed) and ``failed`` (the execution failed); the last
+    two need a ``message``. Measurements are independent of the status: an ``invalid`` result
+    may keep diagnostic values (hit counts of a configuration that violates a validity
+    condition), which an optimizer must not use as objectives, and a ``valid`` result may have
+    none (it only produced ``artifacts``; a problem that asks for a metric still requires it).
     A missing measurement is simply absent: never ``0`` or ``inf``. ``measurements`` may mix
     stages; each ``(stage, metric)`` occurs once. ``artifacts`` names
     local output files that can be inputs of a later evaluation; whether they exist is not
@@ -196,42 +204,38 @@ class EvaluationResult:
     @classmethod
     def valid(
         cls,
-        measurements: Sequence[Measurement],
+        measurements: Sequence[Measurement] = (),
         *,
         artifacts: Mapping[str, Path] | None = None,
         provenance: Mapping[str, Json] | None = None,
         message: str | None = None,
     ) -> EvaluationResult:
-        """A usable result; ``measurements`` must not be empty."""
-        return cls(
-            Status.VALID,
-            tuple(measurements),
-            artifacts or {},
-            message,
-            provenance or {},
-        )
+        """A scientifically usable result."""
+        return cls(Status.VALID, tuple(measurements), artifacts or {}, message, provenance or {})
 
     @classmethod
     def invalid(
         cls,
         message: str,
+        measurements: Sequence[Measurement] = (),
         *,
         artifacts: Mapping[str, Path] | None = None,
         provenance: Mapping[str, Json] | None = None,
     ) -> EvaluationResult:
-        """The evaluation ran but its result is not scientifically usable; say why."""
-        return cls(Status.INVALID, (), artifacts or {}, message, provenance or {})
+        """The evaluation ran but its result is not usable; say why. Diagnostics may be kept."""
+        return cls(Status.INVALID, tuple(measurements), artifacts or {}, message, provenance or {})
 
     @classmethod
     def failed(
         cls,
         message: str,
+        measurements: Sequence[Measurement] = (),
         *,
         artifacts: Mapping[str, Path] | None = None,
         provenance: Mapping[str, Json] | None = None,
     ) -> EvaluationResult:
         """The execution failed (crash, missing output); say what happened."""
-        return cls(Status.FAILED, (), artifacts or {}, message, provenance or {})
+        return cls(Status.FAILED, tuple(measurements), artifacts or {}, message, provenance or {})
 
     def __post_init__(self) -> None:
         try:
@@ -258,13 +262,10 @@ class EvaluationResult:
                 )
             seen.add(key)
         object.__setattr__(self, "measurements", measurements)
-        if status is Status.VALID and not measurements:
-            raise EvaluationContractError("a valid result needs at least one measurement")
-        if status is not Status.VALID:
-            if measurements:
-                raise EvaluationContractError(f"a {status.value} result must not have measurements")
-            if not isinstance(self.message, str) or not self.message.strip():
-                raise EvaluationContractError(f"a {status.value} result needs a message")
+        if status is not Status.VALID and (
+            not isinstance(self.message, str) or not self.message.strip()
+        ):
+            raise EvaluationContractError(f"a {status.value} result needs a message")
         object.__setattr__(self, "artifacts", _paths(self.artifacts, "artifacts"))
         if self.message is not None and not isinstance(self.message, str):
             raise EvaluationContractError("message must be a string")

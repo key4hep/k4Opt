@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from k4opt.ddsim import run as ddsim_run
-from k4opt.evaluators import calo_hits
+from tests.support.evaluators import calo_hits
 
 COLLECTION = "ECalBarrelCollection"
 DDSIM = "/stack/bin/ddsim"

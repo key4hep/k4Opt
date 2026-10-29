@@ -16,7 +16,7 @@ from k4opt import ConfigError, K4OptError
 from k4opt.problem import ProblemConfigError, load_problem, parse_problem
 
 Write = Callable[..., Path]
-EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-granularity.yaml"
+EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-hit-count.yaml"
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def reject(data: object, message: str) -> None:
 def test_loads_the_checked_in_example() -> None:
     # the CLD geometry is not part of the repository, so only the parse is checked
     problem = parse_problem(yaml.safe_load(EXAMPLE.read_text()), source=EXAMPLE)
-    assert problem.name == "cld-ecal-granularity"
+    assert problem.name == "cld-ecal-hit-count"
     assert problem.environment.key4hep.channel == "nightly"
     assert problem.environment.key4hep.version == "2026-10-20"
     assert problem.geometry.entry == "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml"
@@ -52,18 +52,16 @@ def test_loads_the_checked_in_example() -> None:
     assert parameter.geometry.canonical_target == "constants.ECal_cell_size"
     assert (parameter.kind, parameter.bounds, parameter.unit) == ("continuous", (4.0, 8.0), "mm")
     evaluation = problem.evaluation
-    assert (evaluation.evaluator, evaluation.version) == ("calo.single_particle_shower", "1")
-    assert (evaluation.events, evaluation.seed) == (1000, 42)
+    assert (evaluation.evaluator, evaluation.version) == ("calo.hit_multiplicity", "1")
+    assert (evaluation.events, evaluation.seed) == (100, 42)
     assert evaluation.backend["ddsim"] == ("--physics.list", "FTFP_BERT")
     generator: Any = evaluation.generation
     assert generator["particle"] == "gamma"
     assert generator["direction"]["theta"] == (60, 120)
     assert [(o.stage, o.metric, o.direction) for o in problem.objectives] == [
-        ("simulation", "ecal_barrel.position_rms", "minimize")
+        ("simulation", "ecal_barrel.mean_hit_cells", "minimize")
     ]
-    assert [(c.metric, c.min, c.max) for c in problem.constraints] == [
-        ("ecal_barrel.mean_hit_cells", None, 100)
-    ]
+    assert problem.constraints == ()
     assert parse_problem(problem.to_dict()) == problem
 
 

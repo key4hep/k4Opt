@@ -27,7 +27,7 @@ from k4opt.evaluation import (
 )
 from k4opt.evaluation.models import Scalar
 from k4opt.frozen import Json
-from k4opt.problem._stages import check_stage, run_stage
+from k4opt.problem._stages import check_stage, plan_stages, provided_provenance, run_stage
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import Parameter, ProblemSpec
 
@@ -154,6 +154,11 @@ def _check_identity(spec: ProblemSpec, evaluator: Evaluator) -> tuple[str, str]:
     return name, version
 
 
+def _chain(stage: str | None) -> list[str]:
+    """``stage`` and the stages it needs, in pipeline order; empty if there is none."""
+    return [] if stage is None else plan_stages(stage)
+
+
 def _evaluate_candidate(
     spec: ProblemSpec,
     candidate: Mapping[str, Scalar],
@@ -177,23 +182,30 @@ def _evaluate_candidate(
     inputs = dict(inputs or {})
     required = getattr(evaluator, "requires", None)
     plan = [] if required is None else check_stage(spec, required, inputs)
+    supplied = {stage: path for stage, path in inputs.items() if stage in _chain(required)}
     if plan and ("geometry" not in inputs or workdir is None):
         raise EvaluationContractError(
             f"the {', '.join(plan)} stage(s) need inputs['geometry'] and a workdir"
         )
     started = time.perf_counter()
     artifacts: dict[str, Path] = {}
-    stages: dict[str, Json] = {}
+    ran: dict[str, Json] = {}
     error = None
     for stage in plan:
         assert workdir is not None
         outcome = run_stage(spec, stage, inputs=inputs, workdir=workdir)
         inputs |= outcome.inputs
         artifacts |= outcome.artifacts
-        stages[stage] = dict(outcome.provenance)
+        ran[stage] = dict(outcome.provenance)
         error = outcome.error
         if error is not None:
             break
+    # in pipeline order: what ran, and what the caller supplied instead of running it
+    stages = {
+        stage: ran[stage] if stage in ran else provided_provenance(supplied[stage])
+        for stage in _chain(required)
+        if stage in ran or stage in supplied
+    }
     request = EvaluationRequest(
         candidate=values,
         settings=spec.evaluation.settings,
@@ -202,6 +214,7 @@ def _evaluate_candidate(
         events=spec.evaluation.events,
         seed=spec.evaluation.seed,
         backend_args=spec.evaluation.backend,
+        generation=spec.evaluation.generation,
     )
     result = EvaluationResult.failed(error) if error is not None else evaluator.evaluate(request)
     elapsed = time.perf_counter() - started

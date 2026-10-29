@@ -1,11 +1,10 @@
-# SMOKE TEST of the end-to-end flow (geometry -> ddsim -> EDM4hep -> metric). It is NOT a
-# validated detector-optimization study: the only metric measured so far is the mean number
-# of distinct ECAL barrel cells hit per photon (calo.hit_multiplicity), and minimizing it
-# alone is not a physics-performance criterion (a coarser grid always lowers it). The
-# granularity study with a real objective, cld-ecal-granularity.yaml, needs an evaluator
-# for ecal_barrel.position_rms that does not exist yet.
+# SMOKE TEST of the end-to-end flow (geometry -> generation -> ddsim -> EDM4hep -> metric). It
+# is NOT a validated detector-optimization study: the only metric is the mean number of
+# distinct ECAL barrel cells hit per photon (the example evaluator calo.hit_multiplicity), and
+# minimizing it alone is not a physics-performance criterion (a coarser grid always lowers it).
 #
 #   k4opt evaluate examples/problem/cld-ecal-hit-count.yaml \
+#       --evaluator examples/evaluators/calo_hit_multiplicity.py:CaloHitMultiplicity \
 #       --param constants.ECal_cell_size=6.0 --output runs/cld-ecal-6mm
 #
 # Needs the Key4hep environment (ddsim, podio, $K4GEO); about 2.5 s per event on one core.

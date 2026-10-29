@@ -22,7 +22,13 @@ from k4opt.evaluation import (
 from k4opt.frozen import thaw
 from k4opt.problem import ProblemSpec, parse_problem
 from k4opt.problem._evaluate import _evaluate_candidate
-from k4opt.problem._stages import check_stage, plan_stages, run_stage
+from k4opt.problem._stages import (
+    _sha256,
+    check_stage,
+    file_identity,
+    plan_stages,
+    run_stage,
+)
 from tests.support import simulation
 
 CELL = "constants.ECal_cell_size"
@@ -317,7 +323,15 @@ def test_an_input_supplied_by_the_caller_skips_the_stage(
     record = _evaluate_candidate(spec, {CELL: 6}, reader, inputs={"simulation": events_file})
     assert fake.calls == []
     assert reader.calls[0].inputs["simulation"] == events_file
-    assert "stages" not in record.result.provenance
+    # not run, but identified: the file is recorded with its content hash, and generation,
+    # which only the supplied simulation would have needed, does not appear
+    assert record.result.provenance["stages"] == {
+        "simulation": {
+            "provided": str(events_file),
+            "bytes": 4,
+            "sha256": hashlib.sha256(b"fake").hexdigest(),
+        }
+    }
 
 
 @pytest.mark.parametrize("missing", ["geometry", "workdir"])
@@ -370,3 +384,113 @@ def test_a_failed_generation_stops_before_simulation(
     assert record.result.status is Status.FAILED
     assert "cannot read the sample" in (record.result.message or "")
     assert fake.calls == [] and reader.calls == []
+
+
+# --- a supplied generation file is authoritative (review finding) ---
+
+
+def test_a_supplied_generation_file_replaces_the_particle_gun(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+    sample = tmp_path / "mine.hepmc"
+    sample.write_bytes(b"HepMC::Version 3\n")
+    # the problem describes a gun, yet the caller's file is what is simulated; preflight agrees
+    assert check_stage(spec, "simulation", {"generation"}) == ["simulation"]
+    reader = Reader()
+    record = _evaluate_candidate(
+        spec,
+        {CELL: 6},
+        reader,
+        inputs={"geometry": geometry, "generation": sample},
+        workdir=tmp_path / "run",
+    )
+    ((argv, _),) = fake.calls
+    assert f"--inputFiles={sample}" in argv
+    assert not any(a.startswith(("--gun", "--enableGun")) for a in argv)
+    assert record.result.status is Status.VALID
+    stages = record.result.provenance["stages"]
+    assert list(stages) == ["generation", "simulation"]  # type: ignore[arg-type]
+    assert stages["generation"]["provided"] == str(sample)  # type: ignore[index]
+    assert stages["generation"]["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()  # type: ignore[index]
+    assert "argv" in stages["simulation"]  # type: ignore[index, operator]
+
+
+def test_a_supplied_generation_file_needs_no_generation_in_the_problem(
+    doc: dict[str, Any],
+) -> None:
+    del doc["evaluation"]["generation"]
+    assert check_stage(parse_problem(doc), "simulation", {"generation"}) == ["simulation"]
+
+
+def test_the_request_carries_the_generation_context(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    reader = Reader()
+    _evaluate_candidate(
+        spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    assert thaw(reader.calls[0].generation) == GENERATOR
+
+
+class OwnWorkflow:
+    """An evaluator with no ``requires``: it runs nothing from the framework."""
+
+    name = "calo.single_particle_shower"
+    version = "1"
+
+    def __init__(self) -> None:
+        self.seen: EvaluationRequest | None = None
+
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        self.seen = request
+        return EvaluationResult.valid(
+            [
+                Measurement("simulation", "a.rms", 1.0, unit="mm"),
+                Measurement("simulation", "a.cells", 5),
+            ]
+        )
+
+
+def test_an_evaluator_without_requires_runs_no_stage_but_still_sees_the_generation(
+    spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+    own = OwnWorkflow()
+    record = _evaluate_candidate(spec, {CELL: 6}, own, workdir=tmp_path)
+    assert fake.calls == [] and "stages" not in record.result.provenance
+    assert own.seen is not None and thaw(own.seen.generation) == GENERATOR
+
+
+def test_an_evaluator_may_require_only_generation(
+    sample_spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+
+    class NeedsSample(OwnWorkflow):
+        requires = "generation"
+
+    own = NeedsSample()
+    _evaluate_candidate(
+        sample_spec, {CELL: 6}, own, inputs={"geometry": tmp_path / "c.xml"}, workdir=tmp_path
+    )
+    assert fake.calls == []  # no simulation
+    assert own.seen is not None
+    assert own.seen.inputs["generation"] == tmp_path / "samples" / "zh.hepmc"  # resolved
+
+
+# --- hashing a sample once per file version, not once per candidate ---
+
+
+def test_a_sample_is_hashed_once_until_it_changes(tmp_path: Path) -> None:
+    sample = tmp_path / "zh.hepmc"
+    sample.write_bytes(b"one")
+    _sha256.cache_clear()
+    first = file_identity(sample)
+    for _ in range(3):
+        assert file_identity(sample) == first
+    assert _sha256.cache_info().misses == 1 and _sha256.cache_info().hits == 3
+    sample.write_bytes(b"three")  # another size: a different file version
+    changed = file_identity(sample)
+    assert changed["sha256"] == hashlib.sha256(b"three").hexdigest() != first["sha256"]

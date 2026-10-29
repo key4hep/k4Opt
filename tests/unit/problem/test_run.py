@@ -18,15 +18,25 @@ from k4opt.errors import K4OptError
 from k4opt.evaluation import EvaluationContractError
 from k4opt.geometry import GeometrySource, Override
 from k4opt.problem import CandidateError, load_problem, parse_problem
-from k4opt.problem._run import SUMMARY_NAME, _parse_candidate, _xml_value, run_candidate
+from k4opt.problem._run import SUMMARY_NAME, RunOutcome, _parse_candidate, _xml_value
+from k4opt.problem._run import run_candidate as _run_candidate
 from k4opt.problem.errors import RunError
 from tests.support import simulation
 from tests.support.common import tree_digest
+from tests.support.evaluators import CALO_HIT_MULTIPLICITY, calo_hit_multiplicity
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.simulation import COLLECTION, events_with
 
 RADIUS = "constants.InnerTracker_Barrel_radius_1"
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
+
+
+def run_candidate(
+    problem: Path, assignments: list[str], output: Path, **changes: Any
+) -> RunOutcome:
+    """``run_candidate`` with the example evaluator unless the test passes another."""
+    changes.setdefault("evaluator", calo_hit_multiplicity())
+    return _run_candidate(problem, assignments, output, **changes)
 
 
 @pytest.fixture(autouse=True)
@@ -471,19 +481,17 @@ def test_text_values_are_read_by_the_parameter_kind(
         _parse_candidate(integer, ["constants.n=4.0"])
 
 
-def test_the_smoke_study_is_valid_and_leaves_the_granularity_example_alone() -> None:
-    smoke = parse_problem(yaml.safe_load((EXAMPLES / "cld-ecal-hit-count.yaml").read_text()))
-    granularity = parse_problem(
-        yaml.safe_load((EXAMPLES / "cld-ecal-granularity.yaml").read_text())
+def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> None:
+    problem = parse_problem(yaml.safe_load((EXAMPLES / "cld-ecal-hit-count.yaml").read_text()))
+    evaluator = calo_hit_multiplicity()
+    assert (problem.evaluation.evaluator, problem.evaluation.version) == (
+        evaluator.name,
+        evaluator.version,
     )
-    assert (smoke.evaluation.evaluator, smoke.evaluation.version) == ("calo.hit_multiplicity", "1")
-    assert [(o.stage, o.metric) for o in smoke.objectives] == [
+    assert [(o.stage, o.metric) for o in problem.objectives] == [
         ("simulation", "ecal_barrel.mean_hit_cells")
     ]
-    assert [o.metric for o in granularity.objectives] == ["ecal_barrel.position_rms"]
-    assert smoke.parameters == granularity.parameters
-    assert smoke.evaluation.settings == granularity.evaluation.settings
-    assert smoke.evaluation.backend == granularity.evaluation.backend
+    assert set(evaluator.metrics) >= {("simulation", "ecal_barrel.mean_hit_cells")}  # type: ignore[attr-defined]
 
 
 # --- the command ---------------------------------------------------------------------------
@@ -491,7 +499,7 @@ def test_the_smoke_study_is_valid_and_leaves_the_granularity_example_alone() -> 
 
 def evaluate(*argv: str) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    code = main(["evaluate", *argv], stdout=out, stderr=err)
+    code = main(["evaluate", "--evaluator", CALO_HIT_MULTIPLICITY, *argv], stdout=out, stderr=err)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -585,3 +593,32 @@ def test_a_missing_sample_is_a_clean_error_before_any_side_effect(
     with pytest.raises(EvaluationContractError, match=r"generation\.sample"):
         run_candidate(problem_file, [f"{RADIUS}=450.0"], output)
     assert not output.exists() and fake.calls == []
+
+
+def test_the_command_needs_an_evaluator(problem_file: Path, tmp_path: Path) -> None:
+    out, err = io.StringIO(), io.StringIO()
+    with pytest.raises(SystemExit):
+        main(
+            ["evaluate", str(problem_file), "--output", str(tmp_path / "o")], stdout=out, stderr=err
+        )
+    assert not (tmp_path / "o").exists()
+
+
+def test_the_command_reports_an_unloadable_evaluator_without_creating_anything(
+    problem_file: Path, tmp_path: Path
+) -> None:
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        [
+            "evaluate",
+            str(problem_file),
+            "--evaluator",
+            "gone.py:Nope",
+            "--output",
+            str(tmp_path / "o"),
+        ],
+        stdout=out,
+        stderr=err,
+    )
+    assert code == 1 and "does not exist" in err.getvalue()
+    assert not (tmp_path / "o").exists()
