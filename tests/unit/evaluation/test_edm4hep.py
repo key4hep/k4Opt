@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,23 @@ def test_the_collection_of_each_event_is_yielded_including_empty_ones(
     simulation.install_events(monkeypatch, events_with([1, 1, 2], [], [5]))
     sizes = [len(hits) for hits in read_collection(PATH, COLLECTION, HIT_TYPE)]
     assert sizes == [3, 0, 1]
+
+
+def test_a_kept_collection_keeps_the_event_that_owns_its_elements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # podio elements point into the event's memory: freeing the event would leave them dangling
+    events = events_with([1], [2])
+    owners = [weakref.ref(event) for event in events]
+    simulation.install_events(monkeypatch, events)
+    kept = list(read_collection(PATH, COLLECTION, HIT_TYPE))
+    events.clear()  # the fake reader no longer holds the events
+    gc.collect()
+    assert all(owner() is not None for owner in owners)
+    assert [hit.getCellID() for hits in kept for hit in hits] == [1, 2]
+    del kept
+    gc.collect()
+    assert all(owner() is None for owner in owners)
 
 
 @pytest.mark.parametrize(

@@ -45,7 +45,8 @@ attribute, `requires = "simulation"`. The framework runs that stage from the pro
 the file it produced as `request.inputs["simulation"]`; the evaluator never builds a command,
 starts a tool or handles its failures (see [Stages](#stages)). An optional
 `check(request)` may raise `EvaluationContractError` for settings it cannot evaluate; `k4opt`
-calls it before anything is created or run, so `evaluate()` need not repeat it. An
+calls it before anything is created or run, so `evaluate()` need not repeat it. It may be
+called more than once for one candidate, so keep it cheap and free of side effects. An
 optional `metrics` mapping of `(stage, metric)` to unit lets `k4opt evaluate` reject an
 unsupported objective before anything runs, and then holds every returned measurement of those
 metrics to the declared unit, so one metric identity never carries two units.

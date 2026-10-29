@@ -52,6 +52,15 @@ def _type_name(name: Any) -> str:
     return name if isinstance(name, str) else str(name.data())[: int(name.size())]
 
 
+class _Elements(list[Any]):
+    """The elements of one collection. podio elements do not own their data, the event (podio
+    frame) does, so the list keeps its event alive: lists may be kept after reading on."""
+
+    def __init__(self, elements: Any, event: Any) -> None:
+        super().__init__(elements)
+        self.event = event
+
+
 def count_events(path: Path) -> int:
     """The number of events in the EDM4hep file ``path``."""
     with _unreadable(path):
@@ -64,7 +73,8 @@ def read_collection(path: Path, collection: str, value_type: str) -> Iterator[An
     ``value_type`` is the podio type of its elements, for example
     ``"edm4hep::SimCalorimeterHit"``. An existing but empty collection is yielded like any
     other. A collection that is missing in an event, or holds another type, raises
-    :class:`EvaluationFailed` when that event is reached, never an empty result.
+    :class:`EvaluationFailed` when that event is reached, never an empty result. Each list keeps
+    its event in memory, so lists can be kept and used after the next event is read.
     """
     with _unreadable(path):
         for index, event in enumerate(_frames(path)):
@@ -79,4 +89,4 @@ def read_collection(path: Path, collection: str, value_type: str) -> Iterator[An
                     f"collection {collection!r} holds {found!r}, expected {value_type!r}"
                 )
             # read here, where a failing reader is reported, not where the caller uses them
-            yield list(elements)
+            yield _Elements(elements, event)
