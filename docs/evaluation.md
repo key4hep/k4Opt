@@ -116,25 +116,37 @@ no Key4hep stack.
 | `simulation` | `generation` | `evaluation.backend.ddsim.args`, the shared `events` and `seed` | `inputs["simulation"]`, the EDM4hep file of `ddsim` |
 
 An evaluator names only the last stage it reads; the stages it needs run first. Reconstruction
-and analysis will follow the same pattern. A stage that fails (sample unreadable, tool missing,
+and analysis will follow the same pattern. A stage asks only for what it uses: `simulation` needs
+`inputs["geometry"]` and a `workdir`, `generation` neither, so an evaluator that `requires` only
+`generation` runs without a geometry. A stage that fails (sample unreadable, tool missing,
 nonzero exit, no output) becomes a `failed` result with its logs as artifacts, and the evaluator
-is not called. An `inputs[stage]` supplied by the caller replaces running that stage and the ones
-only it needs, and it is authoritative: a supplied `generation` file is simulated even if the
-problem describes a particle gun. The record identifies it (`provenance["stages"][stage]` holds
-the path, size and SHA-256 under `provided`; a file that could not be hashed carries only its
-path, so a verified input is distinguishable from one identified by its name). A sample is hashed once per file version, not once
-per candidate (a file is told apart by size, mtime, ctime and inode, so one rewritten within a
-few milliseconds of being hashed is not; samples are assumed stable while a campaign runs). The files of a stage are added to the result's `artifacts` as `<stage>.<role>`
+is not called.
+
+An `inputs[stage]` supplied by the caller replaces running that stage and the ones only it
+needs, and it is authoritative: a supplied `generation` file is simulated even if the problem
+describes a particle gun. The record identifies it (`provenance["stages"][stage]` holds the
+path, size and SHA-256 under `provided`; a file that could not be hashed carries only its path,
+so a verified input is distinguishable from one identified by its name). A sample is hashed once
+per file version, not once per candidate: a file is told apart by size, mtime, ctime and inode,
+so one rewritten within a few milliseconds of being hashed is not, and samples are assumed
+stable while a campaign runs.
+
+The files of a stage are added to the result's `artifacts` as `<stage>.<role>`
 (`simulation.stdout`, `simulation.edm4hep`, ...) so stages cannot overwrite each other, and the
-stages' record goes to `provenance["stages"]`; an evaluator that returns an artifact role equal
-to one of these, or its own `stages` provenance key, gets an `EvaluationContractError`. Stages are internal for now (`k4opt.problem._stages`).
+stages' record goes to `provenance["stages"]`. An evaluator that returns an artifact role equal
+to one of these gets an `EvaluationContractError`, and so does one that returns a `stages`
+provenance key at all, whether or not a stage ran, because the record reads that key as what the
+framework observed. Stages are internal for now (`k4opt.problem._stages`).
 
 ## Loading an evaluator
 
 `load_evaluator("path/to/file.py:Class")` (or `"package.module:Class"`) imports the file or
 module, creates the class without arguments and checks that it has `name`, `version` and
 `evaluate`; `EvaluatorLoadError` otherwise. This is what `k4opt evaluate --evaluator` uses. The
-file is executed as ordinary Python: name only evaluators you trust. It is not a registry; the
+file is executed as ordinary Python: name only evaluators you trust. Like `python file.py`, its
+directory is put on `sys.path` (and stays there), so an evaluator can import helper modules next
+to it, at the top of the file or inside a method; a helper's name must not clash with another
+module of the same name. It is not a registry; the
 problem's `evaluation.evaluator` stays a label that must equal the loaded evaluator's `name`.
 
 ## Problem, evaluator, record
