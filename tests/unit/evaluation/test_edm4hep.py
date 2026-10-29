@@ -33,6 +33,24 @@ def test_the_collection_of_each_event_is_yielded_including_empty_ones(
     assert sizes == [3, 0, 1]
 
 
+@pytest.mark.parametrize("name", ["SimCalorimeterHit", HIT_TYPE])
+def test_the_edm4hep_prefix_of_the_type_is_optional(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    simulation.install_events(monkeypatch, events_with([1], [2]))
+    assert len(list(read_collection(PATH, COLLECTION, name))) == 2
+
+
+def test_a_short_name_does_not_match_a_type_of_another_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    simulation.install_events(
+        monkeypatch, [Event(**{COLLECTION: Hits([1], "other::SimCalorimeterHit")})]
+    )
+    with pytest.raises(EvaluationFailed, match="expected 'edm4hep::SimCalorimeterHit'"):
+        list(read_collection(PATH, COLLECTION, "SimCalorimeterHit"))
+
+
 def test_a_kept_collection_keeps_the_event_that_owns_its_elements(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

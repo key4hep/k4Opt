@@ -22,7 +22,8 @@ from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRecord,
     EvaluationResult,
-    Evaluator,
+    EvaluatorProtocol,
+    metric_units,
 )
 from k4opt.evaluation.models import Scalar
 from k4opt.frozen import thaw
@@ -183,6 +184,9 @@ def _summary(
     simulation = _stage_provenance(result, "simulation")
     generation = _stage_provenance(result, "generation") or thaw(spec.evaluation.generation)
     argv = simulation.get("argv")
+    provenance = thaw(result.provenance)
+    assert isinstance(provenance, dict)
+    provenance.pop("stages", None)  # what the framework observed is under generation/simulation
     return {
         "schema": SUMMARY_SCHEMA,
         "problem": {"path": str(problem_path), "name": spec.name},
@@ -206,6 +210,7 @@ def _summary(
         "geometry": geometry,
         "generation": generation,
         "settings": thaw(request.settings),
+        "provenance": provenance,
         "simulation": {"command": argv, "returncode": simulation.get("returncode")},
         "paths": {"run_dir": str(run_dir)} | {k: str(v) for k, v in result.artifacts.items()},
         "environment": {
@@ -221,12 +226,12 @@ def _summary(
     }
 
 
-def _check_metrics(spec: ProblemSpec, evaluator: Evaluator) -> None:
+def _check_metrics(spec: ProblemSpec, evaluator: EvaluatorProtocol) -> None:
     """Reject objectives and constraints the evaluator cannot measure, before any simulation.
 
     An evaluator that does not declare ``metrics`` is not checked here; its results still are.
     """
-    metrics = getattr(evaluator, "metrics", None)
+    metrics = metric_units(evaluator)
     if metrics is None:
         return
     declared = [(o.stage, o.metric) for o in spec.objectives]
@@ -252,7 +257,7 @@ def run_candidate(
     assignments: Sequence[str],
     output: str | os.PathLike[str],
     *,
-    evaluator: Evaluator,
+    evaluator: EvaluatorProtocol,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
@@ -272,7 +277,7 @@ def run_candidate(
         check_stage(spec, stage)
     check = getattr(evaluator, "check", None)
     if check is not None:
-        check(_request(spec, values))
+        check(_request(spec, values, evaluator=evaluator))
     _check_metrics(spec, evaluator)
     overrides = _overrides(spec, values)
 

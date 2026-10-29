@@ -20,6 +20,7 @@ from k4opt.evaluation import (
     EvaluationInvalid,
     EvaluationRequest,
     EvaluationResult,
+    Evaluator,
     Measurement,
     Status,
     edm4hep,
@@ -426,6 +427,60 @@ def test_an_evaluator_that_raises_an_outcome_gets_that_result(
     assert "simulation" in record.result.provenance["stages"]  # type: ignore[operator]
 
 
+def test_an_evaluator_may_return_plain_values(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+
+    class Plain(Evaluator):
+        name = "calo.single_particle_shower"
+        version = "1"
+        requires = "simulation"
+        metrics = {"a.rms": "mm", "a.cells": "1"}
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            return {"a.rms": 1.5, "a.cells": [4, 6]}
+
+    record = _evaluate_candidate(
+        spec, {CELL: 6}, Plain(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    assert record.result.status is Status.VALID
+    rms, cells = record.result.measurements
+    assert (rms.stage, rms.metric, rms.value, rms.unit) == ("simulation", "a.rms", 1.5, "mm")
+    assert (cells.value, cells.uncertainty) == (5, 1)
+    assert "simulation.edm4hep" in record.result.artifacts  # the stage's files are still added
+
+
+def test_the_declared_defaults_reach_check_and_evaluate(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    seen: list[Any] = []
+
+    class Tuned(Evaluator):
+        name = "calo.single_particle_shower"
+        version = "1"
+        requires = "simulation"
+        settings = {"collection": str, "threshold": 0.5}
+        metrics = {"a.rms": "mm", "a.cells": "1"}
+
+        def check(self, request: EvaluationRequest) -> None:
+            seen.append(request.settings)
+            super().check(request)
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            seen.append(request.settings)
+            return {"a.rms": 1.0, "a.cells": 5}
+
+    record = _evaluate_candidate(
+        spec, {CELL: 6}, Tuned(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    assert record.result.status is Status.VALID
+    wanted = {"collection": "ECalBarrelCollection", "threshold": 0.5}
+    assert seen == [wanted, wanted]
+    assert record.request.settings == wanted  # the record shows the settings that were used
+
+
 def test_the_bridge_runs_check_before_any_stage(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -441,6 +496,21 @@ def test_the_bridge_runs_check_before_any_stage(
             spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
         )
     assert fake.calls == [] and reader.calls == []
+
+
+def test_a_bad_metrics_declaration_fails_before_any_stage(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+
+    class Unitless(Reader):
+        metrics = {("simulation", "a.rms"): None}
+
+    with pytest.raises(EvaluationContractError, match="unit must be"):
+        _evaluate_candidate(
+            spec, {CELL: 6}, Unitless(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
+    assert fake.calls == []
 
 
 def test_other_exceptions_of_the_evaluator_still_propagate(

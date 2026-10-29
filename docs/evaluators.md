@@ -1,7 +1,7 @@
 # Evaluators and `k4opt evaluate`
 
-k4opt ships no evaluators: an evaluator is an ordinary class implementing the
-[evaluation contract](evaluation.md), written by the physicist. An evaluator only reads: the
+k4opt ships no evaluators: an evaluator is an ordinary class, usually a subclass of `Evaluator`
+([how to write one](evaluation.md#writing-an-evaluator)), written by the physicist. An evaluator only reads: the
 framework runs the pipeline [stage](evaluation.md#stages) it `requires`.
 [`examples/evaluators/calo_hit_multiplicity.py`](../examples/evaluators/calo_hit_multiplicity.py)
 is a complete, working one to copy from. There is no registry: `k4opt evaluate` is told which
@@ -34,9 +34,9 @@ error exits with status 1 and creates nothing. Then, in order:
    If a stage fails or its output lacks events, the result is `failed` and the evaluator is not
    called;
 3. `<output>/summary.json` is written: candidate and key, status, measurements with
-   uncertainty, evaluator and its `settings`, geometry fingerprint and manifest, requested and
-   observed events, elapsed seconds, the exact `ddsim` command and exit code, artifact paths, and the
-   environment (`declared`: the problem's pin; `observed`: `KEY4HEP_STACK`, `K4GEO` and the
+   uncertainty, evaluator with its `settings` and own `provenance`, geometry fingerprint and
+   manifest, requested and observed events, elapsed seconds, the exact `ddsim` command and exit
+   code, artifact paths, and the environment (`declared`: the problem's pin; `observed`: `KEY4HEP_STACK`, `K4GEO` and the
    `ddsim` that was started; the two are not compared).
 
 The command prints status, metric with uncertainty, events, fingerprint and the paths. Exit

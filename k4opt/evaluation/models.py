@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
+from k4opt.evaluation.edm4hep import read_collection
 from k4opt.evaluation.errors import EvaluationContractError
 from k4opt.frozen import FrozenMap, Json, freeze
 
@@ -97,6 +99,15 @@ class EvaluationRequest:
     seed: int | None = None
     backend_args: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: FrozenMap({}))
     generation: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+
+    def read(self, stage: str, collection: str, value_type: str) -> Iterator[Any]:
+        """The collection ``collection`` of each event of the file that ``stage`` produced.
+
+        See :func:`~k4opt.evaluation.edm4hep.read_collection`.
+        """
+        if stage not in self.inputs:
+            raise EvaluationContractError(f"inputs[{stage!r}] is missing")
+        return read_collection(self.inputs[stage], collection, value_type)
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidate, Mapping):

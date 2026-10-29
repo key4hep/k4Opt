@@ -1,55 +1,85 @@
 # Evaluation contract
 
 `k4opt.evaluation` defines how anything that measures a candidate (a simulation, a
-reconstruction, an analysis, a cost model) talks to k4opt: **one protocol, one request, one
+reconstruction, an analysis, a cost model) talks to k4opt: **one evaluator, one request, one
 result**. This is the contract only: it does not run anything, look an evaluator up by the name in
 `problem.yaml` or persist results. An example evaluator and `k4opt evaluate` are described in
 [evaluators.md](evaluators.md); k4opt ships no evaluators of its own. An evaluator can be
 written and tested without Key4hep and without a problem file.
 
-## The protocol
+## Writing an evaluator
 
 ```python
-from pathlib import Path
-from k4opt.evaluation import EvaluationRequest, EvaluationResult, Evaluator, Measurement
+from k4opt.evaluation import Evaluator
+
+
+class CellCount(Evaluator):
+    name = "demo.cell_count"  # counterpart of evaluation.evaluator
+    version = "1"  # counterpart of evaluation.version
+    requires = "simulation"  # the pipeline stage to read (optional)
+    settings = {"collection": str, "min_hits": 1}  # evaluation.settings (optional)
+    metrics = {"ecal.cells": "1"}  # metric -> unit; the stage is `requires` (optional)
+
+    def evaluate(self, request):
+        hits = self.read(request, request.settings["collection"], "SimCalorimeterHit")
+        cells = [len({hit.getCellID() for hit in event}) for event in hits]
+        if max(cells) < request.settings["min_hits"]:
+            self.invalid("too few hits")  # also: self.fail("...")
+        return {"ecal.cells": cells}  # a list: its mean with the standard error; a number: itself
+```
+
+Everything but `name`, `version` and `evaluate` is optional, and `Evaluator` is only a
+convenience: any class with those three members is an evaluator (the structural contract is
+`EvaluatorProtocol`). There is no decorator or registry, and no `SimulationEvaluator` or
+`AnalysisEvaluator`: those are scientific domains, not different calling conventions. `name`
+and `version` identify the evaluator's measurement contract, as `evaluation.evaluator` and
+`evaluation.version` do in the problem file; they are labels, not a lookup mechanism. The
+*documentation* of an evaluator version defines what each of its metrics means: selection,
+estimator, units, uncertainty convention.
+
+What the optional parts do:
+
+- `requires = "simulation"`: the framework runs that stage from the problem and passes the file
+  it produced as `request.inputs["simulation"]`; the evaluator never builds a command, starts a
+  tool or handles its failures (see [Stages](#stages)). `self.read(request, collection, type)`
+  reads a collection of that file (see [Reading EDM4hep files](#reading-edm4hep-files)).
+- `settings`: a mapping of key to a type (`str`, `int`, `float`, `bool`, `list`, `dict`) for a
+  required setting, or to a default value for an optional one (`"min_hits": 1` is an optional
+  `int`). Unknown keys, missing required keys, wrong types and a blank required `str` are an
+  `EvaluationContractError`, raised before anything is created or run (a `bool` is not an `int`,
+  an `int` is a `float`). The request an evaluator gets carries the defaults, so
+  `request.settings` (and the record) show the settings that were used; a `dict` arrives as a
+  read-only mapping and a `list` as a tuple. Override `check(request)` for rules beyond that and
+  call `super().check(request)`; plain evaluators can define `check` alone. `check` may run more
+  than once for one candidate, so keep it cheap and free of side effects.
+- `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
+  holds every returned measurement of those metrics to the declared unit, so one metric identity
+  never carries two units. A metric of another stage is written `("analysis", "rms")`;
+  declaring one metric twice (`"rms"` and `("simulation", "rms")`) is an error, and so is a unit
+  that is not a nonblank string (`"1"` for a dimensionless metric). Both are checked before
+  anything runs.
+- the return value: a mapping of metric to a number or to a list of per-event numbers
+  (`Measurement.from_samples`) becomes a `valid` result, with the unit from `metrics`. Return an
+  `EvaluationResult` for artifacts, provenance or diagnostics.
+
+The long form needs no base class and no shorthand:
+
+```python
+from k4opt.evaluation import EvaluationRequest, EvaluationResult, Measurement
 
 
 class CellCount:
-    name = "demo.cell_count"  # counterpart of evaluation.evaluator
-    version = "1"  # counterpart of evaluation.version
+    name = "demo.cell_count"
+    version = "1"
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
         size = request.candidate["constants.ECal_cell_size"]
         if not isinstance(size, float):
             return EvaluationResult.failed("ECal_cell_size must be a float")
-        cells = 1000.0 / size**2
         return EvaluationResult.valid(
-            [Measurement("analysis", "ecal.cells", cells, unit="1", uncertainty=0.5)]
+            [Measurement("analysis", "ecal.cells", 1000.0 / size**2, unit="1", uncertainty=0.5)]
         )
-
-
-evaluator: Evaluator = CellCount()
-result = evaluator.evaluate(EvaluationRequest(candidate={"constants.ECal_cell_size": 5.0}))
 ```
-
-`Evaluator` is a `typing.Protocol`: a class (or an object built by a function) with `name`,
-`version` and `evaluate` is one. There is no base class, decorator or registry, and no
-`SimulationEvaluator` or `AnalysisEvaluator`: those are scientific domains, not different
-calling conventions. `name` and `version` identify the evaluator's measurement contract, as
-`evaluation.evaluator` and `evaluation.version` do in the problem file; they are labels, not a
-lookup mechanism. The *documentation* of an evaluator version defines what each of its
-metrics means: selection, estimator, units, uncertainty convention.
-
-An evaluator that reads the output of a pipeline stage says so with one optional class
-attribute, `requires = "simulation"`. The framework runs that stage from the problem and passes
-the file it produced as `request.inputs["simulation"]`; the evaluator never builds a command,
-starts a tool or handles its failures (see [Stages](#stages)). An optional
-`check(request)` may raise `EvaluationContractError` for settings it cannot evaluate; `k4opt`
-calls it before anything is created or run, so `evaluate()` need not repeat it. It may be
-called more than once for one candidate, so keep it cheap and free of side effects. An
-optional `metrics` mapping of `(stage, metric)` to unit lets `k4opt evaluate` reject an
-unsupported objective before anything runs, and then holds every returned measurement of those
-metrics to the declared unit, so one metric identity never carries two units.
 
 ## Request
 
@@ -109,11 +139,13 @@ measurements: build the result by hand to keep diagnostics.
 
 ### Reading EDM4hep files
 
+`self.read(request, collection, value_type)` is `read_collection` on the file of the stage in
+`requires`, and `request.read(stage, collection, value_type)` on the file of any stage.
 `read_collection(path, collection, value_type)` yields the collection of each event of an
 EDM4hep file; `count_events(path)` counts the events. `podio` comes from the Key4hep stack and
 is imported only when a file is opened, so `k4opt.evaluation` imports without it. A file that
 cannot be opened, a missing `events` category or collection, an element type other than
-`value_type` and every exception of the C++ reader are an `EvaluationFailed`: a collection is
+`value_type` (`"SimCalorimeterHit"` means `"edm4hep::SimCalorimeterHit"`) and every exception of the C++ reader are an `EvaluationFailed`: a collection is
 never silently read as empty. An existing but empty collection is yielded like any other.
 
 Violations raise `EvaluationContractError` (a `K4OptError`) when the object is built.

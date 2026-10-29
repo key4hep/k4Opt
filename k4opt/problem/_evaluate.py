@@ -24,8 +24,11 @@ from k4opt.evaluation import (
     EvaluationRecord,
     EvaluationRequest,
     EvaluationResult,
-    Evaluator,
+    EvaluatorProtocol,
     Status,
+    metric_units,
+    result_from,
+    with_defaults,
 )
 from k4opt.evaluation.models import Scalar
 from k4opt.frozen import Json
@@ -126,13 +129,13 @@ def _validate_candidate(
     return values, tuple(key)
 
 
-def _check_units(evaluator: Evaluator, result: EvaluationResult) -> None:
+def _check_units(evaluator: EvaluatorProtocol, result: EvaluationResult) -> None:
     """Every measurement of a metric the evaluator declares must carry the declared unit.
 
     Whatever the status: diagnostic values of an ``invalid`` result are recorded too. An
     evaluator that declares no ``metrics``, and metrics it does not declare, are not checked.
     """
-    declared = getattr(evaluator, "metrics", None)
+    declared = metric_units(evaluator)
     if declared is None:
         return
     for m in result.measurements:
@@ -169,7 +172,7 @@ def _check_result(spec: ProblemSpec, result: EvaluationResult) -> None:
             )
 
 
-def _check_identity(spec: ProblemSpec, evaluator: Evaluator) -> tuple[str, str]:
+def _check_identity(spec: ProblemSpec, evaluator: EvaluatorProtocol) -> tuple[str, str]:
     """Require ``evaluator`` to be the one ``spec`` declares; return its ``(name, version)``."""
     wanted = (spec.evaluation.evaluator, spec.evaluation.version)
     name, version = evaluator.name, evaluator.version  # read once: the record reuses them
@@ -186,11 +189,15 @@ def _request(
     values: Mapping[str, Scalar],
     inputs: Mapping[str, Path] | None = None,
     workdir: Path | None = None,
+    evaluator: EvaluatorProtocol | None = None,
 ) -> EvaluationRequest:
-    """The request an evaluator receives, for ``check()`` and ``evaluate()`` alike."""
+    """The request an evaluator receives, for ``check()`` and ``evaluate()`` alike.
+
+    ``settings`` are those of the problem plus the defaults the evaluator declares.
+    """
     return EvaluationRequest(
         candidate=values,
-        settings=spec.evaluation.settings,
+        settings=with_defaults(evaluator, spec.evaluation.settings),
         inputs=inputs or {},
         workdir=workdir,
         events=spec.evaluation.events,
@@ -208,7 +215,7 @@ def _chain(stage: str | None) -> list[str]:
 def _evaluate_candidate(
     spec: ProblemSpec,
     candidate: Mapping[str, Scalar],
-    evaluator: Evaluator,
+    evaluator: EvaluatorProtocol,
     *,
     inputs: Mapping[str, Path] | None = None,
     workdir: Path | None = None,
@@ -230,7 +237,8 @@ def _evaluate_candidate(
     name, version = _check_identity(spec, evaluator)
     check = getattr(evaluator, "check", None)
     if check is not None:
-        check(_request(spec, values))
+        check(_request(spec, values, evaluator=evaluator))
+    metric_units(evaluator)  # a bad metrics declaration fails before any stage runs
     inputs = dict(inputs or {})
     required = getattr(evaluator, "requires", None)
     plan = [] if required is None else check_stage(spec, required, inputs)
@@ -259,20 +267,17 @@ def _evaluate_candidate(
     }
     if observed and required is not None:
         stages[required] = {**stages[required], **observed}
-    request = _request(spec, values, inputs, workdir)
+    request = _request(spec, values, inputs, workdir, evaluator)
     try:
-        result = (
+        returned = (
             EvaluationResult.failed(error) if error is not None else evaluator.evaluate(request)
         )
+        result = result_from(evaluator, returned)
     except EvaluationFailed as exc:
         result = EvaluationResult.failed(str(exc))
     except EvaluationInvalid as exc:
         result = EvaluationResult.invalid(str(exc))
     elapsed = time.perf_counter() - started
-    if not isinstance(result, EvaluationResult):
-        raise EvaluationContractError(
-            f"evaluator must return an EvaluationResult, got {type(result).__name__}"
-        )
     if "stages" in result.provenance:
         # the summary reads this key as what the framework observed, so an evaluator cannot
         # claim stages (a ddsim command, say) that were not run
