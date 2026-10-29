@@ -72,6 +72,11 @@ class FakeDdsim:
         return subprocess.CompletedProcess(argv, self.returncode)
 
 
+def install_events(monkeypatch: pytest.MonkeyPatch, events: Sequence[Any] | None = None) -> None:
+    """Make the evaluator read ``events`` instead of an EDM4hep file; no ddsim is involved."""
+    monkeypatch.setattr(calo_hits, "_open_events", lambda path: iter(events or []))
+
+
 def install(
     monkeypatch: pytest.MonkeyPatch, events: Sequence[Any] | None = None, **ddsim: Any
 ) -> FakeDdsim:
@@ -79,5 +84,5 @@ def install(
     fake = FakeDdsim(**ddsim)
     monkeypatch.setattr(ddsim_run.subprocess, "run", fake)
     monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: DDSIM)
-    monkeypatch.setattr(calo_hits, "_open_events", lambda path: iter(events or []))
+    install_events(monkeypatch, events)
     return fake

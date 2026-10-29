@@ -1,13 +1,15 @@
 """Internal bridge: one candidate of a problem, one evaluator call, one record.
 
 Not a public workflow. It validates a candidate against the declared parameter domains,
-checks the evaluator identity, builds the :class:`EvaluationRequest`, calls the evaluator
+checks the evaluator identity, runs the stage the evaluator ``requires`` (unless the caller
+supplied its file in ``inputs``), builds the :class:`EvaluationRequest`, calls the evaluator
 exactly once and checks that a ``valid`` result carries the metrics the problem asks for.
-It neither locates evaluators, materializes geometry nor runs anything itself.
+It neither locates evaluators nor materializes geometry.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import time
 from collections.abc import Mapping
@@ -21,8 +23,11 @@ from k4opt.evaluation import (
     EvaluationRequest,
     EvaluationResult,
     Evaluator,
+    Status,
 )
 from k4opt.evaluation.models import Scalar
+from k4opt.frozen import Json
+from k4opt.problem._stages import check_stage, run_stage
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import Parameter, ProblemSpec
 
@@ -114,7 +119,7 @@ def _validate_candidate(
 
 def _check_result(spec: ProblemSpec, result: EvaluationResult) -> None:
     """A ``valid`` result must report every metric the problem refers to, in its unit."""
-    if result.status != "valid":
+    if result.status is not Status.VALID:
         return
     measured = {(m.stage, m.metric): m for m in result.measurements}
     required = [(o.stage, o.metric) for o in spec.objectives]
@@ -162,26 +167,53 @@ def _evaluate_candidate(
     The candidate maps each canonical parameter reference to a scalar. Raises
     :class:`CandidateError` for a candidate outside the declared domains and
     :class:`EvaluationContractError` for an evaluator that does not match the problem or a
-    ``valid`` result that omits a requested metric. ``inputs`` and ``workdir`` are passed
-    through unchanged. Exceptions of the evaluator propagate.
+    ``valid`` result that omits a requested metric. If the evaluator has a ``requires``
+    stage that ``inputs`` does not already provide, that stage and the ones it needs run first
+    (on ``inputs["geometry"]``, in ``workdir``) and a failed stage becomes a ``failed`` result
+    without calling the evaluator. Exceptions of the evaluator propagate.
     """
     values, key = _validate_candidate(spec, candidate)
     name, version = _check_identity(spec, evaluator)
+    inputs = dict(inputs or {})
+    required = getattr(evaluator, "requires", None)
+    plan = [] if required is None else check_stage(spec, required, inputs)
+    if plan and ("geometry" not in inputs or workdir is None):
+        raise EvaluationContractError(
+            f"the {', '.join(plan)} stage(s) need inputs['geometry'] and a workdir"
+        )
+    started = time.perf_counter()
+    artifacts: dict[str, Path] = {}
+    stages: dict[str, Json] = {}
+    error = None
+    for stage in plan:
+        assert workdir is not None
+        outcome = run_stage(spec, stage, inputs=inputs, workdir=workdir)
+        inputs |= outcome.inputs
+        artifacts |= outcome.artifacts
+        stages[stage] = dict(outcome.provenance)
+        error = outcome.error
+        if error is not None:
+            break
     request = EvaluationRequest(
         candidate=values,
         settings=spec.evaluation.settings,
-        inputs=inputs or {},
+        inputs=inputs,
         workdir=workdir,
         events=spec.evaluation.events,
         seed=spec.evaluation.seed,
         backend_args=spec.evaluation.backend,
     )
-    started = time.perf_counter()
-    result = evaluator.evaluate(request)
+    result = EvaluationResult.failed(error) if error is not None else evaluator.evaluate(request)
     elapsed = time.perf_counter() - started
     if not isinstance(result, EvaluationResult):
         raise EvaluationContractError(
             f"evaluator must return an EvaluationResult, got {type(result).__name__}"
+        )
+    if stages:
+        result = dataclasses.replace(
+            result,
+            artifacts={**artifacts, **result.artifacts},
+            provenance={**result.provenance, "stages": stages},
         )
     _check_result(spec, result)
     return EvaluationRecord(request, result, name, version, key, elapsed)

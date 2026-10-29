@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import shutil
@@ -40,17 +41,15 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["parameters"][0]["bounds"] = [100.0, 600.0]
     evaluation = doc["evaluation"]
     evaluation.update(evaluator="calo.hit_multiplicity", events=3, seed=5)
-    evaluation["settings"] = {
-        "readouts": {"ecal_barrel": COLLECTION},
-        "generator": {
-            "particle": "gamma",
-            "energy": {"value": 10, "unit": "GeV"},
-            "direction": {
-                "distribution": "uniform",
-                "theta": [60, 120],
-                "phi": [0, 360],
-                "unit": "deg",
-            },
+    evaluation["settings"] = {"readouts": {"ecal_barrel": COLLECTION}}
+    evaluation["generation"] = {
+        "particle": "gamma",
+        "energy": {"value": 10, "unit": "GeV"},
+        "direction": {
+            "distribution": "uniform",
+            "theta": [60, 120],
+            "phi": [0, 360],
+            "unit": "deg",
         },
     }
     doc["objectives"] = [
@@ -147,6 +146,7 @@ def test_summary_is_written_and_truthful(
     ]
     assert on_disk["simulation"]["command"][0] == "/stack/bin/ddsim"
     assert on_disk["simulation"]["returncode"] == 0
+    assert on_disk["generation"]["particle_gun"]["particle"] == "gamma"
     assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
     assert on_disk["environment"]["observed"]["ddsim"] == "/stack/bin/ddsim"
     assert on_disk["problem"]["path"] == str(problem_file.absolute())
@@ -553,3 +553,35 @@ def test_command_requires_an_output_directory(problem_file: Path) -> None:
     with pytest.raises(SystemExit) as info:
         evaluate(str(problem_file), "--param", f"{RADIUS}=450")
     assert info.value.code == 2
+
+
+def test_a_problem_with_a_sample_simulates_it_and_records_its_hash(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    sample = tmp_path / "zh.hepmc"
+    sample.write_bytes(b"HepMC::Version 3\n")
+    doc = yaml.safe_load(problem_file.read_text(encoding="utf-8"))
+    doc["evaluation"]["generation"] = {"sample": "zh.hepmc"}  # next to the problem file
+    problem_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    outcome = run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "s")
+
+    ((argv, _),) = fake.calls
+    assert f"--inputFiles={sample}" in argv and not any(a.startswith("--gun") for a in argv)
+    generation = outcome.summary["generation"]
+    assert isinstance(generation, dict)
+    assert generation["sample"] == str(sample)
+    assert generation["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert outcome.record.result.status == "valid"
+
+
+def test_a_missing_sample_is_a_clean_error_before_any_side_effect(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text(encoding="utf-8"))
+    doc["evaluation"]["generation"] = {"sample": "gone.hepmc"}
+    problem_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    output = tmp_path / "runs" / "s"
+    with pytest.raises(EvaluationContractError, match=r"generation\.sample"):
+        run_candidate(problem_file, [f"{RADIUS}=450.0"], output)
+    assert not output.exists() and fake.calls == []

@@ -147,7 +147,13 @@ def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ProblemSpec:
             raise ProblemConfigError(
                 f"{where} cannot be resolved in {source.compact}: {exc}"
             ) from exc
-    return replace(spec, _source=source, _catalog=catalog, _targets=tuple(targets))
+    return replace(
+        spec,
+        _source=source,
+        _catalog=catalog,
+        _targets=tuple(targets),
+        _directory=problem_path.parent.absolute(),
+    )
 
 
 # --- helpers ---------------------------------------------------------------------------
@@ -378,7 +384,7 @@ def _evaluation(raw: object) -> Evaluation:
     m = _mapping(
         raw,
         path,
-        ("evaluator", "version", "events", "seed", "settings", "backend"),
+        ("evaluator", "version", "events", "seed", "settings", "generation", "backend"),
         ("evaluator", "version"),
     )
     settings: Mapping[str, Json] = {}
@@ -396,8 +402,29 @@ def _evaluation(raw: object) -> Evaluation:
         events=_integer(m["events"], "evaluation.events", minimum=1) if "events" in m else None,
         seed=_integer(m["seed"], "evaluation.seed") if "seed" in m else None,
         settings=settings,
+        generation=_generation(m["generation"]) if "generation" in m else {},
         backend=_backend(m["backend"]) if "backend" in m else {},
     )
+
+
+def _generation(raw: object) -> Mapping[str, Json]:
+    """The particle gun (``particle``, ``energy``, ...) or a ``sample`` file, never both.
+
+    The gun keys are validated where the gun is built (:mod:`k4opt.ddsim`).
+    """
+    path = "evaluation.generation"
+    if not isinstance(raw, Mapping):
+        raise _fail(path, f"must be a mapping, got {type(raw).__name__}")
+    if not raw:
+        raise _fail(path, "set a particle gun (particle, energy, ...) or a sample")
+    if "sample" in raw:
+        if len(raw) != 1:
+            others = [key for key in raw if key != "sample"]
+            raise _fail(path, f"sample cannot be combined with particle gun keys {others}")
+        return {"sample": _text(raw["sample"], f"{path}.sample")}
+    frozen = freeze(raw, path)
+    assert isinstance(frozen, Mapping)
+    return frozen
 
 
 def _backend(raw: object) -> dict[str, tuple[str, ...]]:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from typing import TextIO
 
+from k4opt.evaluation import Status
 from k4opt.problem._run import RunOutcome, run_candidate
 
 
@@ -58,7 +59,7 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     outcome = run_candidate(args.problem, args.param, args.output)
     _report(outcome, out)
     result = outcome.record.result
-    if result.status != "valid":
+    if result.status is not Status.VALID:
         print(f"k4opt: evaluation {result.status}: {result.message}", file=err)
         return 1
     return 0

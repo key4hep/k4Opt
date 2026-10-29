@@ -47,7 +47,14 @@ class SimulationRun:
         return {role: path for role, path in roles.items() if path.is_file()}
 
 
-def check_arguments(*, events: int, seed: int | None, generator: Json, args: Sequence[str]) -> None:
+def check_arguments(
+    *,
+    events: int,
+    seed: int | None,
+    particle_gun: Json = None,
+    sample: Path | None = None,
+    args: Sequence[str],
+) -> None:
     """Raise :class:`DdsimError` if these settings cannot be turned into a ``ddsim`` command.
 
     Needs no files and starts nothing, so it can run before anything is prepared.
@@ -57,7 +64,8 @@ def check_arguments(*, events: int, seed: int | None, generator: Json, args: Seq
         output=Path("events.edm4hep.root"),
         events=events,
         seed=seed,
-        generator=generator,
+        particle_gun=particle_gun,
+        sample=sample,
         user_args=args,
     )
 
@@ -76,20 +84,22 @@ def simulate(
     workdir: Path,
     events: int,
     seed: int | None,
-    generator: Json,
+    particle_gun: Json = None,
+    sample: Path | None = None,
     args: Sequence[str],
 ) -> SimulationRun:
     """Run the ``ddsim`` found on ``PATH`` on ``compact``, in the new directory ``workdir``.
 
     The command is an argument list without a shell: the options k4opt manages (geometry,
-    output, event count, seed, particle gun) followed by ``args`` unchanged. Relative paths are
-    taken from the current directory. ``workdir`` receives ``events.edm4hep.root``,
-    ``ddsim.stdout.log``, ``ddsim.stderr.log`` and ``ddsim.json`` (command, directory, exit
-    code). Raises :class:`DdsimError` for
-    unsupported settings or arguments or an existing ``workdir``.
+    output, event count, seed, particle gun or input sample) followed by ``args`` unchanged.
+    Relative paths are taken from the current directory. ``workdir`` receives
+    ``events.edm4hep.root``, ``ddsim.stdout.log``, ``ddsim.stderr.log`` and ``ddsim.json``
+    (command, directory, exit code). Raises :class:`DdsimError` for unsupported settings or
+    arguments or an existing ``workdir``.
     """
     # ddsim runs inside workdir, so every path in its command line must be absolute
     compact = Path(os.path.abspath(compact))
+    sample = None if sample is None else Path(os.path.abspath(sample))
     workdir = Path(os.path.abspath(workdir))
     output = workdir / "events.edm4hep.root"
     stdout, stderr, command = (
@@ -100,7 +110,8 @@ def simulate(
         output=output,
         events=events,
         seed=seed,
-        generator=generator,
+        particle_gun=particle_gun,
+        sample=sample,
         user_args=args,
     )
     try:

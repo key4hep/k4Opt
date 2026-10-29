@@ -20,10 +20,10 @@ class CellCount:
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
         size = request.candidate["constants.ECal_cell_size"]
         if not isinstance(size, float):
-            return EvaluationResult("failed", message="ECal_cell_size must be a float")
+            return EvaluationResult.failed("ECal_cell_size must be a float")
         cells = 1000.0 / size**2
-        return EvaluationResult(
-            "valid", (Measurement("analysis", "ecal.cells", cells, unit="1", uncertainty=0.5),)
+        return EvaluationResult.valid(
+            [Measurement("analysis", "ecal.cells", cells, unit="1", uncertainty=0.5)]
         )
 
 
@@ -38,6 +38,14 @@ calling conventions. `name` and `version` identify the evaluator's measurement c
 `evaluation.evaluator` and `evaluation.version` do in the problem file; they are labels, not a
 lookup mechanism. The *documentation* of an evaluator version defines what each of its
 metrics means: selection, estimator, units, uncertainty convention.
+
+An evaluator that reads the output of a pipeline stage says so with one optional class
+attribute, `requires = "simulation"`. The framework runs that stage from the problem and passes
+the file it produced as `request.inputs["simulation"]`; the evaluator never builds a command,
+starts a tool or handles its failures (see [Stages](#stages)). An optional
+`check(request)` may raise `EvaluationContractError` for settings it cannot evaluate, and an
+optional `metrics` mapping of `(stage, metric)` to unit lets `k4opt evaluate` reject an
+unsupported objective before anything runs.
 
 ## Request
 
@@ -61,18 +69,29 @@ from those.
 
 | Field | Meaning |
 | --- | --- |
-| `status` | `valid`: ran, result scientifically usable. `invalid`: ran, but the result is not usable (the evaluator's own checks failed); diagnostic measurements are allowed. `failed`: the execution failed |
-| `measurements` | tuple of `Measurement`; may be empty and may mix stages |
+| `status` | a `Status`, a `StrEnum` whose values are `"valid"`, `"invalid"` and `"failed"`. `valid`: ran, result scientifically usable. `invalid`: ran, but the result is not usable (the evaluator's own checks failed). `failed`: the execution failed |
+| `measurements` | tuple of `Measurement`, mixing stages if needed. At least one for `valid`, none for `invalid` and `failed` |
 | `artifacts` | role name to local output `Path`, possibly empty; a later evaluator can take them as `inputs`. Existence is not checked at construction |
-| `message` | optional explanation, mainly for `invalid` and `failed` |
+| `message` | explanation; required for `invalid` and `failed` |
 | `provenance` | optional JSON-compatible metadata the evaluator chose to supply |
 
 A `Measurement` is `stage`, `metric`, a finite `value` (booleans, NaN and infinity are
 rejected), an optional descriptive `unit` (never converted) and an optional symmetric,
 nonnegative `uncertainty`. An omitted uncertainty means *not provided*, not zero. Each
 `(stage, metric)` occurs once per result. A missing measurement is absent, never `0`, `inf` or
-a fake success; a producer that only writes files returns a `valid` result with artifacts and
-no measurements.
+a fake success.
+
+Build a result with the constructor that matches the outcome:
+
+```python
+EvaluationResult.valid([Measurement(...)], artifacts=..., provenance=...)
+EvaluationResult.invalid("no hits in any event", provenance=...)
+EvaluationResult.failed("ddsim exited with status 1", artifacts=...)
+```
+
+They enforce what each status requires: `valid` needs a measurement, `invalid` and `failed` a
+message and no measurements. `EvaluationResult(status, ...)` stays available and checks the same
+things.
 
 Violations raise `EvaluationContractError` (a `K4OptError`) when the object is built.
 
@@ -80,7 +99,26 @@ Violations raise `EvaluationContractError` (a `K4OptError`) when the object is b
 
 `stage` is a free descriptive string next to `metric`, as in the problem file. It is not a
 workflow instruction, and the set of stages is not enumerated. One evaluator may report
-`simulation` and `analysis` metrics together, or produce only artifacts.
+`simulation` and `analysis` metrics together.
+
+## Stages
+
+The stages of the pipeline are run by the framework, not by an evaluator. A stage turns the
+problem's controls (and the earlier stages' files) into a file once per candidate, and an
+evaluator that `requires` a stage reads that file from `request.inputs`. Several evaluators can
+therefore share one expensive run, and an evaluator can be tested with a small fixture file and
+no Key4hep stack.
+
+| Stage | Needs | Configured by | Provides |
+| --- | --- | --- | --- |
+| `generation` | | `evaluation.generation`: a particle gun, or `sample` (an event file) | `inputs["generation"]` for a sample (checked and hashed); nothing for a gun, which `ddsim` generates |
+| `simulation` | `generation` | `evaluation.backend.ddsim.args`, the shared `events` and `seed` | `inputs["simulation"]`, the EDM4hep file of `ddsim` |
+
+An evaluator names only the last stage it reads; the stages it needs run first. Reconstruction
+and analysis will follow the same pattern. A stage that fails (sample unreadable, tool missing,
+nonzero exit, no output) becomes a `failed` result with its logs as artifacts, and the evaluator
+is not called. An `inputs[stage]` supplied by the caller replaces running that stage and the ones
+only it needs. Stages are internal for now (`k4opt.problem._stages`).
 
 ## Problem, evaluator, record
 
@@ -96,7 +134,7 @@ workflow instruction, and the set of stages is not enumerated. One evaluator may
 | `request`, `result` | the actual objects exchanged with the evaluator, unchanged |
 | `evaluator_name`, `evaluator_version` | the evaluator object that ran, checked against the problem before the call |
 | `candidate_key` | framework-computed, see below |
-| `elapsed_seconds` | wall-clock time around the single `evaluate()` call (`time.perf_counter()`); not CPU time, memory or an estimate |
+| `elapsed_seconds` | wall-clock time around the stage and the single `evaluate()` call (`time.perf_counter()`); not CPU time, memory or an estimate |
 
 `result.provenance` is **evaluator-supplied**; the record's identity and elapsed time are
 **framework-observed**. Neither proves which software environment ran: the problem's
@@ -131,15 +169,19 @@ In order, it:
    compare numerically). Units are never interpreted or converted;
 2. requires `evaluator.name` and `evaluator.version` to equal `evaluation.evaluator` and
    `evaluation.version` (`EvaluationContractError` otherwise), before anything runs;
-3. builds the `EvaluationRequest` from the validated candidate plus `settings`, `events`,
-   `seed` and the exact ordered `backend` arguments; `inputs` and `workdir` are passed through
-   unchanged and nothing is created, inspected or materialized;
-4. calls `evaluate()` exactly once. Exceptions of the evaluator propagate;
+3. if the evaluator has a `requires` stage that `inputs` does not already provide, checks the
+   stage and runs it on `inputs["geometry"]` in `workdir` (both needed). A failed stage gives a
+   `failed` result and the evaluator is not called;
+4. builds the `EvaluationRequest` from the validated candidate plus `settings`, `events`,
+   `seed`, the exact ordered `backend` arguments and the stage's file in `inputs`, and calls
+   `evaluate()` exactly once. Exceptions of the evaluator propagate. The stage's files and
+   process record are merged into the result's `artifacts` and into
+   `provenance["stages"][stage]`;
 5. for a `valid` result, requires every `(stage, metric)` of any objective or constraint to be
    measured (extra metrics are fine) and, where a constraint declares a `unit`, the
    measurement's `unit` to be equal. A violation is an `EvaluationContractError`: an
    inconsistent evaluator, not a violated constraint. Whether a value satisfies `min`/`max` is
-   not judged. `invalid` and `failed` results are kept as returned, even without metrics.
+   not judged. `invalid` and `failed` results are kept as returned.
 
 ## Deliberately deferred
 

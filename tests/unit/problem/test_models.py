@@ -40,7 +40,7 @@ def test_round_trip(doc: dict[str, Any]) -> None:
 def test_mutating_the_input_does_not_change_the_spec(doc: dict[str, Any]) -> None:
     problem = parse_problem(doc)
     before = problem.to_dict()
-    doc["evaluation"]["settings"]["generator"]["particle"] = "e-"
+    doc["evaluation"]["generation"]["particle"] = "e-"
     doc["evaluation"]["backend"]["ddsim"]["args"].append("--extra")
     doc["parameters"][0]["bounds"][0] = -1
     doc["objectives"].clear()
@@ -51,7 +51,7 @@ def test_mutating_to_dict_does_not_change_the_spec(doc: dict[str, Any]) -> None:
     problem = parse_problem(doc)
     before = problem.to_dict()
     data = cast(dict[str, Any], problem.to_dict())
-    data["evaluation"]["settings"]["generator"]["particle"] = "e-"
+    data["evaluation"]["generation"]["particle"] = "e-"
     data["evaluation"]["backend"]["ddsim"]["args"].append("--extra")
     data["parameters"].clear()
     assert problem.to_dict() == before
@@ -60,7 +60,7 @@ def test_mutating_to_dict_does_not_change_the_spec(doc: dict[str, Any]) -> None:
 def test_stored_values_are_read_only(doc: dict[str, Any]) -> None:
     evaluation = parse_problem(doc).evaluation
     with pytest.raises(TypeError):
-        evaluation.settings["generator"] = 1  # type: ignore[index]
+        evaluation.generation["particle"] = 1  # type: ignore[index]
     with pytest.raises(AttributeError):
         evaluation.events = 1  # type: ignore[misc]
     assert isinstance(evaluation.backend["ddsim"], tuple)
@@ -82,7 +82,7 @@ def test_spec_is_hashable_and_picklable(doc: dict[str, Any]) -> None:
 def test_optional_parts_are_omitted_from_to_dict(doc: dict[str, Any]) -> None:
     for key in ("name", "constraints"):
         del doc[key]
-    for key in ("events", "seed", "settings", "backend"):
+    for key in ("events", "seed", "settings", "generation", "backend"):
         del doc["evaluation"][key]
     data = parse_problem(doc).to_dict()
     assert "name" not in data and "constraints" not in data

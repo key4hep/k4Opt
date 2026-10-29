@@ -30,7 +30,7 @@ def test_relative_paths_are_made_absolute_before_ddsim_runs_in_workdir(
         workdir=Path("run"),
         events=1,
         seed=1,
-        generator=generator(),  # type: ignore[arg-type]
+        particle_gun=generator(),  # type: ignore[arg-type]
         args=(),
     )
 
@@ -55,7 +55,7 @@ def test_a_relative_executable_found_on_path_is_made_absolute(
         workdir=Path("run"),
         events=1,
         seed=None,
-        generator=generator(),  # type: ignore[arg-type]
+        particle_gun=generator(),  # type: ignore[arg-type]
         args=(),
     )
     ((argv, _),) = fake.calls
@@ -70,7 +70,26 @@ def test_an_existing_workdir_is_refused(tmp_path: Path, monkeypatch: pytest.Monk
             workdir=tmp_path,
             events=1,
             seed=None,
-            generator=generator(),  # type: ignore[arg-type]
+            particle_gun=generator(),  # type: ignore[arg-type]
             args=(),
         )
     assert fake.calls == []
+
+
+def test_a_sample_is_passed_as_an_absolute_input_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    run = simulate(
+        compact=tmp_path / "c.xml",
+        workdir=Path("run"),
+        events=1,
+        seed=None,
+        sample=Path("zh.hepmc"),
+        args=(),
+    )
+    ((argv, _),) = fake.calls
+    assert f"--inputFiles={tmp_path / 'zh.hepmc'}" in argv
+    assert not any(a.startswith("--gun") for a in argv)
+    assert run.error is None

@@ -1,9 +1,10 @@
 # ddsim
 
 `k4opt.ddsim` runs Key4hep's `ddsim` once on a prepared geometry with a particle gun: it builds
-the command from the problem's settings, runs the `ddsim` of the active Key4hep environment
+the command from the problem's `evaluation.simulation` and `evaluation.backend.ddsim`, runs the `ddsim` of the active Key4hep environment
 and keeps the command, exit code and logs. It does not read the output; an evaluator does
-(see [evaluators.md](evaluators.md)). Checked against the `ddsim` of the nightly 2026-10-20.
+(see [evaluators.md](evaluators.md)). `k4opt evaluate` runs it as the `simulation`
+[stage](evaluation.md#stages) once per candidate, so evaluators never call it. Checked against the `ddsim` of the nightly 2026-10-20.
 
 ```python
 from k4opt.ddsim import simulate
@@ -13,7 +14,7 @@ run = simulate(
     workdir=new_dir,
     events=100,
     seed=42,
-    generator=settings["generator"],
+    particle_gun=generation,  # evaluation.generation; or sample=Path("events.hepmc") instead
     args=("--physics.list", "FTFP_BERT"),
 )
 print(run.error or run.output)
@@ -26,9 +27,10 @@ error, no output file) with `returncode`, `argv` and the files. `check_arguments
 part alone. `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`, `ddsim.stderr.log` and
 `ddsim.json` (argument list, directory, exit code).
 
-## Generator settings (`evaluation.settings.generator`)
+## Particle gun (`evaluation.generation`)
 
-Unknown keys are errors.
+Without a `sample`, the keys of `evaluation.generation` describe a particle gun. Unknown keys are
+errors.
 
 | Key | Meaning |
 | --- | --- |
@@ -41,6 +43,16 @@ One primary per event (`--gun.multiplicity=1`). `cos(theta)` is flat in cos(thet
 in solid angle) and phi, whereas `uniform` is flat in theta. Checked on the nightly: of 4000 events with theta in 10-170 degrees,
 50.2 % fell in |cos(theta)| < 0.5 (flat in cos: 50.8 %) against 37 % for `uniform`. Another
 distribution is an error, never a fallback.
+
+## Input sample (`evaluation.generation.sample`)
+
+Instead of a gun, `generation: {sample: events.hepmc}` simulates the events of a file. A relative
+path is read from the directory of the problem file. `ddsim` receives it as `--inputFiles`,
+chooses the reader from the file extension and validates the content, so k4opt accepts every
+format `ddsim` does. The `generation` stage checks that the file exists and records its path,
+size and SHA-256 in the provenance, so a changed sample is a different measurement. A gun and a
+sample together, or neither, are errors. `events` is the number of events to process; a sample
+with fewer events gives an incomplete simulation, which the evaluator reports as `failed`.
 
 ## Command
 

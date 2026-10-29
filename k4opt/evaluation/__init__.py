@@ -23,7 +23,7 @@ Typical use::
         version = "1"
 
         def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
-            return EvaluationResult("valid", (Measurement("analysis", "answer", 42, unit="1"),))
+            return EvaluationResult.valid([Measurement("analysis", "answer", 42, unit="1")])
 """
 
 from k4opt.evaluation.errors import EvaluationContractError
@@ -33,6 +33,7 @@ from k4opt.evaluation.models import (
     EvaluationRequest,
     EvaluationResult,
     Measurement,
+    Status,
 )
 from k4opt.evaluation.protocol import Evaluator
 
@@ -44,4 +45,5 @@ __all__ = [
     "EvaluationResult",
     "Evaluator",
     "Measurement",
+    "Status",
 ]

@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from k4opt.ddsim import DdsimError
-from k4opt.ddsim.command import ddsim_arguments, generator_args, managed_conflict
+from k4opt.ddsim.command import ddsim_arguments, managed_conflict, particle_gun_args
 from k4opt.frozen import freeze
 
 GENERATOR: dict[str, Any] = {
@@ -26,7 +26,7 @@ GENERATOR: dict[str, Any] = {
 
 
 def args(generator: dict[str, Any]) -> tuple[str, ...]:
-    return generator_args(freeze(generator, "generator", DdsimError))
+    return particle_gun_args(freeze(generator, "generator", DdsimError))
 
 
 def test_generator_arguments_with_units() -> None:
@@ -68,11 +68,11 @@ def test_non_finite_numbers_are_rejected(bad: float) -> None:
     energy = copy.deepcopy(GENERATOR)
     energy["energy"]["value"] = bad
     with pytest.raises(DdsimError, match="finite"):
-        generator_args(energy)  # a plain dict, as the public API accepts
+        particle_gun_args(energy)  # a plain dict, as the public API accepts
     vertex = copy.deepcopy(GENERATOR)
     vertex["vertex"]["value"] = [0, bad, 0]
     with pytest.raises(DdsimError, match="finite"):
-        generator_args(vertex)
+        particle_gun_args(vertex)
 
 
 def test_vertex_defaults_to_the_origin_explicitly() -> None:
@@ -189,7 +189,7 @@ def build(user_args: tuple[str, ...] = (), seed: int | None = 42) -> tuple[str, 
         output=Path("/run/simulation/out.root"),
         events=7,
         seed=seed,
-        generator=freeze(GENERATOR, "generator", DdsimError),
+        particle_gun=freeze(GENERATOR, "generator", DdsimError),
         user_args=user_args,
     )
 
@@ -215,7 +215,7 @@ def test_a_user_argument_competing_with_a_managed_option_is_rejected(conflict: s
 
 
 def test_plain_python_lists_are_accepted() -> None:
-    assert generator_args(GENERATOR) == args(GENERATOR)
+    assert particle_gun_args(GENERATOR) == args(GENERATOR)
 
 
 @pytest.mark.parametrize("events", [0, -4, True, 2.0, "3"])
@@ -226,7 +226,7 @@ def test_invalid_event_counts_are_rejected(events: Any) -> None:
             output=Path("o.root"),
             events=events,
             seed=None,
-            generator=GENERATOR,
+            particle_gun=GENERATOR,
             user_args=(),
         )
 
@@ -239,6 +239,48 @@ def test_invalid_seeds_are_rejected(seed: Any) -> None:
             output=Path("o.root"),
             events=1,
             seed=seed,
-            generator=GENERATOR,
+            particle_gun=GENERATOR,
             user_args=(),
+        )
+
+
+def test_a_sample_replaces_the_particle_gun() -> None:
+    built = ddsim_arguments(
+        compact=Path("/run/c.xml"),
+        output=Path("/run/o.root"),
+        events=7,
+        seed=42,
+        sample=Path("/data/zh.hepmc"),
+        user_args=("--physics.list", "FTFP_BERT"),
+    )
+    assert "--inputFiles=/data/zh.hepmc" in built
+    assert not any(a.startswith(("--gun", "--enableGun")) for a in built)
+    assert built[-2:] == ("--physics.list", "FTFP_BERT")
+
+
+@pytest.mark.parametrize("sample", [None, Path("/data/zh.hepmc")])
+def test_exactly_one_of_particle_gun_and_sample_is_needed(sample: Path | None) -> None:
+    gun = None if sample is None else GENERATOR
+    # neither (sample None, gun None) and both (sample given, gun given) are refused
+    with pytest.raises(DdsimError, match="exactly one of particle_gun and sample"):
+        ddsim_arguments(
+            compact=Path("c.xml"),
+            output=Path("o.root"),
+            events=1,
+            seed=None,
+            particle_gun=gun,
+            sample=sample,
+            user_args=(),
+        )
+
+
+def test_an_input_files_argument_is_still_managed() -> None:
+    with pytest.raises(DdsimError, match="manages"):
+        ddsim_arguments(
+            compact=Path("c.xml"),
+            output=Path("o.root"),
+            events=1,
+            seed=None,
+            sample=Path("/data/zh.hepmc"),
+            user_args=("--inputFiles=other.hepmc",),
         )

@@ -37,19 +37,19 @@ evaluation:
     readouts:
       ecal_barrel: ECalBarrelCollection
 
-    generator:
-      particle: gamma
-      energy:
-        value: 10
-        unit: GeV
-      vertex:
-        value: [0, 0, 0]
-        unit: mm
-      direction:
-        distribution: uniform
-        theta: [60, 120]
-        phi: [0, 360]
-        unit: deg
+  generation:
+    particle: gamma
+    energy:
+      value: 10
+      unit: GeV
+    vertex:
+      value: [0, 0, 0]
+      unit: mm
+    direction:
+      distribution: uniform
+      theta: [60, 120]
+      phi: [0, 360]
+      unit: deg
 
   backend:
     ddsim:

@@ -2,7 +2,8 @@
 
 `k4opt.evaluators` holds the evaluators that ship with k4opt. They are ordinary implementations of
 the [evaluation contract](evaluation.md); the contract does not depend on them and users add
-their own the same way. There is no registry: `k4opt evaluate` uses `calo.hit_multiplicity`
+their own the same way. An evaluator only reads: the framework runs the pipeline
+[stage](evaluation.md#stages) it `requires`. There is no registry: `k4opt evaluate` uses `calo.hit_multiplicity`
 for a problem that declares it and rejects any other evaluator name.
 
 ## `k4opt evaluate`
@@ -22,7 +23,9 @@ error exits with status 1 and creates nothing. Then, in order:
 1. the candidate becomes `Override`s (`6.0` with unit `mm` is written `6.0*mm`; units are limited
    to `um mm cm m mrad rad deg MeV GeV TeV`, expressions are not interpreted) and the geometry
    is materialized into `<output>/geometry` from the catalog that `load_problem()` discovered;
-2. `ddsim` runs on that snapshot in `<output>/simulation` and the metric is read from its file;
+2. the `generation` stage checks the sample (if any) and the `simulation` stage runs `ddsim` on
+   that snapshot in `<output>/simulation`; the evaluator reads the metric from the file it wrote.
+   If a stage fails, the result is `failed` and the evaluator is not called;
 3. `<output>/summary.json` is written: candidate and key, status, measurements with
    uncertainty, evaluator, geometry fingerprint and manifest, requested and observed events,
    elapsed seconds, the exact `ddsim` command and exit code, artifact paths, and the
@@ -34,26 +37,31 @@ status is 0 only for `valid`; `invalid` and `failed` print the reason on stderr 
 
 ## `calo.hit_multiplicity` version 1
 
-Runs `k4opt.ddsim.simulate` and reads the file it wrote. Inputs: `request.inputs["geometry"]` (compact file), `request.workdir`, `events` (required),
-`seed` (optional, passed to ddsim when given), `settings` and `backend_args["ddsim"]`.
+`requires = "simulation"`: it reads `request.inputs["simulation"]`, the EDM4hep file the
+framework's simulation stage ([ddsim](ddsim.md)) wrote, and runs no tool. The stage uses `events`
+(required), `seed` (optional, passed to ddsim when given), `evaluation.generation` (a particle
+gun or a sample file) and `backend.ddsim.args`; the evaluator itself uses `settings` and `events` (to check that all
+events are present).
 
 **Metric** `simulation` / `ecal_barrel.mean_hit_cells`, unit `1`. For each simulated event, the
 number of distinct `cellID` values in the collection `settings.readouts.ecal_barrel` (type
 `edm4hep::SimCalorimeterHit`); an existing empty collection counts 0. The value is the sample
 mean over all events and the uncertainty the standard error of the mean, `s / sqrt(N)` with
 `s` the sample standard deviation (`ddof=1`); for one event the uncertainty is absent. There is
-no event selection beyond the generator settings. The error is statistical only (one seed, one
+no event selection beyond the generation settings. The error is statistical only (one seed, one
 sample); it says nothing about detector or systematic effects, and the metric is a technical
 observable, not a performance measure such as shower-position resolution.
 
-**Status.** `failed`: ddsim not found or not started, nonzero exit, no output, unreadable
-file, a collection that is missing in any event or has another element type or no `cellID`, or
-an event count different from `events`. `invalid`: no events in the file, or no hits in any event.
-Programming errors and misuse (unsupported settings, conflicting arguments) raise.
+**Status.** The evaluator reports `failed` for an unreadable file, a collection that is missing in
+any event or has another element type or no `cellID`, or an event count different from `events`,
+and `invalid` for no events in the file or no hits in any event. A `ddsim` that is not found, not
+started, exits nonzero or writes no output is a `failed` result of the stage. Misuse
+(unsupported settings, conflicting arguments, a missing `generation`) raises before anything runs.
 
 **Settings** (unknown keys are errors): `readouts.ecal_barrel` is the collection to read
-(required, the only role); `generator` is passed to [ddsim](ddsim.md), which defines its keys.
-The `ddsim` run, its command and the geometry it simulates are described there.
+(required, the only role). The primary particles are `evaluation.generation` (a particle gun or
+a sample file), which [ddsim](ddsim.md) defines, together with the run, its command and the
+geometry it simulates.
 
 ## Not done
 
