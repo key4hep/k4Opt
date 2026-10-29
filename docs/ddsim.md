@@ -1,7 +1,8 @@
 # ddsim
 
-`k4opt.ddsim` runs Key4hep's `ddsim` once on a prepared geometry with a particle gun: it builds
-the command from the problem's `evaluation.simulation` and `evaluation.backend.ddsim`, runs the `ddsim` of the active Key4hep environment
+`k4opt.ddsim` runs Key4hep's `ddsim` once on a prepared geometry with a particle gun or an input
+sample: it builds the command from the problem's `evaluation.generation`, `events`, `seed` and
+`evaluation.backend.ddsim`, runs the `ddsim` of the active Key4hep environment
 and keeps the command, exit code and logs. It does not read the output; an evaluator does
 (see [evaluators.md](evaluators.md)). `k4opt evaluate` runs it as the `simulation`
 [stage](evaluation.md#stages) once per candidate, so evaluators never call it. Checked against the `ddsim` of the nightly 2026-10-20.

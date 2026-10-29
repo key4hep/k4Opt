@@ -56,7 +56,8 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
         error = "" if m.uncertainty is None else f" +- {m.uncertainty:.6g}"
         unit = f" [{m.unit}]" if m.unit else ""
         print(f"metric:      {m.stage}/{m.metric} = {m.value:.6g}{error}{unit}", file=out)
-    print(f"events:      {outcome.events_read} of {outcome.record.request.events}", file=out)
+    if outcome.events_read is not None:  # None: no simulation output was inspected
+        print(f"events:      {outcome.events_read} of {outcome.record.request.events}", file=out)
     print(f"fingerprint: {outcome.fingerprint}", file=out)
     print(f"summary:     {outcome.summary_path}", file=out)
     for role in ("stdout", "stderr", "edm4hep"):

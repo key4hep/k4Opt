@@ -104,7 +104,8 @@ class Parameter:
     """A quantity that varies between candidates, with its search domain.
 
     ``continuous`` and ``integer`` parameters have inclusive ``bounds``; ``categorical``
-    ones have ``choices``. ``unit`` is a declared label, never interpreted.
+    ones have ``choices``. ``unit`` is the unit of the numbers in ``bounds``; it is never
+    converted (``k4opt evaluate`` writes a value into the geometry as ``<value>*<unit>``).
     """
 
     geometry: GeometrySelector
@@ -150,6 +151,10 @@ class Evaluation:
         generation = freeze(self.generation, "generation")
         assert isinstance(generation, Mapping)
         object.__setattr__(self, "generation", generation)
+        for name, args in self.backend.items():
+            # a str would become its characters, a set an arbitrary order
+            if not isinstance(args, (list, tuple)) or not all(isinstance(a, str) for a in args):
+                raise ProblemConfigError(f"backend.{name}.args: must be a list of strings")
         object.__setattr__(
             self,
             "backend",

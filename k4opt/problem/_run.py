@@ -23,9 +23,9 @@ from k4opt.evaluation import (
     EvaluationRecord,
     EvaluationResult,
     EvaluatorProtocol,
+    Scalar,
     metric_units,
 )
-from k4opt.evaluation.models import Scalar
 from k4opt.frozen import thaw
 from k4opt.geometry import Override
 from k4opt.problem._evaluate import (
@@ -78,6 +78,14 @@ def _stage_provenance(result: EvaluationResult, stage: str) -> dict[str, object]
     return entry if isinstance(entry, dict) else {}
 
 
+def _int(reference: str, text: str) -> int:
+    """``int(text)`` for a text that matches ``_INTEGER``."""
+    try:
+        return int(text)
+    except ValueError:  # more digits than Python converts (sys.get_int_max_str_digits())
+        raise CandidateError(f"{reference}: {text[:20]}... has too many digits") from None
+
+
 def _parse_value(parameter: Parameter, text: str) -> Scalar:
     """The value ``text`` stands for, read according to the kind of ``parameter``."""
     reference = parameter.geometry.canonical_target
@@ -91,7 +99,7 @@ def _parse_value(parameter: Parameter, text: str) -> Scalar:
     if parameter.kind == "integer":
         if not _INTEGER.fullmatch(text):
             raise CandidateError(f"{reference}: expected an integer, got {text!r}")
-        return int(text)
+        return _int(reference, text)
     if not _DECIMAL.fullmatch(text):
         raise CandidateError(f"{reference}: expected a number, got {text!r}")
     if parameter.kind == "categorical":
@@ -114,7 +122,7 @@ def _parse_value(parameter: Parameter, text: str) -> Scalar:
         raise CandidateError(f"{reference}: {text!r} is not one of {list(choices)!r}")
     if _INTEGER.fullmatch(text):
         # an integer literal stays exact where float would change it (above 2**53) or overflow
-        number = int(text)
+        number = _int(reference, text)
         try:
             return float(number) if float(number) == number else number
         except OverflowError:

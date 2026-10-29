@@ -9,9 +9,10 @@ own public API, errors and command group:
   problem.
 * :mod:`k4opt.evaluation` - the contract an evaluator implements: request, result,
   measurements.
+* :mod:`k4opt.ddsim` - run Key4hep's ``ddsim`` on a prepared geometry.
 
-Shared pieces live at the top level: :mod:`k4opt.errors` and the ``k4opt`` command
-(:mod:`k4opt.cli`).
+Shared pieces live at the top level: :mod:`k4opt.errors`, the helpers :mod:`k4opt.frozen` and
+:mod:`k4opt.yamlio`, and the ``k4opt`` command (:mod:`k4opt.cli`).
 """
 
 from importlib.metadata import PackageNotFoundError, version

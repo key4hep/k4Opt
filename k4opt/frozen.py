@@ -10,6 +10,7 @@ state, and :func:`thaw` hands out a plain mutable copy. Each component says whic
 from __future__ import annotations
 
 import math
+import numbers
 from collections.abc import Callable, Iterator, Mapping
 from typing import NamedTuple
 
@@ -49,7 +50,8 @@ def freeze(value: object, path: str, error: Callable[[str], Exception]) -> Json:
     """Return an immutable copy of a JSON-compatible ``value``.
 
     Accepts ``None``, booleans, integers, finite floats, strings, lists (or tuples) and
-    mappings with string keys, nested to a bounded depth. Anything else, including
+    mappings with string keys, nested to a bounded depth; other real numbers (``numpy.int64``)
+    are stored as the Python ``int`` or ``float`` they stand for. Anything else, including
     non-finite numbers, dates, bytes, sets and self-referencing structures, raises
     ``error(message)`` with a message naming ``path``. A value shared by several YAML aliases
     is frozen once, yet counts with its full size and depth at every place it is used; a
@@ -77,10 +79,11 @@ class _Walk:
 def _freeze(value: object, path: str, walk: _Walk, depth: int) -> _Frozen:
     if value is None or isinstance(value, (str, bool, int)):
         return _Frozen(value, 1, 0)
-    if isinstance(value, float):
-        if not math.isfinite(value):
+    if isinstance(value, numbers.Real):  # a float, or a numpy number stored as a Python one
+        number = int(value) if isinstance(value, numbers.Integral) else float(value)
+        if isinstance(number, float) and not math.isfinite(number):
             raise walk.error(f"{path}: non-finite number {value!r} is not allowed")
-        return _Frozen(value, 1, 0)
+        return _Frozen(number, 1, 0)
     if isinstance(value, (list, tuple, Mapping)):
         if id(value) in walk.done:  # an alias of a container that was already frozen
             done = walk.done[id(value)]

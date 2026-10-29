@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import FrozenInstanceError, dataclass
+from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, cast
 
@@ -157,6 +159,37 @@ def test_from_samples_needs_samples_and_finite_ones() -> None:
         Measurement.from_samples("s", "m", [])
     with pytest.raises(EvaluationContractError, match="finite"):
         Measurement.from_samples("s", "m", [1.0, math.inf])
+
+
+def test_from_samples_too_large_to_average_is_a_contract_error() -> None:
+    with pytest.raises(EvaluationContractError, match="too large to average"):
+        Measurement.from_samples("s", "m", [10**400, 1])
+
+
+def test_other_real_numbers_are_stored_as_python_numbers() -> None:
+    # Fraction is a numbers.Real like numpy.float32, so this needs no numpy
+    m = Measurement("s", "m", Fraction(1, 4), uncertainty=Fraction(1, 8))
+    assert (m.value, m.uncertainty) == (0.25, 0.125)
+    assert type(m.value) is float and type(m.uncertainty) is float
+    assert Measurement.from_samples("s", "m", [Fraction(1), Fraction(3)]).value == 2
+    result = EvaluationResult.valid(provenance={"x": Fraction(1, 2)})
+    assert result.provenance["x"] == 0.5 and type(result.provenance["x"]) is float
+    with pytest.raises(EvaluationContractError, match="value"):
+        Measurement("s", "m", Decimal("1.5"))  # not a numbers.Real
+
+
+def test_numpy_numbers_are_stored_as_python_numbers() -> None:
+    np = pytest.importorskip("numpy")
+    m = Measurement("s", "m", np.int64(3), uncertainty=np.float32(0.5))
+    assert (m.value, m.uncertainty) == (3, 0.5)
+    assert type(m.value) is int and type(m.uncertainty) is float
+    with pytest.raises(EvaluationContractError, match="value"):
+        Measurement("s", "m", np.bool_(True))  # a boolean is not a number
+    with pytest.raises(EvaluationContractError, match="finite"):
+        Measurement("s", "m", np.float32("nan"))
+    result = EvaluationResult.valid(provenance={"n": np.int64(7), "x": np.float32(0.5)})
+    assert result.provenance == {"n": 7, "x": 0.5}
+    assert type(result.provenance["n"]) is int and type(result.provenance["x"]) is float
 
 
 def test_measurement_is_frozen() -> None:

@@ -25,12 +25,12 @@ from k4opt.evaluation import (
     EvaluationRequest,
     EvaluationResult,
     EvaluatorProtocol,
+    Scalar,
     Status,
     metric_units,
     result_from,
     with_defaults,
 )
-from k4opt.evaluation.models import Scalar
 from k4opt.frozen import Json
 from k4opt.problem._stages import (
     check_run_inputs,

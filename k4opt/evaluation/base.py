@@ -11,8 +11,8 @@ class adds what most evaluators would write anyway:
 * ``metrics = {"hit_cells": "1"}`` maps each metric to its unit; its stage is ``requires``,
   or the metric is written ``(stage, metric)``;
 * ``evaluate`` may return ``{"hit_cells": 3.2}`` or ``{"hit_cells": [3, 4, 2]}`` (a number, or
-  per-event values that become their mean with its standard error) instead of an
-  :class:`EvaluationResult`;
+  per-event values, a list or a numpy array, that become their mean with its standard error)
+  instead of an :class:`EvaluationResult`;
 * ``self.invalid(...)`` and ``self.fail(...)`` end an evaluation with that status;
 * ``self.read(request, collection, type)`` reads a collection of the file of the stage in
   ``requires`` (``request.read(stage, ...)`` names any stage).
@@ -20,22 +20,26 @@ class adds what most evaluators would write anyway:
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from typing import Any, NoReturn
+from collections.abc import Iterable, Iterator, Mapping
+from typing import Any, NoReturn, cast
 
 from k4opt.evaluation.errors import EvaluationContractError, EvaluationFailed, EvaluationInvalid
 from k4opt.evaluation.models import EvaluationRequest, EvaluationResult, Measurement
 from k4opt.frozen import Json
 
 type MetricKey = str | tuple[str, str]
-type Values = Mapping[MetricKey, int | float | list[int | float] | tuple[int | float, ...]]
+type Values = Mapping[MetricKey, int | float | Iterable[int | float]]
 """What ``evaluate`` may return instead of an :class:`EvaluationResult`."""
 
 
 def _qualified(evaluator: object, key: MetricKey) -> tuple[str, str]:
     """``(stage, metric)`` of a metric written as ``metric`` (stage: ``requires``) or a pair."""
-    if not isinstance(key, str):
+    if isinstance(key, tuple) and len(key) == 2 and all(isinstance(part, str) for part in key):
         return key
+    if not isinstance(key, str):
+        raise EvaluationContractError(
+            f"metric {key!r}: write it as 'metric' or as a pair of strings (stage, metric)"
+        )
     stage = getattr(evaluator, "requires", None)
     if stage is None:
         raise EvaluationContractError(
@@ -110,10 +114,17 @@ def result_from(evaluator: object, returned: EvaluationResult | Values) -> Evalu
     for key, value in returned.items():
         stage, metric = _qualified(evaluator, key)
         unit = units.get((stage, metric))
-        if isinstance(value, (list, tuple)):
-            measurements.append(Measurement.from_samples(stage, metric, value, unit))
-        else:
-            measurements.append(Measurement(stage, metric, value, unit))
+        # per-event values: a list, a tuple or a numpy array, say; text is not a sequence of numbers
+        if isinstance(value, Iterable) and not isinstance(value, (str, bytes, Mapping)):
+            try:
+                samples = list(value)
+            except TypeError:  # iterable in type only, like a zero-dimensional numpy array
+                raise EvaluationContractError(
+                    f"metric {stage}/{metric}: {value!r} is neither a number nor per-event values"
+                ) from None
+            measurements.append(Measurement.from_samples(stage, metric, samples, unit))
+        else:  # a number; Measurement rejects anything else
+            measurements.append(Measurement(stage, metric, cast(float, value), unit))
     return EvaluationResult.valid(measurements)
 
 
