@@ -238,6 +238,7 @@ def _evaluate_candidate(
     check = getattr(evaluator, "check", None)
     if check is not None:
         check(_request(spec, values, evaluator=evaluator))
+    metric_units(evaluator)  # a bad metrics declaration fails before any stage runs
     inputs = dict(inputs or {})
     required = getattr(evaluator, "requires", None)
     plan = [] if required is None else check_stage(spec, required, inputs)

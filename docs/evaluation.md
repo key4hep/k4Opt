@@ -55,7 +55,9 @@ What the optional parts do:
 - `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
   holds every returned measurement of those metrics to the declared unit, so one metric identity
   never carries two units. A metric of another stage is written `("analysis", "rms")`;
-  declaring one metric twice (`"rms"` and `("simulation", "rms")`) is an error.
+  declaring one metric twice (`"rms"` and `("simulation", "rms")`) is an error, and so is a unit
+  that is not a nonblank string (`"1"` for a dimensionless metric). Both are checked before
+  anything runs.
 - the return value: a mapping of metric to a number or to a list of per-event numbers
   (`Measurement.from_samples`) becomes a `valid` result, with the unit from `metrics`. Return an
   `EvaluationResult` for artifacts, provenance or diagnostics.

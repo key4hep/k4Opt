@@ -498,6 +498,21 @@ def test_the_bridge_runs_check_before_any_stage(
     assert fake.calls == [] and reader.calls == []
 
 
+def test_a_bad_metrics_declaration_fails_before_any_stage(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+
+    class Unitless(Reader):
+        metrics = {("simulation", "a.rms"): None}
+
+    with pytest.raises(EvaluationContractError, match="unit must be"):
+        _evaluate_candidate(
+            spec, {CELL: 6}, Unitless(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
+    assert fake.calls == []
+
+
 def test_other_exceptions_of_the_evaluator_still_propagate(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

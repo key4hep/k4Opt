@@ -127,6 +127,16 @@ def test_a_metric_declared_twice_is_a_contract_error_not_overwritten() -> None:
         metric_units(Twice())
 
 
+@pytest.mark.parametrize("unit", [None, "", "  ", 123])
+def test_a_declared_unit_must_be_a_nonblank_string(unit: Any) -> None:
+    class Unitless(Evaluator):
+        name, version, requires = "demo.unitless", "1", "simulation"
+        metrics = {"energy": unit}
+
+    with pytest.raises(EvaluationContractError, match="simulation/energy: unit must be"):
+        metric_units(Unitless())
+
+
 def test_a_bare_metric_needs_a_stage() -> None:
     class Stageless(Evaluator):
         name, version = "demo.stageless", "1"

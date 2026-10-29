@@ -83,6 +83,11 @@ def metric_units(evaluator: object) -> dict[tuple[str, str], str] | None:
     units: dict[tuple[str, str], str] = {}
     for key, unit in declared.items():
         qualified = _qualified(evaluator, key)
+        if not isinstance(unit, str) or not unit.strip():
+            raise EvaluationContractError(
+                f"metric {qualified[0]}/{qualified[1]}: unit must be a nonblank string such as "
+                f"'mm' or '1' (dimensionless), got {unit!r}"
+            )
         if qualified in units:
             raise EvaluationContractError(
                 f"metric {qualified[0]}/{qualified[1]} is declared twice (as {key!r} too)"

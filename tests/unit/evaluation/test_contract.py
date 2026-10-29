@@ -14,9 +14,10 @@ from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRequest,
     EvaluationResult,
-    Evaluator,
+    EvaluatorProtocol,
     Measurement,
     Status,
+    result_from,
 )
 
 M = Measurement("s", "m", 1)  # any measurement, for results that only need to be valid
@@ -55,9 +56,9 @@ class FakeAnalysis:
         )
 
 
-def run(evaluator: Evaluator, request: EvaluationRequest) -> EvaluationResult:
-    """Typed usage: mypy checks that the fakes satisfy the protocol."""
-    return evaluator.evaluate(request)
+def run(evaluator: EvaluatorProtocol, request: EvaluationRequest) -> EvaluationResult:
+    """Typed usage: mypy checks that the fakes, plain classes, satisfy the protocol."""
+    return result_from(evaluator, evaluator.evaluate(request))
 
 
 def test_artifacts_pass_between_stages_by_hand(tmp_path: Path) -> None:
