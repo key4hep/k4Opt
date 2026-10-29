@@ -43,7 +43,8 @@ class CaloHitMultiplicity:
 
     def check(self, request: EvaluationRequest) -> None:
         """Called by k4opt before anything runs: reject settings that cannot be evaluated."""
-        if not isinstance(request.settings.get("collection"), str) or len(request.settings) != 1:
+        collection = request.settings.get("collection")
+        if not isinstance(collection, str) or not collection.strip() or len(request.settings) != 1:
             raise EvaluationContractError("settings: expected exactly 'collection: <name>'")
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
