@@ -5,7 +5,7 @@ k4opt ships no evaluators: an evaluator is an ordinary class, usually a subclass
 framework runs the pipeline [stage](evaluation.md#stages) it `requires`.
 [`examples/evaluators/calo_photon.py`](../examples/evaluators/calo_photon.py)
 is a complete, working one to copy from. There is no registry: `k4opt evaluate` is told which
-evaluator to use, and its name and version must be those the problem declares.
+evaluators to use, and their names and versions must be those the problem declares.
 
 ## `k4opt evaluate`
 
@@ -16,31 +16,77 @@ k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
   --output runs/cld-ecal-10mm
 ```
 
-`--evaluator FILE.py:Class` (or `package.module:Class`) names the evaluator; the file is
-executed as ordinary Python ([`load_evaluator`](evaluation.md#loading-an-evaluator)), so name
-only code you trust.
+`--evaluator FILE.py:Class` (or `package.module:Class`) names an evaluator; give it once for each
+entry of `evaluation.evaluators`, in any order. The file is executed as ordinary Python
+([`load_evaluator`](evaluation.md#loading-an-evaluator)), so name only code you trust.
 
 One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`).
 `--param REFERENCE=VALUE` uses the canonical reference of the problem file and is repeated for
 each declared parameter. `--output` must not exist. Before anything is created, the candidate
-(keys, types, bounds), the evaluator identity and the evaluator settings are validated; an
-error exits with status 1 and creates nothing. Then, in order:
+(keys, types, bounds), the evaluators (each declared one given once, with its version, and no
+other), their settings and their metrics (every objective and constraint measured by exactly one
+evaluator, see [problem](problem.md#evaluation)) are validated; an error exits with status 1 and
+creates nothing. Then, in order:
 
 1. the candidate becomes `Override`s (`6.0` with unit `mm` is written `6.0*mm`; units are limited
    to `um mm cm m mrad rad deg MeV GeV TeV`, expressions are not interpreted) and the geometry
    is materialized into `<output>/geometry` from the catalog that `load_problem()` discovered;
-2. the `generation` stage checks the sample (if any) and the `simulation` stage runs `ddsim` on
-   that snapshot in `<output>/simulation`; the evaluator reads the metric from the file it wrote.
-   If a stage fails or its output lacks events, the result is `failed` and the evaluator is not
-   called;
-3. `<output>/summary.json` is written: candidate and key, status, measurements with
-   uncertainty, evaluator with its `settings` and own `provenance`, geometry fingerprint and
-   manifest, requested and observed events, elapsed seconds, the exact `ddsim` command and exit
-   code, artifact paths, and the environment (`declared`: the problem's pin; `observed`: `KEY4HEP_STACK`, `K4GEO` and the
-   `ddsim` that was started; the two are not compared).
+2. the stages the evaluators require run once each: the `generation` stage checks the sample (if
+   any) and the `simulation` stage runs `ddsim` on that snapshot in `<output>/simulation`. Then
+   each evaluator, in the order of the problem, reads the files of the stages it needs and may
+   write in `<output>/evaluators/<name>`. If a stage fails or its output lacks events, the
+   evaluators that read it are `failed` and not called; the others still are;
+3. `<output>/summary.json` (`k4opt.run/1`) is written:
+   - `status` and `message` of the candidate ([how they follow from the evaluators'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
+     the candidate and its key;
+   - `metrics`: every objective and constraint metric, the evaluator that owns it, and its
+     value, unit and uncertainty, which are `null` unless that evaluator's result is `valid`;
+   - `evaluators`, in problem order: name, version, status, message, settings, the stages it
+     read, its measurements with uncertainty, the artifacts and provenance it returned, its
+     directory and the time of its `evaluate()` call (`null` if it was not called);
+   - `stages`, each once and in pipeline order: the exact `ddsim` command, directory and exit
+     code, the size and SHA-256 of a sample, the events found, the error if there was one, and
+     the time spent on it;
+   - the geometry fingerprint and manifest, requested and observed events, the time of the whole
+     evaluation, the files of the stages under `paths`, and the environment (`declared`: the
+     problem's pin; `observed`: `KEY4HEP_STACK`, `K4GEO` and the `ddsim` that was started; the
+     two are not compared).
 
-The command prints status, metric with uncertainty, events, fingerprint and the paths. Exit
-status is 0 only for `valid`; `invalid` and `failed` print the reason on stderr and exit 1.
+The command prints the candidate's status, each evaluator's status and metrics with their
+uncertainty, the events, the fingerprint and the paths. The exit status is 0 only for a `valid`
+candidate; otherwise the message (each evaluator that is not `valid`, with its status and
+reason) goes to stderr and the exit status is 1.
+
+Several evaluators measure one candidate in the same run and share its simulation. For example,
+next to the example evaluator, an evaluator of your own that needs no simulation, say a readout
+cost computed from the cell size (`my_cost.py` and `my.readout_cost` are illustrative):
+
+```yaml
+evaluation:
+  events: 1000
+  # generation and backend as in the example
+  evaluators:
+    - name: calo.photon
+      version: "1"
+      settings:
+        collection: ECalBarrelCollection
+    - name: my.readout_cost
+      version: "1"
+
+objectives:
+  - {stage: simulation, metric: ecal_barrel.angular_residual, direction: minimize}
+  - {stage: analysis, metric: ecal.readout_cost, direction: minimize}
+```
+
+```bash
+k4opt evaluate problem.yaml \
+  --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
+  --evaluator my_cost.py:ReadoutCost \
+  --param constants.ECal_cell_size=10.0 --output runs/cost-10mm
+```
+
+All evaluators of a problem share its one context (events, seed, generation, backend). A study
+that needs another sample or event count for some evaluator is a separate problem for now.
 
 ## The example evaluator `calo.photon` version 1
 
@@ -116,5 +162,6 @@ separation in particle flow does, and measuring it needs reconstruction.
 
 ## Not done
 
-Reconstruction, other metrics, evaluator lookup by name, aggregation over seeds, retries,
-a persistent store of runs and an environment check against the pin.
+Reconstruction, other metrics, evaluator lookup by name, several samples or event counts
+(evaluation contexts) in one problem, aggregation over seeds, retries, a persistent store of
+runs and an environment check against the pin.

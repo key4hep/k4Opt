@@ -3,10 +3,10 @@
 > **Status: draft.** The file format below can be loaded and statically validated by
 > `k4opt.problem` (see [Validation and Python API](#validation-and-python-api)). One
 > vertical slice is implemented: `k4opt evaluate` runs a single candidate through
-> generation and `ddsim` with an evaluator you name, for example the one in
-> `examples/evaluators` (see [evaluators](evaluators.md)); before it simulates, it checks that
-> the declared objectives and constraints are metrics of that evaluator. Everything else is **proposed, not implemented**: no evaluator registry, no
-> `k4run` invocation, no optimizer. Parsing a file alone does not check that its evaluator,
+> generation and `ddsim` once and measures it with each evaluator you name, for example the one
+> in `examples/evaluators` (see [evaluators](evaluators.md)); before it simulates, it checks that
+> every declared objective and constraint is a metric of exactly one of them. Everything else is
+> **proposed, not implemented**: no evaluator registry, no `k4run` invocation, no optimizer. Parsing a file alone does not check that its evaluator,
 > metrics or geometry targets exist. Everything here may change.
 
 k4opt aims to standardize **optimization problems, measurement definitions and evaluation
@@ -46,13 +46,8 @@ parameters:
     unit: mm
 
 evaluation:
-  evaluator: calo.photon
-  version: "1"
   events: 1000
   seed: 42
-
-  settings:
-    collection: ECalBarrelCollection
 
   generation:
     particle: gamma
@@ -70,6 +65,13 @@ evaluation:
     ddsim:
       args: ["--physics.list", "FTFP_BERT"]
 
+  # who measures the simulated photons; several evaluators would share one simulation
+  evaluators:
+    - name: calo.photon
+      version: "1"
+      settings:
+        collection: ECalBarrelCollection
+
 objectives:
   - stage: simulation
     metric: ecal_barrel.angular_residual
@@ -81,19 +83,20 @@ objectives:
 
 ## What each part means
 
-Six things are kept apart; mixing them is the main way two studies silently stop being
+Seven things are kept apart; mixing them is the main way two studies silently stop being
 comparable.
 
 | Concept | Where | Who decides | Example |
 | --- | --- | --- | --- |
 | Scientific choices | `parameters`, `objectives`, `constraints` | the physicist | vary `ECal_cell_size` in 2.5-20 mm, minimize the photon's angular residual and the number of fired cells (and, optionally, limit a metric) |
-| Evaluator settings | `evaluation.events`, `.seed`, `.settings`, `.generation` | the evaluator's and the stage's contract, filled by the physicist | 1000 photons of 10 GeV, seed 42 |
+| Evaluation context | `evaluation.events`, `.seed`, `.generation` | the stages' contract, filled by the physicist; shared by every evaluator | 1000 photons of 10 GeV, seed 42 |
+| Evaluator settings | `evaluation.evaluators[*].settings` | each evaluator's contract, filled by the physicist | the collection `ECalBarrelCollection` |
 | Backend arguments | `evaluation.backend.<tool>.args` | the physicist, validated by the tool | `--physics.list FTFP_BERT` |
 | Execution environment | `environment`, `geometry.entry` | the physicist pins, k4opt resolves | nightly `2026-10-20`, CLD_o2_v09 |
 | Measured results | evaluation records | the evaluator | `angular_residual = 0.90 ± 0.03 mrad` |
 | Provenance | evaluation records | k4opt records | resolved versions, geometry fingerprint, argv |
 
-The user-facing YAML combines the first four in one file for convenience. Internally they
+The user-facing YAML combines the first five in one file for convenience. Internally they
 stay separate (see [Identity](#identity-and-provenance)).
 
 ## Key reference
@@ -180,46 +183,69 @@ study evaluates only barrel hits.
 
 ### `evaluation`
 
+How a candidate is measured: by one or more evaluators, in one shared context.
+
 | Key | Meaning |
 | --- | --- |
-| `evaluator` | Logical name of a curated, versioned standard evaluator, e.g. `calo.photon`. It must equal the `name` of the evaluator that `k4opt evaluate --evaluator` loads. |
-| `version` | Version of that evaluator's contract. A string. |
-| `events` | Optional. Number of events to process. |
+| `evaluators` | The evaluators that measure every candidate, one or more; see below. |
+| `events` | Optional. Number of events to generate and simulate. |
 | `seed` | Optional. Random seed. |
-| `settings` | Evaluator-defined, semantically meaningful inputs (readouts, ...). |
 | `generation` | Optional. Where the primary particles come from, for the `generation` [stage](evaluation.md#stages): a particle gun (`particle`, `energy`, `direction`, ...; see [ddsim](ddsim.md#particle-gun-evaluationgeneration)) or `sample: path/to/events.hepmc`, an event file. Not both. The framework runs the stage, evaluators do not. |
 | `backend` | Raw pass-through arguments for the backend tool(s). |
 
-A problem has exactly one `evaluation`, so every `metric` name resolves against one
-evaluator and version, and a candidate has one evaluation context. A study that needs
-several stages (say simulation and later reconstruction) uses one evaluator that `requires`
-the last of them; the framework runs the stages, see [Stages](evaluation.md#stages), and
-`stage` on a metric only classifies it.
-Combining several evaluators in one problem is deferred.
+Each entry of `evaluators`:
 
-**Evaluator.** `evaluator` and `version` are the label of a measurement contract. The
+| Key | Meaning |
+| --- | --- |
+| `name` | Logical name of a versioned evaluator, e.g. `calo.photon`. It must equal the `name` of an evaluator that `k4opt evaluate --evaluator` loads. Unique within the problem; letters, digits, `.`, `_` and `-`, starting with a letter or digit, because it also names the evaluator's directory in a run. |
+| `version` | Version of that evaluator's contract. A string. |
+| `settings` | Optional. Evaluator-defined, semantically meaningful inputs (readouts, ...). |
+
+**One context, several evaluators.** `events`, `seed`, `generation` and `backend` are the
+evaluation context: they configure the pipeline stages (generation, then simulation), not an
+evaluator. Every evaluator of the problem measures the candidate in this one context, so each
+stage runs once per candidate, however many evaluators read it (see
+[Stages](evaluation.md#stages)). An evaluator's `settings` hold only what is its own, such as
+the collection it reads; they may select among the shared events but never change how the
+events are made. Evaluators that need different samples, event counts or seeds need separate
+problems for now. Several named contexts in one problem (a photon and a pion sample, say, each
+with its own event count and shared by the evaluators that use it) are a planned extension,
+which is why these keys belong to the context and not to an evaluator.
+
+**Metrics and their evaluators.** Every objective and constraint metric is measured by exactly
+one evaluator. With a single evaluator, that is the one; if it declares its `metrics`, the
+objectives and constraints must be among them. With several, each must declare its `metrics`
+([evaluation](evaluation.md#writing-an-evaluator)), no metric may be declared by two of them,
+and every objective and constraint metric must be declared by one. `k4opt evaluate` checks this,
+and that a constraint's `unit` is the unit its evaluator declares, before anything is created.
+`stage` on a metric only classifies it: an evaluator may report `analysis` metrics without an
+analysis stage. The pipeline stages an evaluator reads are set by its `requires`, the last stage
+it needs; it gets the files of that stage and of the stages before it.
+
+**Evaluator.** `name` and `version` are the label of a measurement contract. The
 evaluator owns the metric definitions and the interpretation of the stage outputs. k4opt ships
 none: the physicist writes one (the example is
 [`calo_photon.py`](../examples/evaluators/calo_photon.py)) and names it on
-the command line, `k4opt evaluate --evaluator FILE.py:Class`, whose `name` and `version` must
-equal these two fields. A registry that resolves the label itself is deferred.
+the command line, `k4opt evaluate --evaluator FILE.py:Class` (once per evaluator), whose `name`
+and `version` must equal those of its entry. A registry that resolves the label itself is
+deferred.
 
-**Events and seed.** `events` and `seed` are common evaluation controls so that different
-evaluators do not each invent their own names. Both are optional and only valid where the
-evaluator declares support: an evaluator that reconstructs an existing dataset may have no
-meaningful seed. They are part of the evaluation context, since a different seed or event
-count is a different measurement.
+**Events and seed.** `events` and `seed` are the common controls of the context, so that
+evaluators do not each invent their own names. Both are optional: the simulation stage needs
+`events` and passes `seed` to `ddsim`, while a problem whose evaluators read no stage needs
+neither. They are part of the evaluation context, since a different seed or event count is a
+different measurement.
 
-**Settings.** The allowed keys belong to the evaluator's future contract. The keys in the
-example are illustrative only. In the example:
+**Settings.** The allowed keys of an evaluator's `settings` belong to that evaluator's
+contract, and the evaluator checks them before anything runs. In the example:
 
 | Key | Illustrative meaning |
 | --- | --- |
 | `collection` | the output collection to read (`ECalBarrelCollection`). The evaluator contract says how a collection is turned into hits |
 
 **Generation.** `evaluation.generation` says where the primary particles come from. It belongs
-to the generation stage, not to one evaluator, so several evaluators of the same problem would
-measure the same events. As a particle gun, as in the example, its keys are, for illustration:
+to the generation stage, not to one evaluator, so all evaluators of the problem measure the
+same events. As a particle gun, as in the example, its keys are, for illustration:
 
 | Key | Illustrative meaning |
 | --- | --- |
@@ -352,7 +378,7 @@ all to tell nearby showers apart in particle flow, which needs reconstruction.
 They are named so the YAML sections have a clear home. The evaluator contract (`Evaluator`,
 `EvaluationRequest`, `EvaluationResult`, `Measurement`, `EvaluationRecord`) is implemented in
 `k4opt.evaluation`, see [evaluation.md](evaluation.md), and `k4opt evaluate` evaluates one
-candidate with an evaluator named on the command line. A registry, a `Run` over many
+candidate with the evaluators named on the command line. A registry, a `Run` over many
 candidates and a store of records do not exist yet, and `load_problem()` neither resolves nor
 runs an evaluator.
 
@@ -360,7 +386,7 @@ runs an evaluator.
 | --- | --- |
 | `Problem` | The scientific definition: parameters, objectives, constraints. It does not change when the stack or backend arguments change. |
 | `Evaluator` | A curated, versioned component. Receives a candidate configuration and the evaluation context, runs existing Key4hep tools, returns measurements with uncertainties, a status and provenance. |
-| `EvaluationRecord` | The result of evaluating one candidate in one context. Parameter variations belong here: one unchanged problem evaluates many candidate geometries. |
+| `EvaluationRecord` | One evaluator's result for one candidate in one context. Parameter variations belong here: one unchanged problem evaluates many candidate geometries. |
 | `Run` | One execution session producing records, for example one optimization campaign or one manual scan. |
 
 ### Evaluation outcomes
@@ -383,8 +409,9 @@ Three identities are kept separate, even though the draft YAML shows them in one
 1. **Problem identity**: parameters (sources, kinds, bounds, units), objectives,
    constraints.
 2. **Evaluation context identity**: everything that can change what a measurement means
-   for the same candidate: the pinned and resolved Key4hep stack, geometry entry, evaluator
-   name and version, `events`, `seed`, `settings`, `generation`, and the exact ordered backend `args`. Changing the nightly
+   for the same candidate: the pinned and resolved Key4hep stack, geometry entry, the
+   evaluators' names, versions and `settings`, `events`, `seed`, `generation`, and the exact
+   ordered backend `args`. Changing the nightly
    or a backend flag does not change the problem, but it **does** change the context.
 3. **Run identity**: one execution session.
 
@@ -395,7 +422,7 @@ are recorded in provenance:
 | --- | --- |
 | `schema_version` | how the problem YAML is interpreted |
 | `environment.key4hep` | the software stack: DD4hep, Geant4, EDM4hep, k4geo, ... |
-| `evaluation.version` | the definition and implementation of the evaluation procedure and its metrics |
+| `evaluation.evaluators[*].version` | the definition and implementation of an evaluation procedure and its metrics |
 | geometry fingerprint | the exact materialized detector input |
 
 A bare evaluator `version: "1"` is fine for this proposal, but it must eventually resolve to
@@ -403,7 +430,7 @@ a precise implementation revision (for example a release of the package that shi
 evaluator), and that revision is what the record stores.
 
 Provenance recorded per evaluation: `k4opt evaluate` writes the geometry snapshot fingerprint
-(see [Fingerprint](geometry.md#fingerprint)), the evaluator identity and version, the settings,
+(see [Fingerprint](geometry.md#fingerprint)), each evaluator's identity, version and settings,
 the executed `ddsim` command (which holds the ordered backend arguments) and the size and SHA-256
 of an input sample to `summary.json` ([evaluators](evaluators.md#k4opt-evaluate)). Resolved
 Key4hep software versions and hashes of steering files are not recorded yet.
@@ -451,12 +478,14 @@ What is checked, with the location of the first problem in the message
 (`parameters[0].bounds: low must be smaller than high, ...`):
 
 - `schema_version` is exactly `k4opt.problem/v1alpha1`; unknown keys are rejected in every
-  section the schema defines (not inside `evaluation.settings`), as are wrong types.
+  section the schema defines (not inside an evaluator's `settings`), as are wrong types.
   `evaluation.generation` is either a particle gun (validated when the gun is built) or
   exactly `sample: <path>`.
-- Identifiers (`name`, `entry`, `evaluator`, `stage`, `metric`, units, ...) are non-empty
-  strings and are never trimmed or changed. `name` is optional and defaults to the file
-  name when loaded from a file.
+- Identifiers (`name`, `entry`, evaluator names and versions, `stage`, `metric`, units, ...)
+  are non-empty strings and are never trimmed or changed. `name` is optional and defaults to
+  the file name when loaded from a file.
+- `evaluation.evaluators` lists at least one evaluator, each with `name` and `version`; names
+  are unique and made of letters, digits, `.`, `_` and `-`, starting with a letter or digit.
 - `events` is a positive integer and `seed` an integer; booleans are not numbers anywhere.
   Backend names are `ddsim` or `k4run`, each with an `args` list of strings that is stored
   exactly as written.
@@ -481,8 +510,10 @@ Out of scope until later increments: evaluating many candidates in one run (`k4o
 takes one); the evaluator registry (the evaluator is named on the command line) and metric
 metadata beyond units; running `k4run`, and conflict detection and argument merging for it;
 capture of steering and configuration files; a problem fingerprint; optimizer integration; multi-objective strategy; non-geometry
-parameter sources; several evaluators per problem; a parameter that drives several geometry targets at once;
-metrics that are not simulated measurements (for example cost or channel-count models);
+parameter sources; several evaluation contexts (samples with their own event counts) per
+problem, and evaluators that read more than one; a parameter that drives several geometry
+targets at once; example evaluators of metrics that are not simulated measurements (cost or
+channel-count models need no new framework: an evaluator without `requires` can compute them);
 a named baseline candidate (an evaluation of the unmodified geometry is the natural
 baseline for validating bounds and constraint limits); reconstruction and analysis stages.
 
