@@ -6,7 +6,8 @@ k4opt is being built to let detector experts define, evaluate, compare and share
 detector optimization problems for the Key4hep chain (generation, simulation,
 reconstruction, analysis), starting from the detector descriptions in
 [k4geo](https://github.com/key4hep/k4geo). It is in early development: **geometry handling and a first end-to-end evaluation
-(one candidate, simulated with `ddsim`) exist; there is no optimizer yet.**
+(one candidate, simulated with `ddsim` once and measured by one or more evaluators) exist;
+there is no optimizer yet.**
 
 ## Components
 
@@ -16,10 +17,10 @@ API, command group, documentation and tests.
 | Component | Purpose | Status |
 | --- | --- | --- |
 | [`k4opt.geometry`](docs/geometry.md) | Discover addressable parameters of a DD4hep XML geometry, override them, materialize modified geometries | available |
-| problem definition | Declare which parameters vary and within which bounds, and what is evaluated. A [draft specification](docs/problem.md) can be loaded, validated and its geometry targets resolved (`k4opt.problem.load_problem`, against the active `$K4GEO`); a single candidate can be evaluated (`k4opt evaluate`); a general evaluator registry and further metrics are **proposed, not yet implemented** | in progress |
+| problem definition | Declare which parameters vary and within which bounds, and what is evaluated. A [draft specification](docs/problem.md) can be loaded, validated and its geometry targets resolved (`k4opt.problem.load_problem`, against the active `$K4GEO`); a single candidate can be evaluated by several evaluators that share its simulation (`k4opt evaluate`); a general evaluator registry and further metrics are **proposed, not yet implemented** | in progress |
 | [`k4opt.evaluation`](docs/evaluation.md) | The contract an evaluator implements (request, result, measurements); evaluators only read the output of a pipeline stage that the framework runs. `load_evaluator` loads an evaluator from a file; a per-run `summary.json` exists; a general runner and result store are **not implemented** | in progress |
-| [`k4opt.ddsim`](docs/ddsim.md) | Run `ddsim` on a prepared geometry with a particle gun or an input sample: command from the problem's `generation` and `backend`, protected options, logs; run once per candidate as the `simulation` stage | first vertical slice |
-| [examples](docs/evaluators.md) | One problem and one evaluator to copy from, run with `k4opt evaluate PROBLEM --evaluator FILE.py:Class --param REF=VALUE --output DIR`. The problem asks how fine the CLD ECAL cells should be: finer cells measure a photon's direction better (`calo.photon` measures it) but fire more readout channels. k4opt ships no evaluators | example |
+| [`k4opt.ddsim`](docs/ddsim.md) | Run `ddsim` on a prepared geometry with a particle gun or an input sample: command from the problem's `generation` and `backend`, protected options, logs; run once per candidate as the `simulation` stage, whatever number of evaluators read it | first vertical slice |
+| [examples](docs/evaluators.md) | One problem and one evaluator to copy from, run with `k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] --param REF=VALUE --output DIR`. The problem asks how fine the CLD ECAL cells should be: finer cells measure a photon's direction better (`calo.photon` measures it) but fire more readout channels. k4opt ships no evaluators | example |
 | optimization | Drive the evaluation with existing optimization libraries | planned |
 
 The planned components are directions, not commitments; their shape depends on

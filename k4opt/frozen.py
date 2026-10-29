@@ -21,18 +21,18 @@ _MAX_DEPTH = 64
 _MAX_VALUES = 1_000_000
 
 
-class FrozenMap[V](Mapping[str, V]):
+class FrozenMap[K, V](Mapping[K, V]):
     """A read-only, hashable mapping that keeps insertion order."""
 
     __slots__ = ("_items",)
 
-    def __init__(self, items: Mapping[str, V]) -> None:
+    def __init__(self, items: Mapping[K, V]) -> None:
         self._items = dict(items)
 
-    def __getitem__(self, key: str) -> V:
+    def __getitem__(self, key: K) -> V:
         return self._items[key]
 
-    def __iter__(self) -> Iterator[str]:
+    def __iter__(self) -> Iterator[K]:
         return iter(self._items)
 
     def __len__(self) -> int:

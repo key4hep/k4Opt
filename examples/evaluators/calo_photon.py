@@ -24,13 +24,13 @@ PHOTON = 22  # PDG code
 
 
 class CaloPhoton(Evaluator):
-    # must match evaluation.evaluator in the problem file
+    # must match the name of an entry of evaluation.evaluators in the problem file
     name = "calo.photon"
-    # must match evaluation.version in the problem file
+    # must match the version of that entry
     version = "1"
     # k4opt runs generation and ddsim first and checks the event count
     requires = "simulation"
-    # evaluation.settings: the calorimeter hits to read (required)
+    # the settings of that entry: the calorimeter hits to read (required)
     settings = {"collection": str}
     # metric -> unit; its stage is `requires`
     metrics = {"ecal_barrel.angular_residual": "mrad", "ecal_barrel.fired_cells": "1"}

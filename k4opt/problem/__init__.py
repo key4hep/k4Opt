@@ -10,7 +10,7 @@ Typical use::
     from k4opt.problem import load_problem
 
     problem = load_problem("problem.yaml")
-    print(problem.parameters[0].bounds, problem.evaluation.backend["ddsim"])
+    print(problem.parameters[0].bounds, problem.evaluation.evaluators[0].name)
     data = problem.to_dict()  # plain JSON-compatible data
 """
 
@@ -21,6 +21,7 @@ from k4opt.problem.models import (
     Constraint,
     Environment,
     Evaluation,
+    EvaluatorSpec,
     GeometrySelector,
     GeometrySpec,
     Key4hepStack,
@@ -35,6 +36,7 @@ __all__ = [
     "Constraint",
     "Environment",
     "Evaluation",
+    "EvaluatorSpec",
     "GeometrySelector",
     "GeometrySpec",
     "Key4hepStack",

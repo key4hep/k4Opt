@@ -57,7 +57,7 @@ def _real(value: object, what: str) -> int | float:
     return number
 
 
-def _paths(value: Mapping[str, Path], what: str) -> FrozenMap[Path]:
+def _paths(value: Mapping[str, Path], what: str) -> FrozenMap[str, Path]:
     if not isinstance(value, Mapping):
         raise EvaluationContractError(f"{what} must be a mapping of names to paths")
     for name, path in value.items():
@@ -69,7 +69,7 @@ def _paths(value: Mapping[str, Path], what: str) -> FrozenMap[Path]:
     return FrozenMap(value)
 
 
-def _json_mapping(value: Mapping[str, Json], what: str) -> FrozenMap[Json]:
+def _json_mapping(value: Mapping[str, Json], what: str) -> FrozenMap[str, Json]:
     if not isinstance(value, Mapping):
         raise EvaluationContractError(f"{what} must be a mapping")
     frozen = freeze(value, what, EvaluationContractError)
@@ -84,8 +84,8 @@ class EvaluationRequest:
     ``candidate`` holds the parameter values, keyed by the problem's canonical parameter
     identity (for a geometry parameter the canonical target, ``constants.ECal_cell_size``);
     the request does not check them against any search domain. ``settings`` is the
-    evaluator-defined content of ``evaluation.settings``. ``inputs`` names already prepared
-    local files (a compact XML snapshot, an EDM4hep file); which names an evaluator
+    evaluator-defined content of its entry in ``evaluation.evaluators``. ``inputs`` names already
+    prepared local files (a compact XML snapshot, an EDM4hep file); which names an evaluator
     accepts is part of its documentation. ``workdir`` is where the evaluator may write; it
     is neither created nor checked here. ``backend_args`` maps a tool name to its raw
     arguments, kept exactly as given, including order and repetition, and never parsed.
@@ -233,8 +233,7 @@ class EvaluationResult:
     stages; each ``(stage, metric)`` occurs once. ``artifacts`` names
     local output files that can be inputs of a later evaluation; whether they exist is not
     checked here. ``message`` explains the status. ``provenance`` is JSON-compatible
-    metadata that the evaluator chose to supply; the framework that runs pipeline stages for an
-    evaluator records them under the reserved key ``stages``.
+    metadata that the evaluator chose to supply.
     """
 
     status: Status
@@ -320,21 +319,22 @@ type CandidateKey = tuple[tuple[str, str, str, str], ...]
 
 @dataclass(frozen=True, slots=True)
 class EvaluationRecord:
-    """One attempted evaluation, as observed by the framework that ran it.
+    """One evaluator's attempt at one candidate, as observed by the framework that ran it.
 
-    ``request`` is the object the evaluator received and ``result`` the one it returned, plus
-    the artifacts and ``provenance["stages"]`` of the pipeline stages the framework ran for it;
-    nothing of them is copied into other fields. ``evaluator_name`` and
-    ``evaluator_version`` are those of the evaluator object that ran (the caller verified
-    that they match the problem). ``candidate_key`` identifies the candidate within the
-    problem that defined it: it is scoped to that problem definition and is neither a
-    cross-problem hash nor a complete cache key. ``elapsed_seconds`` is the wall-clock
-    duration of those stages and the ``evaluate()`` call, measured with
-    ``time.perf_counter()``; it is not CPU time, memory use or an estimate.
+    ``request`` is the object the evaluator received and ``result`` the one it returned, or the
+    ``failed`` result that stands in for it when a pipeline stage it reads could not be read. It
+    holds only the evaluator's own work: the stages it read, which other evaluators may share,
+    are recorded once by the caller, and ``request.inputs`` names their files.
+    ``evaluator_name`` and ``evaluator_version`` are those of the evaluator object that ran (the
+    caller verified that they match the problem). ``candidate_key`` identifies the candidate
+    within the problem that defined it: it is scoped to that problem definition and is neither a
+    cross-problem hash nor a complete cache key. ``elapsed_seconds`` is the wall-clock duration
+    of the ``evaluate()`` call alone, measured with ``time.perf_counter()``, and ``None`` if the
+    evaluator was not called; it is not CPU time, memory use or an estimate.
 
-    ``result.provenance`` is what the evaluator chose to report, apart from ``stages``;
-    ``candidate_key`` and ``elapsed_seconds`` are what the framework observed. Neither is proof
-    of the software environment actually used.
+    ``result.provenance`` is what the evaluator chose to report; ``candidate_key`` and
+    ``elapsed_seconds`` are what the framework observed. Neither is proof of the software
+    environment actually used.
     """
 
     request: EvaluationRequest
@@ -342,7 +342,7 @@ class EvaluationRecord:
     evaluator_name: str
     evaluator_version: str
     candidate_key: CandidateKey
-    elapsed_seconds: float
+    elapsed_seconds: float | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.request, EvaluationRequest):
@@ -358,6 +358,8 @@ class EvaluationRecord:
             raise EvaluationContractError(
                 "candidate_key must be a tuple of (reference, kind, tag, value) string tuples"
             )
+        if self.elapsed_seconds is None:
+            return
         if _real(self.elapsed_seconds, "elapsed_seconds") < 0:
             raise EvaluationContractError(
                 f"elapsed_seconds must not be negative, got {self.elapsed_seconds!r}"

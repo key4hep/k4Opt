@@ -9,7 +9,7 @@ from typing import Any, cast
 import pytest
 
 from k4opt import frozen as frozen_module
-from k4opt.problem import Evaluation, ProblemConfigError, parse_problem
+from k4opt.problem import Evaluation, EvaluatorSpec, ProblemConfigError, parse_problem
 from k4opt.problem.models import freeze, thaw
 
 
@@ -68,9 +68,14 @@ def test_stored_values_are_read_only(doc: dict[str, Any]) -> None:
 
 def test_directly_constructed_evaluation_copies_its_input() -> None:
     settings: dict[str, Any] = {"a": {"b": [1, 2]}}
-    evaluation = Evaluation("e", "1", settings=settings)
+    evaluators = [EvaluatorSpec("e", "1", settings=settings)]
+    evaluation = Evaluation(evaluators)  # type: ignore[arg-type]
     settings["a"]["b"].append(3)
-    assert evaluation.to_dict()["settings"] == {"a": {"b": [1, 2]}}
+    evaluators.append(EvaluatorSpec("f", "1"))
+    assert evaluation.to_dict()["evaluators"] == [
+        {"name": "e", "version": "1", "settings": {"a": {"b": [1, 2]}}}
+    ]
+    assert isinstance(evaluation.evaluators, tuple)
 
 
 @pytest.mark.parametrize("args", ["--physics.list", ["--n", 1], {"--a", "--b"}])
@@ -78,7 +83,7 @@ def test_directly_constructed_evaluation_needs_backend_args_as_a_list_of_strings
     args: Any,
 ) -> None:
     with pytest.raises(ProblemConfigError, match=r"backend\.ddsim\.args: must be a list"):
-        Evaluation("e", "1", backend={"ddsim": args})
+        Evaluation((EvaluatorSpec("e", "1"),), backend={"ddsim": args})
 
 
 def test_spec_is_hashable_and_picklable(doc: dict[str, Any]) -> None:
@@ -90,11 +95,14 @@ def test_spec_is_hashable_and_picklable(doc: dict[str, Any]) -> None:
 def test_optional_parts_are_omitted_from_to_dict(doc: dict[str, Any]) -> None:
     for key in ("name", "constraints"):
         del doc[key]
-    for key in ("events", "seed", "settings", "generation", "backend"):
+    for key in ("events", "seed", "generation", "backend"):
         del doc["evaluation"][key]
+    del doc["evaluation"]["evaluators"][0]["settings"]
     data = parse_problem(doc).to_dict()
     assert "name" not in data and "constraints" not in data
-    assert data["evaluation"] == {"evaluator": "calo.single_particle_shower", "version": "1"}
+    assert data["evaluation"] == {
+        "evaluators": [{"name": "calo.single_particle_shower", "version": "1"}]
+    }
 
 
 def test_canonical_target(doc: dict[str, Any]) -> None:
@@ -175,22 +183,23 @@ def test_aliases_below_the_limit_are_kept_and_shared_results_are_equal() -> None
 
 
 def test_alias_tower_in_a_document_parses_quickly(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["settings"] = {"tower": _alias_tower(17)}
+    doc["evaluation"]["evaluators"][0]["settings"] = {"tower": _alias_tower(17)}
     problem = parse_problem(doc)
     assert parse_problem(doc) == problem
 
 
 def test_equal_specs_hash_equally_whatever_the_key_order(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["settings"] = {"x": 1, "y": {"a": 1, "b": 2}}
+    doc["evaluation"]["evaluators"][0]["settings"] = {"x": 1, "y": {"a": 1, "b": 2}}
     first = parse_problem(doc)
-    doc["evaluation"]["settings"] = {"y": {"b": 2, "a": 1}, "x": 1}
+    doc["evaluation"]["evaluators"][0]["settings"] = {"y": {"b": 2, "a": 1}, "x": 1}
     second = parse_problem(doc)
     assert first == second
     assert hash(first) == hash(second)
     assert len({first, second}) == 1
     # insertion order is still what iteration and serialization show
-    assert list(second.evaluation.settings) == ["y", "x"]
-    assert list(second.to_dict()["evaluation"]["settings"]) == ["y", "x"]  # type: ignore[index]
+    assert list(second.evaluation.evaluators[0].settings) == ["y", "x"]
+    evaluators = second.to_dict()["evaluation"]["evaluators"]  # type: ignore[index]
+    assert list(evaluators[0]["settings"]) == ["y", "x"]
 
 
 def test_different_specs_are_still_different(doc: dict[str, Any]) -> None:

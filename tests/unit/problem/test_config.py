@@ -52,7 +52,8 @@ def test_loads_the_checked_in_example() -> None:
     assert parameter.geometry.canonical_target == "constants.ECal_cell_size"
     assert (parameter.kind, parameter.bounds, parameter.unit) == ("continuous", (2.5, 20.0), "mm")
     evaluation = problem.evaluation
-    assert (evaluation.evaluator, evaluation.version) == ("calo.photon", "1")
+    assert [(e.name, e.version) for e in evaluation.evaluators] == [("calo.photon", "1")]
+    assert evaluation.evaluators[0].settings == {"collection": "ECalBarrelCollection"}
     assert (evaluation.events, evaluation.seed) == (1000, 42)
     assert evaluation.backend["ddsim"] == ("--physics.list", "FTFP_BERT")
     generator: Any = evaluation.generation
@@ -86,11 +87,11 @@ def test_minimal_document(doc: dict[str, Any]) -> None:
     for key in ("name", "constraints"):
         del doc[key]
     del doc["evaluation"]["events"], doc["evaluation"]["seed"]
-    del doc["evaluation"]["settings"], doc["evaluation"]["backend"]
+    del doc["evaluation"]["evaluators"][0]["settings"], doc["evaluation"]["backend"]
     del doc["evaluation"]["generation"]
     problem = parse_problem(doc)
     assert problem.evaluation.events is None
-    assert not problem.evaluation.settings and not problem.evaluation.backend
+    assert not problem.evaluation.evaluators[0].settings and not problem.evaluation.backend
     assert not problem.evaluation.generation
     assert problem.constraints == ()
 
@@ -283,10 +284,54 @@ def test_generation_rejects_wrong_shapes(
 
 
 def test_unknown_keys_inside_settings_are_allowed(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["settings"] = {"anything": {"goes": [1, "x", None, True, 2.5]}}
-    assert parse_problem(doc).evaluation.to_dict()["settings"] == {
-        "anything": {"goes": [1, "x", None, True, 2.5]}
+    doc["evaluation"]["evaluators"][0]["settings"] = {"anything": {"goes": [1, "x", None, True]}}
+    assert parse_problem(doc).evaluation.evaluators[0].to_dict()["settings"] == {
+        "anything": {"goes": [1, "x", None, True]}
     }
+
+
+def test_several_evaluators_keep_their_order_and_own_settings(doc: dict[str, Any]) -> None:
+    doc["evaluation"]["evaluators"].append({"name": "detector.cost", "version": "2"})
+    problem = parse_problem(doc)
+    first, second = problem.evaluation.evaluators
+    assert (first.name, first.version, second.name, second.version) == (
+        "calo.single_particle_shower",
+        "1",
+        "detector.cost",
+        "2",
+    )
+    assert first.settings == {"collection": "ECalBarrelCollection"} and second.settings == {}
+    assert parse_problem(problem.to_dict()) == problem
+
+
+def test_evaluation_needs_its_evaluators(doc: dict[str, Any]) -> None:
+    del doc["evaluation"]["evaluators"]
+    reject(doc, "evaluation: missing required key(s) ['evaluators']")
+
+
+@pytest.mark.parametrize(
+    ("evaluators", "message"),
+    [
+        ([], "evaluation.evaluators: must list at least one evaluator"),
+        ({"name": "x", "version": "1"}, "evaluation.evaluators: must be a list, got dict"),
+        (["calo.photon"], "evaluation.evaluators[0]: must be a mapping, got str"),
+        ([{"name": "x"}], "evaluation.evaluators[0]: missing required key(s) ['version']"),
+        (
+            [{"name": "x", "version": "1", "extra": 1}],
+            "evaluation.evaluators[0]: unknown key(s) ['extra']",
+        ),
+        ([{"name": "a/b", "version": "1"}], "evaluation.evaluators[0].name: 'a/b' must start"),
+        ([{"name": "..", "version": "1"}], "evaluation.evaluators[0].name: '..' must start"),
+        ([{"name": "-x", "version": "1"}], "must start with a letter or digit"),
+        (
+            [{"name": "x", "version": "1"}, {"name": "x", "version": "2"}],
+            "evaluation.evaluators[1]: duplicates evaluators[0] (name 'x')",
+        ),
+    ],
+)
+def test_evaluator_list_errors(doc: dict[str, Any], evaluators: object, message: str) -> None:
+    doc["evaluation"]["evaluators"] = evaluators
+    reject(doc, message)
 
 
 @pytest.mark.parametrize(
@@ -332,24 +377,38 @@ def test_document_must_be_a_mapping(data: object) -> None:
         (lambda d: d["geometry"].clear(), "missing required key(s) ['entry']"),
         (lambda d: d.update(name=""), "name: must be a non-empty string"),
         (
-            lambda d: d["evaluation"].update(evaluator=""),
-            "evaluation.evaluator: must be a non-empty",
+            lambda d: d["evaluation"]["evaluators"][0].update(name=""),
+            "evaluation.evaluators[0].name: must be a non-empty",
         ),
-        (lambda d: d["evaluation"].update(version=1), "evaluation.version: must be a non-empty"),
+        (
+            lambda d: d["evaluation"]["evaluators"][0].update(version=1),
+            "evaluation.evaluators[0].version: must be a non-empty",
+        ),
         (lambda d: d["evaluation"].update(events=0), "events: must be >= 1"),
         (lambda d: d["evaluation"].update(events=True), "events: must be an integer, got bool"),
         (lambda d: d["evaluation"].update(events=1.5), "events: must be an integer, got float"),
         (lambda d: d["evaluation"].update(seed=True), "seed: must be an integer, got bool"),
         (lambda d: d["evaluation"].update(seed="42"), "seed: must be an integer, got str"),
-        (lambda d: d["evaluation"].update(settings=[1]), "settings: must be a mapping, got list"),
-        (lambda d: d["evaluation"].update(settings={"a": {1, 2}}), "settings.a: unsupported value"),
-        (lambda d: d["evaluation"].update(settings={"a": float("nan")}), "non-finite"),
         (
-            lambda d: d["evaluation"].update(settings={"a": datetime.date(2026, 1, 1)}),
+            lambda d: d["evaluation"]["evaluators"][0].update(settings=[1]),
+            "evaluation.evaluators[0].settings: must be a mapping, got list",
+        ),
+        (
+            lambda d: d["evaluation"]["evaluators"][0].update(settings={"a": {1, 2}}),
+            "evaluation.evaluators[0].settings.a: unsupported value",
+        ),
+        (
+            lambda d: d["evaluation"]["evaluators"][0].update(settings={"a": float("nan")}),
+            "non-finite",
+        ),
+        (
+            lambda d: d["evaluation"]["evaluators"][0].update(
+                settings={"a": datetime.date(2026, 1, 1)}
+            ),
             "settings.a: unsupported",
         ),
         (
-            lambda d: d["evaluation"].update(settings={1: "x"}),
+            lambda d: d["evaluation"]["evaluators"][0].update(settings={1: "x"}),
             "settings: mapping keys must be strings",
         ),
         (lambda d: d["objectives"][0].update(stage=""), "objectives[0].stage: must be a non-empty"),
@@ -694,27 +753,35 @@ def test_unquoted_date_is_flagged(write: Write) -> None:
 
 
 def test_disallowed_scalars_in_settings_from_yaml(write: Write) -> None:
-    text = good_yaml().replace("    collection:", "    when: 2026-10-20\n    collection:")
+    text = good_yaml().replace(
+        "        collection:", "        when: 2026-10-20\n        collection:"
+    )
     with pytest.raises(ProblemConfigError, match=r"settings\.when: unsupported value of type date"):
         load_problem(write(text))
-    text = good_yaml().replace("    collection:", "    blob: !!binary aGk=\n    collection:")
+    text = good_yaml().replace(
+        "        collection:", "        blob: !!binary aGk=\n        collection:"
+    )
     with pytest.raises(
         ProblemConfigError, match=r"settings\.blob: unsupported value of type bytes"
     ):
         load_problem(write(text))
-    text = good_yaml().replace("    collection:", "    s: !!set {a, b}\n    collection:")
+    text = good_yaml().replace(
+        "        collection:", "        s: !!set {a, b}\n        collection:"
+    )
     with pytest.raises(ProblemConfigError, match=r"settings\.s: unsupported value of type set"):
         load_problem(write(text))
-    text = good_yaml().replace("    collection:", "    x: .nan\n    collection:")
+    text = good_yaml().replace("        collection:", "        x: .nan\n        collection:")
     with pytest.raises(ProblemConfigError, match="non-finite"):
         load_problem(write(text))
 
 
 def test_recursive_aliases_are_rejected(write: Write) -> None:
-    text = good_yaml().replace("    collection:", "    loop: &a [*a]\n    collection:")
+    text = good_yaml().replace("        collection:", "        loop: &a [*a]\n        collection:")
     with pytest.raises(ProblemConfigError, match="contains itself"):
         load_problem(write(text))
-    text = good_yaml().replace("    collection:", "    loop: &a {x: *a}\n    collection:")
+    text = good_yaml().replace(
+        "        collection:", "        loop: &a {x: *a}\n        collection:"
+    )
     with pytest.raises(ProblemConfigError, match="contains itself"):
         load_problem(write(text))
 
@@ -738,7 +805,7 @@ environment: {key4hep: {channel: release, version: "2026-04-08"}}
 geometry: {entry: g.xml}
 parameters:
   - {geometry: {constant: X}, type: integer, bounds: [1, 3]}
-evaluation: {evaluator: e, version: "1"}
+evaluation: {evaluators: [{name: e, version: "1"}]}
 objectives:
   - &base {stage: simulation, metric: a, direction: minimize}
   - <<: *base
