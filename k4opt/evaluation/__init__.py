@@ -27,7 +27,13 @@ Typical use::
             return EvaluationResult.valid([Measurement("analysis", "answer", 42, unit="1")])
 """
 
-from k4opt.evaluation.errors import EvaluationContractError, EvaluatorLoadError
+from k4opt.evaluation.edm4hep import count_events, read_collection
+from k4opt.evaluation.errors import (
+    EvaluationContractError,
+    EvaluationFailed,
+    EvaluationInvalid,
+    EvaluatorLoadError,
+)
 from k4opt.evaluation.loader import load_evaluator
 from k4opt.evaluation.models import (
     CandidateKey,
@@ -42,6 +48,8 @@ from k4opt.evaluation.protocol import Evaluator
 __all__ = [
     "CandidateKey",
     "EvaluationContractError",
+    "EvaluationFailed",
+    "EvaluationInvalid",
     "EvaluationRecord",
     "EvaluationRequest",
     "EvaluationResult",
@@ -49,5 +57,7 @@ __all__ = [
     "EvaluatorLoadError",
     "Measurement",
     "Status",
+    "count_events",
     "load_evaluator",
+    "read_collection",
 ]

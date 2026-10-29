@@ -51,7 +51,7 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["parameters"][0]["bounds"] = [100.0, 600.0]
     evaluation = doc["evaluation"]
     evaluation.update(evaluator="calo.hit_multiplicity", events=3, seed=5)
-    evaluation["settings"] = {"readouts": {"ecal_barrel": COLLECTION}}
+    evaluation["settings"] = {"collection": COLLECTION}
     evaluation["generation"] = {
         "particle": "gamma",
         "energy": {"value": 10, "unit": "GeV"},
@@ -156,7 +156,7 @@ def test_summary_is_written_and_truthful(
     ]
     assert on_disk["simulation"]["command"][0] == "/stack/bin/ddsim"
     assert on_disk["simulation"]["returncode"] == 0
-    assert on_disk["simulation"]["collection"] == COLLECTION
+    assert on_disk["settings"] == {"collection": COLLECTION}
     # the files of the stages, named <stage>.<role>: what the real-ddsim test reads back
     paths = on_disk["paths"]
     assert paths["run_dir"] == str(tmp_path / "a")
@@ -655,8 +655,10 @@ def test_the_preflight_request_has_the_generation_the_evaluation_gets(
 ) -> None:
     spy = Spy()
     run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluator=spy)
-    (checked,) = spy.checked
     (evaluated,) = spy.evaluated
-    assert checked.generation["particle"] == "gamma"
-    for field in ("generation", "settings", "events", "seed", "backend_args", "candidate"):
-        assert getattr(checked, field) == getattr(evaluated, field)
+    # once before anything is created and once more when the candidate is evaluated
+    assert len(spy.checked) == 2
+    for checked in spy.checked:
+        assert checked.generation["particle"] == "gamma"
+        for field in ("generation", "settings", "events", "seed", "backend_args", "candidate"):
+            assert getattr(checked, field) == getattr(evaluated, field)

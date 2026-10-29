@@ -24,7 +24,7 @@ _BASE: dict[str, object] = {
         "version": "1",
         "events": 1000,
         "seed": 42,
-        "settings": {"readouts": {"ecal_barrel": "ECalBarrelCollection"}},
+        "settings": {"collection": "ECalBarrelCollection"},
         "generation": {"particle": "gamma", "energy": {"value": 10, "unit": "GeV"}},
         "backend": {"ddsim": {"args": ["--physics.list", "FTFP_BERT"]}},
     },

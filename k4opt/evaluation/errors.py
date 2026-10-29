@@ -19,3 +19,18 @@ class EvaluatorLoadError(K4OptError):
     The file or module is missing or fails to import, the class is not there, it cannot be
     created without arguments, or the object lacks ``name``, ``version`` or ``evaluate``.
     """
+
+
+class EvaluationFailed(K4OptError):  # noqa: N818 - names the status ``failed``
+    """Raised by an evaluator (or a reading helper) when the execution failed.
+
+    ``k4opt`` turns it into a ``failed`` result whose message is the text of the exception, so
+    an evaluator can stop at the first problem instead of building the result by hand.
+    """
+
+
+class EvaluationInvalid(K4OptError):  # noqa: N818 - names the status ``invalid``
+    """Raised by an evaluator when the evaluation ran but its result is not usable.
+
+    ``k4opt`` turns it into an ``invalid`` result whose message is the text of the exception.
+    """

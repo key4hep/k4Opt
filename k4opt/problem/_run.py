@@ -21,6 +21,7 @@ from pathlib import Path
 from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRecord,
+    EvaluationResult,
     Evaluator,
 )
 from k4opt.evaluation.models import Scalar
@@ -60,6 +61,20 @@ class RunOutcome:
     @property
     def summary_path(self) -> Path:
         return self.run_dir / SUMMARY_NAME
+
+    @property
+    def events_read(self) -> object:
+        """The events found in the simulation output, ``None`` if it was not inspected."""
+        return _stage_provenance(self.record.result, "simulation").get("events_read")
+
+
+def _stage_provenance(result: EvaluationResult, stage: str) -> dict[str, object]:
+    """What the framework recorded about ``stage`` (plain data), empty if it left nothing."""
+    provenance = thaw(result.provenance)
+    assert isinstance(provenance, dict)
+    stages = provenance.get("stages")
+    entry = stages.get(stage) if isinstance(stages, dict) else None
+    return entry if isinstance(entry, dict) else {}
 
 
 def _parse_value(parameter: Parameter, text: str) -> Scalar:
@@ -165,13 +180,8 @@ def _summary(
     problem_path: Path, spec: ProblemSpec, record: EvaluationRecord, run_dir: Path, geometry: object
 ) -> dict[str, object]:
     result, request = record.result, record.request
-    provenance = thaw(result.provenance)
-    assert isinstance(provenance, dict)
-    stages = provenance.get("stages")
-    stages = stages if isinstance(stages, dict) else {}
-    simulation = stages.get("simulation")
-    simulation = simulation if isinstance(simulation, dict) else {}
-    generation = stages.get("generation") or thaw(spec.evaluation.generation)
+    simulation = _stage_provenance(result, "simulation")
+    generation = _stage_provenance(result, "generation") or thaw(spec.evaluation.generation)
     argv = simulation.get("argv")
     return {
         "schema": SUMMARY_SCHEMA,
@@ -191,15 +201,12 @@ def _summary(
             }
             for m in result.measurements
         ],
-        "events": {"requested": request.events, "observed": provenance.get("events_read")},
+        "events": {"requested": request.events, "observed": simulation.get("events_read")},
         "elapsed_seconds": record.elapsed_seconds,
         "geometry": geometry,
         "generation": generation,
-        "simulation": {
-            "command": argv,
-            "returncode": simulation.get("returncode"),
-            "collection": provenance.get("collection"),
-        },
+        "settings": thaw(request.settings),
+        "simulation": {"command": argv, "returncode": simulation.get("returncode")},
         "paths": {"run_dir": str(run_dir)} | {k: str(v) for k, v in result.artifacts.items()},
         "environment": {
             # declared by the problem: a pin, not a check of what ran

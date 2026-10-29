@@ -19,6 +19,8 @@ from pathlib import Path
 from k4opt.evaluation import (
     CandidateKey,
     EvaluationContractError,
+    EvaluationFailed,
+    EvaluationInvalid,
     EvaluationRecord,
     EvaluationRequest,
     EvaluationResult,
@@ -30,6 +32,7 @@ from k4opt.frozen import Json
 from k4opt.problem._stages import (
     check_run_inputs,
     check_stage,
+    inspect_stage,
     plan_stages,
     provided_provenance,
     run_stage,
@@ -214,14 +217,20 @@ def _evaluate_candidate(
 
     The candidate maps each canonical parameter reference to a scalar. Raises
     :class:`CandidateError` for a candidate outside the declared domains and
-    :class:`EvaluationContractError` for an evaluator that does not match the problem or a
-    ``valid`` result that omits a requested metric. If the evaluator has a ``requires``
+    :class:`EvaluationContractError` for an evaluator that does not match the problem, rejects
+    the settings in its optional ``check()`` or returns a ``valid`` result that omits a
+    requested metric. If the evaluator has a ``requires``
     stage that ``inputs`` does not already provide, that stage and the ones it needs run first
-    (on ``inputs["geometry"]``, in ``workdir``) and a failed stage becomes a ``failed`` result
-    without calling the evaluator. Exceptions of the evaluator propagate.
+    (on ``inputs["geometry"]``, in ``workdir``); a failed stage, or an output that does not
+    hold the requested events, becomes a ``failed`` result without calling the evaluator. An
+    evaluator that raises :class:`EvaluationFailed` or :class:`EvaluationInvalid` gets that
+    result; any other exception propagates.
     """
     values, key = _validate_candidate(spec, candidate)
     name, version = _check_identity(spec, evaluator)
+    check = getattr(evaluator, "check", None)
+    if check is not None:
+        check(_request(spec, values))
     inputs = dict(inputs or {})
     required = getattr(evaluator, "requires", None)
     plan = [] if required is None else check_stage(spec, required, inputs)
@@ -229,7 +238,7 @@ def _evaluate_candidate(
     check_run_inputs(plan, inputs, workdir)
     started = time.perf_counter()
     artifacts: dict[str, Path] = {}
-    ran: dict[str, Json] = {}
+    ran: dict[str, dict[str, Json]] = {}
     error = None
     for stage in plan:
         outcome = run_stage(spec, stage, inputs=inputs, workdir=workdir)
@@ -239,14 +248,26 @@ def _evaluate_candidate(
         error = outcome.error
         if error is not None:
             break
+    observed: dict[str, Json] = {}
+    if error is None and required is not None and required in inputs:
+        observed, error = inspect_stage(spec, required, inputs[required])
     # in pipeline order: what ran, and what the caller supplied instead of running it
     stages = {
         stage: ran[stage] if stage in ran else provided_provenance(supplied[stage])
         for stage in _chain(required)
         if stage in ran or stage in supplied
     }
+    if observed and required is not None:
+        stages[required] = {**stages[required], **observed}
     request = _request(spec, values, inputs, workdir)
-    result = EvaluationResult.failed(error) if error is not None else evaluator.evaluate(request)
+    try:
+        result = (
+            EvaluationResult.failed(error) if error is not None else evaluator.evaluate(request)
+        )
+    except EvaluationFailed as exc:
+        result = EvaluationResult.failed(str(exc))
+    except EvaluationInvalid as exc:
+        result = EvaluationResult.invalid(str(exc))
     elapsed = time.perf_counter() - started
     if not isinstance(result, EvaluationResult):
         raise EvaluationContractError(

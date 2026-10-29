@@ -8,7 +8,8 @@ starts a tool or handles that tool's failures.
 * ``generation``: where the primary particles come from, ``evaluation.generation``. A
   ``sample`` file is checked and hashed and handed on as ``inputs["generation"]``; a particle
   gun has no file (``ddsim`` generates it).
-* ``simulation``: ``ddsim`` on the prepared geometry; needs ``generation``.
+* ``simulation``: ``ddsim`` on the prepared geometry; needs ``generation``. Its output, run
+  or supplied, is checked to hold the requested number of events, so no evaluator has to.
 
 A file the caller supplies as ``inputs[stage]`` is authoritative: that stage is not run, the
 stages that only it needs are not run either, and the file replaces what the problem says (a
@@ -26,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from k4opt.ddsim import check_arguments, simulate
-from k4opt.evaluation import EvaluationContractError
+from k4opt.evaluation import EvaluationContractError, EvaluationFailed, count_events
 from k4opt.frozen import Json
 from k4opt.problem.models import ProblemSpec
 
@@ -175,6 +176,21 @@ def _run_simulation(
     return StageOutcome({"simulation": run.output}, run.files, provenance)
 
 
+def _inspect_simulation(spec: ProblemSpec, path: Path) -> tuple[dict[str, Json], str | None]:
+    """``(observations, error)`` for the EDM4hep file of the simulation stage."""
+    try:
+        count = count_events(path)
+    except EvaluationFailed as exc:
+        return {}, str(exc)
+    observed: dict[str, Json] = {"events_read": count}
+    expected = spec.evaluation.events
+    if expected is not None and count != expected:
+        return observed, f"incomplete simulation: {count} of {expected} events in {path.name}"
+    if count == 0:
+        return observed, f"{path.name} contains no events"
+    return observed, None
+
+
 @dataclass(frozen=True, slots=True)
 class _Stage:
     needs: tuple[str, ...]
@@ -182,12 +198,19 @@ class _Stage:
     run: Callable[[ProblemSpec, Mapping[str, Path], Path | None], StageOutcome]
     geometry: bool  # reads the prepared geometry, inputs["geometry"]
     writes: bool  # writes files, so it needs a workdir
+    # checks the output file, whether the stage wrote it or the caller supplied it
+    inspect: Callable[[ProblemSpec, Path], tuple[dict[str, Json], str | None]] | None = None
 
 
 _STAGES: Mapping[str, _Stage] = {
     "generation": _Stage((), _check_generation, _run_generation, geometry=False, writes=False),
     "simulation": _Stage(
-        ("generation",), _check_simulation, _run_simulation, geometry=True, writes=True
+        ("generation",),
+        _check_simulation,
+        _run_simulation,
+        geometry=True,
+        writes=True,
+        inspect=_inspect_simulation,
     ),
 }
 
@@ -241,3 +264,12 @@ def run_stage(
 ) -> StageOutcome:
     """Run one ``stage`` in ``workdir``; ``inputs`` holds the geometry and earlier outputs."""
     return _STAGES[stage].run(spec, inputs, workdir)
+
+
+def inspect_stage(spec: ProblemSpec, stage: str, path: Path) -> tuple[dict[str, Json], str | None]:
+    """What the file ``path`` of ``stage`` shows (``events_read``) and what is wrong with it.
+
+    A stage without a check, such as ``generation``, returns ``({}, None)``.
+    """
+    check = _STAGES[stage].inspect
+    return ({}, None) if check is None else check(spec, path)

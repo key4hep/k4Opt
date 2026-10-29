@@ -10,6 +10,7 @@ the search domain. Nested caller-owned data is copied on construction.
 from __future__ import annotations
 
 import math
+import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -162,6 +163,22 @@ class Measurement:
     value: int | float
     unit: str | None = None
     uncertainty: int | float | None = None
+
+    @classmethod
+    def from_samples(
+        cls, stage: str, metric: str, samples: Sequence[int | float], unit: str | None = None
+    ) -> Measurement:
+        """The mean of ``samples`` (one per event, say) with its statistical uncertainty.
+
+        The uncertainty is the standard error of the mean, ``s / sqrt(N)`` with the sample
+        standard deviation ``s`` (``ddof=1``); a single sample has none.
+        """
+        if len(samples) == 0:
+            raise EvaluationContractError(f"measurement {stage}/{metric}: no samples to average")
+        for sample in samples:
+            _real(sample, f"measurement {stage}/{metric}: sample")
+        error = statistics.stdev(samples) / math.sqrt(len(samples)) if len(samples) > 1 else None
+        return cls(stage, metric, statistics.fmean(samples), unit, error)
 
     def __post_init__(self) -> None:
         _name(self.stage, "stage")

@@ -33,8 +33,7 @@ evaluation:
   seed: 42
 
   settings:
-    readouts:
-      ecal_barrel: ECalBarrelCollection
+    collection: ECalBarrelCollection
 
   generation:
     particle: gamma

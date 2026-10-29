@@ -44,7 +44,8 @@ An evaluator that reads the output of a pipeline stage says so with one optional
 attribute, `requires = "simulation"`. The framework runs that stage from the problem and passes
 the file it produced as `request.inputs["simulation"]`; the evaluator never builds a command,
 starts a tool or handles its failures (see [Stages](#stages)). An optional
-`check(request)` may raise `EvaluationContractError` for settings it cannot evaluate, and an
+`check(request)` may raise `EvaluationContractError` for settings it cannot evaluate; `k4opt`
+calls it before anything is created or run, so `evaluate()` need not repeat it. An
 optional `metrics` mapping of `(stage, metric)` to unit lets `k4opt evaluate` reject an
 unsupported objective before anything runs, and then holds every returned measurement of those
 metrics to the declared unit, so one metric identity never carries two units.
@@ -84,6 +85,11 @@ nonnegative `uncertainty`. An omitted uncertainty means *not provided*, not zero
 `(stage, metric)` occurs once per result. A missing measurement is absent, never `0`, `inf` or
 a fake success.
 
+`Measurement.from_samples(stage, metric, samples, unit)` averages per-event values: the value
+is the sample mean and the uncertainty the standard error of the mean, `s / sqrt(N)` with `s`
+the sample standard deviation (`ddof=1`); a single sample has no uncertainty. Statistical
+uncertainty only: it says nothing about systematic effects.
+
 Build a result with the constructor that matches the outcome:
 
 ```python
@@ -94,6 +100,20 @@ EvaluationResult.failed("ddsim exited with status 1", artifacts=...)
 
 `invalid` and `failed` require a message, so an unusable result always says why.
 `EvaluationResult(status, ...)` stays available and checks the same thing.
+
+An evaluator can also stop at the first problem by raising `EvaluationInvalid("...")` or
+`EvaluationFailed("...")`. `k4opt` turns the exception into the matching result with the text as
+its message; anything else an evaluator raises propagates. The exceptions carry no
+measurements: build the result by hand to keep diagnostics.
+
+### Reading EDM4hep files
+
+`read_collection(path, collection, value_type)` yields the collection of each event of an
+EDM4hep file; `count_events(path)` counts the events. `podio` comes from the Key4hep stack and
+is imported only when a file is opened, so `k4opt.evaluation` imports without it. A file that
+cannot be opened, a missing `events` category or collection, an element type other than
+`value_type` and every exception of the C++ reader are an `EvaluationFailed`: a collection is
+never silently read as empty. An existing but empty collection is yielded like any other.
 
 Violations raise `EvaluationContractError` (a `K4OptError`) when the object is built.
 
@@ -204,10 +224,14 @@ In order, it:
    `evaluation.version` (`EvaluationContractError` otherwise), before anything runs;
 3. if the evaluator has a `requires` stage that `inputs` does not already provide, checks the
    stage and runs it on `inputs["geometry"]` in `workdir` (both needed). A failed stage gives a
-   `failed` result and the evaluator is not called;
+   `failed` result and the evaluator is not called. The output of the `simulation` stage, run
+   or supplied, must hold exactly `events` events (at least one if `events` is not set), otherwise
+   the result is `failed` ("incomplete simulation") and the evaluator is not called; the number
+   found is `provenance["stages"]["simulation"]["events_read"]`;
 4. builds the `EvaluationRequest` from the validated candidate plus `settings`, `events`,
    `seed`, the exact ordered `backend` arguments and the stage's file in `inputs`, and calls
-   `evaluate()` exactly once. Exceptions of the evaluator propagate. The stage's files and
+   `evaluate()` exactly once. `EvaluationFailed` and `EvaluationInvalid` become a `failed` or
+   `invalid` result; other exceptions of the evaluator propagate. The stage's files and
    process record are merged into the result's `artifacts` and into
    `provenance["stages"][stage]`;
 5. for a `valid` result, requires every `(stage, metric)` of any objective or constraint to be
