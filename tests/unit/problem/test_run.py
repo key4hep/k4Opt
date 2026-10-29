@@ -437,7 +437,7 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
     assert "G4Exception: bad volume" in summary["message"]
     assert summary["measurements"] == []
     assert summary["simulation"]["returncode"] == 2
-    assert "bad volume" in Path(summary["paths"]["stderr"]).read_text()
+    assert "bad volume" in Path(summary["paths"]["simulation.stderr"]).read_text()
 
 
 @pytest.mark.parametrize(
@@ -622,3 +622,34 @@ def test_the_command_reports_an_unloadable_evaluator_without_creating_anything(
     )
     assert code == 1 and "does not exist" in err.getvalue()
     assert not (tmp_path / "o").exists()
+
+
+class Spy:
+    """The example evaluator, recording the requests of check() and evaluate()."""
+
+    def __init__(self) -> None:
+        self.inner: Any = calo_hit_multiplicity()
+        self.name, self.version = self.inner.name, self.inner.version
+        self.requires, self.metrics = self.inner.requires, self.inner.metrics
+        self.checked: list[Any] = []
+        self.evaluated: list[Any] = []
+
+    def check(self, request: Any) -> None:
+        self.checked.append(request)
+        self.inner.check(request)
+
+    def evaluate(self, request: Any) -> Any:
+        self.evaluated.append(request)
+        return self.inner.evaluate(request)
+
+
+def test_the_preflight_request_has_the_generation_the_evaluation_gets(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    spy = Spy()
+    run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluator=spy)
+    (checked,) = spy.checked
+    (evaluated,) = spy.evaluated
+    assert checked.generation["particle"] == "gamma"
+    for field in ("generation", "settings", "events", "seed", "backend_args", "candidate"):
+        assert getattr(checked, field) == getattr(evaluated, field)

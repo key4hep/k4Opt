@@ -21,7 +21,7 @@ from k4opt.evaluation import (
 )
 from k4opt.frozen import thaw
 from k4opt.problem import ProblemSpec, parse_problem
-from k4opt.problem._evaluate import _evaluate_candidate
+from k4opt.problem._evaluate import _evaluate_candidate, _request
 from k4opt.problem._stages import (
     _sha256,
     check_stage,
@@ -291,7 +291,14 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
     assert record.request is reader.calls[0]
     result = record.result
     assert result.status is Status.VALID
-    assert {"stdout", "stderr", "command", "edm4hep", "mine"} == set(result.artifacts)
+    # the stage's files are named <stage>.<role>; the evaluator's own role stays as it chose it
+    assert {
+        "simulation.stdout",
+        "simulation.stderr",
+        "simulation.command",
+        "simulation.edm4hep",
+        "mine",
+    } == set(result.artifacts)
     assert result.provenance["read"] == events_file.name  # the evaluator's own provenance stays
     stage = result.provenance["stages"]["simulation"]  # type: ignore[index]
     assert stage["returncode"] == 0 and stage["argv"][0] == simulation.DDSIM
@@ -309,7 +316,7 @@ def test_a_failed_stage_is_a_failed_record_and_the_evaluator_never_runs(
     assert record.result.status is Status.FAILED
     assert "status 3" in (record.result.message or "")
     assert record.result.measurements == ()
-    assert {"stdout", "stderr"} <= set(record.result.artifacts)
+    assert {"simulation.stdout", "simulation.stderr"} <= set(record.result.artifacts)
     assert record.result.provenance["stages"]["simulation"]["returncode"] == 3  # type: ignore[index]
 
 
@@ -494,3 +501,80 @@ def test_a_sample_is_hashed_once_until_it_changes(tmp_path: Path) -> None:
     sample.write_bytes(b"three")  # another size: a different file version
     changed = file_identity(sample)
     assert changed["sha256"] == hashlib.sha256(b"three").hexdigest() != first["sha256"]
+
+
+# --- the request is the same for check() and evaluate(); roles never collide (review) ---
+
+
+class Checking(Reader):
+    """Records what ``check()`` and ``evaluate()`` each receive."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.checked: list[EvaluationRequest] = []
+
+    def check(self, request: EvaluationRequest) -> None:
+        self.checked.append(request)
+
+
+def test_check_and_evaluate_receive_the_same_request_fields(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    checking = Checking()
+    _evaluate_candidate(
+        spec, {CELL: 6}, checking, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    # what the preflight builds (no inputs yet) against what evaluate() was given
+    preflight = _request(spec, {CELL: 6})
+    (evaluated,) = checking.calls
+    assert thaw(preflight.generation) == GENERATOR == thaw(evaluated.generation)
+    for field in ("settings", "events", "seed", "backend_args", "candidate", "generation"):
+        assert getattr(preflight, field) == getattr(evaluated, field)
+
+
+class Colliding(Reader):
+    def __init__(self, artifacts: dict[str, Path], provenance: dict[str, Any]) -> None:
+        super().__init__()
+        self.own_artifacts, self.own_provenance = artifacts, provenance
+
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        return EvaluationResult.valid(
+            [
+                Measurement("simulation", "a.rms", 1.0, unit="mm"),
+                Measurement("simulation", "a.cells", 5),
+            ],
+            artifacts=self.own_artifacts,
+            provenance=self.own_provenance,
+        )
+
+
+@pytest.mark.parametrize("role", ["simulation.edm4hep", "simulation.stderr"])
+def test_an_evaluator_artifact_cannot_replace_a_stage_artifact(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
+    simulation.install(monkeypatch)
+    evaluator = Colliding({role: tmp_path / "other.root"}, {})
+    with pytest.raises(EvaluationContractError, match=rf"{role}.*collide"):
+        _evaluate_candidate(
+            spec, {CELL: 6}, evaluator, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
+
+
+def test_an_evaluator_cannot_overwrite_the_stage_provenance(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    evaluator = Colliding({}, {"stages": {"simulation": {"returncode": 0}}})
+    with pytest.raises(EvaluationContractError, match="'stages' is reserved"):
+        _evaluate_candidate(
+            spec, {CELL: 6}, evaluator, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
+
+
+def test_an_evaluator_without_stages_keeps_its_own_provenance_and_artifacts(
+    spec: ProblemSpec, tmp_path: Path
+) -> None:
+    evaluator = OwnWorkflow()
+    record = _evaluate_candidate(spec, {CELL: 6}, evaluator, workdir=tmp_path)
+    assert "stages" not in record.result.provenance

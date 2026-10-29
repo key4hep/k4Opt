@@ -154,6 +154,25 @@ def _check_identity(spec: ProblemSpec, evaluator: Evaluator) -> tuple[str, str]:
     return name, version
 
 
+def _request(
+    spec: ProblemSpec,
+    values: Mapping[str, Scalar],
+    inputs: Mapping[str, Path] | None = None,
+    workdir: Path | None = None,
+) -> EvaluationRequest:
+    """The request an evaluator receives, for ``check()`` and ``evaluate()`` alike."""
+    return EvaluationRequest(
+        candidate=values,
+        settings=spec.evaluation.settings,
+        inputs=inputs or {},
+        workdir=workdir,
+        events=spec.evaluation.events,
+        seed=spec.evaluation.seed,
+        backend_args=spec.evaluation.backend,
+        generation=spec.evaluation.generation,
+    )
+
+
 def _chain(stage: str | None) -> list[str]:
     """``stage`` and the stages it needs, in pipeline order; empty if there is none."""
     return [] if stage is None else plan_stages(stage)
@@ -195,7 +214,7 @@ def _evaluate_candidate(
         assert workdir is not None
         outcome = run_stage(spec, stage, inputs=inputs, workdir=workdir)
         inputs |= outcome.inputs
-        artifacts |= outcome.artifacts
+        artifacts |= {f"{stage}.{role}": path for role, path in outcome.artifacts.items()}
         ran[stage] = dict(outcome.provenance)
         error = outcome.error
         if error is not None:
@@ -206,16 +225,7 @@ def _evaluate_candidate(
         for stage in _chain(required)
         if stage in ran or stage in supplied
     }
-    request = EvaluationRequest(
-        candidate=values,
-        settings=spec.evaluation.settings,
-        inputs=inputs,
-        workdir=workdir,
-        events=spec.evaluation.events,
-        seed=spec.evaluation.seed,
-        backend_args=spec.evaluation.backend,
-        generation=spec.evaluation.generation,
-    )
+    request = _request(spec, values, inputs, workdir)
     result = EvaluationResult.failed(error) if error is not None else evaluator.evaluate(request)
     elapsed = time.perf_counter() - started
     if not isinstance(result, EvaluationResult):
@@ -223,6 +233,16 @@ def _evaluate_candidate(
             f"evaluator must return an EvaluationResult, got {type(result).__name__}"
         )
     if stages:
+        clash = sorted(set(artifacts) & set(result.artifacts))
+        if clash:
+            raise EvaluationContractError(
+                f"evaluator artifact role(s) {clash} collide with artifacts of the stages, which "
+                "are named '<stage>.<role>'; choose other names"
+            )
+        if "stages" in result.provenance:
+            raise EvaluationContractError(
+                "provenance key 'stages' is reserved for the stages that the framework ran"
+            )
         result = dataclasses.replace(
             result,
             artifacts={**artifacts, **result.artifacts},

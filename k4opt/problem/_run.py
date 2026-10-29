@@ -21,13 +21,17 @@ from pathlib import Path
 from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRecord,
-    EvaluationRequest,
     Evaluator,
 )
 from k4opt.evaluation.models import Scalar
 from k4opt.frozen import thaw
 from k4opt.geometry import Override
-from k4opt.problem._evaluate import _check_identity, _evaluate_candidate, _validate_candidate
+from k4opt.problem._evaluate import (
+    _check_identity,
+    _evaluate_candidate,
+    _request,
+    _validate_candidate,
+)
 from k4opt.problem._stages import check_stage
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
@@ -261,15 +265,7 @@ def run_candidate(
         check_stage(spec, stage)
     check = getattr(evaluator, "check", None)
     if check is not None:
-        check(
-            EvaluationRequest(
-                candidate=values,
-                settings=spec.evaluation.settings,
-                events=spec.evaluation.events,
-                seed=spec.evaluation.seed,
-                backend_args=spec.evaluation.backend,
-            )
-        )
+        check(_request(spec, values))
     _check_metrics(spec, evaluator)
     overrides = _overrides(spec, values)
 

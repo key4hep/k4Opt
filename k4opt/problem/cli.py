@@ -61,8 +61,8 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
     print(f"fingerprint: {outcome.fingerprint}", file=out)
     print(f"summary:     {outcome.summary_path}", file=out)
     for role in ("stdout", "stderr", "edm4hep"):
-        if role in result.artifacts:
-            print(f"{role + ':':12} {result.artifacts[role]}", file=out)
+        if f"simulation.{role}" in result.artifacts:
+            print(f"{role + ':':12} {result.artifacts[f'simulation.{role}']}", file=out)
 
 
 def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
