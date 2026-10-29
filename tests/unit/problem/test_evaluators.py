@@ -275,6 +275,54 @@ def test_a_generation_reader_keeps_its_result_when_the_simulation_fails(
     }
 
 
+@pytest.mark.parametrize("readable", [True, False])
+def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluator_runs(
+    sample_doc: dict[str, Any],
+    tmp_path: Path,
+    log: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    readable: bool,
+) -> None:
+    # the caller's simulation file bypasses generation, which runs only for the sample reader:
+    # its file never reaches the simulation reader, and its failure does not fail that reader
+    spec = problem(
+        sample_doc,
+        "test.cell_count",
+        "test.sample_size",
+        objectives=(CELLS, ("analysis", "sample.bytes")),
+        generation={"sample": "zh.hepmc"},
+    )
+    sample, events_file = tmp_path / "zh.hepmc", tmp_path / "mine.edm4hep.root"
+    events_file.write_bytes(b"fake")
+    if not readable:
+        real_open = Path.open
+
+        def unreadable(self: Path, *args: Any, **kwargs: Any) -> Any:
+            if self == sample:
+                raise PermissionError("denied")
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", unreadable)
+    cells = Spy(cell_count(), log)
+    candidate = _evaluate_candidate(
+        with_sample(spec, tmp_path),
+        {CELL: 6},
+        [cells, SampleSize()],
+        inputs={"simulation": events_file},
+    )
+    assert "ddsim" not in log
+    assert set(cells.evaluated[0].inputs) == {"simulation"}
+    assert candidate.reads["test.cell_count"] == ("simulation",)
+    counted, sized = candidate.records
+    assert counted.result.status is Status.VALID
+    assert candidate.value(*CELLS).value == 3.0
+    if readable:
+        assert sized.result.status is Status.VALID and candidate.status is Status.VALID
+    else:
+        assert sized.result.status is Status.FAILED
+        assert "cannot read the sample" in (sized.result.message or "")
+
+
 # --- the candidate's status: incomplete is never reported as scientifically invalid ---
 
 
