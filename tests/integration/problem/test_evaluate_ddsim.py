@@ -124,7 +124,7 @@ def test_metric_comes_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
     for run in runs.values():
         assert run["status"] == "valid"
         assert run["events"] == {"requested": EVENTS, "observed": EVENTS}
-        collection = run["simulation"]["collection"]
+        collection = run["settings"]["collection"]
         events = get_reader(run["paths"]["simulation.edm4hep"]).get("events")
         counts = [len({hit.getCellID() for hit in event.get(collection)}) for event in events]
         (measurement,) = run["measurements"]

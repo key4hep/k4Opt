@@ -16,8 +16,12 @@ from typing import Any
 from k4opt.evaluation.errors import EvaluationFailed
 
 
-def _events(path: Path) -> Iterator[Any]:
-    """The events (podio frames) of an EDM4hep file; imports the Key4hep ``podio``."""
+def _frames(path: Path) -> Any:
+    """The events (podio frames) of an EDM4hep file, iterable and with a ``len``.
+
+    Imports the Key4hep ``podio``. Counting asks the reader for the number of entries; only
+    iterating reads the frames.
+    """
     try:
         from podio.reading import get_reader
     except ImportError as exc:
@@ -27,7 +31,7 @@ def _events(path: Path) -> Iterator[Any]:
     reader = get_reader(str(path))
     if "events" not in reader.categories:
         raise EvaluationFailed(f"{path.name} has no 'events' category")
-    yield from reader.get("events")
+    return reader.get("events")
 
 
 @contextlib.contextmanager
@@ -51,11 +55,11 @@ def _type_name(name: Any) -> str:
 def count_events(path: Path) -> int:
     """The number of events in the EDM4hep file ``path``."""
     with _unreadable(path):
-        return sum(1 for _ in _events(path))
+        return len(_frames(path))
 
 
 def read_collection(path: Path, collection: str, value_type: str) -> Iterator[Any]:
-    """The collection ``collection`` of each event of ``path``, in file order.
+    """The collection ``collection`` of each event of ``path`` as a list, in file order.
 
     ``value_type`` is the podio type of its elements, for example
     ``"edm4hep::SimCalorimeterHit"``. An existing but empty collection is yielded like any
@@ -63,7 +67,7 @@ def read_collection(path: Path, collection: str, value_type: str) -> Iterator[An
     :class:`EvaluationFailed` when that event is reached, never an empty result.
     """
     with _unreadable(path):
-        for index, event in enumerate(_events(path)):
+        for index, event in enumerate(_frames(path)):
             if collection not in event.getAvailableCollections():
                 raise EvaluationFailed(
                     f"collection {collection!r} is missing in event {index} of {path.name}"
@@ -74,4 +78,5 @@ def read_collection(path: Path, collection: str, value_type: str) -> Iterator[An
                 raise EvaluationFailed(
                     f"collection {collection!r} holds {found!r}, expected {value_type!r}"
                 )
-            yield elements
+            # read here, where a failing reader is reported, not where the caller uses them
+            yield list(elements)
