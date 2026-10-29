@@ -693,27 +693,27 @@ def test_unquoted_date_is_flagged(write: Write) -> None:
 
 
 def test_disallowed_scalars_in_settings_from_yaml(write: Write) -> None:
-    text = good_yaml().replace("    readouts:", "    when: 2026-10-20\n    readouts:")
+    text = good_yaml().replace("    collection:", "    when: 2026-10-20\n    collection:")
     with pytest.raises(ProblemConfigError, match=r"settings\.when: unsupported value of type date"):
         load_problem(write(text))
-    text = good_yaml().replace("    readouts:", "    blob: !!binary aGk=\n    readouts:")
+    text = good_yaml().replace("    collection:", "    blob: !!binary aGk=\n    collection:")
     with pytest.raises(
         ProblemConfigError, match=r"settings\.blob: unsupported value of type bytes"
     ):
         load_problem(write(text))
-    text = good_yaml().replace("    readouts:", "    s: !!set {a, b}\n    readouts:")
+    text = good_yaml().replace("    collection:", "    s: !!set {a, b}\n    collection:")
     with pytest.raises(ProblemConfigError, match=r"settings\.s: unsupported value of type set"):
         load_problem(write(text))
-    text = good_yaml().replace("    readouts:", "    x: .nan\n    readouts:")
+    text = good_yaml().replace("    collection:", "    x: .nan\n    collection:")
     with pytest.raises(ProblemConfigError, match="non-finite"):
         load_problem(write(text))
 
 
 def test_recursive_aliases_are_rejected(write: Write) -> None:
-    text = good_yaml().replace("    readouts:", "    loop: &a [*a]\n    readouts:")
+    text = good_yaml().replace("    collection:", "    loop: &a [*a]\n    collection:")
     with pytest.raises(ProblemConfigError, match="contains itself"):
         load_problem(write(text))
-    text = good_yaml().replace("    readouts:", "    loop: &a {x: *a}\n    readouts:")
+    text = good_yaml().replace("    collection:", "    loop: &a {x: *a}\n    collection:")
     with pytest.raises(ProblemConfigError, match="contains itself"):
         load_problem(write(text))
 

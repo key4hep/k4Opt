@@ -11,9 +11,10 @@ from typing import Any
 import pytest
 
 from k4opt.ddsim import run as ddsim_run
-from tests.support.evaluators import calo_hits
+from k4opt.evaluation import edm4hep
 
 COLLECTION = "ECalBarrelCollection"
+HIT_TYPE = "edm4hep::SimCalorimeterHit"
 DDSIM = "/stack/bin/ddsim"
 _run = subprocess.run
 
@@ -29,7 +30,7 @@ class Hit:
 class Hits(list[Any]):
     """A podio-like collection of hits."""
 
-    def __init__(self, cells: Sequence[int], type_name: str = calo_hits.HIT_TYPE) -> None:
+    def __init__(self, cells: Sequence[int], type_name: str = HIT_TYPE) -> None:
         super().__init__(Hit(c) for c in cells)
         self.type_name = type_name
 
@@ -73,16 +74,29 @@ class FakeDdsim:
 
 
 def install_events(monkeypatch: pytest.MonkeyPatch, events: Sequence[Any] | None = None) -> None:
-    """Make the evaluator read ``events`` instead of an EDM4hep file; no ddsim is involved."""
-    monkeypatch.setattr(calo_hits, "_open_events", lambda path: iter(events or []))
+    """Make k4opt read ``events`` instead of an EDM4hep file; no ddsim is involved."""
+    monkeypatch.setattr(edm4hep, "_frames", lambda path: list(events or []))
 
 
 def install(
     monkeypatch: pytest.MonkeyPatch, events: Sequence[Any] | None = None, **ddsim: Any
 ) -> FakeDdsim:
-    """Make the evaluator run ``FakeDdsim`` and read ``events`` instead of the real thing."""
+    """Make k4opt run ``FakeDdsim`` and read ``events`` instead of the real thing.
+
+    Without ``events`` the file holds as many one-hit events as the last run requested.
+    """
     fake = FakeDdsim(**ddsim)
     monkeypatch.setattr(ddsim_run.subprocess, "run", fake)
     monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: DDSIM)
-    install_events(monkeypatch, events)
+
+    def read(path: Path) -> list[Any]:
+        if events is not None:
+            return list(events)
+        argv = fake.calls[-1][0]
+        requested = int(
+            next(a for a in argv if a.startswith("--numberOfEvents=")).partition("=")[2]
+        )
+        return events_with(*[[1]] * requested)
+
+    monkeypatch.setattr(edm4hep, "_frames", read)
     return fake

@@ -29,7 +29,8 @@ class Evaluator(Protocol):
         """Evaluate one candidate.
 
         Report a scientific or execution problem through ``status`` (``invalid`` or
-        ``failed``) and a ``message``, not by returning made-up measurements. Bugs and
-        misuse (a missing required input, say) may raise.
+        ``failed``) and a ``message``, not by returning made-up measurements; raising
+        :class:`EvaluationInvalid` or :class:`EvaluationFailed` does the same. Bugs and
+        misuse (a missing required input, say) may raise anything else.
         """
         ...

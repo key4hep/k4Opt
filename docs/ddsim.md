@@ -52,7 +52,7 @@ chooses the reader from the file extension and validates the content, so k4opt a
 format `ddsim` does. The `generation` stage checks that the file exists and records its path,
 size and SHA-256 in the provenance, so a changed sample is a different measurement. A gun and a
 sample together, or neither, are errors. `events` is the number of events to process; a sample
-with fewer events gives an incomplete simulation, which the evaluator reports as `failed`.
+with fewer events gives an incomplete simulation, which the simulation stage reports as `failed`.
 
 ## Command
 

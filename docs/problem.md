@@ -52,8 +52,7 @@ evaluation:
   seed: 42
 
   settings:
-    readouts:
-      ecal_barrel: ECalBarrelCollection
+    collection: ECalBarrelCollection
 
   generation:
     particle: gamma
@@ -215,7 +214,7 @@ example are illustrative only. In the example:
 
 | Key | Illustrative meaning |
 | --- | --- |
-| `readouts` | maps a logical *role* (`ecal_barrel`) to an output collection (`ECalBarrelCollection`). Roles are defined by the evaluator contract, which also says how a collection is turned into hits; add one entry per collection a study needs |
+| `collection` | the output collection to read (`ECalBarrelCollection`). The evaluator contract says how a collection is turned into hits |
 
 **Generation.** `evaluation.generation` says where the primary particles come from. It belongs
 to the generation stage, not to one evaluator, so several evaluators of the same problem would
@@ -305,7 +304,7 @@ A non-empty list. Each item:
 | Key | Meaning |
 | --- | --- |
 | `stage` | Scientific classification of the measurement: `simulation` now; `reconstruction` and `analysis` possible later. It is not a request to run a particular pipeline step, and it does not create separate problem types. |
-| `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.mean_hit_cells` (measured by `calo.hit_multiplicity`). The part before the dot is a role from the evaluator's `readouts` setting, so a metric stays unambiguous when several collections are involved and collection names appear only once, in `settings`. |
+| `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.mean_hit_cells` (measured by `calo.hit_multiplicity`). The part before the dot names what is measured (here the ECAL barrel); collection names appear only in `settings`. |
 | `direction` | `minimize` or `maximize`. |
 
 `stage` and `metric` are separate fields, not a combined `simulation.some_metric` string.

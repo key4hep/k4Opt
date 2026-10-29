@@ -16,10 +16,13 @@ from k4opt.ddsim import DdsimError
 from k4opt.ddsim import run as ddsim_run
 from k4opt.evaluation import (
     EvaluationContractError,
+    EvaluationFailed,
+    EvaluationInvalid,
     EvaluationRequest,
     EvaluationResult,
     Measurement,
     Status,
+    edm4hep,
 )
 from k4opt.frozen import thaw
 from k4opt.problem import ProblemSpec, parse_problem
@@ -32,6 +35,7 @@ from k4opt.problem._stages import (
     run_stage,
 )
 from tests.support import simulation
+from tests.support.simulation import events_with
 
 CELL = "constants.ECal_cell_size"
 
@@ -325,7 +329,9 @@ def test_a_failed_stage_is_a_failed_record_and_the_evaluator_never_runs(
 def test_an_input_supplied_by_the_caller_skips_the_stage(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake = simulation.install(monkeypatch)
+    requested = spec.evaluation.events
+    assert requested is not None
+    fake = simulation.install(monkeypatch, events_with(*[[1]] * requested))
     events_file = tmp_path / "mine.root"
     events_file.write_bytes(b"fake")
     reader = Reader()
@@ -339,8 +345,117 @@ def test_an_input_supplied_by_the_caller_skips_the_stage(
             "provided": str(events_file),
             "bytes": 4,
             "sha256": hashlib.sha256(b"fake").hexdigest(),
+            "events_read": requested,
         }
     }
+
+
+@pytest.mark.parametrize("supplied", [False, True])
+@pytest.mark.parametrize(
+    ("found", "message"),
+    [(2, "incomplete simulation: 2 of 1000 events"), (0, "incomplete simulation: 0 of 1000")],
+)
+def test_a_simulation_output_without_the_requested_events_fails_before_the_evaluator(
+    spec: ProblemSpec,
+    geometry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    supplied: bool,
+    found: int,
+    message: str,
+) -> None:
+    simulation.install(monkeypatch, events_with(*[[1]] * found))
+    reader = Reader()
+    inputs = {"geometry": geometry}
+    if supplied:
+        inputs["simulation"] = tmp_path / "mine.root"
+        inputs["simulation"].write_bytes(b"fake")
+    record = _evaluate_candidate(spec, {CELL: 6}, reader, inputs=inputs, workdir=tmp_path / "run")
+    assert reader.calls == []
+    assert record.result.status is Status.FAILED
+    assert message in (record.result.message or "")
+    assert record.result.provenance["stages"]["simulation"]["events_read"] == found  # type: ignore[index]
+
+
+def test_an_unreadable_simulation_output_fails_before_the_evaluator(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(path: Path) -> Any:
+        raise RuntimeError("truncated file")
+
+    simulation.install(monkeypatch)
+    monkeypatch.setattr(edm4hep, "_frames", broken)
+    reader = Reader()
+    record = _evaluate_candidate(
+        spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    assert reader.calls == []
+    assert record.result.status is Status.FAILED
+    assert "cannot read events.edm4hep.root: RuntimeError: truncated file" in (
+        record.result.message or ""
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (EvaluationFailed("disk on fire"), Status.FAILED),
+        (EvaluationInvalid("no hits"), Status.INVALID),
+    ],
+)
+def test_an_evaluator_that_raises_an_outcome_gets_that_result(
+    spec: ProblemSpec,
+    geometry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    status: Status,
+) -> None:
+    simulation.install(monkeypatch)
+
+    class Raising(Reader):
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            raise error
+
+    record = _evaluate_candidate(
+        spec, {CELL: 6}, Raising(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    assert record.result.status is status
+    assert record.result.message == str(error)
+    assert record.result.measurements == ()
+    assert "simulation" in record.result.provenance["stages"]  # type: ignore[operator]
+
+
+def test_the_bridge_runs_check_before_any_stage(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+
+    class Picky(Reader):
+        def check(self, request: EvaluationRequest) -> None:
+            raise EvaluationContractError("unsupported settings")
+
+    reader = Picky()
+    with pytest.raises(EvaluationContractError, match="unsupported settings"):
+        _evaluate_candidate(
+            spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
+    assert fake.calls == [] and reader.calls == []
+
+
+def test_other_exceptions_of_the_evaluator_still_propagate(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+
+    class Buggy(Reader):
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            raise ZeroDivisionError
+
+    with pytest.raises(ZeroDivisionError):
+        _evaluate_candidate(
+            spec, {CELL: 6}, Buggy(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
 
 
 @pytest.mark.parametrize(
