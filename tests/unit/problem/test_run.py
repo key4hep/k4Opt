@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import shutil
@@ -17,15 +18,25 @@ from k4opt.errors import K4OptError
 from k4opt.evaluation import EvaluationContractError
 from k4opt.geometry import GeometrySource, Override
 from k4opt.problem import CandidateError, load_problem, parse_problem
-from k4opt.problem._run import SUMMARY_NAME, _parse_candidate, _xml_value, run_candidate
+from k4opt.problem._run import SUMMARY_NAME, RunOutcome, _parse_candidate, _xml_value
+from k4opt.problem._run import run_candidate as _run_candidate
 from k4opt.problem.errors import RunError
 from tests.support import simulation
 from tests.support.common import tree_digest
+from tests.support.evaluators import CALO_HIT_MULTIPLICITY, calo_hit_multiplicity
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.simulation import COLLECTION, events_with
 
 RADIUS = "constants.InnerTracker_Barrel_radius_1"
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
+
+
+def run_candidate(
+    problem: Path, assignments: list[str], output: Path, **changes: Any
+) -> RunOutcome:
+    """``run_candidate`` with the example evaluator unless the test passes another."""
+    changes.setdefault("evaluator", calo_hit_multiplicity())
+    return _run_candidate(problem, assignments, output, **changes)
 
 
 @pytest.fixture(autouse=True)
@@ -40,17 +51,15 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["parameters"][0]["bounds"] = [100.0, 600.0]
     evaluation = doc["evaluation"]
     evaluation.update(evaluator="calo.hit_multiplicity", events=3, seed=5)
-    evaluation["settings"] = {
-        "readouts": {"ecal_barrel": COLLECTION},
-        "generator": {
-            "particle": "gamma",
-            "energy": {"value": 10, "unit": "GeV"},
-            "direction": {
-                "distribution": "uniform",
-                "theta": [60, 120],
-                "phi": [0, 360],
-                "unit": "deg",
-            },
+    evaluation["settings"] = {"readouts": {"ecal_barrel": COLLECTION}}
+    evaluation["generation"] = {
+        "particle": "gamma",
+        "energy": {"value": 10, "unit": "GeV"},
+        "direction": {
+            "distribution": "uniform",
+            "theta": [60, 120],
+            "phi": [0, 360],
+            "unit": "deg",
         },
     }
     doc["objectives"] = [
@@ -147,6 +156,14 @@ def test_summary_is_written_and_truthful(
     ]
     assert on_disk["simulation"]["command"][0] == "/stack/bin/ddsim"
     assert on_disk["simulation"]["returncode"] == 0
+    assert on_disk["simulation"]["collection"] == COLLECTION
+    # the files of the stages, named <stage>.<role>: what the real-ddsim test reads back
+    paths = on_disk["paths"]
+    assert paths["run_dir"] == str(tmp_path / "a")
+    for role in ("stdout", "stderr", "command", "edm4hep"):
+        assert Path(paths[f"simulation.{role}"]).is_file()
+    assert {"stdout", "stderr", "edm4hep"}.isdisjoint(paths)  # no unprefixed leftovers
+    assert on_disk["generation"]["particle_gun"]["particle"] == "gamma"
     assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
     assert on_disk["environment"]["observed"]["ddsim"] == "/stack/bin/ddsim"
     assert on_disk["problem"]["path"] == str(problem_file.absolute())
@@ -427,7 +444,7 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
     assert "G4Exception: bad volume" in summary["message"]
     assert summary["measurements"] == []
     assert summary["simulation"]["returncode"] == 2
-    assert "bad volume" in Path(summary["paths"]["stderr"]).read_text()
+    assert "bad volume" in Path(summary["paths"]["simulation.stderr"]).read_text()
 
 
 @pytest.mark.parametrize(
@@ -471,19 +488,17 @@ def test_text_values_are_read_by_the_parameter_kind(
         _parse_candidate(integer, ["constants.n=4.0"])
 
 
-def test_the_smoke_study_is_valid_and_leaves_the_granularity_example_alone() -> None:
-    smoke = parse_problem(yaml.safe_load((EXAMPLES / "cld-ecal-hit-count.yaml").read_text()))
-    granularity = parse_problem(
-        yaml.safe_load((EXAMPLES / "cld-ecal-granularity.yaml").read_text())
+def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> None:
+    problem = parse_problem(yaml.safe_load((EXAMPLES / "cld-ecal-hit-count.yaml").read_text()))
+    evaluator = calo_hit_multiplicity()
+    assert (problem.evaluation.evaluator, problem.evaluation.version) == (
+        evaluator.name,
+        evaluator.version,
     )
-    assert (smoke.evaluation.evaluator, smoke.evaluation.version) == ("calo.hit_multiplicity", "1")
-    assert [(o.stage, o.metric) for o in smoke.objectives] == [
+    assert [(o.stage, o.metric) for o in problem.objectives] == [
         ("simulation", "ecal_barrel.mean_hit_cells")
     ]
-    assert [o.metric for o in granularity.objectives] == ["ecal_barrel.position_rms"]
-    assert smoke.parameters == granularity.parameters
-    assert smoke.evaluation.settings == granularity.evaluation.settings
-    assert smoke.evaluation.backend == granularity.evaluation.backend
+    assert set(evaluator.metrics) >= {("simulation", "ecal_barrel.mean_hit_cells")}  # type: ignore[attr-defined]
 
 
 # --- the command ---------------------------------------------------------------------------
@@ -491,7 +506,7 @@ def test_the_smoke_study_is_valid_and_leaves_the_granularity_example_alone() -> 
 
 def evaluate(*argv: str) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    code = main(["evaluate", *argv], stdout=out, stderr=err)
+    code = main(["evaluate", "--evaluator", CALO_HIT_MULTIPLICITY, *argv], stdout=out, stderr=err)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -553,3 +568,95 @@ def test_command_requires_an_output_directory(problem_file: Path) -> None:
     with pytest.raises(SystemExit) as info:
         evaluate(str(problem_file), "--param", f"{RADIUS}=450")
     assert info.value.code == 2
+
+
+def test_a_problem_with_a_sample_simulates_it_and_records_its_hash(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    sample = tmp_path / "zh.hepmc"
+    sample.write_bytes(b"HepMC::Version 3\n")
+    doc = yaml.safe_load(problem_file.read_text(encoding="utf-8"))
+    doc["evaluation"]["generation"] = {"sample": "zh.hepmc"}  # next to the problem file
+    problem_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    outcome = run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "s")
+
+    ((argv, _),) = fake.calls
+    assert f"--inputFiles={sample}" in argv and not any(a.startswith("--gun") for a in argv)
+    generation = outcome.summary["generation"]
+    assert isinstance(generation, dict)
+    assert generation["sample"] == str(sample)
+    assert generation["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert outcome.record.result.status == "valid"
+
+
+def test_a_missing_sample_is_a_clean_error_before_any_side_effect(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text(encoding="utf-8"))
+    doc["evaluation"]["generation"] = {"sample": "gone.hepmc"}
+    problem_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    output = tmp_path / "runs" / "s"
+    with pytest.raises(EvaluationContractError, match=r"generation\.sample"):
+        run_candidate(problem_file, [f"{RADIUS}=450.0"], output)
+    assert not output.exists() and fake.calls == []
+
+
+def test_the_command_needs_an_evaluator(problem_file: Path, tmp_path: Path) -> None:
+    out, err = io.StringIO(), io.StringIO()
+    with pytest.raises(SystemExit):
+        main(
+            ["evaluate", str(problem_file), "--output", str(tmp_path / "o")], stdout=out, stderr=err
+        )
+    assert not (tmp_path / "o").exists()
+
+
+def test_the_command_reports_an_unloadable_evaluator_without_creating_anything(
+    problem_file: Path, tmp_path: Path
+) -> None:
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        [
+            "evaluate",
+            str(problem_file),
+            "--evaluator",
+            "gone.py:Nope",
+            "--output",
+            str(tmp_path / "o"),
+        ],
+        stdout=out,
+        stderr=err,
+    )
+    assert code == 1 and "does not exist" in err.getvalue()
+    assert not (tmp_path / "o").exists()
+
+
+class Spy:
+    """The example evaluator, recording the requests of check() and evaluate()."""
+
+    def __init__(self) -> None:
+        self.inner: Any = calo_hit_multiplicity()
+        self.name, self.version = self.inner.name, self.inner.version
+        self.requires, self.metrics = self.inner.requires, self.inner.metrics
+        self.checked: list[Any] = []
+        self.evaluated: list[Any] = []
+
+    def check(self, request: Any) -> None:
+        self.checked.append(request)
+        self.inner.check(request)
+
+    def evaluate(self, request: Any) -> Any:
+        self.evaluated.append(request)
+        return self.inner.evaluate(request)
+
+
+def test_the_preflight_request_has_the_generation_the_evaluation_gets(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    spy = Spy()
+    run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluator=spy)
+    (checked,) = spy.checked
+    (evaluated,) = spy.evaluated
+    assert checked.generation["particle"] == "gamma"
+    for field in ("generation", "settings", "events", "seed", "backend_args", "candidate"):
+        assert getattr(checked, field) == getattr(evaluated, field)

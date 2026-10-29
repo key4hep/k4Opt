@@ -1,6 +1,8 @@
-"""ddsim component: run Key4hep's ``ddsim`` on a prepared geometry with a particle gun.
+"""ddsim component: run Key4hep's ``ddsim`` on a prepared geometry.
 
-Translates the generator settings of a problem into ``ddsim`` options (units included, the
+The primaries come from a particle gun or from an input sample file.
+
+Translates the generation settings of a problem into ``ddsim`` options (units included, the
 direction distribution checked against what ``ddsim`` offers), protects the options that k4opt
 manages from conflicting user arguments, runs the executable of the active Key4hep
 environment and keeps command, exit code and logs. It does not read the output; that is up to
@@ -16,7 +18,8 @@ Typical use::
         workdir=Path("run/simulation"),  # must not exist yet
         events=100,
         seed=42,
-        generator={...},  # evaluation.settings.generator of a problem file
+        particle_gun={...},  # evaluation.generation of a problem file
+        # or sample=Path("events.hepmc") instead
         args=("--physics.list", "FTFP_BERT"),
     )
     print(run.error or run.output)

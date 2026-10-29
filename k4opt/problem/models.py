@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from k4opt.frozen import FrozenMap, Json, thaw
@@ -127,8 +128,10 @@ class Parameter:
 class Evaluation:
     """How a candidate is measured: a proposed standard evaluator plus its inputs.
 
-    ``settings`` is owned by the evaluator's future contract and ``backend`` maps a tool
-    name to its ordered, uninterpreted argument list.
+    ``settings`` is owned by the evaluator's future contract, ``generation`` says where the
+    primary particles come from (a particle gun, interpreted by :mod:`k4opt.ddsim`, or
+    ``sample``, the path of an event file) and ``backend`` maps a
+    tool name to its ordered, uninterpreted argument list.
     """
 
     evaluator: str
@@ -136,6 +139,7 @@ class Evaluation:
     events: int | None = None
     seed: int | None = None
     settings: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    generation: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
     backend: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
@@ -143,6 +147,9 @@ class Evaluation:
         settings = freeze(self.settings, "settings")
         assert isinstance(settings, Mapping)
         object.__setattr__(self, "settings", settings)
+        generation = freeze(self.generation, "generation")
+        assert isinstance(generation, Mapping)
+        object.__setattr__(self, "generation", generation)
         object.__setattr__(
             self,
             "backend",
@@ -157,6 +164,8 @@ class Evaluation:
             data["seed"] = self.seed
         if self.settings:
             data["settings"] = thaw(self.settings)
+        if self.generation:
+            data["generation"] = thaw(self.generation)
         if self.backend:
             data["backend"] = {name: {"args": list(args)} for name, args in self.backend.items()}
         return data
@@ -220,6 +229,8 @@ class ProblemSpec:
     _targets: tuple[GeometryParameter, ...] = field(
         default=(), kw_only=True, repr=False, compare=False
     )
+    # the directory of the problem file, against which a relative ``generation.sample`` is read
+    _directory: Path | None = field(default=None, kw_only=True, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, object]:
         """Plain JSON-compatible data in schema order; a fresh copy on every call.

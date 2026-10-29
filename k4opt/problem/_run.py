@@ -18,12 +18,21 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
-from k4opt.evaluation import EvaluationContractError, EvaluationRecord, EvaluationRequest
+from k4opt.evaluation import (
+    EvaluationContractError,
+    EvaluationRecord,
+    Evaluator,
+)
 from k4opt.evaluation.models import Scalar
-from k4opt.evaluators import CaloHitMultiplicity
 from k4opt.frozen import thaw
 from k4opt.geometry import Override
-from k4opt.problem._evaluate import _check_identity, _evaluate_candidate, _validate_candidate
+from k4opt.problem._evaluate import (
+    _check_identity,
+    _evaluate_candidate,
+    _request,
+    _validate_candidate,
+)
+from k4opt.problem._stages import check_stage
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
 from k4opt.problem.models import Parameter, ProblemSpec
@@ -158,7 +167,12 @@ def _summary(
     result, request = record.result, record.request
     provenance = thaw(result.provenance)
     assert isinstance(provenance, dict)
-    argv = provenance.get("argv")
+    stages = provenance.get("stages")
+    stages = stages if isinstance(stages, dict) else {}
+    simulation = stages.get("simulation")
+    simulation = simulation if isinstance(simulation, dict) else {}
+    generation = stages.get("generation") or thaw(spec.evaluation.generation)
+    argv = simulation.get("argv")
     return {
         "schema": SUMMARY_SCHEMA,
         "problem": {"path": str(problem_path), "name": spec.name},
@@ -180,9 +194,10 @@ def _summary(
         "events": {"requested": request.events, "observed": provenance.get("events_read")},
         "elapsed_seconds": record.elapsed_seconds,
         "geometry": geometry,
+        "generation": generation,
         "simulation": {
             "command": argv,
-            "returncode": provenance.get("returncode"),
+            "returncode": simulation.get("returncode"),
             "collection": provenance.get("collection"),
         },
         "paths": {"run_dir": str(run_dir)} | {k: str(v) for k, v in result.artifacts.items()},
@@ -199,21 +214,25 @@ def _summary(
     }
 
 
-def _check_metrics(spec: ProblemSpec, evaluator: CaloHitMultiplicity) -> None:
-    """Reject objectives and constraints the evaluator cannot measure, before any simulation."""
+def _check_metrics(spec: ProblemSpec, evaluator: Evaluator) -> None:
+    """Reject objectives and constraints the evaluator cannot measure, before any simulation.
+
+    An evaluator that does not declare ``metrics`` is not checked here; its results still are.
+    """
+    metrics = getattr(evaluator, "metrics", None)
+    if metrics is None:
+        return
     declared = [(o.stage, o.metric) for o in spec.objectives]
     declared += [(c.stage, c.metric) for c in spec.constraints]
-    unsupported = [
-        f"{s}/{m}" for s, m in dict.fromkeys(declared) if (s, m) not in evaluator.metrics
-    ]
+    unsupported = [f"{s}/{m}" for s, m in dict.fromkeys(declared) if (s, m) not in metrics]
     if unsupported:
-        supported = sorted(f"{s}/{m}" for s, m in evaluator.metrics)
+        supported = sorted(f"{s}/{m}" for s, m in metrics)
         raise EvaluationContractError(
             f"evaluator {evaluator.name!r} does not measure {', '.join(unsupported)}; "
             f"supported: {', '.join(supported)}"
         )
     for constraint in spec.constraints:
-        unit = evaluator.metrics[(constraint.stage, constraint.metric)]
+        unit = metrics[(constraint.stage, constraint.metric)]
         if constraint.unit is not None and constraint.unit != unit:
             raise EvaluationContractError(
                 f"constraint on {constraint.stage}/{constraint.metric} declares unit "
@@ -226,7 +245,7 @@ def run_candidate(
     assignments: Sequence[str],
     output: str | os.PathLike[str],
     *,
-    evaluator: CaloHitMultiplicity | None = None,
+    evaluator: Evaluator,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
@@ -234,7 +253,6 @@ def run_candidate(
     output location before anything is created. Execution problems are reported as a
     ``failed`` or ``invalid`` result in the outcome.
     """
-    evaluator = evaluator or CaloHitMultiplicity()
     problem_path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
     spec = load_problem(problem_path)
     assert spec._source is not None
@@ -242,15 +260,12 @@ def run_candidate(
 
     values, _ = _validate_candidate(spec, _parse_candidate(spec, assignments))
     _check_identity(spec, evaluator)
-    evaluator.check(
-        EvaluationRequest(
-            candidate=values,
-            settings=spec.evaluation.settings,
-            events=spec.evaluation.events,
-            seed=spec.evaluation.seed,
-            backend_args=spec.evaluation.backend,
-        )
-    )
+    stage = getattr(evaluator, "requires", None)
+    if stage is not None:
+        check_stage(spec, stage)
+    check = getattr(evaluator, "check", None)
+    if check is not None:
+        check(_request(spec, values))
     _check_metrics(spec, evaluator)
     overrides = _overrides(spec, values)
 

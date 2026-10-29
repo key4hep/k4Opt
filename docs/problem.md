@@ -2,10 +2,10 @@
 
 > **Status: draft.** The file format below can be loaded and statically validated by
 > `k4opt.problem` (see [Validation and Python API](#validation-and-python-api)). One
-> vertical slice is implemented: `k4opt evaluate` runs a single candidate with the
-> `calo.hit_multiplicity` evaluator through `ddsim` (see [evaluators](evaluators.md)); before
-> it simulates, it checks that the declared objectives and constraints are metrics of that
-> evaluator. Everything else is **proposed, not implemented**: no evaluator registry, no
+> vertical slice is implemented: `k4opt evaluate` runs a single candidate through
+> generation and `ddsim` with an evaluator you name, for example the one in
+> `examples/evaluators` (see [evaluators](evaluators.md)); before it simulates, it checks that
+> the declared objectives and constraints are metrics of that evaluator. Everything else is **proposed, not implemented**: no evaluator registry, no
 > `k4run` invocation, no optimizer. Parsing a file alone does not check that its evaluator,
 > metrics or geometry targets exist. Everything here may change.
 
@@ -19,20 +19,21 @@ scientifically meaningful; k4opt records them precisely and reproducibly.
 records, provenance and identities ([Concepts](#concepts-and-boundaries-future),
 [Identity](#identity-and-provenance)) describe what k4Opt will record and are not part of the file.
 
-The illustrative example is
-[`examples/problem/cld-ecal-granularity.yaml`](../examples/problem/cld-ecal-granularity.yaml).
-It is a specification fixture, not an executable study: the evaluator
-`calo.single_particle_shower` and both metrics are proposed names, and the bounds (4-8 mm)
-and the hit-multiplicity limit (100, a placeholder) have not been validated by a baseline simulation.
+The example is [`examples/problem/cld-ecal-hit-count.yaml`](../examples/problem/cld-ecal-hit-count.yaml),
+run with the example evaluator
+[`calo_hit_multiplicity.py`](../examples/evaluators/calo_hit_multiplicity.py) (see
+[evaluators](evaluators.md)). It is a smoke test of the flow, not a performance study: the
+metric is a technical observable, and the bounds (4-8 mm) have not been validated by a baseline
+simulation.
 
 ```yaml
 schema_version: k4opt.problem/v1alpha1
-name: cld-ecal-granularity
+name: cld-ecal-hit-count
 
 environment:
   key4hep:
     channel: nightly
-    version: "2026-10-20"  # illustrative; availability not verified
+    version: "2026-10-20"
 
 geometry:
   entry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
@@ -45,39 +46,38 @@ parameters:
     unit: mm
 
 evaluation:
-  evaluator: calo.single_particle_shower
+  evaluator: calo.hit_multiplicity
   version: "1"
-  events: 1000
+  events: 100
   seed: 42
+
   settings:
     readouts:
       ecal_barrel: ECalBarrelCollection
-    generator:
-      particle: gamma
-      energy:
-        value: 10
-        unit: GeV
-      vertex:
-        value: [0, 0, 0]
-        unit: mm
-      direction:
-        distribution: uniform
-        theta: [60, 120]
-        phi: [0, 360]
-        unit: deg
+
+  generation:
+    particle: gamma
+    energy:
+      value: 10
+      unit: GeV
+    vertex:
+      value: [0, 0, 0]
+      unit: mm
+    direction:
+      distribution: uniform
+      theta: [60, 120]
+      phi: [0, 360]
+      unit: deg
+
   backend:
     ddsim:
       args: ["--physics.list", "FTFP_BERT"]
 
 objectives:
-  - stage: simulation
-    metric: ecal_barrel.position_rms
-    direction: minimize
-
-constraints:
+  # A technical observable, not a detector-performance objective (see the note above).
   - stage: simulation
     metric: ecal_barrel.mean_hit_cells
-    max: 100
+    direction: minimize
 ```
 
 ## What each part means
@@ -87,8 +87,8 @@ comparable.
 
 | Concept | Where | Who decides | Example |
 | --- | --- | --- | --- |
-| Scientific choices | `parameters`, `objectives`, `constraints` | the physicist | vary `ECal_cell_size` in 4-8 mm, minimize `position_rms` with at most 100 mean hit cells |
-| Evaluator settings | `evaluation.events`, `.seed`, `.settings` | the evaluator's contract, filled by the physicist | 1000 photons of 10 GeV, seed 42 |
+| Scientific choices | `parameters`, `objectives`, `constraints` | the physicist | vary `ECal_cell_size` in 4-8 mm, minimize the mean number of hit cells (and, optionally, limit a metric) |
+| Evaluator settings | `evaluation.events`, `.seed`, `.settings`, `.generation` | the evaluator's and the stage's contract, filled by the physicist | 1000 photons of 10 GeV, seed 42 |
 | Backend arguments | `evaluation.backend.<tool>.args` | the physicist, validated by the tool | `--physics.list FTFP_BERT` |
 | Execution environment | `environment`, `geometry.entry` | the physicist pins, k4opt resolves | nightly `2026-10-20`, CLD_o2_v09 |
 | Measured results | evaluation records | the evaluator | `mean_hit_cells = 7.9 ± 0.1` |
@@ -182,23 +182,27 @@ study evaluates only barrel hits.
 
 | Key | Meaning |
 | --- | --- |
-| `evaluator` | Logical name of a curated, versioned standard evaluator, e.g. `calo.single_particle_shower` (proposed). |
+| `evaluator` | Logical name of a curated, versioned standard evaluator, e.g. `calo.hit_multiplicity`. It must equal the `name` of the evaluator that `k4opt evaluate --evaluator` loads. |
 | `version` | Version of that evaluator's contract. A string. |
 | `events` | Optional. Number of events to process. |
 | `seed` | Optional. Random seed. |
-| `settings` | Evaluator-defined, semantically meaningful inputs (generator, readouts, ...). |
+| `settings` | Evaluator-defined, semantically meaningful inputs (readouts, ...). |
+| `generation` | Optional. Where the primary particles come from, for the `generation` [stage](evaluation.md#stages): a particle gun (`particle`, `energy`, `direction`, ...; see [ddsim](ddsim.md#particle-gun-evaluationgeneration)) or `sample: path/to/events.hepmc`, an event file. Not both. The framework runs the stage, evaluators do not. |
 | `backend` | Raw pass-through arguments for the backend tool(s). |
 
 A problem has exactly one `evaluation`, so every `metric` name resolves against one
 evaluator and version, and a candidate has one evaluation context. A study that needs
-several stages (say simulation and later reconstruction) uses one evaluator whose contract
-covers them and which runs the tools internally; `stage` only classifies the metrics.
+several stages (say simulation and later reconstruction) uses one evaluator that `requires`
+the last of them; the framework runs the stages, see [Stages](evaluation.md#stages), and
+`stage` on a metric only classifies it.
 Combining several evaluators in one problem is deferred.
 
-**Evaluator.** The default is a standard evaluator referenced by name and version, not an
-arbitrary Python path and not a user-written script. The evaluator owns the metric
-definitions and the interpretation of backend output. One evaluator is implemented,
-`calo.hit_multiplicity`; there is no registry yet.
+**Evaluator.** `evaluator` and `version` are the label of a measurement contract. The
+evaluator owns the metric definitions and the interpretation of the stage outputs. k4opt ships
+none: the physicist writes one (the example is
+[`calo_hit_multiplicity.py`](../examples/evaluators/calo_hit_multiplicity.py)) and names it on
+the command line, `k4opt evaluate --evaluator FILE.py:Class`, whose `name` and `version` must
+equal these two fields. A registry that resolves the label itself is deferred.
 
 **Events and seed.** `events` and `seed` are common evaluation controls so that different
 evaluators do not each invent their own names. Both are optional and only valid where the
@@ -212,18 +216,25 @@ example are illustrative only. In the example:
 | Key | Illustrative meaning |
 | --- | --- |
 | `readouts` | maps a logical *role* (`ecal_barrel`) to an output collection (`ECalBarrelCollection`). Roles are defined by the evaluator contract, which also says how a collection is turned into hits; add one entry per collection a study needs |
-| `generator.particle` | primary particle species (`gamma`) |
-| `generator.energy` | primary energy, `value` with an explicit `unit` |
-| `generator.vertex` | production point of the primary, `value` (x, y, z) with an explicit `unit`; here the origin. A fixed vertex keeps the true entry point on the ECAL surface well defined, which `position_rms` relies on |
-| `generator.direction.distribution` | ddsim's `--gun.distribution`, `cos(theta)` or `uniform`. `cos(theta)` is uniform in cos(theta), i.e. in solid angle; `uniform` is uniform in theta |
-| `generator.direction.theta`, `.phi` | inclusive angular range; `unit` gives the angle unit |
 
-Samples and simulation mode belong in `settings` as well, because they define the
-measurement. A study over several physics processes (signal and backgrounds, with event
-counts) lists them there; the sample set is not a backend argument. Any sample file or
-dataset must be captured for identity (hash or pinned dataset reference), like the files
-referenced by backend arguments. Choices such as fast versus full simulation are
-evaluator-owned settings too: they change the context identity and the validity of the
+**Generation.** `evaluation.generation` says where the primary particles come from. It belongs
+to the generation stage, not to one evaluator, so several evaluators of the same problem would
+measure the same events. As a particle gun, as in the example, its keys are, for illustration:
+
+| Key | Illustrative meaning |
+| --- | --- |
+| `particle` | primary particle species (`gamma`) |
+| `energy` | primary energy, `value` with an explicit `unit` |
+| `vertex` | production point of the primary, `value` (x, y, z) with an explicit `unit`; here the origin. A fixed vertex keeps the true entry point on the ECAL surface well defined, which shower-position metrics rely on |
+| `direction.distribution` | ddsim's `--gun.distribution`, `cos(theta)` or `uniform`. `cos(theta)` is uniform in cos(theta), i.e. in solid angle; `uniform` is uniform in theta |
+| `direction.theta`, `.phi` | inclusive angular range; `unit` gives the angle unit |
+
+To use an existing sample instead, write `generation: {sample: samples/zh.hepmc}`; a relative
+path is read from the directory of the problem file, `ddsim` reads the format from the extension,
+and the file's path, size and SHA-256 are recorded in the provenance, so a changed sample is a
+different measurement. A study over several physics processes (signal and backgrounds, with
+event counts) is not expressible yet: a problem has one sample; the sample set is not a
+backend argument. Choices such as fast versus full simulation are evaluator-owned settings: they change the context identity and the validity of the
 metrics, so they are never left to a raw argument.
 
 The 60-120 degree range is an illustrative barrel-oriented selection. It is not shown to
@@ -256,13 +267,13 @@ evaluator, see [evaluators.md](evaluators.md)):
    installed tool, which validates it. Some inputs belong to k4Opt or the evaluator: the
    materialized compact geometry, output paths, evaluator-selected steering or job
    configuration, and the authoritative event and generator settings (`events`, `seed` and
-   `settings`). A user argument that competes with one of them is an error rather than
+   `generation`). A user argument that competes with one of them is an error rather than
    silently winning or losing: the policy is **fail on known conflict**. This is
    best effort. An unrestricted argument list cannot be exhaustively validated, and for
    `k4run` the options are partly defined dynamically by the configuration. Exact conflict
    detection and any merging rules are deferred to the backend integration.
 5. *One authoritative way per property.* The example sets the particle gun, event count
-   and seed through `events`/`seed` and `settings` and uses raw arguments only for something `settings` does not
+   and seed through `events`/`seed` and `generation` and uses raw arguments only for something they do not
    cover (the physics list).
 6. *Arguments are part of the evaluation context.* They can change physics, not only
    logging, so the exact ordered list contributes to the context identity. The same
@@ -312,24 +323,30 @@ satisfied and is never replaced by an invented number. Metrics come with
 uncertainties, so how a constraint is judged against them is an
 [unresolved choice](#unresolved-choices). k4Opt adds no scientifically
 motivated constraints of its own: whether a candidate is physically sensible is the
-researcher's responsibility. In the example, `max: 100` is a placeholder until a baseline has been measured.
+researcher's responsibility. For instance, with a second metric the evaluator supports:
+
+```yaml
+constraints:
+  - stage: simulation
+    metric: ecal_barrel.position_rms   # illustrative; the example evaluator does not measure it
+    max: 2.0
+    unit: mm
+```
+
+A limit such as this needs a baseline measurement before it means anything.
 
 ## Metrics are defined by the evaluator
 
 A metric name alone does not make two studies measure the same thing. The evaluator and
 version must define each metric precisely: meaning, unit, estimator, event selection and
-thresholds, and the uncertainty and statistical conventions. For the example, the
-evaluator would have to say exactly what a "hit cell" is (energy threshold, which
-collection) and how `position_rms` is computed (reference position, residual definition)
-before any number can be interpreted. One possible definition of `position_rms` is the
-spread of the shower centroid relative to the true photon intersection with the ECAL
-reference surface; this is an example of the precision required, not a decision.
-
-The study as proposed concerns *simulated* calorimeter granularity against a shower-position
-observable. Hit multiplicity is not a detector cost or readout channel count, and
-`position_rms` is not a validated cost model nor a digitized or reconstructed photon
-resolution. The example makes position the objective and multiplicity a limit; a physicist
-who wants to minimize multiplicity at a required position resolution swaps the two.
+thresholds, and the uncertainty and statistical conventions. For the example, the evaluator
+defines a "hit cell" as a distinct `cellID` of the configured collection and the metric as the
+mean per event with the standard error of the mean ([evaluators](evaluators.md)). Hit
+multiplicity is a technical observable, not a detector cost, a readout channel count or a
+performance measure: a coarser grid always lowers it, so minimizing it alone is not a study.
+A study of granularity against a shower-position observable would need an evaluator that
+defines that observable (reference position, residual definition) before any number can be
+interpreted.
 
 ## Concepts and boundaries (future)
 
@@ -367,7 +384,7 @@ Three identities are kept separate, even though the draft YAML shows them in one
    constraints.
 2. **Evaluation context identity**: everything that can change what a measurement means
    for the same candidate: the pinned and resolved Key4hep stack, geometry entry, evaluator
-   name and version, `events`, `seed`, `settings`, and the exact ordered backend `args`. Changing the nightly
+   name and version, `events`, `seed`, `settings`, `generation`, and the exact ordered backend `args`. Changing the nightly
    or a backend flag does not change the problem, but it **does** change the context.
 3. **Run identity**: one execution session.
 
@@ -423,8 +440,8 @@ assert parse_problem(data) == problem  # parse already-decoded data, no file nee
 `$K4GEO` must point at the intended installed geometry tree. `environment.key4hep` names the
 intended release or nightly, but k4Opt does not select or verify it: the geometry comes from
 the active environment, so a resolved target is neither proof that the geometry matches the
-pinned stack nor that it is physically valid. The illustrative
-[CLD example](../examples/problem/cld-ecal-granularity.yaml) loads only where a suitable CLD
+pinned stack nor that it is physically valid. The
+[CLD example](../examples/problem/cld-ecal-hit-count.yaml) loads only where a suitable CLD
 geometry is installed.
 
 A target that exists in several reachable files cannot be selected in `v1alpha1`, which has
@@ -435,6 +452,8 @@ What is checked, with the location of the first problem in the message
 
 - `schema_version` is exactly `k4opt.problem/v1alpha1`; unknown keys are rejected in every
   section the schema defines (not inside `evaluation.settings`), as are wrong types.
+  `evaluation.generation` is either a particle gun (validated when the gun is built) or
+  exactly `sample: <path>`.
 - Identifiers (`name`, `entry`, `evaluator`, `stage`, `metric`, units, ...) are non-empty
   strings and are never trimmed or changed. `name` is optional and defaults to the file
   name when loaded from a file.
@@ -472,7 +491,7 @@ baseline for validating bounds and constraint limits); reconstruction and analys
 - **Value and unit composition.** `unit: mm` is declared next to numeric bounds, while the
   XML holds `5.1*mm`. The proposal is that k4Opt composes the replacement string from the
   value and the declared unit; the exact rule is undecided.
-- **Quantity notation in `settings`.** The draft convention is a number with an explicit
+- **Quantity notation in `settings` and `generation`.** The draft convention is a number with an explicit
   `unit` (`energy` with `value: 10` and `unit: GeV`, or a shared `unit` for a group such as
   `theta`/`phi`), never a quoted expression. The evaluator contract may still refine it.
 - **Constraint units.** `unit` on a constraint states the unit of `min`/`max`; whether

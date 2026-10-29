@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from k4opt.cli import main
+from tests.support.evaluators import CALO_HIT_MULTIPLICITY
 from tests.support.geometry import CLD_COMPACT
 
 pytestmark = pytest.mark.integration
@@ -51,7 +52,16 @@ def problem(tmp_path_factory: pytest.TempPathFactory, stack: None) -> Path:
 def evaluate(problem: Path, size: str, output: Path) -> dict[str, Any]:
     out, err = io.StringIO(), io.StringIO()
     code = main(
-        ["evaluate", str(problem), "--param", f"{CELL}={size}", "--output", str(output)],
+        [
+            "evaluate",
+            str(problem),
+            "--evaluator",
+            CALO_HIT_MULTIPLICITY,
+            "--param",
+            f"{CELL}={size}",
+            "--output",
+            str(output),
+        ],
         stdout=out,
         stderr=err,
     )
@@ -103,7 +113,7 @@ def test_the_installed_geometry_is_untouched(
 
 def test_ddsim_simulated_the_materialized_geometry(runs: dict[str, dict[str, Any]]) -> None:
     for run in runs.values():
-        log = Path(run["paths"]["stdout"]).read_text()
+        log = Path(run["paths"]["simulation.stdout"]).read_text()
         assert run["geometry"]["compact"] in log
         assert run["geometry"]["source_root"] not in log  # nothing loaded from the original
 
@@ -115,13 +125,13 @@ def test_metric_comes_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
         assert run["status"] == "valid"
         assert run["events"] == {"requested": EVENTS, "observed": EVENTS}
         collection = run["simulation"]["collection"]
-        events = get_reader(run["paths"]["edm4hep"]).get("events")
+        events = get_reader(run["paths"]["simulation.edm4hep"]).get("events")
         counts = [len({hit.getCellID() for hit in event.get(collection)}) for event in events]
         (measurement,) = run["measurements"]
         assert len(counts) == EVENTS
         assert measurement["value"] == pytest.approx(statistics.fmean(counts))
         assert measurement["uncertainty"] == pytest.approx(statistics.stdev(counts) / EVENTS**0.5)
         assert measurement["unit"] == "1"
-        assert Path(run["paths"]["stderr"]).is_file()
+        assert Path(run["paths"]["simulation.stderr"]).is_file()
         assert run["environment"]["declared"]["version"] == "2026-10-20"
         assert run["simulation"]["returncode"] == 0

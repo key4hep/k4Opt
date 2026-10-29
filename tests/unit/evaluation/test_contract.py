@@ -16,7 +16,10 @@ from k4opt.evaluation import (
     EvaluationResult,
     Evaluator,
     Measurement,
+    Status,
 )
+
+M = Measurement("s", "m", 1)  # any measurement, for results that only need to be valid
 
 # --- two evaluators behind the same protocol, run by hand, no Key4hep, no problem.yaml ---
 
@@ -33,7 +36,7 @@ class FakeSimulation:
         out = request.workdir / "events.txt"
         geometry = request.inputs["geometry"].read_text()
         out.write_text(f"{request.events} events, seed {request.seed}, {geometry}")
-        return EvaluationResult("valid", artifacts={"events": out})
+        return EvaluationResult.valid(artifacts={"events": out})
 
 
 @dataclass(frozen=True)
@@ -46,9 +49,8 @@ class FakeAnalysis:
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
         text = request.inputs["events"].read_text()
         n = int(text.split()[0])
-        return EvaluationResult(
-            "valid",
-            (Measurement("analysis", "n_events", n, unit="1", uncertainty=math.sqrt(n)),),
+        return EvaluationResult.valid(
+            [Measurement("analysis", "n_events", n, unit="1", uncertainty=math.sqrt(n))],
             provenance={"counted": n},
         )
 
@@ -74,7 +76,7 @@ def test_artifacts_pass_between_stages_by_hand(tmp_path: Path) -> None:
             seed=7,
         ),
     )
-    assert produced.status == "valid"
+    assert produced.status is Status.VALID
     assert produced.measurements == ()
     assert produced.artifacts["events"] == work / "events.txt"
 
@@ -143,50 +145,66 @@ def test_measurement_is_frozen() -> None:
 
 
 def test_result_defaults_and_statuses() -> None:
-    for status in ("valid", "invalid", "failed"):
-        result = EvaluationResult(status)
+    valid = EvaluationResult.valid([Measurement("s", "m", 1)])
+    assert valid.status is Status.VALID and valid.status == "valid"
+    assert not valid.artifacts and not valid.provenance and valid.message is None
+    for result, status in (
+        (EvaluationResult.invalid("too leaky"), Status.INVALID),
+        (EvaluationResult.failed("ddsim exited with 1"), Status.FAILED),
+    ):
+        assert result.status is status
         assert result.measurements == () and not result.artifacts and not result.provenance
-        assert result.message is None
     with pytest.raises(EvaluationContractError, match="status"):
         EvaluationResult("ok")  # type: ignore[arg-type]
+    assert EvaluationResult("valid", (Measurement("s", "m", 1),)).status is Status.VALID
+
+
+def test_a_valid_result_may_only_produce_artifacts() -> None:
+    result = EvaluationResult.valid(artifacts={"events": Path("events.root")})
+    assert result.status is Status.VALID and result.measurements == ()
+
+
+@pytest.mark.parametrize("make", [EvaluationResult.invalid, EvaluationResult.failed])
+def test_invalid_and_failed_results_need_a_message(make: Any) -> None:
+    for message in ("", "  ", None):
+        with pytest.raises(EvaluationContractError, match="needs a message"):
+            make(message)
 
 
 def test_failed_result_carries_no_invented_numbers() -> None:
-    result = EvaluationResult("failed", message="ddsim exited with 1")
+    result = EvaluationResult.failed("ddsim exited with 1")
     assert result.measurements == ()
     assert result.message == "ddsim exited with 1"
 
 
-def test_invalid_result_may_keep_diagnostic_measurements() -> None:
-    result = EvaluationResult(
-        "invalid", (Measurement("simulation", "containment", 0.4),), message="too leaky"
-    )
-    assert result.status == "invalid"
-    assert len(result.measurements) == 1
+@pytest.mark.parametrize("make", [EvaluationResult.invalid, EvaluationResult.failed])
+def test_invalid_and_failed_results_may_keep_diagnostic_measurements(make: Any) -> None:
+    result = make("too leaky", [Measurement("simulation", "containment", 0.4)])
+    assert result.measurements == (Measurement("simulation", "containment", 0.4),)
+    assert result.message == "too leaky"
 
 
 def test_measurements_given_as_a_list_are_stored_as_a_tuple() -> None:
     given: list[Measurement] = [Measurement("s", "m", 1)]
-    result = EvaluationResult("valid", cast(Any, given))
+    result = EvaluationResult.valid(given)
     given.append(Measurement("s", "other", 2))
     assert result.measurements == (Measurement("s", "m", 1),)
 
 
 def test_one_result_may_mix_stages() -> None:
-    result = EvaluationResult(
-        "valid",
-        (
+    result = EvaluationResult.valid(
+        [
             Measurement("simulation", "ecal.rms", 1.0),
             Measurement("reconstruction", "ecal.rms", 2.0),  # same metric name, other stage
             Measurement("analysis", "mass", 91.2, unit="GeV", uncertainty=0.1),
-        ),
+        ]
     )
     assert [m.stage for m in result.measurements] == ["simulation", "reconstruction", "analysis"]
 
 
 def test_duplicate_stage_metric_is_rejected() -> None:
     with pytest.raises(EvaluationContractError, match=r"duplicate measurement.*'a'.*'s'"):
-        EvaluationResult("valid", (Measurement("s", "a", 1), Measurement("s", "a", 2)))
+        EvaluationResult.valid([Measurement("s", "a", 1), Measurement("s", "a", 2)])
 
 
 def test_measurements_must_be_measurements() -> None:
@@ -198,35 +216,35 @@ def test_measurements_must_be_measurements() -> None:
 
 def test_artifact_paths_are_preserved_and_not_checked(tmp_path: Path) -> None:
     missing = tmp_path / "does" / "not" / "exist.root"
-    result = EvaluationResult("valid", artifacts={"events": missing, "rel": Path("a/../b")})
+    result = EvaluationResult.valid([M], artifacts={"events": missing, "rel": Path("a/../b")})
     assert result.artifacts["events"] is missing
     assert result.artifacts["rel"] == Path("a/../b")
     assert not missing.exists()
     with pytest.raises(EvaluationContractError, match=r"pathlib\.Path"):
-        EvaluationResult("valid", artifacts={"events": "a.root"})  # type: ignore[dict-item]
+        EvaluationResult.valid([M], artifacts={"events": "a.root"})  # type: ignore[dict-item]
     with pytest.raises(EvaluationContractError, match="name"):
-        EvaluationResult("valid", artifacts={" ": Path("a")})
+        EvaluationResult.valid([M], artifacts={" ": Path("a")})
 
 
 def test_provenance_is_copied_and_read_only() -> None:
     nested: dict[str, Any] = {"versions": {"dd4hep": "1.30"}, "argv": ["ddsim", "-N", "1"]}
-    result = EvaluationResult("valid", provenance=nested)
+    result = EvaluationResult.valid([M], provenance=nested)
     nested["versions"]["dd4hep"] = "changed"
     nested["argv"].append("x")
     assert result.provenance == {"versions": {"dd4hep": "1.30"}, "argv": ("ddsim", "-N", "1")}
     with pytest.raises(TypeError):
         result.provenance["new"] = 1  # type: ignore[index]
     with pytest.raises(EvaluationContractError, match=r"provenance\.when"):
-        EvaluationResult("valid", provenance={"when": cast(Any, object())})
+        EvaluationResult.valid([M], provenance={"when": cast(Any, object())})
     with pytest.raises(EvaluationContractError, match="non-finite"):
-        EvaluationResult("valid", provenance={"x": math.nan})
+        EvaluationResult.valid([M], provenance={"x": math.nan})
 
 
 def test_result_equality() -> None:
-    a = EvaluationResult("valid", (Measurement("s", "m", 1.0),), provenance={"k": (1,)})
-    b = EvaluationResult("valid", (Measurement("s", "m", 1.0),), provenance={"k": (1,)})
+    a = EvaluationResult.valid([Measurement("s", "m", 1.0)], provenance={"k": (1,)})
+    b = EvaluationResult.valid([Measurement("s", "m", 1.0)], provenance={"k": (1,)})
     assert a == b
-    assert a != EvaluationResult("failed")
+    assert a != EvaluationResult.failed("boom")
 
 
 # --- EvaluationRequest ---
@@ -354,12 +372,12 @@ def test_request_mappings_must_be_mappings(field: str) -> None:
 @pytest.mark.parametrize("field", ["artifacts", "provenance"])
 def test_result_mappings_must_be_mappings(field: str) -> None:
     with pytest.raises(EvaluationContractError, match=field):
-        EvaluationResult("valid", **{field: [("a", 1)]})  # type: ignore[arg-type]
+        EvaluationResult.valid([M], **{field: [("a", 1)]})  # type: ignore[arg-type]
 
 
 def test_message_must_be_text() -> None:
     with pytest.raises(EvaluationContractError, match="message"):
-        EvaluationResult("failed", message=cast(Any, ValueError("boom")))
+        EvaluationResult.failed(cast(Any, ValueError("boom")))
 
 
 @pytest.mark.parametrize(
@@ -374,3 +392,22 @@ def test_backend_args_must_be_ordered_sequences(args: Any) -> None:
 def test_measurements_must_be_ordered_sequences(measurements: Any) -> None:
     with pytest.raises(EvaluationContractError, match="list or tuple"):
         EvaluationResult("valid", measurements)
+
+
+# --- the generation context of a request ---
+
+
+def test_the_generation_context_is_copied_and_read_only() -> None:
+    gun: dict[str, Any] = {"particle": "gamma", "energy": {"value": 10, "unit": "GeV"}}
+    request = EvaluationRequest(generation=gun)
+    gun["energy"]["value"] = 1
+    assert request.generation == {"particle": "gamma", "energy": {"value": 10, "unit": "GeV"}}
+    with pytest.raises(TypeError):
+        request.generation["particle"] = "mu-"  # type: ignore[index]
+    assert not EvaluationRequest().generation
+    assert EvaluationRequest(generation={"sample": "zh.hepmc"}).generation == {"sample": "zh.hepmc"}
+
+
+def test_the_generation_context_must_be_a_mapping() -> None:
+    with pytest.raises(EvaluationContractError, match="generation"):
+        EvaluationRequest(generation=[("sample", "zh.hepmc")])  # type: ignore[arg-type]

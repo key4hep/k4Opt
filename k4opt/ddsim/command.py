@@ -46,7 +46,7 @@ _MANAGED_SHORT = "NOGIM"  # -N, -O, -G, -I and -M, the short spellings of the ab
 
 
 def _fail(path: str, message: str) -> DdsimError:
-    return DdsimError(f"settings.{path}: {message}")
+    return DdsimError(f"{path}: {message}")
 
 
 def _mapping(
@@ -90,8 +90,8 @@ def _range(value: Json, path: str) -> tuple[int | float, int | float]:
     return low, high
 
 
-def generator_args(generator: Json) -> tuple[str, ...]:
-    """The ``ddsim`` particle-gun arguments for ``settings.generator``.
+def particle_gun_args(particle_gun: Json) -> tuple[str, ...]:
+    """The ``ddsim`` particle-gun arguments for ``evaluation.generation``.
 
     ``particle``, ``energy`` and ``direction`` are required, ``vertex`` defaults to the
     origin. ``energy`` is the total energy of the primary. ``direction.distribution`` is passed
@@ -100,63 +100,64 @@ def generator_args(generator: Json) -> tuple[str, ...]:
     other distributions are errors; nothing falls back to another distribution.
     """
     top = _mapping(
-        generator,
-        "generator",
+        particle_gun,
+        "generation",
         ("particle", "energy", "vertex", "direction"),
         ("particle", "energy", "direction"),
     )
     particle = top["particle"]
     if not isinstance(particle, str) or not particle.strip() or particle.startswith("-"):
         raise _fail(
-            "generator.particle", f"must be a particle name such as 'gamma', got {particle!r}"
+            "generation.particle",
+            f"must be a particle name such as 'gamma', got {particle!r}",
         )
 
-    energy = _mapping(top["energy"], "generator.energy", ("value", "unit"), ("value", "unit"))
-    energy_value = _number(energy["value"], "generator.energy.value")
+    energy = _mapping(top["energy"], "generation.energy", ("value", "unit"), ("value", "unit"))
+    energy_value = _number(energy["value"], "generation.energy.value")
     if energy_value <= 0:
-        raise _fail("generator.energy.value", f"must be positive, got {energy_value!r}")
-    energy_unit = _unit(energy["unit"], "generator.energy.unit", _ENERGY_UNITS)
+        raise _fail("generation.energy.value", f"must be positive, got {energy_value!r}")
+    energy_unit = _unit(energy["unit"], "generation.energy.unit", _ENERGY_UNITS)
 
     vertex = _mapping(
         top.get("vertex", {"value": (0, 0, 0), "unit": "mm"}),
-        "generator.vertex",
+        "generation.vertex",
         ("value", "unit"),
         ("value", "unit"),
     )
     coordinates = vertex["value"]
     if not isinstance(coordinates, (list, tuple)) or len(coordinates) != 3:
-        raise _fail("generator.vertex.value", f"must be a list [x, y, z], got {coordinates!r}")
-    length_unit = _unit(vertex["unit"], "generator.vertex.unit", _LENGTH_UNITS)
+        raise _fail("generation.vertex.value", f"must be a list [x, y, z], got {coordinates!r}")
+    length_unit = _unit(vertex["unit"], "generation.vertex.unit", _LENGTH_UNITS)
     position = " ".join(
-        _quantity(_number(c, f"generator.vertex.value[{i}]"), length_unit)
+        _quantity(_number(c, f"generation.vertex.value[{i}]"), length_unit)
         for i, c in enumerate(coordinates)
     )
 
     direction = _mapping(
         top["direction"],
-        "generator.direction",
+        "generation.direction",
         ("distribution", "theta", "phi", "unit"),
         ("distribution", "theta", "phi", "unit"),
     )
     distribution = direction["distribution"]
     if not isinstance(distribution, str) or distribution not in DIRECTION_DISTRIBUTIONS:
         raise _fail(
-            "generator.direction.distribution",
+            "generation.direction.distribution",
             f"must be one of {list(DIRECTION_DISTRIBUTIONS)} (ddsim --gun.distribution), "
             f"got {distribution!r}",
         )
-    angle_unit = _unit(direction["unit"], "generator.direction.unit", tuple(_ANGLE_UNITS))
+    angle_unit = _unit(direction["unit"], "generation.direction.unit", tuple(_ANGLE_UNITS))
     half_turn = _ANGLE_UNITS[angle_unit]
-    theta_min, theta_max = _range(direction["theta"], "generator.direction.theta")
+    theta_min, theta_max = _range(direction["theta"], "generation.direction.theta")
     if theta_min < 0 or theta_max > half_turn:
         raise _fail(
-            "generator.direction.theta",
+            "generation.direction.theta",
             f"must lie within [0, {half_turn:g}] {angle_unit}, got [{theta_min}, {theta_max}]",
         )
-    phi_min, phi_max = _range(direction["phi"], "generator.direction.phi")
+    phi_min, phi_max = _range(direction["phi"], "generation.direction.phi")
     if phi_max - phi_min > 2 * half_turn:
         raise _fail(
-            "generator.direction.phi",
+            "generation.direction.phi",
             f"must not span more than a full turn, got [{phi_min}, {phi_max}]",
         )
 
@@ -199,31 +200,40 @@ def ddsim_arguments(
     output: Path,
     events: int,
     seed: int | None,
-    generator: Json,
+    particle_gun: Json = None,
+    sample: Path | None = None,
     user_args: Sequence[str],
 ) -> tuple[str, ...]:
     """The arguments of ``ddsim`` (without the executable): managed ones, then ``user_args``.
 
-    ``user_args`` are appended unchanged and in order; one that sets an option managed by
-    k4opt raises :class:`DdsimError` instead of silently winning or losing. ``events`` must be
-    a positive integer and ``seed`` an integer or ``None``.
+    The primaries come from exactly one of ``particle_gun`` (see :func:`particle_gun_args`) and
+    ``sample``, an event file that ``ddsim`` reads with ``--inputFiles`` (it picks the reader
+    from the file extension and validates the content). ``user_args`` are appended unchanged
+    and in order; one that sets an option managed by k4opt raises :class:`DdsimError` instead of
+    silently winning or losing. ``events`` must be a positive integer and ``seed`` an integer
+    or ``None``.
     """
     if isinstance(events, bool) or not isinstance(events, int) or events < 1:
         raise DdsimError(f"events must be a positive integer, got {events!r}")
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         raise DdsimError(f"seed must be an integer, got {seed!r}")
+    if (particle_gun is None) == (sample is None):
+        raise DdsimError(
+            "generation: set exactly one of particle_gun and sample "
+            f"(got {'both' if sample is not None else 'neither'})"
+        )
     for arg in user_args:
         if managed_conflict(arg):
             raise DdsimError(
                 f"backend.ddsim.args: {arg!r} sets an option that k4opt manages (geometry, "
-                "output, event count, seed and generator come from the problem); "
+                "output, event count, seed and generation come from the problem); "
                 "remove it from the arguments"
             )
     managed = [
         f"--compactFile={compact}",
         f"--outputFile={output}",
         f"--numberOfEvents={events}",
-        *generator_args(generator),
+        *(particle_gun_args(particle_gun) if sample is None else (f"--inputFiles={sample}",)),
     ]
     if seed is not None:
         managed.append(f"--random.seed={seed}")

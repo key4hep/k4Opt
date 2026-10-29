@@ -10,10 +10,10 @@ the search domain. Nested caller-owned data is copied on construction.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
-from typing import Literal
 
 from k4opt.evaluation.errors import EvaluationContractError
 from k4opt.frozen import FrozenMap, Json, freeze
@@ -21,9 +21,13 @@ from k4opt.frozen import FrozenMap, Json, freeze
 type Scalar = bool | int | float | str
 """A parameter value of a candidate."""
 
-type Status = Literal["valid", "invalid", "failed"]
 
-_STATUSES = ("valid", "invalid", "failed")
+class Status(StrEnum):
+    """How an evaluation ended; the values are the strings written to ``summary.json``."""
+
+    VALID = "valid"
+    INVALID = "invalid"
+    FAILED = "failed"
 
 
 def _name(value: object, what: str) -> str:
@@ -77,6 +81,9 @@ class EvaluationRequest:
     is neither created nor checked here. ``backend_args`` maps a tool name to its raw
     arguments, kept exactly as given, including order and repetition, and never parsed.
     ``events`` (positive) and ``seed`` are the optional controls of ``evaluation``.
+    ``generation`` is the problem's ``evaluation.generation``, a particle gun or
+    ``{"sample": path}`` exactly as written (a relative path is not resolved here); an
+    evaluator that runs its own workflow can read the conditions of the measurement from it.
 
     Every field is optional so that a toy evaluator needs little setup.
     """
@@ -88,6 +95,7 @@ class EvaluationRequest:
     events: int | None = None
     seed: int | None = None
     backend_args: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: FrozenMap({}))
+    generation: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidate, Mapping):
@@ -103,6 +111,7 @@ class EvaluationRequest:
                 )
         object.__setattr__(self, "candidate", FrozenMap(self.candidate))
         object.__setattr__(self, "settings", _json_mapping(self.settings, "settings"))
+        object.__setattr__(self, "generation", _json_mapping(self.generation, "generation"))
         object.__setattr__(self, "inputs", _paths(self.inputs, "inputs"))
         if self.workdir is not None and not isinstance(self.workdir, Path):
             raise EvaluationContractError("workdir must be a pathlib.Path")
@@ -171,12 +180,16 @@ class Measurement:
 class EvaluationResult:
     """What an evaluator returns for one request.
 
-    ``status`` separates three outcomes that are never collapsed into a number: ``valid``
-    (the evaluation ran and its result is scientifically usable), ``invalid`` (it ran, but
-    the result is not usable, for example the evaluator's own checks failed) and ``failed``
-    (the execution failed). A missing measurement is simply absent: never ``0`` or
-    ``inf``. ``measurements`` may be empty, for instance for a simulation that only produces
-    files, and may mix stages; each ``(stage, metric)`` occurs once. ``artifacts`` names
+    Build one with :meth:`valid`, :meth:`invalid` or :meth:`failed`. ``status`` separates
+    three outcomes that are never collapsed into a number: ``valid`` (the evaluation ran and
+    its result is scientifically usable), ``invalid`` (it ran, but the result is not usable, for
+    example the evaluator's own checks failed) and ``failed`` (the execution failed); the last
+    two need a ``message``. Measurements are independent of the status: an ``invalid`` result
+    may keep diagnostic values (hit counts of a configuration that violates a validity
+    condition), which an optimizer must not use as objectives, and a ``valid`` result may have
+    none (it only produced ``artifacts``; a problem that asks for a metric still requires it).
+    A missing measurement is simply absent: never ``0`` or ``inf``. ``measurements`` may mix
+    stages; each ``(stage, metric)`` occurs once. ``artifacts`` names
     local output files that can be inputs of a later evaluation; whether they exist is not
     checked here. ``message`` explains the status. ``provenance`` is JSON-compatible
     metadata that the evaluator chose to supply; nothing is collected automatically.
@@ -188,11 +201,50 @@ class EvaluationResult:
     message: str | None = None
     provenance: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
 
+    @classmethod
+    def valid(
+        cls,
+        measurements: Sequence[Measurement] = (),
+        *,
+        artifacts: Mapping[str, Path] | None = None,
+        provenance: Mapping[str, Json] | None = None,
+        message: str | None = None,
+    ) -> EvaluationResult:
+        """A scientifically usable result."""
+        return cls(Status.VALID, tuple(measurements), artifacts or {}, message, provenance or {})
+
+    @classmethod
+    def invalid(
+        cls,
+        message: str,
+        measurements: Sequence[Measurement] = (),
+        *,
+        artifacts: Mapping[str, Path] | None = None,
+        provenance: Mapping[str, Json] | None = None,
+    ) -> EvaluationResult:
+        """The evaluation ran but its result is not usable; say why. Diagnostics may be kept."""
+        return cls(Status.INVALID, tuple(measurements), artifacts or {}, message, provenance or {})
+
+    @classmethod
+    def failed(
+        cls,
+        message: str,
+        measurements: Sequence[Measurement] = (),
+        *,
+        artifacts: Mapping[str, Path] | None = None,
+        provenance: Mapping[str, Json] | None = None,
+    ) -> EvaluationResult:
+        """The execution failed (crash, missing output); say what happened."""
+        return cls(Status.FAILED, tuple(measurements), artifacts or {}, message, provenance or {})
+
     def __post_init__(self) -> None:
-        if self.status not in _STATUSES:
+        try:
+            status = Status(self.status)
+        except ValueError:
             raise EvaluationContractError(
-                f"status must be one of {', '.join(_STATUSES)}, got {self.status!r}"
-            )
+                f"status must be one of {', '.join(s.value for s in Status)}, got {self.status!r}"
+            ) from None
+        object.__setattr__(self, "status", status)
         if not isinstance(self.measurements, (list, tuple)):
             raise EvaluationContractError("measurements must be a list or tuple of Measurement")
         measurements = tuple(self.measurements)
@@ -210,6 +262,10 @@ class EvaluationResult:
                 )
             seen.add(key)
         object.__setattr__(self, "measurements", measurements)
+        if status is not Status.VALID and (
+            not isinstance(self.message, str) or not self.message.strip()
+        ):
+            raise EvaluationContractError(f"a {status.value} result needs a message")
         object.__setattr__(self, "artifacts", _paths(self.artifacts, "artifacts"))
         if self.message is not None and not isinstance(self.message, str):
             raise EvaluationContractError("message must be a string")

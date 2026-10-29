@@ -1,9 +1,18 @@
-"""The ``calo.hit_multiplicity`` evaluator: distinct cells hit in the simulated ECAL barrel.
+"""Example evaluator ``calo.hit_multiplicity``: distinct cells hit in the simulated ECAL barrel.
 
-Runs ``ddsim`` on a prepared geometry and reads the EDM4hep file it writes. The one
-measurement is ``simulation`` / ``ecal_barrel.mean_hit_cells``; see ``docs/evaluation.md`` for
-the definition. ``podio`` comes from the Key4hep stack and is imported only when a file is
-read, so this module imports without it.
+A complete, working evaluator to copy from. It is not part of the k4opt package; name it on the
+command line::
+
+    k4opt evaluate examples/problem/cld-ecal-hit-count.yaml \\
+        --evaluator examples/evaluators/calo_hit_multiplicity.py:CaloHitMultiplicity \\
+        --param constants.ECal_cell_size=6.0 --output runs/cld-ecal-6mm
+
+It only reads. ``requires = "simulation"`` asks k4opt to run generation and ``ddsim`` first and
+to hand over the EDM4hep file as ``request.inputs["simulation"]``; the evaluator starts no tool
+and handles none of their failures. The one measurement is ``simulation`` /
+``ecal_barrel.mean_hit_cells``; see ``docs/evaluators.md`` for the definition. ``podio`` comes
+from the Key4hep stack and is imported only when a file is read, so this module imports without
+it. The metric is a technical observable, not a detector-performance measure.
 """
 
 from __future__ import annotations
@@ -15,10 +24,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from k4opt.ddsim import check_arguments, simulate
-from k4opt.evaluation.errors import EvaluationContractError
-from k4opt.evaluation.models import EvaluationRequest, EvaluationResult, Measurement
-from k4opt.frozen import Json
+from k4opt.evaluation import (
+    EvaluationContractError,
+    EvaluationRequest,
+    EvaluationResult,
+    Measurement,
+)
 
 HIT_TYPE = "edm4hep::SimCalorimeterHit"
 
@@ -93,11 +104,11 @@ def read_cell_counts(path: Path, collection: str) -> list[int]:
     return counts
 
 
-def _readout(settings: Mapping[str, Json]) -> str:
-    unknown = [key for key in settings if key not in ("readouts", "generator")]
+def _readout(settings: Mapping[str, Any]) -> str:
+    unknown = [key for key in settings if key != "readouts"]
     if unknown:
         raise EvaluationContractError(
-            f"settings: unknown key(s) {unknown}; supported: ['readouts', 'generator']"
+            f"settings: unknown key(s) {unknown}; supported: ['readouts']"
         )
     readouts = settings.get("readouts")
     if not isinstance(readouts, Mapping) or list(readouts) != ["ecal_barrel"]:
@@ -115,105 +126,56 @@ def _readout(settings: Mapping[str, Json]) -> str:
 class CaloHitMultiplicity:
     """Mean number of distinct ECAL barrel cells hit per simulated event.
 
-    ``request.inputs["geometry"]`` is the compact file to simulate, ``request.workdir`` the
-    directory to write into (``simulation/`` is created in it), ``request.events`` the
-    number of events (required), ``request.seed`` the random seed (optional), and
-    ``request.settings`` the ``readouts`` and ``generator`` of the problem.
+    Reads ``request.inputs["simulation"]``, the EDM4hep file of the simulation stage it
+    ``requires``; ``request.settings["readouts"]`` names the collection. It runs no tool.
     """
 
     name = "calo.hit_multiplicity"
     version = "1"
+    requires = "simulation"
     #: the ``(stage, metric)`` pairs a valid result reports, with their units
     metrics: Mapping[tuple[str, str], str] = MappingProxyType(
         {("simulation", "ecal_barrel.mean_hit_cells"): "1"}
     )
 
     def check(self, request: EvaluationRequest) -> None:
-        """Raise if the request cannot be simulated (:class:`EvaluationContractError` or
-        :class:`~k4opt.ddsim.DdsimError`).
-
-        Needs no geometry and starts nothing, so a caller can run it before preparing files.
-        """
+        """Raise :class:`EvaluationContractError` if the settings cannot be evaluated."""
         _readout(request.settings)
-        if request.events is None:
-            raise EvaluationContractError("events is required to simulate")
-        unknown = [tool for tool in request.backend_args if tool != "ddsim"]
-        if unknown:
-            raise EvaluationContractError(f"backend: unsupported tool(s) {unknown}; only 'ddsim'")
-        check_arguments(
-            events=request.events,
-            seed=request.seed,
-            generator=request.settings.get("generator"),
-            args=request.backend_args.get("ddsim", ()),
-        )
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
-        self.check(request)
-        assert request.events is not None
         collection = _readout(request.settings)
-        geometry = request.inputs.get("geometry")
-        if geometry is None or not geometry.is_file():
+        events_file = request.inputs.get("simulation")
+        if events_file is None or not events_file.is_file():
             raise EvaluationContractError(
-                f"inputs['geometry'] must be an existing compact file, got {geometry!r}"
+                f"inputs['simulation'] must be an existing EDM4hep file, got {events_file!r}"
             )
-        if request.workdir is None:
-            raise EvaluationContractError("workdir is required to simulate")
-
-        run = simulate(
-            compact=geometry,
-            workdir=request.workdir / "simulation",
-            events=request.events,
-            seed=request.seed,
-            generator=request.settings.get("generator"),
-            args=request.backend_args.get("ddsim", ()),
-        )
-        artifacts = run.files
-        provenance: dict[str, Json] = {
-            "argv": run.argv,
-            "cwd": str(run.cwd),
-            "returncode": run.returncode,
+        provenance: dict[str, Any] = {
             "collection": collection,
             "events_requested": request.events,
         }
-
-        def failed(message: str) -> EvaluationResult:
-            return EvaluationResult(
-                "failed", artifacts=artifacts, message=message, provenance=provenance
-            )
-
-        if run.error is not None:
-            return failed(run.error)
-        events_file = run.output
         try:
             counts = read_cell_counts(events_file, collection)
         except _ReadError as exc:
-            return failed(str(exc))
+            return EvaluationResult.failed(str(exc), provenance=provenance)
         provenance["events_read"] = len(counts)
 
         if not counts:
-            return EvaluationResult(
-                "invalid",
-                artifacts=artifacts,
-                provenance=provenance,
-                message=f"{events_file.name} contains no events",
+            return EvaluationResult.invalid(
+                f"{events_file.name} contains no events", provenance=provenance
             )
-        if len(counts) != request.events:
-            return failed(
+        if request.events is not None and len(counts) != request.events:
+            return EvaluationResult.failed(
                 f"incomplete simulation: {len(counts)} of {request.events} events in "
-                f"{events_file.name}"
+                f"{events_file.name}",
+                provenance=provenance,
             )
         provenance["cells_min"], provenance["cells_max"] = min(counts), max(counts)
         if max(counts) == 0:
-            return EvaluationResult(
-                "invalid",
-                artifacts=artifacts,
-                provenance=provenance,
-                message=f"no hits in {collection!r} in any of {len(counts)} events",
+            return EvaluationResult.invalid(
+                f"no hits in {collection!r} in any of {len(counts)} events", provenance=provenance
             )
         mean, error = mean_and_error(counts)
-        return EvaluationResult(
-            "valid",
-            (Measurement("simulation", "ecal_barrel.mean_hit_cells", mean, "1", error),),
-            artifacts,
+        return EvaluationResult.valid(
+            [Measurement("simulation", "ecal_barrel.mean_hit_cells", mean, "1", error)],
             provenance=provenance,
         )
