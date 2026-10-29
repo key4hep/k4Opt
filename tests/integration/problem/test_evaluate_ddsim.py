@@ -1,7 +1,8 @@
 """``k4opt evaluate`` on the real CLD geometry with the real ddsim (needs the Key4hep stack).
 
-Skipped without ``$K4GEO``, ``ddsim`` and ``podio``. Runs two candidates of a few events each;
-about a minute each, mostly ddsim start-up. Verify by hand with::
+Skipped without ``$K4GEO``, ``ddsim`` and ``podio``. Runs two candidates of a few events each,
+and one more with two evaluators that share its simulation; about a minute each, mostly ddsim
+start-up. Verify by hand with::
 
     source setup.sh && pytest tests/integration/problem -m integration -s
 """
@@ -21,13 +22,14 @@ import pytest
 import yaml
 
 from k4opt.cli import main
-from tests.support.evaluators import CALO_PHOTON
+from tests.support.evaluators import CALO_PHOTON, CELL_COUNT
 from tests.support.geometry import CLD_COMPACT
 
 pytestmark = pytest.mark.integration
 
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-granularity.yaml"
 CELL = "constants.ECal_cell_size"
+COLLECTION = "ECalBarrelCollection"
 EVENTS = 4
 
 
@@ -49,19 +51,13 @@ def problem(tmp_path_factory: pytest.TempPathFactory, stack: None) -> Path:
     return path
 
 
-def evaluate(problem: Path, size: str, output: Path) -> dict[str, Any]:
+def evaluate(
+    problem: Path, size: str, output: Path, evaluators: tuple[str, ...] = (CALO_PHOTON,)
+) -> dict[str, Any]:
     out, err = io.StringIO(), io.StringIO()
+    flags = [arg for evaluator in evaluators for arg in ("--evaluator", evaluator)]
     code = main(
-        [
-            "evaluate",
-            str(problem),
-            "--evaluator",
-            CALO_PHOTON,
-            "--param",
-            f"{CELL}={size}",
-            "--output",
-            str(output),
-        ],
+        ["evaluate", str(problem), *flags, "--param", f"{CELL}={size}", "--output", str(output)],
         stdout=out,
         stderr=err,
     )
@@ -124,13 +120,14 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
     for run in runs.values():
         assert run["status"] == "valid"
         assert run["events"] == {"requested": EVENTS, "observed": EVENTS}
-        collection = run["settings"]["collection"]
+        (evaluator,) = run["evaluators"]
+        collection = evaluator["settings"]["collection"]
         counts = []
         for event in get_reader(run["paths"]["simulation.edm4hep"]).get("events"):
             (photon,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
             if not photon.isDecayedInTracker():
                 counts.append(sum(hit.getEnergy() >= 70e-6 for hit in event.get(collection)))
-        measured = {m["metric"]: m for m in run["measurements"]}
+        measured = {m["metric"]: m for m in evaluator["measurements"]}
         cells, residual = (
             measured["ecal_barrel.fired_cells"],
             measured["ecal_barrel.angular_residual"],
@@ -141,4 +138,37 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
         assert 0 < residual["value"] < 20  # a 10 GeV photon: about a mrad
         assert Path(run["paths"]["simulation.stderr"]).is_file()
         assert run["environment"]["declared"]["version"] == "2026-10-20"
-        assert run["simulation"]["returncode"] == 0
+        assert run["stages"]["simulation"]["returncode"] == 0
+
+
+@pytest.fixture(scope="module")
+def shared(problem: Path, tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """One candidate measured by the example evaluator and the test evaluator together."""
+    doc = yaml.safe_load(problem.read_text())
+    doc["evaluation"]["evaluators"].append(
+        {"name": "test.cell_count", "version": "1", "settings": {"collection": COLLECTION}}
+    )
+    both = problem.with_name("both.yaml")
+    both.write_text(yaml.safe_dump(doc))
+    output = tmp_path_factory.mktemp("shared") / "run"
+    return evaluate(both, "6.0", output, (CALO_PHOTON, CELL_COUNT))
+
+
+def test_two_evaluators_read_one_simulation(shared: dict[str, Any]) -> None:
+    from podio.reading import get_reader
+
+    run_dir = Path(shared["paths"]["run_dir"])
+    assert len(list(run_dir.glob("**/ddsim.json"))) == 1  # ddsim ran once
+    photon, cells = shared["evaluators"]
+    assert (photon["name"], photon["status"]) == ("calo.photon", "valid")
+    assert (cells["name"], cells["status"]) == ("test.cell_count", "valid")
+    assert photon["stages"] == cells["stages"] == ["generation", "simulation"]
+    # the test evaluator's value, recomputed from the one file both read
+    per_event = [
+        len({hit.getCellID() for hit in event.get(COLLECTION)})
+        for event in get_reader(shared["paths"]["simulation.edm4hep"]).get("events")
+    ]
+    (measurement,) = cells["measurements"]
+    assert measurement["value"] == pytest.approx(statistics.fmean(per_event))
+    # the objectives are calo.photon's, each read from it
+    assert {m["evaluator"] for m in shared["metrics"]} == {"calo.photon"}

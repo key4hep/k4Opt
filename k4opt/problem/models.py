@@ -3,9 +3,10 @@
 The models describe the draft ``k4opt.problem/v1alpha1`` format of ``docs/problem.md``.
 They hold declarative data only: nothing here looks up an evaluator or metric or touches
 the Key4hep stack; :func:`k4opt.problem.load_problem` attaches the resolved geometry targets
-to the :class:`ProblemSpec` as private runtime state. Evaluator-owned content (``settings``
-and backend arguments) is stored as an immutable copy, so neither the caller's YAML data
-nor the object handed out by :meth:`ProblemSpec.to_dict` aliases the stored state.
+to the :class:`ProblemSpec` as private runtime state. Evaluator-owned content (each
+evaluator's ``settings``, the generation and the backend arguments) is stored as an immutable
+copy, so neither the caller's YAML data nor the object handed out by
+:meth:`ProblemSpec.to_dict` aliases the stored state.
 """
 
 from __future__ import annotations
@@ -126,28 +127,50 @@ class Parameter:
 
 
 @dataclass(frozen=True, slots=True)
-class Evaluation:
-    """How a candidate is measured: a proposed standard evaluator plus its inputs.
+class EvaluatorSpec:
+    """One evaluator of a problem: the label of its measurement contract and its settings.
 
-    ``settings`` is owned by the evaluator's future contract, ``generation`` says where the
-    primary particles come from (a particle gun, interpreted by :mod:`k4opt.ddsim`, or
-    ``sample``, the path of an event file) and ``backend`` maps a
-    tool name to its ordered, uninterpreted argument list.
+    ``name`` and ``version`` must equal those of the evaluator that measures; ``settings`` is
+    owned by that evaluator's contract.
     """
 
-    evaluator: str
+    name: str
     version: str
-    events: int | None = None
-    seed: int | None = None
     settings: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
-    generation: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
-    backend: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
         # Direct construction gets the same defensive copy as parsing does.
         settings = freeze(self.settings, "settings")
         assert isinstance(settings, Mapping)
         object.__setattr__(self, "settings", settings)
+
+    def to_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {"name": self.name, "version": self.version}
+        if self.settings:
+            data["settings"] = thaw(self.settings)
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class Evaluation:
+    """How a candidate is measured: the evaluators and the one context they share.
+
+    Each of ``evaluators`` measures the candidate with its own settings. The other fields are
+    the conditions of the pipeline stages, shared by every evaluator: ``events``, ``seed``,
+    ``generation`` (where the primary particles come from: a particle gun, interpreted by
+    :mod:`k4opt.ddsim`, or ``sample``, the path of an event file) and ``backend``, which maps a
+    tool name to its ordered, uninterpreted argument list.
+    """
+
+    evaluators: tuple[EvaluatorSpec, ...]
+    events: int | None = None
+    seed: int | None = None
+    generation: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    backend: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: FrozenMap({}))
+
+    def __post_init__(self) -> None:
+        # Direct construction gets the same defensive copy as parsing does.
+        object.__setattr__(self, "evaluators", tuple(self.evaluators))
         generation = freeze(self.generation, "generation")
         assert isinstance(generation, Mapping)
         object.__setattr__(self, "generation", generation)
@@ -162,17 +185,16 @@ class Evaluation:
         )
 
     def to_dict(self) -> dict[str, object]:
-        data: dict[str, object] = {"evaluator": self.evaluator, "version": self.version}
+        data: dict[str, object] = {}
         if self.events is not None:
             data["events"] = self.events
         if self.seed is not None:
             data["seed"] = self.seed
-        if self.settings:
-            data["settings"] = thaw(self.settings)
         if self.generation:
             data["generation"] = thaw(self.generation)
         if self.backend:
             data["backend"] = {name: {"args": list(args)} for name, args in self.backend.items()}
+        data["evaluators"] = [evaluator.to_dict() for evaluator in self.evaluators]
         return data
 
 

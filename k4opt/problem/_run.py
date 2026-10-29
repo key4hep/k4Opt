@@ -1,9 +1,10 @@
 """Internal: evaluate one candidate of a problem file end to end (behind ``k4opt evaluate``).
 
-Not a workflow API. In order it loads the problem, parses and validates the candidate and
-the evaluator settings (nothing is created before this succeeds), creates the new run
-directory, materializes the candidate's geometry into it, runs the one evaluator through
-:func:`k4opt.problem._evaluate._evaluate_candidate` and writes ``summary.json``.
+Not a workflow API. In order it loads the problem, parses and validates the candidate, binds
+and checks the evaluators (nothing is created before this succeeds), creates the new run
+directory, materializes the candidate's geometry into it, measures the candidate with every
+evaluator through :func:`k4opt.problem._evaluate._evaluate_candidate`, which runs each pipeline
+stage once, and writes ``summary.json``.
 """
 
 from __future__ import annotations
@@ -18,23 +19,15 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
-from k4opt.evaluation import (
-    EvaluationContractError,
-    EvaluationRecord,
-    EvaluationResult,
-    EvaluatorProtocol,
-    Scalar,
-    metric_units,
-)
-from k4opt.frozen import thaw
+from k4opt.evaluation import EvaluationRecord, EvaluatorProtocol, Measurement, Scalar
+from k4opt.frozen import Json, thaw
 from k4opt.geometry import Override
 from k4opt.problem._evaluate import (
-    _check_identity,
+    CandidateRecord,
     _evaluate_candidate,
-    _request,
+    _preflight,
     _validate_candidate,
 )
-from k4opt.problem._stages import check_stage
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
 from k4opt.problem.models import Parameter, ProblemSpec
@@ -52,9 +45,9 @@ _DECIMAL = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 
 @dataclass(frozen=True, slots=True)
 class RunOutcome:
-    """What one run produced: the record, the written summary and where it is."""
+    """What one run produced: the candidate's record, the written summary and where it is."""
 
-    record: EvaluationRecord
+    candidate: CandidateRecord
     summary: Mapping[str, object]
     run_dir: Path
     fingerprint: str
@@ -66,16 +59,7 @@ class RunOutcome:
     @property
     def events_read(self) -> object:
         """The events found in the simulation output, ``None`` if it was not inspected."""
-        return _stage_provenance(self.record.result, "simulation").get("events_read")
-
-
-def _stage_provenance(result: EvaluationResult, stage: str) -> dict[str, object]:
-    """What the framework recorded about ``stage`` (plain data), empty if it left nothing."""
-    provenance = thaw(result.provenance)
-    assert isinstance(provenance, dict)
-    stages = provenance.get("stages")
-    entry = stages.get(stage) if isinstance(stages, dict) else None
-    return entry if isinstance(entry, dict) else {}
+        return self.candidate.stages.provenance.get("simulation", {}).get("events_read")
 
 
 def _int(reference: str, text: str) -> int:
@@ -185,42 +169,83 @@ def _overrides(spec: ProblemSpec, values: Mapping[str, Scalar]) -> list[Override
     return overrides
 
 
-def _summary(
-    problem_path: Path, spec: ProblemSpec, record: EvaluationRecord, run_dir: Path, geometry: object
-) -> dict[str, object]:
+def _measurement(m: Measurement | None) -> dict[str, object]:
+    return {
+        "value": None if m is None else m.value,
+        "unit": None if m is None else m.unit,
+        "uncertainty": None if m is None else m.uncertainty,
+    }
+
+
+def _evaluator(record: EvaluationRecord, reads: Sequence[str]) -> dict[str, object]:
+    """One evaluator's own part of the summary: nothing of the stages it shares."""
     result, request = record.result, record.request
-    simulation = _stage_provenance(result, "simulation")
-    generation = _stage_provenance(result, "generation") or thaw(spec.evaluation.generation)
+    return {
+        "name": record.evaluator_name,
+        "version": record.evaluator_version,
+        "status": result.status,
+        "message": result.message,
+        "settings": thaw(request.settings),
+        "stages": list(reads),
+        "measurements": [
+            {"stage": m.stage, "metric": m.metric} | _measurement(m) for m in result.measurements
+        ],
+        "artifacts": {role: str(path) for role, path in result.artifacts.items()},
+        "provenance": thaw(result.provenance),
+        "workdir": None if request.workdir is None else str(request.workdir),
+        "elapsed_seconds": record.elapsed_seconds,
+    }
+
+
+def _summary(
+    problem_path: Path,
+    spec: ProblemSpec,
+    values: Mapping[str, Scalar],
+    candidate: CandidateRecord,
+    run_dir: Path,
+    geometry: object,
+) -> dict[str, object]:
+    stages = candidate.stages
+    simulation = stages.provenance.get("simulation", {})
     argv = simulation.get("argv")
-    provenance = thaw(result.provenance)
-    assert isinstance(provenance, dict)
-    provenance.pop("stages", None)  # what the framework observed is under generation/simulation
+    generation: Json = stages.provenance.get("generation") or spec.evaluation.generation
+    stage_records: dict[str, object] = {}
+    for stage, provenance in stages.provenance.items():  # pipeline order
+        entry = thaw(provenance)
+        assert isinstance(entry, dict)
+        if stage in stages.errors:
+            entry["error"] = stages.errors[stage]
+        if stage in stages.seconds:
+            entry["elapsed_seconds"] = stages.seconds[stage]
+        stage_records[stage] = entry
     return {
         "schema": SUMMARY_SCHEMA,
         "problem": {"path": str(problem_path), "name": spec.name},
-        "candidate": dict(request.candidate),
-        "candidate_key": [list(part) for part in record.candidate_key],
-        "evaluator": {"name": record.evaluator_name, "version": record.evaluator_version},
-        "status": result.status,
-        "message": result.message,
-        "measurements": [
-            {
-                "stage": m.stage,
-                "metric": m.metric,
-                "value": m.value,
-                "unit": m.unit,
-                "uncertainty": m.uncertainty,
-            }
-            for m in result.measurements
+        "candidate": dict(values),
+        "candidate_key": [list(part) for part in candidate.candidate_key],
+        "status": candidate.status,
+        "message": candidate.message,
+        # the objective and constraint metrics, each from the evaluator that owns it
+        "metrics": [
+            {"stage": stage, "metric": metric, "evaluator": owner}
+            | _measurement(candidate.value(stage, metric))
+            for (stage, metric), owner in candidate.owners.items()
         ],
-        "events": {"requested": request.events, "observed": simulation.get("events_read")},
-        "elapsed_seconds": record.elapsed_seconds,
+        "evaluators": [
+            _evaluator(record, candidate.reads[record.evaluator_name])
+            for record in candidate.records
+        ],
+        "stages": stage_records,
+        "events": {"requested": spec.evaluation.events, "observed": simulation.get("events_read")},
+        "elapsed_seconds": candidate.elapsed_seconds,
         "geometry": geometry,
-        "generation": generation,
-        "settings": thaw(request.settings),
-        "provenance": provenance,
-        "simulation": {"command": argv, "returncode": simulation.get("returncode")},
-        "paths": {"run_dir": str(run_dir)} | {k: str(v) for k, v in result.artifacts.items()},
+        "generation": thaw(generation),
+        "paths": {"run_dir": str(run_dir)}
+        | {
+            f"{stage}.{role}": str(path)
+            for stage, files in stages.artifacts.items()
+            for role, path in files.items()
+        },
         "environment": {
             # declared by the problem: a pin, not a check of what ran
             "declared": spec.environment.to_dict()["key4hep"],
@@ -228,36 +253,10 @@ def _summary(
             "observed": {
                 "KEY4HEP_STACK": os.environ.get("KEY4HEP_STACK"),
                 "K4GEO": os.environ.get("K4GEO"),
-                "ddsim": argv[0] if isinstance(argv, list) and argv else None,
+                "ddsim": argv[0] if isinstance(argv, (list, tuple)) and argv else None,
             },
         },
     }
-
-
-def _check_metrics(spec: ProblemSpec, evaluator: EvaluatorProtocol) -> None:
-    """Reject objectives and constraints the evaluator cannot measure, before any simulation.
-
-    An evaluator that does not declare ``metrics`` is not checked here; its results still are.
-    """
-    metrics = metric_units(evaluator)
-    if metrics is None:
-        return
-    declared = [(o.stage, o.metric) for o in spec.objectives]
-    declared += [(c.stage, c.metric) for c in spec.constraints]
-    unsupported = [f"{s}/{m}" for s, m in dict.fromkeys(declared) if (s, m) not in metrics]
-    if unsupported:
-        supported = sorted(f"{s}/{m}" for s, m in metrics)
-        raise EvaluationContractError(
-            f"evaluator {evaluator.name!r} does not measure {', '.join(unsupported)}; "
-            f"supported: {', '.join(supported)}"
-        )
-    for constraint in spec.constraints:
-        unit = metrics[(constraint.stage, constraint.metric)]
-        if constraint.unit is not None and constraint.unit != unit:
-            raise EvaluationContractError(
-                f"constraint on {constraint.stage}/{constraint.metric} declares unit "
-                f"{constraint.unit!r} but the evaluator measures it in {unit!r}"
-            )
 
 
 def run_candidate(
@@ -265,13 +264,14 @@ def run_candidate(
     assignments: Sequence[str],
     output: str | os.PathLike[str],
     *,
-    evaluator: EvaluatorProtocol,
+    evaluators: Sequence[EvaluatorProtocol],
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
-    Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, candidate, settings or
-    output location before anything is created. Execution problems are reported as a
-    ``failed`` or ``invalid`` result in the outcome.
+    ``evaluators`` implement the problem's ``evaluation.evaluators``, in any order. Raises a
+    :class:`~k4opt.errors.K4OptError` for an invalid problem, candidate, evaluator, settings or
+    output location before anything is created. Execution problems are reported as ``failed``
+    or ``invalid`` results in the outcome.
     """
     problem_path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
     spec = load_problem(problem_path)
@@ -279,14 +279,7 @@ def run_candidate(
     assert spec._catalog is not None
 
     values, _ = _validate_candidate(spec, _parse_candidate(spec, assignments))
-    _check_identity(spec, evaluator)
-    stage = getattr(evaluator, "requires", None)
-    if stage is not None:
-        check_stage(spec, stage)
-    check = getattr(evaluator, "check", None)
-    if check is not None:
-        check(_request(spec, values, evaluator=evaluator))
-    _check_metrics(spec, evaluator)
+    _preflight(spec, values, evaluators)
     overrides = _overrides(spec, values)
 
     run_dir = Path(os.path.abspath(output))
@@ -301,8 +294,8 @@ def run_candidate(
             run_dir.rmdir()  # created by the failed attempt; only removed while empty
         raise
 
-    record = _evaluate_candidate(
-        spec, values, evaluator, inputs={"geometry": snapshot.compact_path}, workdir=run_dir
+    candidate = _evaluate_candidate(
+        spec, values, evaluators, inputs={"geometry": snapshot.compact_path}, workdir=run_dir
     )
     geometry = {
         "fingerprint": snapshot.fingerprint,
@@ -314,8 +307,8 @@ def run_candidate(
             for c in snapshot.changes
         ],
     }
-    summary = _summary(problem_path.absolute(), spec, record, run_dir, geometry)
+    summary = _summary(problem_path.absolute(), spec, values, candidate, run_dir, geometry)
     with (run_dir / SUMMARY_NAME).open("x", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
         handle.write("\n")
-    return RunOutcome(record, summary, run_dir, snapshot.fingerprint)
+    return RunOutcome(candidate, summary, run_dir, snapshot.fingerprint)

@@ -20,13 +20,17 @@ _BASE: dict[str, object] = {
         }
     ],
     "evaluation": {
-        "evaluator": "calo.single_particle_shower",
-        "version": "1",
         "events": 1000,
         "seed": 42,
-        "settings": {"collection": "ECalBarrelCollection"},
         "generation": {"particle": "gamma", "energy": {"value": 10, "unit": "GeV"}},
         "backend": {"ddsim": {"args": ["--physics.list", "FTFP_BERT"]}},
+        "evaluators": [
+            {
+                "name": "calo.single_particle_shower",
+                "version": "1",
+                "settings": {"collection": "ECalBarrelCollection"},
+            }
+        ],
     },
     "objectives": [{"stage": "simulation", "metric": "a.rms", "direction": "minimize"}],
     "constraints": [{"stage": "simulation", "metric": "a.cells", "max": 100}],

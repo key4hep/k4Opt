@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +28,7 @@ from k4opt.problem.models import (
     Direction,
     Environment,
     Evaluation,
+    EvaluatorSpec,
     GeometrySelector,
     GeometrySpec,
     Key4hepStack,
@@ -62,6 +64,7 @@ _KINDS = ("continuous", "integer", "categorical")
 _DIRECTIONS = ("minimize", "maximize")
 _BACKENDS = ("ddsim", "k4run")
 _SCHEMA_FAMILY = "k4opt.problem/"
+_EVALUATOR_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
@@ -365,29 +368,48 @@ def _choices(raw: object, path: str) -> tuple[str | bool | Number, ...]:
 def _evaluation(raw: object) -> Evaluation:
     path = "evaluation"
     m = _mapping(
-        raw,
-        path,
-        ("evaluator", "version", "events", "seed", "settings", "generation", "backend"),
-        ("evaluator", "version"),
+        raw, path, ("events", "seed", "generation", "backend", "evaluators"), ("evaluators",)
     )
-    settings: Mapping[str, Json] = {}
-    if "settings" in m:
-        if not isinstance(m["settings"], Mapping):
-            raise _fail(
-                "evaluation.settings", f"must be a mapping, got {type(m['settings']).__name__}"
-            )
-        frozen = freeze(m["settings"], "evaluation.settings")
-        assert isinstance(frozen, Mapping)
-        settings = frozen
     return Evaluation(
-        evaluator=_text(m["evaluator"], "evaluation.evaluator"),
-        version=_text(m["version"], "evaluation.version"),
+        evaluators=_evaluators(m["evaluators"]),
         events=_integer(m["events"], "evaluation.events", minimum=1) if "events" in m else None,
         seed=_integer(m["seed"], "evaluation.seed") if "seed" in m else None,
-        settings=settings,
         generation=_generation(m["generation"]) if "generation" in m else {},
         backend=_backend(m["backend"]) if "backend" in m else {},
     )
+
+
+def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
+    items = _sequence(raw, "evaluation.evaluators")
+    if not items:
+        raise _fail("evaluation.evaluators", "must list at least one evaluator")
+    evaluators: list[EvaluatorSpec] = []
+    first: dict[str, int] = {}
+    for index, item in enumerate(items):
+        path = f"evaluation.evaluators[{index}]"
+        m = _mapping(item, path, ("name", "version", "settings"), ("name", "version"))
+        name = _text(m["name"], f"{path}.name")
+        # the name also names the evaluator's directory in a run
+        if not _EVALUATOR_NAME.fullmatch(name):
+            raise _fail(
+                f"{path}.name",
+                f"{_show(name)} must start with a letter or digit and hold only letters, "
+                "digits, '.', '_' and '-'",
+            )
+        if name in first:
+            raise _fail(path, f"duplicates evaluators[{first[name]}] (name {name!r})")
+        first[name] = index
+        settings: Mapping[str, Json] = {}
+        if "settings" in m:
+            if not isinstance(m["settings"], Mapping):
+                raise _fail(
+                    f"{path}.settings", f"must be a mapping, got {type(m['settings']).__name__}"
+                )
+            frozen = freeze(m["settings"], f"{path}.settings")
+            assert isinstance(frozen, Mapping)
+            settings = frozen
+        evaluators.append(EvaluatorSpec(name, _text(m["version"], f"{path}.version"), settings))
+    return tuple(evaluators)
 
 
 def _generation(raw: object) -> Mapping[str, Json]:

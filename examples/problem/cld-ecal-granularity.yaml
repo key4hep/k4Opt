@@ -27,13 +27,8 @@ parameters:
     unit: mm
 
 evaluation:
-  evaluator: calo.photon
-  version: "1"
   events: 1000
   seed: 42
-
-  settings:
-    collection: ECalBarrelCollection
 
   generation:
     particle: gamma
@@ -50,6 +45,13 @@ evaluation:
   backend:
     ddsim:
       args: ["--physics.list", "FTFP_BERT"]
+
+  # who measures the simulated photons; several evaluators would share one simulation
+  evaluators:
+    - name: calo.photon
+      version: "1"
+      settings:
+        collection: ECalBarrelCollection
 
 objectives:
   - stage: simulation

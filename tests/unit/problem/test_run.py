@@ -30,7 +30,15 @@ from k4opt.problem._run import run_candidate as _run_candidate
 from k4opt.problem.errors import RunError
 from tests.support import simulation
 from tests.support.common import tree_digest
-from tests.support.evaluators import CELL_COUNT, calo_photon, cell_count
+from tests.support.evaluators import (
+    CELL_COUNT,
+    HIT_ENERGY,
+    PARAMETER_ECHO,
+    calo_photon,
+    cell_count,
+    hit_energy,
+    parameter_echo,
+)
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.simulation import COLLECTION, events_with
 
@@ -41,8 +49,8 @@ EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
 def run_candidate(
     problem: Path, assignments: list[str], output: Path, **changes: Any
 ) -> RunOutcome:
-    """``run_candidate`` with the test evaluator unless the test passes another."""
-    changes.setdefault("evaluator", cell_count())
+    """``run_candidate`` with the test evaluator unless the test passes others."""
+    changes.setdefault("evaluators", [cell_count()])
     return _run_candidate(problem, assignments, output, **changes)
 
 
@@ -57,8 +65,10 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
     doc["parameters"][0]["bounds"] = [100.0, 600.0]
     evaluation = doc["evaluation"]
-    evaluation.update(evaluator="test.cell_count", events=3, seed=5)
-    evaluation["settings"] = {"collection": COLLECTION}
+    evaluation.update(events=3, seed=5)
+    evaluation["evaluators"] = [
+        {"name": "test.cell_count", "version": "1", "settings": {"collection": COLLECTION}}
+    ]
     evaluation["generation"] = {
         "particle": "gamma",
         "energy": {"value": 10, "unit": "GeV"},
@@ -131,8 +141,8 @@ def test_candidate_is_materialized_with_the_cached_catalog_and_simulated(
     assert 'value="450.0*mm"' in (snapshot / "compact/det_v1/tracker.xml").read_text()
     ((argv, _),) = fake.calls
     assert f"--compactFile={snapshot / MINI_COMPACT}" in argv
-    assert outcome.record.result.status == "valid"
-    assert outcome.record.request.inputs["geometry"] == snapshot / MINI_COMPACT
+    assert outcome.candidate.status == "valid"
+    assert outcome.candidate.records[0].request.inputs["geometry"] == snapshot / MINI_COMPACT
 
 
 def test_geometry_is_discovered_once_per_run(
@@ -149,22 +159,44 @@ def test_summary_is_written_and_truthful(
     on_disk = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
     assert on_disk == json.loads(json.dumps(outcome.summary))
 
-    assert on_disk["status"] == "valid"
+    assert on_disk["schema"] == "k4opt.run/1"
+    assert (on_disk["status"], on_disk["message"]) == ("valid", None)
     assert on_disk["candidate"] == {RADIUS: 450.0}
-    assert on_disk["evaluator"] == {"name": "test.cell_count", "version": "1"}
-    (measurement,) = on_disk["measurements"]
+    (evaluator,) = on_disk["evaluators"]
+    assert (evaluator["name"], evaluator["version"]) == ("test.cell_count", "1")
+    assert (evaluator["status"], evaluator["message"]) == ("valid", None)
+    (measurement,) = evaluator["measurements"]
     assert measurement["metric"] == "ecal_barrel.mean_hit_cells"
     assert measurement["value"] == 3.0  # distinct cells per event: 3, 2, 4
+    # the objective, from the evaluator that owns it
+    assert on_disk["metrics"] == [
+        {
+            "stage": "simulation",
+            "metric": "ecal_barrel.mean_hit_cells",
+            "evaluator": "test.cell_count",
+        }
+        | {k: measurement[k] for k in ("value", "unit", "uncertainty")}
+    ]
     assert on_disk["events"] == {"requested": 3, "observed": 3}
     assert on_disk["geometry"]["fingerprint"] == outcome.fingerprint
     assert Path(on_disk["geometry"]["manifest"]).is_file()
     assert on_disk["geometry"]["changes"] == [
         {"target": RADIUS, "old_value": "400*mm", "new_value": "450.0*mm"}
     ]
-    assert on_disk["simulation"]["command"][0] == "/stack/bin/ddsim"
-    assert on_disk["simulation"]["returncode"] == 0
-    assert on_disk["settings"] == {"collection": COLLECTION}
-    assert on_disk["provenance"] == {}  # the test evaluator reports none of its own
+    # the stages, recorded once, apart from the evaluators that read them
+    assert list(on_disk["stages"]) == ["generation", "simulation"]
+    simulated = on_disk["stages"]["simulation"]
+    assert simulated["argv"][0] == "/stack/bin/ddsim"
+    assert (simulated["returncode"], simulated["events_read"]) == (0, 3)
+    assert "error" not in simulated
+    assert evaluator["settings"] == {"collection": COLLECTION}
+    assert evaluator["provenance"] == {} and evaluator["artifacts"] == {}  # none of its own
+    assert evaluator["stages"] == ["generation", "simulation"]
+    assert evaluator["workdir"] == str(tmp_path / "a" / "evaluators" / "test.cell_count")
+    # every second once: each stage, the evaluator's own call, and the candidate around them
+    seconds = [stage["elapsed_seconds"] for stage in on_disk["stages"].values()]
+    seconds.append(evaluator["elapsed_seconds"])
+    assert min(seconds) >= 0 and sum(seconds) <= on_disk["elapsed_seconds"]
     # the files of the stages, named <stage>.<role>: what the real-ddsim test reads back
     paths = on_disk["paths"]
     assert paths["run_dir"] == str(tmp_path / "a")
@@ -238,7 +270,7 @@ def test_another_evaluator_is_rejected_before_any_side_effect(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
 ) -> None:
     doc = yaml.safe_load(problem_file.read_text())
-    doc["evaluation"]["evaluator"] = "calo.single_particle_shower"
+    doc["evaluation"]["evaluators"][0]["name"] = "calo.single_particle_shower"
     problem_file.write_text(yaml.safe_dump(doc))
     with pytest.raises(EvaluationContractError, match="calo\\.single_particle_shower"):
         run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
@@ -459,9 +491,14 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
     outcome = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
     summary = json.loads(outcome.summary_path.read_text())
     assert summary["status"] == "failed"
+    assert summary["message"].startswith("test.cell_count failed: ddsim exited with status 2")
     assert "G4Exception: bad volume" in summary["message"]
-    assert summary["measurements"] == []
-    assert summary["simulation"]["returncode"] == 2
+    (evaluator,) = summary["evaluators"]
+    assert evaluator["measurements"] == [] and evaluator["elapsed_seconds"] is None
+    assert evaluator["workdir"] is None  # not called, so no directory was made for it
+    assert summary["metrics"][0]["value"] is None  # never a made-up number
+    assert summary["stages"]["simulation"]["returncode"] == 2
+    assert "bad volume" in summary["stages"]["simulation"]["error"]
     assert "bad volume" in Path(summary["paths"]["simulation.stderr"]).read_text()
 
 
@@ -509,10 +546,8 @@ def test_text_values_are_read_by_the_parameter_kind(
 def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> None:
     problem = parse_problem(yaml.safe_load((EXAMPLES / "cld-ecal-granularity.yaml").read_text()))
     evaluator = calo_photon()
-    assert (problem.evaluation.evaluator, problem.evaluation.version) == (
-        evaluator.name,
-        evaluator.version,
-    )
+    (entry,) = problem.evaluation.evaluators
+    assert (entry.name, entry.version) == (evaluator.name, evaluator.version)
     assert [(o.stage, o.metric) for o in problem.objectives] == [
         ("simulation", "ecal_barrel.angular_residual"),
         ("simulation", "ecal_barrel.fired_cells"),
@@ -521,7 +556,7 @@ def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> Non
         ("simulation", "ecal_barrel.angular_residual"): "mrad",
         ("simulation", "ecal_barrel.fired_cells"): "1",
     }
-    evaluator.check(EvaluationRequest(settings=problem.evaluation.settings))
+    evaluator.check(EvaluationRequest(settings=entry.settings))
 
 
 # --- the command ---------------------------------------------------------------------------
@@ -541,6 +576,7 @@ def test_command_prints_the_result_and_exits_zero(
     )
     assert code == 0, err
     assert "status:      valid" in out
+    assert "evaluator:   test.cell_count 1: valid" in out
     assert "simulation/ecal_barrel.mean_hit_cells = 3 +- 0.57735 [1]" in out
     assert "events:      3 of 3" in out
     assert "fingerprint: " in out
@@ -559,7 +595,7 @@ def test_command_exits_nonzero_for_a_failed_run(
     assert code == 1
     assert "status:      failed" in out
     assert "events:" not in out  # ddsim wrote no file, so no events were counted
-    assert "k4opt: evaluation failed: ddsim exited with status 1" in err
+    assert "k4opt: evaluation failed: test.cell_count failed: ddsim exited with status 1" in err
 
 
 def test_command_exits_nonzero_for_an_invalid_run(
@@ -611,7 +647,7 @@ def test_a_problem_with_a_sample_simulates_it_and_records_its_hash(
     assert isinstance(generation, dict)
     assert generation["sample"] == str(sample)
     assert generation["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
-    assert outcome.record.result.status == "valid"
+    assert outcome.candidate.status == "valid"
 
 
 def test_a_missing_sample_is_a_clean_error_before_any_side_effect(
@@ -683,18 +719,19 @@ def test_the_evaluator_provenance_is_saved_in_the_summary(
             return dataclasses.replace(result, provenance={"selection": "barrel", "algo": [2, 1]})
 
     outcome = run_candidate(
-        problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluator=Annotating()
+        problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluators=[Annotating()]
     )
     on_disk = json.loads(outcome.summary_path.read_text())
-    assert on_disk["provenance"] == {"selection": "barrel", "algo": [2, 1]}
-    assert on_disk["simulation"]["returncode"] == 0  # the framework's stage record stays apart
+    (evaluator,) = on_disk["evaluators"]
+    assert evaluator["provenance"] == {"selection": "barrel", "algo": [2, 1]}
+    assert on_disk["stages"]["simulation"]["returncode"] == 0  # the stage's record stays apart
 
 
 def test_the_preflight_request_has_the_generation_the_evaluation_gets(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     spy = Spy()
-    run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluator=spy)
+    run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluators=[spy])
     (evaluated,) = spy.evaluated
     # once before anything is created and once more when the candidate is evaluated
     assert len(spy.checked) == 2
@@ -702,3 +739,162 @@ def test_the_preflight_request_has_the_generation_the_evaluation_gets(
         assert checked.generation["particle"] == "gamma"
         for field in ("generation", "settings", "events", "seed", "backend_args", "candidate"):
             assert getattr(checked, field) == getattr(evaluated, field)
+
+
+# --- several evaluators of one candidate ---------------------------------------------------
+
+CELLS = ("simulation", "ecal_barrel.mean_hit_cells")
+ENERGY = ("simulation", "ecal_barrel.mean_hit_energy")
+ECHO = ("analysis", "candidate.first_value")
+
+
+def declare(problem_file: Path, names: list[str], objectives: list[tuple[str, str]]) -> None:
+    """Make the problem declare the test evaluators ``names`` and these objectives."""
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["evaluation"]["evaluators"] = [
+        {"name": name, "version": "1"}
+        | ({} if name == "test.parameter_echo" else {"settings": {"collection": COLLECTION}})
+        for name in names
+    ]
+    doc["objectives"] = [{"stage": s, "metric": m, "direction": "minimize"} for s, m in objectives]
+    problem_file.write_text(yaml.safe_dump(doc))
+
+
+def evaluate_with(references: list[str], *argv: str) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    flags = [arg for reference in references for arg in ("--evaluator", reference)]
+    code = main(["evaluate", *flags, *argv], stdout=out, stderr=err)
+    return code, out.getvalue(), err.getvalue()
+
+
+def test_the_command_measures_with_several_evaluators_on_one_simulation(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    declare(problem_file, ["test.cell_count", "test.hit_energy"], [CELLS, ENERGY])
+    output = tmp_path / "a"
+    # in any order on the command line; reported in the order of the problem
+    code, out, err = evaluate_with(
+        [HIT_ENERGY, CELL_COUNT],
+        str(problem_file),
+        "--param",
+        f"{RADIUS}=450",
+        "--output",
+        str(output),
+    )
+    assert code == 0, err
+    assert len(fake.calls) == 1  # one simulation for both
+    assert sorted(p.name for p in output.iterdir()) == [
+        "evaluators",
+        "geometry",
+        "simulation",
+        SUMMARY_NAME,
+    ]
+    assert sorted(p.name for p in (output / "evaluators").iterdir()) == [
+        "test.cell_count",
+        "test.hit_energy",
+    ]
+    assert out.index("evaluator:   test.cell_count 1: valid") < out.index(
+        "evaluator:   test.hit_energy 1: valid"
+    )
+    summary = json.loads((output / SUMMARY_NAME).read_text())
+    assert summary["status"] == "valid"
+    assert [e["name"] for e in summary["evaluators"]] == ["test.cell_count", "test.hit_energy"]
+    assert [(m["metric"], m["evaluator"]) for m in summary["metrics"]] == [
+        ("ecal_barrel.mean_hit_cells", "test.cell_count"),
+        ("ecal_barrel.mean_hit_energy", "test.hit_energy"),
+    ]
+    assert summary["metrics"][1]["value"] == pytest.approx(10 / 3)  # 4, 2 and 4 hits of 1 GeV
+    assert list(summary["stages"]) == ["generation", "simulation"]
+
+
+def test_a_failed_simulation_keeps_the_result_of_an_evaluator_that_needs_none(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, returncode=2, stderr="G4Exception: bad volume")
+    declare(problem_file, ["test.cell_count", "test.parameter_echo"], [CELLS, ECHO])
+    output = tmp_path / "a"
+    code, out, err = evaluate_with(
+        [CELL_COUNT, PARAMETER_ECHO],
+        str(problem_file),
+        "--param",
+        f"{RADIUS}=450",
+        "--output",
+        str(output),
+    )
+    assert code == 1
+    assert err.startswith("k4opt: evaluation failed: test.cell_count failed: ddsim exited")
+    assert "evaluator:   test.parameter_echo 1: valid" in out
+    summary = json.loads((output / SUMMARY_NAME).read_text())
+    assert summary["status"] == "failed"
+    cells, echo = summary["evaluators"]
+    assert (cells["status"], cells["elapsed_seconds"], cells["workdir"]) == ("failed", None, None)
+    assert echo["status"] == "valid" and echo["measurements"][0]["value"] == 450.0
+    # the measurement that was made is kept; the missing one is missing, not made up
+    assert [m["value"] for m in summary["metrics"]] == [None, 450.0]
+    assert summary["stages"]["simulation"]["error"].startswith("ddsim exited with status 2")
+
+
+@pytest.mark.parametrize(
+    ("declared", "given", "message"),
+    [
+        (
+            ["test.cell_count", "test.hit_energy"],
+            [CELL_COUNT],
+            "no evaluator given for 'test.hit_energy' version '1'",
+        ),
+        (["test.cell_count"], [CELL_COUNT, HIT_ENERGY], "declares no evaluator 'test.hit_energy'"),
+        (["test.cell_count"], [CELL_COUNT, CELL_COUNT], "'test.cell_count' is given twice"),
+    ],
+)
+def test_evaluators_that_do_not_fit_the_problem_are_refused_before_any_side_effect(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    guard: list[str],
+    declared: list[str],
+    given: list[str],
+    message: str,
+) -> None:
+    declare(problem_file, declared, [CELLS])
+    output = tmp_path / "a"
+    code, out, err = evaluate_with(
+        given, str(problem_file), "--param", f"{RADIUS}=450", "--output", str(output)
+    )
+    assert (code, out) == (1, "")
+    assert err.startswith("k4opt: error: ") and message in err
+    assert not output.exists() and fake.calls == [] and "materialize" not in guard
+
+
+def test_the_summary_is_the_same_for_the_same_candidate(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    declare(
+        problem_file,
+        ["test.cell_count", "test.hit_energy", "test.parameter_echo"],
+        [CELLS, ENERGY, ECHO],
+    )
+    first = run_candidate(
+        problem_file,
+        [f"{RADIUS}=450"],
+        tmp_path / "a",
+        evaluators=[cell_count(), hit_energy(), parameter_echo()],
+    )
+    second = run_candidate(
+        problem_file,
+        [f"{RADIUS}=450"],
+        tmp_path / "b",
+        evaluators=[parameter_echo(), hit_energy(), cell_count()],
+    )
+
+    def normalized(outcome: RunOutcome) -> str:
+        """The summary as written, without its directory and its times."""
+        data = json.loads(outcome.summary_path.read_text().replace(str(outcome.run_dir), "<run>"))
+
+        def untimed(node: Any) -> Any:
+            if isinstance(node, dict):
+                return {k: 0 if k == "elapsed_seconds" else untimed(v) for k, v in node.items()}
+            return [untimed(item) for item in node] if isinstance(node, list) else node
+
+        return json.dumps(untimed(data))  # key order included
+
+    assert normalized(first) == normalized(second)

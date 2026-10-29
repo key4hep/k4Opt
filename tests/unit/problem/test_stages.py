@@ -18,6 +18,7 @@ from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationFailed,
     EvaluationInvalid,
+    EvaluationRecord,
     EvaluationRequest,
     EvaluationResult,
     Evaluator,
@@ -27,13 +28,15 @@ from k4opt.evaluation import (
 )
 from k4opt.frozen import thaw
 from k4opt.problem import ProblemSpec, parse_problem
-from k4opt.problem._evaluate import _evaluate_candidate, _request
+from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate, _request
 from k4opt.problem._stages import (
+    StageContext,
     _sha256,
-    check_stage,
+    check_stages,
     file_identity,
     plan_stages,
     run_stage,
+    run_stages,
 )
 from tests.support import simulation
 from tests.support.simulation import events_with
@@ -72,6 +75,25 @@ def changed(doc: dict[str, Any], path: str, value: Any) -> ProblemSpec:
     return parse_problem(doc)
 
 
+def context(spec: ProblemSpec) -> StageContext:
+    return StageContext.of(spec)
+
+
+def evaluate(
+    spec: ProblemSpec, candidate: dict[str, Any], evaluator: Any, **kwargs: Any
+) -> CandidateRecord:
+    """The bridge with ``evaluator`` as the problem's only evaluator."""
+    return _evaluate_candidate(spec, candidate, [evaluator], **kwargs)
+
+
+def evaluate_one(
+    spec: ProblemSpec, candidate: dict[str, Any], evaluator: Any, **kwargs: Any
+) -> EvaluationRecord:
+    """The record of ``evaluator``, the problem's only evaluator."""
+    (record,) = evaluate(spec, candidate, evaluator, **kwargs).records
+    return record
+
+
 @pytest.fixture
 def geometry(tmp_path: Path) -> Path:
     path = tmp_path / "compact.xml"
@@ -105,7 +127,9 @@ def test_the_simulation_stage_runs_ddsim_from_the_problem(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
-    outcome = run_stage(spec, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run")
+    outcome = run_stage(
+        context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
 
     assert outcome.error is None
     assert outcome.inputs == {"simulation": tmp_path / "run/simulation/events.edm4hep.root"}
@@ -138,7 +162,9 @@ def test_a_failed_ddsim_is_an_error_outcome_that_keeps_the_logs(
     message: str,
 ) -> None:
     simulation.install(monkeypatch, **ddsim)
-    outcome = run_stage(spec, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run")
+    outcome = run_stage(
+        context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
     assert message in (outcome.error or "")
     assert outcome.inputs == {}
     assert {"stdout", "stderr"} <= set(outcome.artifacts)
@@ -149,7 +175,9 @@ def test_ddsim_missing_from_the_environment_is_an_error_outcome(
 ) -> None:
     simulation.install(monkeypatch)
     monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: None)
-    outcome = run_stage(spec, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run")
+    outcome = run_stage(
+        context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
     assert "ddsim not found" in (outcome.error or "")
 
 
@@ -162,7 +190,9 @@ def test_ddsim_that_cannot_start_is_an_error_outcome(
         raise PermissionError("denied")
 
     monkeypatch.setattr(ddsim_run.subprocess, "run", refuse)
-    outcome = run_stage(spec, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run")
+    outcome = run_stage(
+        context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
     assert "denied" in (outcome.error or "")
 
 
@@ -172,17 +202,19 @@ def test_an_existing_simulation_directory_is_never_reused(
     fake = simulation.install(monkeypatch)
     (tmp_path / "run" / "simulation").mkdir(parents=True)
     with pytest.raises(DdsimError, match="already exists"):
-        run_stage(spec, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run")
+        run_stage(
+            context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
     assert fake.calls == []
 
 
 def test_a_valid_problem_passes_the_check(spec: ProblemSpec) -> None:
-    assert check_stage(spec, "simulation") == ["generation", "simulation"]
+    assert check_stages(context(spec), "simulation") == ["generation", "simulation"]
 
 
 def test_an_unknown_stage_is_rejected(spec: ProblemSpec) -> None:
     with pytest.raises(EvaluationContractError, match=r"unknown stage 'reconstruction'"):
-        check_stage(spec, "reconstruction")
+        check_stages(context(spec), "reconstruction")
 
 
 def test_simulation_needs_generation_and_provided_inputs_are_not_rerun() -> None:
@@ -192,11 +224,59 @@ def test_simulation_needs_generation_and_provided_inputs_are_not_rerun() -> None
     assert plan_stages("simulation", provided={"simulation", "geometry"}) == []
 
 
+def test_several_targets_plan_each_stage_once_in_pipeline_order() -> None:
+    assert plan_stages("simulation", "generation", "simulation") == ["generation", "simulation"]
+    assert plan_stages("generation", "simulation") == ["generation", "simulation"]
+    assert plan_stages("generation", "simulation", provided={"generation"}) == ["simulation"]
+    assert plan_stages() == []
+
+
+def test_the_stages_of_two_contexts_run_independently(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The stages take everything from their context, so the same stage can run once per
+    # context (a photon and a pion sample, say), each in its own directory.
+    fake = simulation.install(monkeypatch)
+    photons = context(spec)
+    pions = dataclasses.replace(
+        photons, events=7, seed=3, generation={**GENERATOR, "particle": "pi-"}
+    )
+    first = run_stages(photons, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "a")
+    second = run_stages(pions, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "b")
+    (photon_argv, _), (pion_argv, _) = fake.calls
+    assert "--gun.particle=gamma" in photon_argv and "--numberOfEvents=1000" in photon_argv
+    assert "--gun.particle=pi-" in pion_argv and "--numberOfEvents=7" in pion_argv
+    assert "--random.seed=3" in pion_argv
+    assert first.outputs["simulation"] == tmp_path / "a" / "simulation" / "events.edm4hep.root"
+    assert second.outputs["simulation"] == tmp_path / "b" / "simulation" / "events.edm4hep.root"
+    assert (
+        first.provenance["simulation"]["events_read"],
+        second.provenance["simulation"]["events_read"],
+    ) == (1000, 7)
+
+
+def test_a_failed_stage_leaves_the_stages_after_it_unrun_with_the_reason(
+    spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+    # a sample that vanished after the preflight: generation fails, simulation never runs
+    missing = tmp_path / "gone.hepmc"
+    sample = dataclasses.replace(context(spec), generation={"sample": str(missing)})
+    records = run_stages(
+        sample, "simulation", inputs={"geometry": tmp_path / "c.xml"}, workdir=tmp_path / "run"
+    )
+    assert fake.calls == []
+    assert "cannot read the sample" in records.errors["generation"]
+    assert records.errors["simulation"] == "not run because the 'generation' stage failed"
+    assert records.error("simulation") == records.errors["generation"]  # the first along the chain
+    assert records.inputs("simulation") == {} and "simulation" not in records.seconds
+
+
 # --- generation: a particle gun or a sample file ---
 
 
 def test_a_particle_gun_provides_no_file_but_is_recorded(spec: ProblemSpec, tmp_path: Path) -> None:
-    outcome = run_stage(spec, "generation", inputs={}, workdir=tmp_path)
+    outcome = run_stage(context(spec), "generation", inputs={}, workdir=tmp_path)
     assert outcome.error is None and outcome.inputs == {}
     assert thaw(outcome.provenance["particle_gun"]) == GENERATOR
 
@@ -213,7 +293,7 @@ def sample_spec(doc: dict[str, Any], tmp_path: Path) -> ProblemSpec:
 def test_a_sample_is_provided_hashed_and_resolved_from_the_problem_directory(
     sample_spec: ProblemSpec, tmp_path: Path
 ) -> None:
-    outcome = run_stage(sample_spec, "generation", inputs={}, workdir=tmp_path / "run")
+    outcome = run_stage(context(sample_spec), "generation", inputs={}, workdir=tmp_path / "run")
     path = tmp_path / "samples" / "zh.hepmc"
     assert outcome.error is None
     assert outcome.inputs == {"generation": path}
@@ -230,14 +310,14 @@ def test_a_missing_sample_is_refused_before_anything_runs(
     fake = simulation.install(monkeypatch)
     (tmp_path / "samples" / "zh.hepmc").unlink()
     with pytest.raises(EvaluationContractError, match=r"generation\.sample.*is not a file"):
-        check_stage(sample_spec, "simulation")
+        check_stages(context(sample_spec), "simulation")
     assert fake.calls == []
 
 
 def test_a_problem_without_generation_is_refused(doc: dict[str, Any]) -> None:
     del doc["evaluation"]["generation"]
     with pytest.raises(EvaluationContractError, match=r"evaluation\.generation: set"):
-        check_stage(parse_problem(doc), "simulation")
+        check_stages(context(parse_problem(doc)), "simulation")
 
 
 def test_simulation_reads_the_sample_instead_of_a_gun(
@@ -246,7 +326,7 @@ def test_simulation_reads_the_sample_instead_of_a_gun(
     fake = simulation.install(monkeypatch)
     sample = tmp_path / "samples" / "zh.hepmc"
     outcome = run_stage(
-        sample_spec,
+        context(sample_spec),
         "simulation",
         inputs={"geometry": geometry, "generation": sample},
         workdir=tmp_path / "run",
@@ -277,7 +357,7 @@ def test_misuse_raises_before_anything_is_created(
 ) -> None:
     fake = simulation.install(monkeypatch)
     with pytest.raises(error):
-        check_stage(changed(doc, path, value), "simulation")
+        check_stages(context(changed(doc, path, value)), "simulation")
     assert fake.calls == [] and not (tmp_path / "run").exists()
 
 
@@ -289,26 +369,24 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
 ) -> None:
     fake = simulation.install(monkeypatch)
     reader = Reader()
-    record = _evaluate_candidate(
+    candidate = evaluate(
         spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     assert len(fake.calls) == 1 and len(reader.calls) == 1
     events_file = tmp_path / "run/simulation/events.edm4hep.root"
     assert reader.calls[0].inputs["simulation"] == events_file
+    (record,) = candidate.records
     assert record.request is reader.calls[0]
     result = record.result
     assert result.status is Status.VALID
-    # the stage's files are named <stage>.<role>; the evaluator's own role stays as it chose it
-    assert {
-        "simulation.stdout",
-        "simulation.stderr",
-        "simulation.command",
-        "simulation.edm4hep",
-        "mine",
-    } == set(result.artifacts)
-    assert result.provenance["read"] == events_file.name  # the evaluator's own provenance stays
-    stage = result.provenance["stages"]["simulation"]  # type: ignore[index]
-    assert stage["returncode"] == 0 and stage["argv"][0] == simulation.DDSIM
+    # the result is the evaluator's own; the stage's files and record are the candidate's
+    assert result.artifacts == {"mine": events_file}
+    assert result.provenance == {"read": events_file.name}
+    stages = candidate.stages
+    assert set(stages.artifacts["simulation"]) == {"stdout", "stderr", "command", "edm4hep"}
+    stage = stages.provenance["simulation"]
+    assert stage["returncode"] == 0 and stage["argv"][0] == simulation.DDSIM  # type: ignore[index]
+    assert candidate.reads == {"calo.single_particle_shower": ("generation", "simulation")}
 
 
 def test_a_failed_stage_is_a_failed_record_and_the_evaluator_never_runs(
@@ -316,15 +394,19 @@ def test_a_failed_stage_is_a_failed_record_and_the_evaluator_never_runs(
 ) -> None:
     simulation.install(monkeypatch, returncode=3, stderr="boom")
     reader = Reader()
-    record = _evaluate_candidate(
+    candidate = evaluate(
         spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
+    (record,) = candidate.records
     assert reader.calls == []
     assert record.result.status is Status.FAILED
     assert "status 3" in (record.result.message or "")
     assert record.result.measurements == ()
-    assert {"simulation.stdout", "simulation.stderr"} <= set(record.result.artifacts)
-    assert record.result.provenance["stages"]["simulation"]["returncode"] == 3  # type: ignore[index]
+    assert record.elapsed_seconds is None  # it was not called
+    assert record.request.workdir is None and not (tmp_path / "run" / "evaluators").exists()
+    assert {"stdout", "stderr"} <= set(candidate.stages.artifacts["simulation"])
+    assert candidate.stages.provenance["simulation"]["returncode"] == 3
+    assert "status 3" in candidate.stages.errors["simulation"]
 
 
 def test_an_input_supplied_by_the_caller_skips_the_stage(
@@ -336,12 +418,12 @@ def test_an_input_supplied_by_the_caller_skips_the_stage(
     events_file = tmp_path / "mine.root"
     events_file.write_bytes(b"fake")
     reader = Reader()
-    record = _evaluate_candidate(spec, {CELL: 6}, reader, inputs={"simulation": events_file})
+    candidate = evaluate(spec, {CELL: 6}, reader, inputs={"simulation": events_file})
     assert fake.calls == []
     assert reader.calls[0].inputs["simulation"] == events_file
     # not run, but identified: the file is recorded with its content hash, and generation,
     # which only the supplied simulation would have needed, does not appear
-    assert record.result.provenance["stages"] == {
+    assert candidate.stages.provenance == {
         "simulation": {
             "provided": str(events_file),
             "bytes": 4,
@@ -371,11 +453,12 @@ def test_a_simulation_output_without_the_requested_events_fails_before_the_evalu
     if supplied:
         inputs["simulation"] = tmp_path / "mine.root"
         inputs["simulation"].write_bytes(b"fake")
-    record = _evaluate_candidate(spec, {CELL: 6}, reader, inputs=inputs, workdir=tmp_path / "run")
+    candidate = evaluate(spec, {CELL: 6}, reader, inputs=inputs, workdir=tmp_path / "run")
+    (record,) = candidate.records
     assert reader.calls == []
     assert record.result.status is Status.FAILED
     assert message in (record.result.message or "")
-    assert record.result.provenance["stages"]["simulation"]["events_read"] == found  # type: ignore[index]
+    assert candidate.stages.provenance["simulation"]["events_read"] == found
 
 
 def test_an_unreadable_simulation_output_fails_before_the_evaluator(
@@ -387,7 +470,7 @@ def test_an_unreadable_simulation_output_fails_before_the_evaluator(
     simulation.install(monkeypatch)
     monkeypatch.setattr(edm4hep, "_frames", broken)
     reader = Reader()
-    record = _evaluate_candidate(
+    record = evaluate_one(
         spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     assert reader.calls == []
@@ -418,13 +501,15 @@ def test_an_evaluator_that_raises_an_outcome_gets_that_result(
         def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
             raise error
 
-    record = _evaluate_candidate(
+    candidate = evaluate(
         spec, {CELL: 6}, Raising(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
+    (record,) = candidate.records
     assert record.result.status is status
     assert record.result.message == str(error)
     assert record.result.measurements == ()
-    assert "simulation" in record.result.provenance["stages"]  # type: ignore[operator]
+    assert record.elapsed_seconds is not None  # it was called
+    assert "simulation" in candidate.stages.provenance
 
 
 def test_an_evaluator_may_return_plain_values(
@@ -441,14 +526,14 @@ def test_an_evaluator_may_return_plain_values(
         def evaluate(self, request: EvaluationRequest) -> Any:
             return {"a.rms": 1.5, "a.cells": [4, 6]}
 
-    record = _evaluate_candidate(
+    record = evaluate_one(
         spec, {CELL: 6}, Plain(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     assert record.result.status is Status.VALID
     rms, cells = record.result.measurements
     assert (rms.stage, rms.metric, rms.value, rms.unit) == ("simulation", "a.rms", 1.5, "mm")
     assert (cells.value, cells.uncertainty) == (5, 1)
-    assert "simulation.edm4hep" in record.result.artifacts  # the stage's files are still added
+    assert record.result.artifacts == {}  # the stage's files are the candidate's, not its own
 
 
 def test_the_declared_defaults_reach_check_and_evaluate(
@@ -472,7 +557,7 @@ def test_the_declared_defaults_reach_check_and_evaluate(
             seen.append(request.settings)
             return {"a.rms": 1.0, "a.cells": 5}
 
-    record = _evaluate_candidate(
+    record = evaluate_one(
         spec, {CELL: 6}, Tuned(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     assert record.result.status is Status.VALID
@@ -492,7 +577,7 @@ def test_the_bridge_runs_check_before_any_stage(
 
     reader = Picky()
     with pytest.raises(EvaluationContractError, match="unsupported settings"):
-        _evaluate_candidate(
+        evaluate_one(
             spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
         )
     assert fake.calls == [] and reader.calls == []
@@ -507,7 +592,7 @@ def test_a_bad_metrics_declaration_fails_before_any_stage(
         metrics = {("simulation", "a.rms"): None}
 
     with pytest.raises(EvaluationContractError, match="unit must be"):
-        _evaluate_candidate(
+        evaluate_one(
             spec, {CELL: 6}, Unitless(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
         )
     assert fake.calls == []
@@ -523,7 +608,7 @@ def test_other_exceptions_of_the_evaluator_still_propagate(
             raise ZeroDivisionError
 
     with pytest.raises(ZeroDivisionError):
-        _evaluate_candidate(
+        evaluate_one(
             spec, {CELL: 6}, Buggy(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
         )
 
@@ -547,7 +632,7 @@ def test_the_simulation_stage_needs_a_geometry_and_a_workdir(
     inputs = {} if missing == "geometry" else {"geometry": geometry}
     workdir = None if missing == "workdir" else tmp_path / "run"
     with pytest.raises(EvaluationContractError, match=message):
-        _evaluate_candidate(spec, {CELL: 6}, Reader(), inputs=inputs, workdir=workdir)
+        evaluate_one(spec, {CELL: 6}, Reader(), inputs=inputs, workdir=workdir)
     assert fake.calls == []
 
 
@@ -556,17 +641,18 @@ def test_a_sample_problem_runs_generation_then_simulation_and_records_the_hash(
 ) -> None:
     fake = simulation.install(monkeypatch)
     reader = Reader()
-    record = _evaluate_candidate(
+    candidate = evaluate(
         sample_spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     sample = tmp_path / "samples" / "zh.hepmc"
     ((argv, _),) = fake.calls
     assert f"--inputFiles={sample}" in argv
-    assert record.request.inputs["generation"] == sample
+    # an evaluator reads the files of every stage it needs, not only of the one it requires
+    assert candidate.records[0].request.inputs["generation"] == sample
     assert reader.calls[0].inputs["simulation"].name == "events.edm4hep.root"
-    stages = record.result.provenance["stages"]
-    assert list(stages) == ["generation", "simulation"]  # type: ignore[arg-type]
-    assert stages["generation"]["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()  # type: ignore[index]
+    stages = candidate.stages.provenance
+    assert list(stages) == ["generation", "simulation"]
+    assert stages["generation"]["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
 
 
 def test_a_failed_generation_stops_before_simulation(
@@ -583,12 +669,15 @@ def test_a_failed_generation_stops_before_simulation(
 
     monkeypatch.setattr(Path, "open", unreadable)
     reader = Reader()
-    record = _evaluate_candidate(
+    candidate = evaluate(
         sample_spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
+    (record,) = candidate.records
     assert record.result.status is Status.FAILED
     assert "cannot read the sample" in (record.result.message or "")
     assert fake.calls == [] and reader.calls == []
+    # the simulation stage is recorded as not run, with the reason
+    assert candidate.stages.errors["simulation"] == "not run because the 'generation' stage failed"
 
 
 # --- a supplied generation file is authoritative (review finding) ---
@@ -601,9 +690,9 @@ def test_a_supplied_generation_file_replaces_the_particle_gun(
     sample = tmp_path / "mine.hepmc"
     sample.write_bytes(b"HepMC::Version 3\n")
     # the problem describes a gun, yet the caller's file is what is simulated; preflight agrees
-    assert check_stage(spec, "simulation", {"generation"}) == ["simulation"]
+    assert check_stages(context(spec), "simulation", provided={"generation"}) == ["simulation"]
     reader = Reader()
-    record = _evaluate_candidate(
+    candidate = evaluate(
         spec,
         {CELL: 6},
         reader,
@@ -613,19 +702,20 @@ def test_a_supplied_generation_file_replaces_the_particle_gun(
     ((argv, _),) = fake.calls
     assert f"--inputFiles={sample}" in argv
     assert not any(a.startswith(("--gun", "--enableGun")) for a in argv)
-    assert record.result.status is Status.VALID
-    stages = record.result.provenance["stages"]
-    assert list(stages) == ["generation", "simulation"]  # type: ignore[arg-type]
-    assert stages["generation"]["provided"] == str(sample)  # type: ignore[index]
-    assert stages["generation"]["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()  # type: ignore[index]
-    assert "argv" in stages["simulation"]  # type: ignore[index, operator]
+    assert candidate.records[0].result.status is Status.VALID
+    stages = candidate.stages.provenance
+    assert list(stages) == ["generation", "simulation"]
+    assert stages["generation"]["provided"] == str(sample)
+    assert stages["generation"]["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert "argv" in stages["simulation"]
 
 
 def test_a_supplied_generation_file_needs_no_generation_in_the_problem(
     doc: dict[str, Any],
 ) -> None:
     del doc["evaluation"]["generation"]
-    assert check_stage(parse_problem(doc), "simulation", {"generation"}) == ["simulation"]
+    plan = check_stages(context(parse_problem(doc)), "simulation", provided={"generation"})
+    assert plan == ["simulation"]
 
 
 def test_the_request_carries_the_generation_context(
@@ -633,9 +723,7 @@ def test_the_request_carries_the_generation_context(
 ) -> None:
     simulation.install(monkeypatch)
     reader = Reader()
-    _evaluate_candidate(
-        spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
-    )
+    evaluate_one(spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run")
     assert thaw(reader.calls[0].generation) == GENERATOR
 
 
@@ -663,8 +751,8 @@ def test_an_evaluator_without_requires_runs_no_stage_but_still_sees_the_generati
 ) -> None:
     fake = simulation.install(monkeypatch)
     own = OwnWorkflow()
-    record = _evaluate_candidate(spec, {CELL: 6}, own, workdir=tmp_path)
-    assert fake.calls == [] and "stages" not in record.result.provenance
+    candidate = evaluate(spec, {CELL: 6}, own, workdir=tmp_path)
+    assert fake.calls == [] and candidate.stages.provenance == {}
     assert own.seen is not None and thaw(own.seen.generation) == GENERATOR
 
 
@@ -678,9 +766,9 @@ def test_an_evaluator_may_require_only_generation(
 
     own = NeedsSample()
     # a sample only has to be found and hashed: no geometry and no workdir are needed
-    record = _evaluate_candidate(sample_spec, {CELL: 6}, own)
+    candidate = evaluate(sample_spec, {CELL: 6}, own)
     assert fake.calls == []  # no simulation
-    assert list(record.result.provenance["stages"]) == ["generation"]  # type: ignore[arg-type]
+    assert list(candidate.stages.provenance) == ["generation"]
     assert own.seen is not None
     assert own.seen.inputs["generation"] == tmp_path / "samples" / "zh.hepmc"  # resolved
 
@@ -701,7 +789,7 @@ def test_a_sample_is_hashed_once_until_it_changes(tmp_path: Path) -> None:
     assert changed["sha256"] == hashlib.sha256(b"three").hexdigest() != first["sha256"]
 
 
-# --- the request is the same for check() and evaluate(); roles never collide (review) ---
+# --- the request is the same for check() and evaluate(); results stay the evaluator's ---
 
 
 class Checking(Reader):
@@ -720,11 +808,9 @@ def test_check_and_evaluate_receive_the_same_request_fields(
 ) -> None:
     simulation.install(monkeypatch)
     checking = Checking()
-    _evaluate_candidate(
-        spec, {CELL: 6}, checking, inputs={"geometry": geometry}, workdir=tmp_path / "run"
-    )
+    evaluate_one(spec, {CELL: 6}, checking, inputs={"geometry": geometry}, workdir=tmp_path / "run")
     # what the preflight builds (no inputs yet) against what evaluate() was given
-    preflight = _request(spec, {CELL: 6})
+    preflight = _request(context(spec), {CELL: 6}, spec.evaluation.evaluators[0])
     (evaluated,) = checking.calls
     assert thaw(preflight.generation) == GENERATOR == thaw(evaluated.generation)
     for field in ("settings", "events", "seed", "backend_args", "candidate", "generation"):
@@ -747,35 +833,34 @@ class Colliding(Reader):
         )
 
 
-@pytest.mark.parametrize("role", ["simulation.edm4hep", "simulation.stderr"])
-def test_an_evaluator_artifact_cannot_replace_a_stage_artifact(
-    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
-) -> None:
-    simulation.install(monkeypatch)
-    evaluator = Colliding({role: tmp_path / "other.root"}, {})
-    with pytest.raises(EvaluationContractError, match=rf"{role}.*collide"):
-        _evaluate_candidate(
-            spec, {CELL: 6}, evaluator, inputs={"geometry": geometry}, workdir=tmp_path / "run"
-        )
-
-
-def test_an_evaluator_cannot_overwrite_the_stage_provenance(
+def test_an_evaluator_keeps_its_own_artifacts_and_provenance_whatever_their_names(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # stages are recorded apart from the results, so no name of an evaluator can clash with them
     simulation.install(monkeypatch)
-    evaluator = Colliding({}, {"stages": {"simulation": {"returncode": 0}}})
-    with pytest.raises(EvaluationContractError, match="'stages' is reserved"):
-        _evaluate_candidate(
-            spec, {CELL: 6}, evaluator, inputs={"geometry": geometry}, workdir=tmp_path / "run"
-        )
+    mine = tmp_path / "other.root"
+    claimed = {"stages": {"simulation": {"returncode": 0}}}
+    candidate = evaluate(
+        spec,
+        {CELL: 6},
+        Colliding({"simulation.edm4hep": mine}, claimed),
+        inputs={"geometry": geometry},
+        workdir=tmp_path / "run",
+    )
+    (record,) = candidate.records
+    assert record.result.artifacts == {"simulation.edm4hep": mine}
+    assert thaw(record.result.provenance) == claimed
+    events_file = tmp_path / "run/simulation/events.edm4hep.root"
+    assert candidate.stages.artifacts["simulation"]["edm4hep"] == events_file
+    assert candidate.stages.provenance["simulation"]["argv"][0] == simulation.DDSIM  # type: ignore[index]
 
 
 def test_an_evaluator_without_stages_keeps_its_own_provenance_and_artifacts(
     spec: ProblemSpec, tmp_path: Path
 ) -> None:
     evaluator = OwnWorkflow()
-    record = _evaluate_candidate(spec, {CELL: 6}, evaluator, workdir=tmp_path)
-    assert "stages" not in record.result.provenance
+    candidate = evaluate(spec, {CELL: 6}, evaluator, workdir=tmp_path)
+    assert candidate.records[0].result.provenance == {} and candidate.stages.provenance == {}
 
 
 def test_a_particle_gun_generation_needs_nothing_either(spec: ProblemSpec) -> None:
@@ -783,19 +868,10 @@ def test_a_particle_gun_generation_needs_nothing_either(spec: ProblemSpec) -> No
         requires = "generation"
 
     own = NeedsGeneration()
-    record = _evaluate_candidate(spec, {CELL: 6}, own)
+    candidate = evaluate(spec, {CELL: 6}, own)
     assert "generation" not in own.seen.inputs  # type: ignore[union-attr]
-    assert record.result.provenance["stages"]["generation"]["particle_gun"]["particle"] == "gamma"  # type: ignore[index]
-
-
-def test_stages_in_the_provenance_are_the_frameworks_even_when_none_ran(
-    spec: ProblemSpec, tmp_path: Path
-) -> None:
-    claimed = {"simulation": {"argv": ("ddsim",), "returncode": 0}}
-    evaluator = Colliding({}, {"stages": claimed})
-    evaluator.requires = None  # type: ignore[assignment]  # no stage runs for this evaluator
-    with pytest.raises(EvaluationContractError, match="'stages' is reserved"):
-        _evaluate_candidate(spec, {CELL: 6}, evaluator, workdir=tmp_path)
+    gun = candidate.stages.provenance["generation"]["particle_gun"]
+    assert gun["particle"] == "gamma"  # type: ignore[index]
 
 
 def test_a_sample_replaced_with_the_same_size_and_mtime_is_hashed_again(tmp_path: Path) -> None:
