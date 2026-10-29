@@ -48,7 +48,10 @@ def load_evaluator(reference: str) -> Evaluator:
 
     ``FILE.py`` is a path (a leading ``~`` is expanded) and its directory is added to
     ``sys.path``, so the file can import modules next to it; anything else is an importable
-    module name. The class is created without arguments and must provide ``name``, ``version`` and
+    module name. Modules are cached by name for the process, so helpers of different evaluator
+    files need unique names (or one installed package, ``package.module:Class``).
+
+    The class is created without arguments and must provide ``name``, ``version`` and
     ``evaluate``. The file is executed as ordinary code: only name evaluators you trust. Raises
     :class:`EvaluatorLoadError`.
     """

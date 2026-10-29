@@ -145,8 +145,11 @@ module, creates the class without arguments and checks that it has `name`, `vers
 `evaluate`; `EvaluatorLoadError` otherwise. This is what `k4opt evaluate --evaluator` uses. The
 file is executed as ordinary Python: name only evaluators you trust. Like `python file.py`, its
 directory is put on `sys.path` (and stays there), so an evaluator can import helper modules next
-to it, at the top of the file or inside a method; a helper's name must not clash with another
-module of the same name. It is not a registry; the
+to it, at the top of the file or inside a method. Python caches modules by name for the whole
+process, so two evaluator files that each import a helper called `metrics` share whichever was
+imported first. For one study this is fine. When several studies run in one process, give the
+helpers unique names or, better, install the study as a package and use
+`package.module:Class`. It is not a registry; the
 problem's `evaluation.evaluator` stays a label that must equal the loaded evaluator's `name`.
 
 ## Problem, evaluator, record

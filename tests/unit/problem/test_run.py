@@ -156,6 +156,13 @@ def test_summary_is_written_and_truthful(
     ]
     assert on_disk["simulation"]["command"][0] == "/stack/bin/ddsim"
     assert on_disk["simulation"]["returncode"] == 0
+    assert on_disk["simulation"]["collection"] == COLLECTION
+    # the files of the stages, named <stage>.<role>: what the real-ddsim test reads back
+    paths = on_disk["paths"]
+    assert paths["run_dir"] == str(tmp_path / "a")
+    for role in ("stdout", "stderr", "command", "edm4hep"):
+        assert Path(paths[f"simulation.{role}"]).is_file()
+    assert {"stdout", "stderr", "edm4hep"}.isdisjoint(paths)  # no unprefixed leftovers
     assert on_disk["generation"]["particle_gun"]["particle"] == "gamma"
     assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
     assert on_disk["environment"]["observed"]["ddsim"] == "/stack/bin/ddsim"
