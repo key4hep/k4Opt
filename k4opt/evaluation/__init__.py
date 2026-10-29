@@ -39,6 +39,7 @@ from k4opt.evaluation.models import (
     EvaluationRequest,
     EvaluationResult,
     Measurement,
+    Scalar,
     Status,
 )
 from k4opt.evaluation.protocol import EvaluatorProtocol
@@ -55,6 +56,7 @@ __all__ = [
     "EvaluatorLoadError",
     "EvaluatorProtocol",
     "Measurement",
+    "Scalar",
     "Status",
     "count_events",
     "load_evaluator",

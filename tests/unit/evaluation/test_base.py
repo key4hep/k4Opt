@@ -181,10 +181,35 @@ def test_anything_else_is_a_contract_error(returned: Any) -> None:
         result_from(Counter(), returned)
 
 
-@pytest.mark.parametrize("value", ["a", None, float("nan"), [], [1, float("inf")]])
+@pytest.mark.parametrize("value", ["a", b"12", {"a": 1}, None, float("nan"), [], [1, float("inf")]])
 def test_unusable_values_are_contract_errors(value: Any) -> None:
     with pytest.raises(EvaluationContractError):
         result_from(Counter(), {"cells": value})
+
+
+@pytest.mark.parametrize("cells", [range(1, 4), (n for n in (1, 2, 3)), {1, 2, 3}])
+def test_per_event_values_may_be_any_collection_of_numbers(cells: Any) -> None:
+    measurement = result_from(Counter(), {"cells": cells}).measurements[0]
+    assert (measurement.value, measurement.unit) == (2, "1")
+    assert measurement.uncertainty == pytest.approx(1 / 3**0.5)
+
+
+def test_per_event_values_may_be_a_numpy_array() -> None:
+    np = pytest.importorskip("numpy")
+    measurement = result_from(Counter(), {"cells": np.array([1, 2, 3])}).measurements[0]
+    assert measurement.value == 2 and type(measurement.value) is float
+
+
+@pytest.mark.parametrize("key", [("simulation", "a", "b"), ("simulation",), ("s", 5), 5])
+def test_a_metric_is_a_name_or_a_pair_of_names(key: Any) -> None:
+    class Odd(Evaluator):
+        name, version, requires = "demo.odd", "1", "simulation"
+        metrics = {key: "1"}
+
+    with pytest.raises(EvaluationContractError, match="pair of strings"):
+        metric_units(Odd())
+    with pytest.raises(EvaluationContractError, match="pair of strings"):
+        result_from(Counter(), {key: 1})
 
 
 def test_invalid_and_fail_end_the_evaluation() -> None:

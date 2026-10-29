@@ -10,6 +10,7 @@ the search domain. Nested caller-owned data is copied on construction.
 from __future__ import annotations
 
 import math
+import numbers
 import statistics
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -43,12 +44,17 @@ def _name(value: object, what: str) -> str:
 
 
 def _real(value: object, what: str) -> int | float:
-    """Return ``value`` if it is a finite real number; booleans are not numbers."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    """Return ``value`` as a finite ``int`` or ``float``; booleans are not numbers.
+
+    Any other real number (``numpy.int64``, ``numpy.float32``) becomes the Python number it
+    stands for, so values computed with numpy need no conversion.
+    """
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
         raise EvaluationContractError(f"{what} must be a number, got {value!r}")
-    if isinstance(value, float) and not math.isfinite(value):
+    number = int(value) if isinstance(value, numbers.Integral) else float(value)
+    if isinstance(number, float) and not math.isfinite(number):
         raise EvaluationContractError(f"{what} must be finite, got {value!r}")
-    return value
+    return number
 
 
 def _paths(value: Mapping[str, Path], what: str) -> FrozenMap[Path]:
@@ -184,24 +190,31 @@ class Measurement:
         The uncertainty is the standard error of the mean, ``s / sqrt(N)`` with the sample
         standard deviation ``s`` (``ddof=1``); a single sample has none.
         """
+        where = f"measurement {stage}/{metric}"
         if len(samples) == 0:
-            raise EvaluationContractError(f"measurement {stage}/{metric}: no samples to average")
-        for sample in samples:
-            _real(sample, f"measurement {stage}/{metric}: sample")
-        error = statistics.stdev(samples) / math.sqrt(len(samples)) if len(samples) > 1 else None
-        return cls(stage, metric, statistics.fmean(samples), unit, error)
+            raise EvaluationContractError(f"{where}: no samples to average")
+        values = [_real(sample, f"{where}: sample") for sample in samples]
+        try:
+            mean = statistics.fmean(values)
+            error = statistics.stdev(values) / math.sqrt(len(values)) if len(values) > 1 else None
+        except OverflowError:
+            raise EvaluationContractError(f"{where}: samples too large to average") from None
+        return cls(stage, metric, mean, unit, error)
 
     def __post_init__(self) -> None:
         _name(self.stage, "stage")
         _name(self.metric, "metric")
         where = f"measurement {self.stage}/{self.metric}"
-        _real(self.value, f"{where}: value")
+        object.__setattr__(self, "value", _real(self.value, f"{where}: value"))
         if self.unit is not None:
             _name(self.unit, f"{where}: unit")
-        if self.uncertainty is not None and _real(self.uncertainty, f"{where}: uncertainty") < 0:
-            raise EvaluationContractError(
-                f"{where}: uncertainty must not be negative, got {self.uncertainty!r}"
-            )
+        if self.uncertainty is not None:
+            uncertainty = _real(self.uncertainty, f"{where}: uncertainty")
+            if uncertainty < 0:
+                raise EvaluationContractError(
+                    f"{where}: uncertainty must not be negative, got {self.uncertainty!r}"
+                )
+            object.__setattr__(self, "uncertainty", uncertainty)
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +233,8 @@ class EvaluationResult:
     stages; each ``(stage, metric)`` occurs once. ``artifacts`` names
     local output files that can be inputs of a later evaluation; whether they exist is not
     checked here. ``message`` explains the status. ``provenance`` is JSON-compatible
-    metadata that the evaluator chose to supply; nothing is collected automatically.
+    metadata that the evaluator chose to supply; the framework that runs pipeline stages for an
+    evaluator records them under the reserved key ``stages``.
     """
 
     status: Status
@@ -308,18 +322,19 @@ type CandidateKey = tuple[tuple[str, str, str, str], ...]
 class EvaluationRecord:
     """One attempted evaluation, as observed by the framework that ran it.
 
-    ``request`` and ``result`` are the actual objects exchanged with the evaluator, kept
-    unchanged; nothing of them is copied into other fields. ``evaluator_name`` and
+    ``request`` is the object the evaluator received and ``result`` the one it returned, plus
+    the artifacts and ``provenance["stages"]`` of the pipeline stages the framework ran for it;
+    nothing of them is copied into other fields. ``evaluator_name`` and
     ``evaluator_version`` are those of the evaluator object that ran (the caller verified
     that they match the problem). ``candidate_key`` identifies the candidate within the
     problem that defined it: it is scoped to that problem definition and is neither a
     cross-problem hash nor a complete cache key. ``elapsed_seconds`` is the wall-clock
-    duration of the ``evaluate()`` call, measured with ``time.perf_counter()``; it is not
-    CPU time, memory use or an estimate.
+    duration of those stages and the ``evaluate()`` call, measured with
+    ``time.perf_counter()``; it is not CPU time, memory use or an estimate.
 
-    ``result.provenance`` is what the evaluator chose to report; ``candidate_key`` and
-    ``elapsed_seconds`` are what the framework observed. Neither is proof of the software
-    environment actually used.
+    ``result.provenance`` is what the evaluator chose to report, apart from ``stages``;
+    ``candidate_key`` and ``elapsed_seconds`` are what the framework observed. Neither is proof
+    of the software environment actually used.
     """
 
     request: EvaluationRequest

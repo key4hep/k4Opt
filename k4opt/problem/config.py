@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Hashable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -37,6 +37,7 @@ from k4opt.problem.models import (
     ProblemSpec,
     freeze,
 )
+from k4opt.yamlio import UniqueKeyLoader
 
 _TOP_KEYS = (
     "schema_version",
@@ -63,24 +64,6 @@ _BACKENDS = ("ddsim", "k4run")
 _SCHEMA_FAMILY = "k4opt.problem/"
 
 
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """``yaml.safe_load`` that rejects duplicate mapping keys instead of keeping the last one."""
-
-    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
-        seen: set[Any] = set()
-        for key_node, _ in node.value:
-            if key_node.tag == "tag:yaml.org,2002:merge":
-                continue  # `<<: *anchor` is expanded by the base class; explicit keys win
-            key = self.construct_object(key_node, deep=True)
-            if isinstance(key, Hashable):
-                if key in seen:
-                    raise yaml.YAMLError(
-                        f"duplicate key {key!r} (line {key_node.start_mark.line + 1})"
-                    )
-                seen.add(key)
-        return super().construct_mapping(node, deep)  # rejects unhashable keys itself
-
-
 def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
     """Read the UTF-8 YAML file ``path``, validate it and resolve its geometry parameters.
 
@@ -95,7 +78,7 @@ def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
         raise ProblemConfigError(f"{problem_path}: problem file not found")
     try:
         text = problem_path.read_bytes().decode("utf-8")
-        data = yaml.load(text, Loader=_UniqueKeyLoader)
+        data = yaml.load(text, Loader=UniqueKeyLoader)
     except UnicodeDecodeError as exc:
         raise ProblemConfigError(f"{problem_path}: not valid UTF-8: {exc}") from exc
     except OSError as exc:

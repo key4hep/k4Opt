@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -405,6 +406,16 @@ def test_integer_literals_of_a_continuous_parameter_stay_exact(
     assert isinstance(small, float)  # ordinary values stay floats: "6.0*mm"
 
 
+@pytest.mark.parametrize("kind", ["continuous", "integer"])
+def test_an_integer_with_more_digits_than_python_converts_is_a_candidate_error(
+    doc: dict[str, Any], kind: str
+) -> None:
+    doc["parameters"][0] = {"geometry": {"constant": "n"}, "type": kind, "bounds": [0, 10]}
+    text = "1" * (sys.get_int_max_str_digits() + 1)
+    with pytest.raises(CandidateError, match="too many digits"):
+        _parse_candidate(parse_problem(doc), [f"constants.n={text}"])
+
+
 def test_a_home_relative_problem_path_is_recorded_expanded(
     tmp_path: Path,
     problem_file: Path,
@@ -537,6 +548,7 @@ def test_command_exits_nonzero_for_a_failed_run(
     )
     assert code == 1
     assert "status:      failed" in out
+    assert "events:" not in out  # ddsim wrote no file, so no events were counted
     assert "k4opt: evaluation failed: ddsim exited with status 1" in err
 
 

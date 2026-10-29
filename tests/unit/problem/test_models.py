@@ -73,6 +73,14 @@ def test_directly_constructed_evaluation_copies_its_input() -> None:
     assert evaluation.to_dict()["settings"] == {"a": {"b": [1, 2]}}
 
 
+@pytest.mark.parametrize("args", ["--physics.list", ["--n", 1], {"--a", "--b"}])
+def test_directly_constructed_evaluation_needs_backend_args_as_a_list_of_strings(
+    args: Any,
+) -> None:
+    with pytest.raises(ProblemConfigError, match=r"backend\.ddsim\.args: must be a list"):
+        Evaluation("e", "1", backend={"ddsim": args})
+
+
 def test_spec_is_hashable_and_picklable(doc: dict[str, Any]) -> None:
     problem = parse_problem(doc)
     assert hash(problem) == hash(parse_problem(doc))

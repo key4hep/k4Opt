@@ -166,8 +166,9 @@ name the same target (`constant: X` and `target: constants.X` are the same targe
 
 Units are explicit: `unit` names the unit of the numbers in `bounds`. k4Opt never infers
 a scientific unit from a textual XML expression such as `5.1*mm`, and it never evaluates
-DD4hep expressions. How a candidate value plus its declared unit becomes the literal
-replacement string for the XML attribute is part of the geometry-resolution increment.
+DD4hep expressions. `k4opt evaluate` writes a candidate value followed by its declared unit
+into the XML attribute (`6.0` with `unit: mm` becomes `6.0*mm`, a value without `unit` the bare
+number); the units it can write are listed in [evaluators](evaluators.md#k4opt-evaluate).
 Unit-less parameters (counts, choices) omit `unit`.
 
 Bounds belong to the *search space*. They are distinct from measurement constraints.
@@ -349,11 +350,12 @@ interpreted.
 
 ## Concepts and boundaries (future)
 
-Apart from the evaluator *contract*, none of these exist as code yet. They are named so the
-YAML sections have a clear home. The contract (`Evaluator`, `EvaluationRequest`,
-`EvaluationResult`, `Measurement`) is implemented in `k4opt.evaluation`, see
-[evaluation.md](evaluation.md); the evaluator name, metric binding, registry and execution
-below are still not, and `load_problem()` neither resolves nor runs an evaluator.
+They are named so the YAML sections have a clear home. The evaluator contract (`Evaluator`,
+`EvaluationRequest`, `EvaluationResult`, `Measurement`, `EvaluationRecord`) is implemented in
+`k4opt.evaluation`, see [evaluation.md](evaluation.md), and `k4opt evaluate` evaluates one
+candidate with an evaluator named on the command line. A registry, a `Run` over many
+candidates and a store of records do not exist yet, and `load_problem()` neither resolves nor
+runs an evaluator.
 
 | Concept | Role |
 | --- | --- |
@@ -401,15 +403,15 @@ A bare evaluator `version: "1"` is fine for this proposal, but it must eventuall
 a precise implementation revision (for example a release of the package that ships the
 evaluator), and that revision is what the record stores.
 
-Provenance recorded per evaluation record (future): resolved Key4hep software versions, the
-geometry snapshot fingerprint (see [Fingerprint](geometry.md#fingerprint)), evaluator
-identity and version, ordered backend arguments, hashes of relevant input and steering
-files, and eventually the executed argv.
+Provenance recorded per evaluation: `k4opt evaluate` writes the geometry snapshot fingerprint
+(see [Fingerprint](geometry.md#fingerprint)), the evaluator identity and version, the settings,
+the executed `ddsim` command (which holds the ordered backend arguments) and the size and SHA-256
+of an input sample to `summary.json` ([evaluators](evaluators.md#k4opt-evaluate)). Resolved
+Key4hep software versions and hashes of steering files are not recorded yet.
 
-A candidate evaluated against a problem is checked against the parameter domains above by an
-internal bridge that produces an `EvaluationRecord`; see
-[Evaluation contract](evaluation.md#problem-evaluator-record). It is not yet a user-facing
-workflow.
+A candidate is checked against the parameter domains above before it is evaluated, by
+`k4opt evaluate` and the internal bridge behind it that produces an `EvaluationRecord`; see
+[Evaluation contract](evaluation.md#problem-evaluator-record).
 
 ## Validation and Python API
 
@@ -476,10 +478,10 @@ There is no fingerprint of a problem yet.
 
 ## Deferred
 
-Out of scope until later increments: candidate values and
-materialization; CLI commands; the evaluator registry, the binding of `evaluation.evaluator` and metrics to an
-implementation, and metric metadata (the bare contract exists, see [evaluation.md](evaluation.md)); running `ddsim` or `k4run`; conflict detection and argument merging;
-file and configuration capture; a problem fingerprint; optimizer integration; multi-objective strategy; non-geometry
+Out of scope until later increments: evaluating many candidates in one run (`k4opt evaluate`
+takes one); the evaluator registry (the evaluator is named on the command line) and metric
+metadata beyond units; running `k4run`, and conflict detection and argument merging for it;
+capture of steering and configuration files; a problem fingerprint; optimizer integration; multi-objective strategy; non-geometry
 parameter sources; several evaluators per problem; a parameter that drives several geometry targets at once;
 metrics that are not simulated measurements (for example cost or channel-count models);
 a named baseline candidate (an evaluation of the unmodified geometry is the natural
@@ -488,8 +490,9 @@ baseline for validating bounds and constraint limits); reconstruction and analys
 ## Unresolved choices
 
 - **Value and unit composition.** `unit: mm` is declared next to numeric bounds, while the
-  XML holds `5.1*mm`. The proposal is that k4Opt composes the replacement string from the
-  value and the declared unit; the exact rule is undecided.
+  XML holds `5.1*mm`. `k4opt evaluate` writes `<value>*<unit>` for a fixed list of DD4hep
+  units; whether more units, or a check against the unit of the original XML expression, are
+  needed is open.
 - **Quantity notation in `settings` and `generation`.** The draft convention is a number with an explicit
   `unit` (`energy` with `value: 10` and `unit: GeV`, or a shared `unit` for a group such as
   `theta`/`phi`), never a quoted expression. The evaluator contract may still refine it.

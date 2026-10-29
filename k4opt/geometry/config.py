@@ -18,7 +18,7 @@ replacement text is always exactly what the user wrote.
 from __future__ import annotations
 
 import os
-from collections.abc import Hashable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,25 +29,10 @@ from k4opt.errors import ConfigError
 from k4opt.geometry.errors import InvalidTargetError
 from k4opt.geometry.overrides import Override
 from k4opt.geometry.source import GeometrySource
+from k4opt.yamlio import UniqueKeyLoader
 
 _TOP_KEYS = {"geometry", "root", "overrides"}
 _OVERRIDE_KEYS = {"target", "value", "file"}
-
-
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """``yaml.safe_load`` that rejects duplicate mapping keys instead of keeping the last one."""
-
-    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
-        seen: set[Any] = set()
-        for key_node, _ in node.value:
-            if key_node.tag == "tag:yaml.org,2002:merge":
-                continue  # `<<: *anchor` is expanded by the base class; explicit keys win
-            key = self.construct_object(key_node, deep=True)
-            if isinstance(key, Hashable) and key in seen:
-                raise yaml.YAMLError(f"duplicate key {key!r} (line {key_node.start_mark.line + 1})")
-            if isinstance(key, Hashable):
-                seen.add(key)
-        return super().construct_mapping(node, deep)  # rejects unhashable keys itself
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +71,7 @@ def load_config(path: str | os.PathLike[str]) -> GeometryConfig:
     if not config_path.is_file():
         raise ConfigError(f"configuration file {config_path} not found")
     try:
-        data = yaml.load(config_path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+        data = yaml.load(config_path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise ConfigError(f"{config_path}: invalid YAML: {exc}") from exc
     except (OSError, UnicodeError) as exc:

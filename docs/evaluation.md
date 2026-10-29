@@ -58,8 +58,9 @@ What the optional parts do:
   declaring one metric twice (`"rms"` and `("simulation", "rms")`) is an error, and so is a unit
   that is not a nonblank string (`"1"` for a dimensionless metric). Both are checked before
   anything runs.
-- the return value: a mapping of metric to a number or to a list of per-event numbers
-  (`Measurement.from_samples`) becomes a `valid` result, with the unit from `metrics`. Return an
+- the return value: a mapping of metric to a number or to per-event numbers (a list, a numpy
+  array, ...; `Measurement.from_samples`) becomes a `valid` result, with the unit from `metrics`.
+  A metric is written `"name"` (its stage is `requires`) or as a pair `(stage, name)`. Return an
   `EvaluationResult` for artifacts, provenance or diagnostics.
 
 The long form needs no base class and no shorthand:
@@ -108,11 +109,12 @@ from those.
 | `measurements` | tuple of `Measurement`, mixing stages if needed. Independent of the status: an `invalid` result may keep diagnostic values (they are never objectives), and a `valid` one may have none if it only produced artifacts; a problem that asks for a metric still requires it from a `valid` result |
 | `artifacts` | role name to local output `Path`, possibly empty; a later evaluator can take them as `inputs`. Existence is not checked at construction |
 | `message` | explanation; required for `invalid` and `failed` |
-| `provenance` | optional JSON-compatible metadata the evaluator chose to supply |
+| `provenance` | optional JSON-compatible metadata the evaluator chose to supply; the key `stages` is the framework's (see [Stages](#stages)) |
 
 A `Measurement` is `stage`, `metric`, a finite `value` (booleans, NaN and infinity are
 rejected), an optional descriptive `unit` (never converted) and an optional symmetric,
-nonnegative `uncertainty`. An omitted uncertainty means *not provided*, not zero. Each
+nonnegative `uncertainty`. A numpy number is stored as the Python `int` or `float` it stands
+for, here and in `provenance`. An omitted uncertainty means *not provided*, not zero. Each
 `(stage, metric)` occurs once per result. A missing measurement is absent, never `0`, `inf` or
 a fake success.
 
@@ -217,15 +219,17 @@ problem's `evaluation.evaluator` stays a label that must equal the loaded evalua
 
 | `EvaluationRecord` field | Source |
 | --- | --- |
-| `request`, `result` | the actual objects exchanged with the evaluator, unchanged |
+| `request` | the object the evaluator received |
+| `result` | what the evaluator returned, plus the files and record of the stages that ran for it in `artifacts` and `provenance["stages"]` |
 | `evaluator_name`, `evaluator_version` | the evaluator object that ran, checked against the problem before the call |
 | `candidate_key` | framework-computed, see below |
 | `elapsed_seconds` | wall-clock time around the stage and the single `evaluate()` call (`time.perf_counter()`); not CPU time, memory or an estimate |
 
-`result.provenance` is **evaluator-supplied**; the record's identity and elapsed time are
-**framework-observed**. Neither proves which software environment ran: the problem's
-`environment.key4hep` is a declared pin, and no executed command, input hash or version is
-recorded yet.
+`result.provenance` is **evaluator-supplied**, except `provenance["stages"]`; that, the record's
+identity and elapsed time are **framework-observed** (the executed `ddsim` command and exit
+code, the hash of a sample, the events found). None of it proves which software environment
+ran: the problem's `environment.key4hep` is a declared pin, and the versions of the stack are
+not recorded yet.
 
 `candidate_key` is a tuple with one `(reference, kind, tag, value)` entry per parameter, in the
 problem's parameter order. It is problem-aware: `True`, `1` and `1.0` are not interchangeable
