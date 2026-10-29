@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import dataclasses
 import hashlib
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -341,14 +343,25 @@ def test_an_input_supplied_by_the_caller_skips_the_stage(
     }
 
 
-@pytest.mark.parametrize("missing", ["geometry", "workdir"])
-def test_the_stage_needs_a_geometry_and_a_workdir(
-    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+@pytest.mark.parametrize(
+    ("missing", "message"),
+    [
+        ("geometry", r"'simulation' stage needs inputs\['geometry'\]"),
+        ("workdir", r"'simulation' stage needs a workdir"),
+    ],
+)
+def test_the_simulation_stage_needs_a_geometry_and_a_workdir(
+    spec: ProblemSpec,
+    geometry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
+    message: str,
 ) -> None:
     fake = simulation.install(monkeypatch)
     inputs = {} if missing == "geometry" else {"geometry": geometry}
     workdir = None if missing == "workdir" else tmp_path / "run"
-    with pytest.raises(EvaluationContractError, match=r"geometry.*workdir"):
+    with pytest.raises(EvaluationContractError, match=message):
         _evaluate_candidate(spec, {CELL: 6}, Reader(), inputs=inputs, workdir=workdir)
     assert fake.calls == []
 
@@ -479,10 +492,10 @@ def test_an_evaluator_may_require_only_generation(
         requires = "generation"
 
     own = NeedsSample()
-    _evaluate_candidate(
-        sample_spec, {CELL: 6}, own, inputs={"geometry": tmp_path / "c.xml"}, workdir=tmp_path
-    )
+    # a sample only has to be found and hashed: no geometry and no workdir are needed
+    record = _evaluate_candidate(sample_spec, {CELL: 6}, own)
     assert fake.calls == []  # no simulation
+    assert list(record.result.provenance["stages"]) == ["generation"]  # type: ignore[arg-type]
     assert own.seen is not None
     assert own.seen.inputs["generation"] == tmp_path / "samples" / "zh.hepmc"  # resolved
 
@@ -578,3 +591,37 @@ def test_an_evaluator_without_stages_keeps_its_own_provenance_and_artifacts(
     evaluator = OwnWorkflow()
     record = _evaluate_candidate(spec, {CELL: 6}, evaluator, workdir=tmp_path)
     assert "stages" not in record.result.provenance
+
+
+def test_a_particle_gun_generation_needs_nothing_either(spec: ProblemSpec) -> None:
+    class NeedsGeneration(OwnWorkflow):
+        requires = "generation"
+
+    own = NeedsGeneration()
+    record = _evaluate_candidate(spec, {CELL: 6}, own)
+    assert "generation" not in own.seen.inputs  # type: ignore[union-attr]
+    assert record.result.provenance["stages"]["generation"]["particle_gun"]["particle"] == "gamma"  # type: ignore[index]
+
+
+def test_stages_in_the_provenance_are_the_frameworks_even_when_none_ran(
+    spec: ProblemSpec, tmp_path: Path
+) -> None:
+    claimed = {"simulation": {"argv": ("ddsim",), "returncode": 0}}
+    evaluator = Colliding({}, {"stages": claimed})
+    evaluator.requires = None  # type: ignore[assignment]  # no stage runs for this evaluator
+    with pytest.raises(EvaluationContractError, match="'stages' is reserved"):
+        _evaluate_candidate(spec, {CELL: 6}, evaluator, workdir=tmp_path)
+
+
+def test_a_sample_replaced_with_the_same_size_and_mtime_is_hashed_again(tmp_path: Path) -> None:
+    sample = tmp_path / "zh.hepmc"
+    sample.write_bytes(b"AAAA")
+    before = sample.stat()
+    _sha256.cache_clear()
+    first = file_identity(sample)
+    time.sleep(0.05)  # ctime comes from a coarse kernel clock; see _sha256
+    sample.write_bytes(b"BBBB")  # same size ...
+    os.utime(sample, ns=(before.st_atime_ns, before.st_mtime_ns))  # ... and the old mtime back
+    second = file_identity(sample)
+    assert first["sha256"] == hashlib.sha256(b"AAAA").hexdigest()
+    assert second["sha256"] == hashlib.sha256(b"BBBB").hexdigest()

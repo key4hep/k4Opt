@@ -27,7 +27,13 @@ from k4opt.evaluation import (
 )
 from k4opt.evaluation.models import Scalar
 from k4opt.frozen import Json
-from k4opt.problem._stages import check_stage, plan_stages, provided_provenance, run_stage
+from k4opt.problem._stages import (
+    check_run_inputs,
+    check_stage,
+    plan_stages,
+    provided_provenance,
+    run_stage,
+)
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import Parameter, ProblemSpec
 
@@ -202,16 +208,12 @@ def _evaluate_candidate(
     required = getattr(evaluator, "requires", None)
     plan = [] if required is None else check_stage(spec, required, inputs)
     supplied = {stage: path for stage, path in inputs.items() if stage in _chain(required)}
-    if plan and ("geometry" not in inputs or workdir is None):
-        raise EvaluationContractError(
-            f"the {', '.join(plan)} stage(s) need inputs['geometry'] and a workdir"
-        )
+    check_run_inputs(plan, inputs, workdir)
     started = time.perf_counter()
     artifacts: dict[str, Path] = {}
     ran: dict[str, Json] = {}
     error = None
     for stage in plan:
-        assert workdir is not None
         outcome = run_stage(spec, stage, inputs=inputs, workdir=workdir)
         inputs |= outcome.inputs
         artifacts |= {f"{stage}.{role}": path for role, path in outcome.artifacts.items()}
@@ -232,16 +234,18 @@ def _evaluate_candidate(
         raise EvaluationContractError(
             f"evaluator must return an EvaluationResult, got {type(result).__name__}"
         )
+    if "stages" in result.provenance:
+        # the summary reads this key as what the framework observed, so an evaluator cannot
+        # claim stages (a ddsim command, say) that were not run
+        raise EvaluationContractError(
+            "provenance key 'stages' is reserved for the stages that the framework ran"
+        )
     if stages:
         clash = sorted(set(artifacts) & set(result.artifacts))
         if clash:
             raise EvaluationContractError(
                 f"evaluator artifact role(s) {clash} collide with artifacts of the stages, which "
                 "are named '<stage>.<role>'; choose other names"
-            )
-        if "stages" in result.provenance:
-            raise EvaluationContractError(
-                "provenance key 'stages' is reserved for the stages that the framework ran"
             )
         result = dataclasses.replace(
             result,

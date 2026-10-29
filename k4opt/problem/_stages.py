@@ -63,9 +63,13 @@ def _particle_gun(spec: ProblemSpec) -> Json:
 
 
 @functools.lru_cache(maxsize=32)
-def _sha256(path: str, size: int, mtime_ns: int) -> str:
-    """SHA-256 of a file; ``size`` and ``mtime_ns`` only key the cache, so a changed file
-    is hashed again but the same sample is read once per run of candidates, not once each."""
+def _sha256(path: str, size: int, mtime_ns: int, ctime_ns: int, inode: int) -> str:
+    """SHA-256 of a file. The other arguments only key the cache, so the same file is read once
+    per run of candidates but a changed one is hashed again: writing to a file or replacing it
+    changes its ctime or inode even if the content keeps its size and its mtime is restored.
+    The kernel stamps ctime with a coarse clock (milliseconds), so a file rewritten within the
+    same tick as it was hashed is not told apart; samples are assumed not to change while a
+    campaign hashes them."""
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
         for block in iter(lambda: handle.read(1 << 20), b""):
@@ -78,7 +82,9 @@ def file_identity(path: Path) -> dict[str, Json]:
     status = path.stat()
     return {
         "bytes": status.st_size,
-        "sha256": _sha256(str(path), status.st_size, status.st_mtime_ns),
+        "sha256": _sha256(
+            str(path), status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino
+        ),
     }
 
 
@@ -109,7 +115,9 @@ def _check_generation(spec: ProblemSpec, provided: Collection[str]) -> None:
         raise EvaluationContractError(f"evaluation.generation.sample: {sample} is not a file")
 
 
-def _run_generation(spec: ProblemSpec, inputs: Mapping[str, Path], workdir: Path) -> StageOutcome:
+def _run_generation(
+    spec: ProblemSpec, inputs: Mapping[str, Path], workdir: Path | None
+) -> StageOutcome:
     sample = sample_path(spec)
     if sample is None:
         gun = _particle_gun(spec)
@@ -141,9 +149,12 @@ def _check_simulation(spec: ProblemSpec, provided: Collection[str]) -> None:
     )
 
 
-def _run_simulation(spec: ProblemSpec, inputs: Mapping[str, Path], workdir: Path) -> StageOutcome:
+def _run_simulation(
+    spec: ProblemSpec, inputs: Mapping[str, Path], workdir: Path | None
+) -> StageOutcome:
     evaluation = spec.evaluation
     assert evaluation.events is not None  # checked by _check_simulation
+    assert workdir is not None  # checked by check_run_inputs
     particle_gun, sample = _primaries(spec, inputs.get("generation"))
     run = simulate(
         compact=inputs["geometry"],
@@ -168,12 +179,16 @@ def _run_simulation(spec: ProblemSpec, inputs: Mapping[str, Path], workdir: Path
 class _Stage:
     needs: tuple[str, ...]
     check: Callable[[ProblemSpec, Collection[str]], None]
-    run: Callable[[ProblemSpec, Mapping[str, Path], Path], StageOutcome]
+    run: Callable[[ProblemSpec, Mapping[str, Path], Path | None], StageOutcome]
+    geometry: bool  # reads the prepared geometry, inputs["geometry"]
+    writes: bool  # writes files, so it needs a workdir
 
 
 _STAGES: Mapping[str, _Stage] = {
-    "generation": _Stage((), _check_generation, _run_generation),
-    "simulation": _Stage(("generation",), _check_simulation, _run_simulation),
+    "generation": _Stage((), _check_generation, _run_generation, geometry=False, writes=False),
+    "simulation": _Stage(
+        ("generation",), _check_simulation, _run_simulation, geometry=True, writes=True
+    ),
 }
 
 
@@ -211,8 +226,18 @@ def check_stage(spec: ProblemSpec, stage: str, provided: Collection[str] = ()) -
     return plan
 
 
+def check_run_inputs(plan: Collection[str], inputs: Collection[str], workdir: Path | None) -> None:
+    """Raise if a stage of ``plan`` lacks the geometry or workdir it needs; others need none."""
+    for name in plan:
+        stage = _STAGES[name]
+        if stage.geometry and "geometry" not in inputs:
+            raise EvaluationContractError(f"the {name!r} stage needs inputs['geometry']")
+        if stage.writes and workdir is None:
+            raise EvaluationContractError(f"the {name!r} stage needs a workdir")
+
+
 def run_stage(
-    spec: ProblemSpec, stage: str, *, inputs: Mapping[str, Path], workdir: Path
+    spec: ProblemSpec, stage: str, *, inputs: Mapping[str, Path], workdir: Path | None
 ) -> StageOutcome:
     """Run one ``stage`` in ``workdir``; ``inputs`` holds the geometry and earlier outputs."""
     return _STAGES[stage].run(spec, inputs, workdir)

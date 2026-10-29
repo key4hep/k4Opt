@@ -107,3 +107,46 @@ def test_a_file_that_fails_to_import_is_a_load_error_and_can_be_fixed(tmp_path: 
         load_evaluator(f"{broken}:Good")
     broken.write_text(GOOD, encoding="utf-8")  # a failed import is not remembered
     assert load_evaluator(f"{broken}:Good").name == "demo.good"
+
+
+SIBLING_EVALUATOR = """
+from {helper} import resolution
+from k4opt.evaluation import EvaluationResult, Measurement
+
+
+class Study:
+    name = "demo.study"
+    version = "1"
+
+    def evaluate(self, request):
+        from {lazy} import offset  # imported only when the evaluator runs
+        return EvaluationResult.valid([Measurement("analysis", "res", resolution() + offset())])
+"""
+
+
+def test_a_file_can_import_modules_next_to_it(tmp_path: Path) -> None:
+    study = tmp_path / "my_study"
+    study.mkdir()
+    (study / "study_metrics_a.py").write_text("def resolution():\n    return 3.5\n")
+    (study / "study_lazy_a.py").write_text("def offset():\n    return 0.5\n")
+    (study / "evaluator.py").write_text(
+        SIBLING_EVALUATOR.format(helper="study_metrics_a", lazy="study_lazy_a")
+    )
+    before = list(sys.path)
+    try:
+        evaluator = load_evaluator(f"{study / 'evaluator.py'}:Study")  # a top-level sibling import
+        result = evaluator.evaluate(None)  # type: ignore[arg-type]  # and one inside the method
+        assert result.measurements[0].value == 4.0
+        assert sys.path[0] == str(study)
+    finally:
+        sys.path[:] = before
+        for name in ("study_metrics_a", "study_lazy_a"):
+            sys.modules.pop(name, None)
+
+
+def test_a_failed_import_leaves_the_search_path_alone(tmp_path: Path) -> None:
+    (tmp_path / "evaluator.py").write_text("import study_missing_sibling\n")
+    before = list(sys.path)
+    with pytest.raises(EvaluatorLoadError, match="study_missing_sibling"):
+        load_evaluator(f"{tmp_path / 'evaluator.py'}:Study")
+    assert sys.path == before

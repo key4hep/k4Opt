@@ -123,7 +123,8 @@ only it needs, and it is authoritative: a supplied `generation` file is simulate
 problem describes a particle gun. The record identifies it (`provenance["stages"][stage]` holds
 the path, size and SHA-256 under `provided`; a file that could not be hashed carries only its
 path, so a verified input is distinguishable from one identified by its name). A sample is hashed once per file version, not once
-per candidate. The files of a stage are added to the result's `artifacts` as `<stage>.<role>`
+per candidate (a file is told apart by size, mtime, ctime and inode, so one rewritten within a
+few milliseconds of being hashed is not; samples are assumed stable while a campaign runs). The files of a stage are added to the result's `artifacts` as `<stage>.<role>`
 (`simulation.stdout`, `simulation.edm4hep`, ...) so stages cannot overwrite each other, and the
 stages' record goes to `provenance["stages"]`; an evaluator that returns an artifact role equal
 to one of these, or its own `stages` provenance key, gets an `EvaluationContractError`. Stages are internal for now (`k4opt.problem._stages`).
