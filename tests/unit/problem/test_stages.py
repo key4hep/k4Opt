@@ -272,6 +272,26 @@ def test_a_failed_stage_leaves_the_stages_after_it_unrun_with_the_reason(
     assert records.inputs("simulation") == {} and "simulation" not in records.seconds
 
 
+def test_a_supplied_stage_does_not_inherit_the_failure_of_a_stage_before_it(
+    spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requested = spec.evaluation.events
+    assert requested is not None
+    simulation.install(monkeypatch, events_with(*[[1]] * requested))
+    events_file = tmp_path / "mine.root"
+    events_file.write_bytes(b"fake")
+    # another evaluator requires generation, which fails; the supplied simulation never needed it
+    missing = tmp_path / "gone.hepmc"
+    sample = dataclasses.replace(context(spec), generation={"sample": str(missing)})
+    records = run_stages(
+        sample, "generation", "simulation", inputs={"simulation": events_file}, workdir=None
+    )
+    assert "cannot read the sample" in (records.error("generation") or "")
+    assert records.chain("simulation") == ["simulation"]
+    assert records.error("simulation") is None
+    assert records.inputs("simulation") == {"simulation": events_file}
+
+
 # --- generation: a particle gun or a sample file ---
 
 

@@ -315,7 +315,8 @@ class StageRecords:
     (``events_read``). ``outputs`` maps a stage to the file it provides (a particle gun provides
     none), ``artifacts`` to its files by role, ``errors`` to why it cannot be read (it failed, its
     output is incomplete, or it did not run because an earlier stage failed) and ``seconds`` to
-    the wall time k4opt spent on it: running it and checking its output.
+    the wall time k4opt spent on it: running it and checking its output. ``provided`` names the
+    stages the caller supplied; their files do not depend on the stages before them.
     """
 
     provenance: Mapping[str, Mapping[str, Json]] = field(default_factory=dict)
@@ -323,12 +324,28 @@ class StageRecords:
     artifacts: Mapping[str, Mapping[str, Path]] = field(default_factory=dict)
     errors: Mapping[str, str] = field(default_factory=dict)
     seconds: Mapping[str, float] = field(default_factory=dict)
+    provided: frozenset[str] = frozenset()
 
     def chain(self, stage: str | None) -> list[str]:
-        """``stage`` and the recorded stages it needs, in pipeline order; empty for ``None``."""
+        """``stage`` and the recorded stages it needs, in pipeline order; empty for ``None``.
+
+        A supplied stage needs nothing: the stages before it are not in its chain, even if
+        another evaluator had them run.
+        """
         if stage is None:
             return []
-        return [name for name in plan_stages(stage) if name in self.provenance]
+        order: list[str] = []
+
+        def visit(name: str) -> None:
+            if name in order:
+                return
+            if name not in self.provided:
+                for need in _STAGES[name].needs:
+                    visit(need)
+            order.append(name)
+
+        visit(stage)
+        return [name for name in order if name in self.provenance]
 
     def error(self, stage: str | None) -> str | None:
         """Why ``stage`` cannot be read: the first error along its chain, ``None`` if it can."""
@@ -391,4 +408,5 @@ def run_stages(
         seconds[name] = time.perf_counter() - started
         if name in errors:
             failed = name
-    return StageRecords(provenance, outputs, artifacts, errors, seconds)
+    provided = frozenset(name for name in inputs if name in _STAGES)
+    return StageRecords(provenance, outputs, artifacts, errors, seconds, provided)
