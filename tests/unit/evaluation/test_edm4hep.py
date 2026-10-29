@@ -95,6 +95,21 @@ def test_counting_asks_the_reader_for_its_entries_and_reads_no_frame(
     assert count_events(PATH) == 7
 
 
+def test_a_file_that_ends_before_its_recorded_events_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Truncated(list[Any]):
+        def __len__(self) -> int:  # the entries the file records
+            return 3
+
+    monkeypatch.setattr(edm4hep, "_frames", lambda path: Truncated(events_with([1], [2])))
+    assert count_events(PATH) == 3  # what the metadata says
+    reading = read_collection(PATH, COLLECTION, HIT_TYPE)
+    assert len(next(reading)) == 1 and len(next(reading)) == 1  # the events that exist
+    with pytest.raises(EvaluationFailed, match="records 3 events, but 2 were read"):
+        next(reading)
+
+
 def test_c_plus_plus_exceptions_while_iterating_a_collection_are_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
