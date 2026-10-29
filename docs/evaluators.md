@@ -34,9 +34,9 @@ error exits with status 1 and creates nothing. Then, in order:
    If a stage fails or its output lacks events, the result is `failed` and the evaluator is not
    called;
 3. `<output>/summary.json` is written: candidate and key, status, measurements with
-   uncertainty, evaluator and its `settings`, geometry fingerprint and manifest, requested and
-   observed events, elapsed seconds, the exact `ddsim` command and exit code, artifact paths, and the
-   environment (`declared`: the problem's pin; `observed`: `KEY4HEP_STACK`, `K4GEO` and the
+   uncertainty, evaluator with its `settings` and own `provenance`, geometry fingerprint and
+   manifest, requested and observed events, elapsed seconds, the exact `ddsim` command and exit
+   code, artifact paths, and the environment (`declared`: the problem's pin; `observed`: `KEY4HEP_STACK`, `K4GEO` and the
    `ddsim` that was started; the two are not compared).
 
 The command prints status, metric with uncertainty, events, fingerprint and the paths. Exit

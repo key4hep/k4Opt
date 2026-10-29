@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -15,7 +16,7 @@ import yaml
 from k4opt.cli import main
 from k4opt.ddsim import DdsimError
 from k4opt.errors import K4OptError
-from k4opt.evaluation import EvaluationContractError, metric_units
+from k4opt.evaluation import EvaluationContractError, metric_units, result_from
 from k4opt.geometry import GeometrySource, Override
 from k4opt.problem import CandidateError, load_problem, parse_problem
 from k4opt.problem._run import SUMMARY_NAME, RunOutcome, _parse_candidate, _xml_value
@@ -157,6 +158,7 @@ def test_summary_is_written_and_truthful(
     assert on_disk["simulation"]["command"][0] == "/stack/bin/ddsim"
     assert on_disk["simulation"]["returncode"] == 0
     assert on_disk["settings"] == {"collection": COLLECTION}
+    assert on_disk["provenance"] == {}  # the example evaluator reports none of its own
     # the files of the stages, named <stage>.<role>: what the real-ddsim test reads back
     paths = on_disk["paths"]
     assert paths["run_dir"] == str(tmp_path / "a")
@@ -648,6 +650,22 @@ class Spy:
     def evaluate(self, request: Any) -> Any:
         self.evaluated.append(request)
         return self.inner.evaluate(request)
+
+
+def test_the_evaluator_provenance_is_saved_in_the_summary(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    class Annotating(Spy):
+        def evaluate(self, request: Any) -> Any:
+            result = result_from(self.inner, self.inner.evaluate(request))
+            return dataclasses.replace(result, provenance={"selection": "barrel", "algo": [2, 1]})
+
+    outcome = run_candidate(
+        problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluator=Annotating()
+    )
+    on_disk = json.loads(outcome.summary_path.read_text())
+    assert on_disk["provenance"] == {"selection": "barrel", "algo": [2, 1]}
+    assert on_disk["simulation"]["returncode"] == 0  # the framework's stage record stays apart
 
 
 def test_the_preflight_request_has_the_generation_the_evaluation_gets(

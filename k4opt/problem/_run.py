@@ -184,6 +184,9 @@ def _summary(
     simulation = _stage_provenance(result, "simulation")
     generation = _stage_provenance(result, "generation") or thaw(spec.evaluation.generation)
     argv = simulation.get("argv")
+    provenance = thaw(result.provenance)
+    assert isinstance(provenance, dict)
+    provenance.pop("stages", None)  # what the framework observed is under generation/simulation
     return {
         "schema": SUMMARY_SCHEMA,
         "problem": {"path": str(problem_path), "name": spec.name},
@@ -207,6 +210,7 @@ def _summary(
         "geometry": geometry,
         "generation": generation,
         "settings": thaw(request.settings),
+        "provenance": provenance,
         "simulation": {"command": argv, "returncode": simulation.get("returncode")},
         "paths": {"run_dir": str(run_dir)} | {k: str(v) for k, v in result.artifacts.items()},
         "environment": {
