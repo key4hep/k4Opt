@@ -33,7 +33,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         help=(
             "the evaluator to measure with, a file and class or package.module:Class; "
             "its name and version must be those of the problem. The file is executed, "
-            "e.g. examples/evaluators/calo_hit_multiplicity.py:CaloHitMultiplicity"
+            "e.g. examples/evaluators/calo_photon.py:CaloPhoton"
         ),
     )
     evaluate.add_argument(

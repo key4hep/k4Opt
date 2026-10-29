@@ -21,12 +21,12 @@ import pytest
 import yaml
 
 from k4opt.cli import main
-from tests.support.evaluators import CALO_HIT_MULTIPLICITY
+from tests.support.evaluators import CALO_PHOTON
 from tests.support.geometry import CLD_COMPACT
 
 pytestmark = pytest.mark.integration
 
-EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-hit-count.yaml"
+EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-granularity.yaml"
 CELL = "constants.ECal_cell_size"
 EVENTS = 4
 
@@ -56,7 +56,7 @@ def evaluate(problem: Path, size: str, output: Path) -> dict[str, Any]:
             "evaluate",
             str(problem),
             "--evaluator",
-            CALO_HIT_MULTIPLICITY,
+            CALO_PHOTON,
             "--param",
             f"{CELL}={size}",
             "--output",
@@ -118,20 +118,27 @@ def test_ddsim_simulated_the_materialized_geometry(runs: dict[str, dict[str, Any
         assert run["geometry"]["source_root"] not in log  # nothing loaded from the original
 
 
-def test_metric_comes_from_the_observed_events(runs: dict[str, dict[str, Any]]) -> None:
+def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) -> None:
     from podio.reading import get_reader
 
     for run in runs.values():
         assert run["status"] == "valid"
         assert run["events"] == {"requested": EVENTS, "observed": EVENTS}
         collection = run["settings"]["collection"]
-        events = get_reader(run["paths"]["simulation.edm4hep"]).get("events")
-        counts = [len({hit.getCellID() for hit in event.get(collection)}) for event in events]
-        (measurement,) = run["measurements"]
-        assert len(counts) == EVENTS
-        assert measurement["value"] == pytest.approx(statistics.fmean(counts))
-        assert measurement["uncertainty"] == pytest.approx(statistics.stdev(counts) / EVENTS**0.5)
-        assert measurement["unit"] == "1"
+        counts = []
+        for event in get_reader(run["paths"]["simulation.edm4hep"]).get("events"):
+            (photon,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
+            if not photon.isDecayedInTracker():
+                counts.append(sum(hit.getEnergy() >= 70e-6 for hit in event.get(collection)))
+        measured = {m["metric"]: m for m in run["measurements"]}
+        cells, residual = (
+            measured["ecal_barrel.fired_cells"],
+            measured["ecal_barrel.angular_residual"],
+        )
+        assert cells["value"] == pytest.approx(statistics.fmean(counts))
+        assert cells["unit"] == "1"
+        assert residual["unit"] == "mrad"
+        assert 0 < residual["value"] < 20  # a 10 GeV photon: about a mrad
         assert Path(run["paths"]["simulation.stderr"]).is_file()
         assert run["environment"]["declared"]["version"] == "2026-10-20"
         assert run["simulation"]["returncode"] == 0

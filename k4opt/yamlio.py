@@ -6,8 +6,8 @@ keys: PyYAML silently keeps the last one, so a repeated key would drop part of w
 
 from __future__ import annotations
 
-from collections.abc import Hashable
-from typing import Any
+from collections.abc import Callable, Hashable
+from typing import Any, cast
 
 import yaml
 
@@ -20,7 +20,9 @@ class UniqueKeyLoader(yaml.SafeLoader):
         for key_node, _ in node.value:
             if key_node.tag == "tag:yaml.org,2002:merge":
                 continue  # `<<: *anchor` is expanded by the base class; explicit keys win
-            key = self.construct_object(key_node, deep=True)
+            # some PyYAML stubs leave `node` unannotated, which strict mypy calls untyped
+            construct = cast(Callable[..., Any], self.construct_object)
+            key = construct(key_node, deep=True)
             if isinstance(key, Hashable):
                 if key in seen:
                     raise yaml.YAMLError(

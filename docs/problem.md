@@ -19,16 +19,15 @@ scientifically meaningful; k4opt records them precisely and reproducibly.
 records, provenance and identities ([Concepts](#concepts-and-boundaries-future),
 [Identity](#identity-and-provenance)) describe what k4Opt will record and are not part of the file.
 
-The example is [`examples/problem/cld-ecal-hit-count.yaml`](../examples/problem/cld-ecal-hit-count.yaml),
-run with the example evaluator
-[`calo_hit_multiplicity.py`](../examples/evaluators/calo_hit_multiplicity.py) (see
-[evaluators](evaluators.md)). It is a smoke test of the flow, not a performance study: the
-metric is a technical observable, and the bounds (4-8 mm) have not been validated by a baseline
-simulation.
+The example is [`examples/problem/cld-ecal-granularity.yaml`](../examples/problem/cld-ecal-granularity.yaml),
+run with the example evaluator [`calo_photon.py`](../examples/evaluators/calo_photon.py) (see
+[evaluators](evaluators.md)). It asks how fine the ECAL barrel cells of CLD should be: finer
+cells measure the direction of a photon better, but every photon fires more cells, and each cell
+is a readout channel. What a scan of it finds is in [evaluators](evaluators.md#the-example-study).
 
 ```yaml
 schema_version: k4opt.problem/v1alpha1
-name: cld-ecal-hit-count
+name: cld-ecal-granularity
 
 environment:
   key4hep:
@@ -39,16 +38,17 @@ geometry:
   entry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 
 parameters:
+  # CLD uses 5.1 mm; 20 mm is about the width of a photon shower
   - geometry:
       constant: ECal_cell_size
     type: continuous
-    bounds: [4.0, 8.0]
+    bounds: [2.5, 20.0]
     unit: mm
 
 evaluation:
-  evaluator: calo.hit_multiplicity
+  evaluator: calo.photon
   version: "1"
-  events: 100
+  events: 1000
   seed: 42
 
   settings:
@@ -59,12 +59,10 @@ evaluation:
     energy:
       value: 10
       unit: GeV
-    vertex:
-      value: [0, 0, 0]
-      unit: mm
+    # the middle of the barrel, where photons enter the ECAL almost head-on
     direction:
       distribution: uniform
-      theta: [60, 120]
+      theta: [80, 100]
       phi: [0, 360]
       unit: deg
 
@@ -73,9 +71,11 @@ evaluation:
       args: ["--physics.list", "FTFP_BERT"]
 
 objectives:
-  # A technical observable, not a detector-performance objective (see the note above).
   - stage: simulation
-    metric: ecal_barrel.mean_hit_cells
+    metric: ecal_barrel.angular_residual
+    direction: minimize
+  - stage: simulation
+    metric: ecal_barrel.fired_cells
     direction: minimize
 ```
 
@@ -86,11 +86,11 @@ comparable.
 
 | Concept | Where | Who decides | Example |
 | --- | --- | --- | --- |
-| Scientific choices | `parameters`, `objectives`, `constraints` | the physicist | vary `ECal_cell_size` in 4-8 mm, minimize the mean number of hit cells (and, optionally, limit a metric) |
+| Scientific choices | `parameters`, `objectives`, `constraints` | the physicist | vary `ECal_cell_size` in 2.5-20 mm, minimize the photon's angular residual and the number of fired cells (and, optionally, limit a metric) |
 | Evaluator settings | `evaluation.events`, `.seed`, `.settings`, `.generation` | the evaluator's and the stage's contract, filled by the physicist | 1000 photons of 10 GeV, seed 42 |
 | Backend arguments | `evaluation.backend.<tool>.args` | the physicist, validated by the tool | `--physics.list FTFP_BERT` |
 | Execution environment | `environment`, `geometry.entry` | the physicist pins, k4opt resolves | nightly `2026-10-20`, CLD_o2_v09 |
-| Measured results | evaluation records | the evaluator | `mean_hit_cells = 7.9 ± 0.1` |
+| Measured results | evaluation records | the evaluator | `angular_residual = 0.90 ± 0.03 mrad` |
 | Provenance | evaluation records | k4opt records | resolved versions, geometry fingerprint, argv |
 
 The user-facing YAML combines the first four in one file for convenience. Internally they
@@ -182,7 +182,7 @@ study evaluates only barrel hits.
 
 | Key | Meaning |
 | --- | --- |
-| `evaluator` | Logical name of a curated, versioned standard evaluator, e.g. `calo.hit_multiplicity`. It must equal the `name` of the evaluator that `k4opt evaluate --evaluator` loads. |
+| `evaluator` | Logical name of a curated, versioned standard evaluator, e.g. `calo.photon`. It must equal the `name` of the evaluator that `k4opt evaluate --evaluator` loads. |
 | `version` | Version of that evaluator's contract. A string. |
 | `events` | Optional. Number of events to process. |
 | `seed` | Optional. Random seed. |
@@ -200,7 +200,7 @@ Combining several evaluators in one problem is deferred.
 **Evaluator.** `evaluator` and `version` are the label of a measurement contract. The
 evaluator owns the metric definitions and the interpretation of the stage outputs. k4opt ships
 none: the physicist writes one (the example is
-[`calo_hit_multiplicity.py`](../examples/evaluators/calo_hit_multiplicity.py)) and names it on
+[`calo_photon.py`](../examples/evaluators/calo_photon.py)) and names it on
 the command line, `k4opt evaluate --evaluator FILE.py:Class`, whose `name` and `version` must
 equal these two fields. A registry that resolves the label itself is deferred.
 
@@ -225,7 +225,7 @@ measure the same events. As a particle gun, as in the example, its keys are, for
 | --- | --- |
 | `particle` | primary particle species (`gamma`) |
 | `energy` | primary energy, `value` with an explicit `unit` |
-| `vertex` | production point of the primary, `value` (x, y, z) with an explicit `unit`; here the origin. A fixed vertex keeps the true entry point on the ECAL surface well defined, which shower-position metrics rely on |
+| `vertex` | optional production point of the primary, `value` (x, y, z) with an explicit `unit`; the origin if omitted, as in the example, whose evaluator takes each photon's vertex from the simulation |
 | `direction.distribution` | ddsim's `--gun.distribution`, `cos(theta)` or `uniform`. `cos(theta)` is uniform in cos(theta), i.e. in solid angle; `uniform` is uniform in theta |
 | `direction.theta`, `.phi` | inclusive angular range; `unit` gives the angle unit |
 
@@ -237,8 +237,8 @@ event counts) is not expressible yet: a problem has one sample; the sample set i
 backend argument. Choices such as fast versus full simulation are evaluator-owned settings: they change the context identity and the validity of the
 metrics, so they are never left to a raw argument.
 
-The 60-120 degree range is an illustrative barrel-oriented selection. It is not shown to
-suffice for shower containment or acceptance. The evaluator translates this semantic
+The 80-100 degree range keeps the photons in the middle of the barrel, where they enter the
+ECAL almost head-on; the evaluator does not select on the angle itself. The evaluator translates this semantic
 request into the concrete backend settings; the user does not write them.
 
 **Backend.** `backend.<tool>.args` is an **ordered list of strings** appended to the
@@ -250,8 +250,8 @@ backend:
     args: ["--physics.list", "FTFP_BERT"]
 ```
 
-Rules (policy; `k4opt evaluate` implements it for `ddsim` with the `calo.hit_multiplicity`
-evaluator, see [evaluators.md](evaluators.md)):
+Rules (policy; `k4opt evaluate` implements it for `ddsim`, see
+[evaluators.md](evaluators.md)):
 
 1. *Ordered list, not a string or a mapping.* Order, repeated flags, values and option
    spellings are preserved exactly.
@@ -305,7 +305,7 @@ A non-empty list. Each item:
 | Key | Meaning |
 | --- | --- |
 | `stage` | Scientific classification of the measurement: `simulation` now; `reconstruction` and `analysis` possible later. It is not a request to run a particular pipeline step, and it does not create separate problem types. |
-| `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.mean_hit_cells` (measured by `calo.hit_multiplicity`). The part before the dot names what is measured (here the ECAL barrel); collection names appear only in `settings`. |
+| `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.angular_residual` (measured by `calo.photon`). The part before the dot names what is measured (here the ECAL barrel); collection names appear only in `settings`. |
 | `direction` | `minimize` or `maximize`. |
 
 `stage` and `metric` are separate fields, not a combined `simulation.some_metric` string.
@@ -323,30 +323,29 @@ satisfied and is never replaced by an invented number. Metrics come with
 uncertainties, so how a constraint is judged against them is an
 [unresolved choice](#unresolved-choices). k4Opt adds no scientifically
 motivated constraints of its own: whether a candidate is physically sensible is the
-researcher's responsibility. For instance, with a second metric the evaluator supports:
+researcher's responsibility. For instance, a requirement on the photon direction:
 
 ```yaml
 constraints:
   - stage: simulation
-    metric: ecal_barrel.position_rms   # illustrative; the example evaluator does not measure it
-    max: 2.0
-    unit: mm
+    metric: ecal_barrel.angular_residual
+    max: 1.0
+    unit: mrad
 ```
 
-A limit such as this needs a baseline measurement before it means anything.
+A limit such as this needs a baseline measurement before it means anything; in the
+[example study](evaluators.md#the-example-study) this one keeps cells up to about 12 mm.
 
 ## Metrics are defined by the evaluator
 
 A metric name alone does not make two studies measure the same thing. The evaluator and
 version must define each metric precisely: meaning, unit, estimator, event selection and
 thresholds, and the uncertainty and statistical conventions. For the example, the evaluator
-defines a "hit cell" as a distinct `cellID` of the configured collection and the metric as the
-mean per event with the standard error of the mean ([evaluators](evaluators.md)). Hit
-multiplicity is a technical observable, not a detector cost, a readout channel count or a
-performance measure: a coarser grid always lowers it, so minimizing it alone is not a study.
-A study of granularity against a shower-position observable would need an evaluator that
-defines that observable (reference position, residual definition) before any number can be
-interpreted.
+defines a fired cell (a deposit of at least 70 keV), the measured direction (from the photon's
+vertex to the energy-weighted center of the fired cells), the selection (photons that do not
+convert in the tracker) and the estimator (the mean, with the standard error of the mean)
+([evaluators](evaluators.md)). Neither metric is the whole story: fine cells are chosen above
+all to tell nearby showers apart in particle flow, which needs reconstruction.
 
 ## Concepts and boundaries (future)
 
@@ -432,7 +431,7 @@ touches neither the file system nor a geometry tree and needs no Key4hep install
 from k4opt.problem import load_problem, parse_problem
 
 problem = load_problem("problem.yaml")  # UTF-8 YAML file; geometry and targets resolved
-problem.parameters[0].bounds  # (4.0, 8.0)
+problem.parameters[0].bounds  # (2.5, 20.0)
 problem.evaluation.backend["ddsim"]  # ("--physics.list", "FTFP_BERT"), order preserved
 data = problem.to_dict()  # plain JSON-compatible data, a fresh copy each call
 assert parse_problem(data) == problem  # parse already-decoded data, no file needed
@@ -442,7 +441,7 @@ assert parse_problem(data) == problem  # parse already-decoded data, no file nee
 intended release or nightly, but k4Opt does not select or verify it: the geometry comes from
 the active environment, so a resolved target is neither proof that the geometry matches the
 pinned stack nor that it is physically valid. The
-[CLD example](../examples/problem/cld-ecal-hit-count.yaml) loads only where a suitable CLD
+[CLD example](../examples/problem/cld-ecal-granularity.yaml) loads only where a suitable CLD
 geometry is installed.
 
 A target that exists in several reachable files cannot be selected in `v1alpha1`, which has
@@ -499,7 +498,7 @@ baseline for validating bounds and constraint limits); reconstruction and analys
 - **Constraint units.** `unit` on a constraint states the unit of `min`/`max`; whether
   the evaluator may convert or must match exactly is undecided.
 - **Release `channel` vocabulary** beyond `nightly` and `release`.
-- **Constraints and uncertainty.** A constraint such as `mean_hit_cells <= 100` is judged
+- **Constraints and uncertainty.** A constraint such as `angular_residual <= 1 mrad` is judged
   on a measurement with an uncertainty. Whether the central value is compared, or
   satisfaction is required at some confidence, is undecided and belongs in the evaluator
   contract so results stay comparable across optimizers.
