@@ -200,6 +200,21 @@ def test_per_event_values_may_be_a_numpy_array() -> None:
     assert measurement.value == 2 and type(measurement.value) is float
 
 
+def test_a_value_that_cannot_be_iterated_after_all_is_a_contract_error() -> None:
+    class Unrollable:  # iterable in type only, like a zero-dimensional numpy array
+        def __iter__(self) -> Any:
+            raise TypeError("iteration over a 0-d array")
+
+    with pytest.raises(EvaluationContractError, match="neither a number nor per-event"):
+        result_from(Counter(), {"cells": Unrollable()})
+
+
+def test_a_zero_dimensional_numpy_array_is_a_contract_error() -> None:
+    np = pytest.importorskip("numpy")
+    with pytest.raises(EvaluationContractError, match="neither a number nor per-event"):
+        result_from(Counter(), {"cells": np.array(3.0)})
+
+
 @pytest.mark.parametrize("key", [("simulation", "a", "b"), ("simulation",), ("s", 5), 5])
 def test_a_metric_is_a_name_or_a_pair_of_names(key: Any) -> None:
     class Odd(Evaluator):

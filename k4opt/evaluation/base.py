@@ -116,7 +116,13 @@ def result_from(evaluator: object, returned: EvaluationResult | Values) -> Evalu
         unit = units.get((stage, metric))
         # per-event values: a list, a tuple or a numpy array, say; text is not a sequence of numbers
         if isinstance(value, Iterable) and not isinstance(value, (str, bytes, Mapping)):
-            measurements.append(Measurement.from_samples(stage, metric, list(value), unit))
+            try:
+                samples = list(value)
+            except TypeError:  # iterable in type only, like a zero-dimensional numpy array
+                raise EvaluationContractError(
+                    f"metric {stage}/{metric}: {value!r} is neither a number nor per-event values"
+                ) from None
+            measurements.append(Measurement.from_samples(stage, metric, samples, unit))
         else:  # a number; Measurement rejects anything else
             measurements.append(Measurement(stage, metric, cast(float, value), unit))
     return EvaluationResult.valid(measurements)
