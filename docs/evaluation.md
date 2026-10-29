@@ -43,16 +43,19 @@ What the optional parts do:
   it produced as `request.inputs["simulation"]`; the evaluator never builds a command, starts a
   tool or handles its failures (see [Stages](#stages)). `self.read(request, collection, type)`
   reads a collection of that file (see [Reading EDM4hep files](#reading-edm4hep-files)).
-- `settings`: a mapping of key to a type (`str`, `int`, `float`, `bool`) for a required setting
-  or to a default value for an optional one (`"min_hits": 1` is an optional `int`). Unknown keys,
-  missing required keys, wrong types and a blank required `str` are an `EvaluationContractError`,
-  raised before anything is created or run (a `bool` is not an `int`, an `int` is a `float`). The request an evaluator
-  gets carries the defaults, so `request.settings` (and the record) show the settings that were
-  used. Override `check(request)` for rules beyond that and call `super().check(request)`; plain
-  evaluators can define `check` alone.
+- `settings`: a mapping of key to a type (`str`, `int`, `float`, `bool`, `list`, `dict`) for a
+  required setting, or to a default value for an optional one (`"min_hits": 1` is an optional
+  `int`). Unknown keys, missing required keys, wrong types and a blank required `str` are an
+  `EvaluationContractError`, raised before anything is created or run (a `bool` is not an `int`,
+  an `int` is a `float`). The request an evaluator gets carries the defaults, so
+  `request.settings` (and the record) show the settings that were used; a `dict` arrives as a
+  read-only mapping and a `list` as a tuple. Override `check(request)` for rules beyond that and
+  call `super().check(request)`; plain evaluators can define `check` alone. `check` may run more
+  than once for one candidate, so keep it cheap and free of side effects.
 - `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
   holds every returned measurement of those metrics to the declared unit, so one metric identity
-  never carries two units. A metric of another stage is written `("analysis", "rms")`.
+  never carries two units. A metric of another stage is written `("analysis", "rms")`;
+  declaring one metric twice (`"rms"` and `("simulation", "rms")`) is an error.
 - the return value: a mapping of metric to a number or to a list of per-event numbers
   (`Measurement.from_samples`) becomes a `valid` result, with the unit from `metrics`. Return an
   `EvaluationResult` for artifacts, provenance or diagnostics.

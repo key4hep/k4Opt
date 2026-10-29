@@ -64,6 +64,42 @@ def test_mismatching_settings_are_rejected(settings: dict[str, Any], message: st
         check(**settings)
 
 
+class Nested(Evaluator):
+    name, version = "demo.nested", "1"
+    settings = {"selection": dict, "thresholds": list, "rings": [1, 2], "cuts": {"pt": 1.0}}
+
+
+def test_dict_and_list_settings_accept_the_frozen_form_the_request_holds() -> None:
+    request = EvaluationRequest(settings={"selection": {"x": 1}, "thresholds": [1, 2]})
+    Nested().check(request)  # the request froze them into a read-only mapping and a tuple
+    Nested().check(EvaluationRequest(settings=with_defaults(Nested(), request.settings)))
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"selection": [1]}, r"settings\.selection: expected dict"),
+        ({"thresholds": {"a": 1}}, r"settings\.thresholds: expected list"),
+        ({"rings": "1, 2"}, r"settings\.rings: expected list"),
+        ({"cuts": 1.0}, r"settings\.cuts: expected dict"),
+    ],
+)
+def test_dict_and_list_settings_reject_other_values(changes: dict[str, Any], message: str) -> None:
+    settings = {"selection": {}, "thresholds": [], **changes}
+    with pytest.raises(EvaluationContractError, match=message):
+        Nested().check(EvaluationRequest(settings=settings))
+
+
+@pytest.mark.parametrize("declared", [Path, tuple, None])
+def test_a_setting_of_an_unsupported_type_cannot_be_declared(declared: Any) -> None:
+    class Odd(Evaluator):
+        name, version = "demo.odd", "1"
+        settings = {"x": declared}
+
+    with pytest.raises(EvaluationContractError, match=r"settings\.x: cannot declare"):
+        Odd().check(EvaluationRequest())
+
+
 def test_without_a_settings_declaration_nothing_is_checked() -> None:
     class Free(Evaluator):
         name, version = "demo.free", "1"
@@ -80,6 +116,15 @@ def test_no_declared_metrics_is_not_an_empty_declaration() -> None:
         name, version = "demo.free", "1"
 
     assert metric_units(Free()) is None
+
+
+def test_a_metric_declared_twice_is_a_contract_error_not_overwritten() -> None:
+    class Twice(Evaluator):
+        name, version, requires = "demo.twice", "1", "simulation"
+        metrics = {"energy": "GeV", ("simulation", "energy"): "MeV"}
+
+    with pytest.raises(EvaluationContractError, match="simulation/energy is declared twice"):
+        metric_units(Twice())
 
 
 def test_a_bare_metric_needs_a_stage() -> None:

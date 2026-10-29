@@ -44,11 +44,22 @@ def _qualified(evaluator: object, key: MetricKey) -> tuple[str, str]:
     return stage, key
 
 
+_KINDS: Mapping[type, type | tuple[type, ...]] = {
+    str: str,
+    int: int,
+    float: (int, float),
+    bool: bool,
+    # the request holds settings frozen: a mapping is read-only, a list a tuple
+    dict: Mapping,
+    list: (list, tuple),
+}
+
+
 def _is(value: object, kind: type) -> bool:
-    """``isinstance``, except that a bool is only a bool and an int is also a float."""
+    """Whether ``value`` is a ``kind`` setting; a bool is only a bool, an int also a float."""
     if isinstance(value, bool):
         return kind is bool
-    return isinstance(value, kind) or (kind is float and isinstance(value, int))
+    return isinstance(value, _KINDS[kind])
 
 
 def _declared(evaluator: object) -> Mapping[str, Any]:
@@ -69,7 +80,15 @@ def metric_units(evaluator: object) -> dict[tuple[str, str], str] | None:
     declared = getattr(evaluator, "metrics", None)
     if declared is None:
         return None
-    return {_qualified(evaluator, key): unit for key, unit in declared.items()}
+    units: dict[tuple[str, str], str] = {}
+    for key, unit in declared.items():
+        qualified = _qualified(evaluator, key)
+        if qualified in units:
+            raise EvaluationContractError(
+                f"metric {qualified[0]}/{qualified[1]} is declared twice (as {key!r} too)"
+            )
+        units[qualified] = unit
+    return units
 
 
 def result_from(evaluator: object, returned: EvaluationResult | Values) -> EvaluationResult:
@@ -112,6 +131,12 @@ class Evaluator:
             return
         given = request.settings
         kinds = {k: d if isinstance(d, type) else type(d) for k, d in self.settings.items()}
+        for key, kind in kinds.items():
+            if kind not in _KINDS:
+                raise EvaluationContractError(
+                    f"settings.{key}: cannot declare {kind.__name__}; "
+                    "use str, int, float, bool, list or dict (or a default of one of them)"
+                )
         unknown = [key for key in given if key not in kinds]
         missing = [k for k, d in self.settings.items() if isinstance(d, type) and k not in given]
         if unknown or missing:
