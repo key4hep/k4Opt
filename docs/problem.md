@@ -9,7 +9,8 @@
 > exactly one of them, and afterwards it judges the candidate against the constraints. From
 > Python, an `EvaluationSession` evaluates many candidates of a problem the same way
 > ([evaluation](evaluation.md#evaluating-candidates-evaluationsession)). Everything else is
-> **proposed, not implemented**: no evaluator registry, no `k4run` invocation, no optimizer.
+> **proposed, not implemented**: no evaluator registry, no `k4run` invocation. An optimizer
+> searches the parameters with `k4opt optimize` ([optimization](optimization.md)).
 > Parsing a file alone does not check that its evaluators, metrics or geometry targets exist.
 > Everything here may change.
 
@@ -505,19 +506,18 @@ There is no fingerprint of a problem yet.
 
 ## Deferred
 
-Out of scope until later increments: evaluating many candidates from the command line
-(`k4opt evaluate` takes one; an `EvaluationSession` takes many from Python); the evaluator
-registry (the evaluator is named on the command line) and metric
-metadata beyond units; reconstruction and analysis stages and running `k4run`; steering and
-configuration files (refused for ddsim until they can be captured); a problem fingerprint;
-optimizer integration; multi-objective strategy; non-geometry parameter sources (stage options
-are named keys so that a parameter can target one later); several samples per problem, each
-entering at any stage, and evaluators that read more than one; branches of the stages; a
-parameter that drives several geometry targets at once; example evaluators of metrics that are
-not simulated measurements (cost or channel-count models need no new framework: an evaluator
-without a `stage` can compute them);
-a named baseline candidate (an evaluation of the unmodified geometry is the natural
-baseline for validating bounds and constraint limits).
+Out of scope until later increments: evaluating many candidates from the command line (`k4opt
+evaluate` takes one; an `EvaluationSession` takes many from Python); the evaluator registry (the
+evaluator is named on the command line) and metric metadata beyond units; reconstruction and
+analysis stages and running `k4run`; steering and configuration files (refused for ddsim until
+they can be captured); a problem fingerprint; a multi-objective strategy beyond the Pareto
+front; non-geometry parameter sources (stage options are named keys so that a parameter can
+target one later); several samples per problem, each entering at any stage, and evaluators that
+read more than one; branches of the stages; a parameter that drives several geometry targets at
+once; example evaluators of metrics that are not simulated measurements (cost or channel-count
+models need no new framework: an evaluator without a `stage` can compute them); a named baseline
+candidate (an evaluation of the unmodified geometry is the natural baseline for validating
+bounds and constraint limits).
 
 ## Unresolved choices
 

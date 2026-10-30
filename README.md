@@ -5,9 +5,9 @@ A detector optimization framework for [Key4hep](https://key4hep.github.io/key4he
 k4opt is being built to let detector experts define, evaluate, compare and share
 detector optimization problems for the Key4hep chain (generation, simulation,
 reconstruction, analysis), starting from the detector descriptions in
-[k4geo](https://github.com/key4hep/k4geo). It is in early development: **geometry handling and a first end-to-end evaluation
-(one candidate, simulated with `ddsim` once and measured by one or more evaluators) exist;
-there is no optimizer yet.**
+[k4geo](https://github.com/key4hep/k4geo). It is in early development: **geometry handling, a first end-to-end evaluation (a
+candidate, simulated with `ddsim` once and measured by one or more evaluators) and a first
+optimization with Optuna exist.**
 
 ## Components
 
@@ -21,7 +21,7 @@ API, command group, documentation and tests.
 | [`k4opt.evaluation`](docs/evaluation.md) | The contract an evaluator implements (request, result, measurements); evaluators only read the output of a pipeline stage that the framework runs. `load_evaluator` loads an evaluator from a file; a per-run `summary.json` exists; a general runner and result store are **not implemented** | in progress |
 | [`k4opt.ddsim`](docs/ddsim.md) | Run `ddsim` on a prepared geometry with a particle gun or an event file: command from the problem's `stages` (the ddsim options written the way ddsim reads them), protected options, logs; run once per candidate as the `simulation` stage, whatever number of evaluators read it | first vertical slice |
 | [examples](docs/evaluators.md) | One problem and one evaluator to copy from, run with `k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] --param REF=VALUE --output DIR`. The problem asks how fine the CLD ECAL cells should be: finer cells measure a photon's direction better (`calo.photon` measures it) but fire more readout channels. k4opt ships no evaluators | example |
-| optimization | Drive the evaluation with existing optimization libraries | planned |
+| [`k4opt.optimization`](docs/optimization.md) | Search a problem's parameters with an existing optimizer (Optuna's TPE sampler): `k4opt optimize` proposes candidates, evaluates each into a trial directory, judges them against the objectives and constraints, and resumes a study only with what it was made with | first version |
 
 The planned components are directions, not commitments; their shape depends on
 what the first ones teach.
@@ -118,9 +118,17 @@ k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
     --param constants.ECal_cell_size=10.0 --output runs/cld-ecal-10mm
 ```
 
+or let an optimizer search the cell size, one evaluation per trial:
+
+```bash
+k4opt optimize examples/problem/cld-ecal-granularity.yaml \
+    --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
+    --trials 30 --seed 42 --output runs/cld-ecal-study
+```
+
 The guides: [geometry](docs/geometry.md) (target references, include handling, override
-semantics, manifest, Python API, limitations), [problem](docs/problem.md) and
-[evaluators](docs/evaluators.md).
+semantics, manifest, Python API, limitations), [problem](docs/problem.md),
+[evaluators](docs/evaluators.md) and [optimization](docs/optimization.md).
 
 ## Development
 

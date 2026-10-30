@@ -11,7 +11,9 @@ from pathlib import Path
 def write_json(path: Path, value: object) -> None:
     """Serialize into a hidden temporary sibling, then publish with an exclusive hard link.
 
-    Serialization, flushing and closing finish before the destination becomes visible.
+    Serialization, flushing to disk (fsync) and closing finish before the destination becomes
+    visible. Without the fsync, EOS shows the destination of a hard link to unsynced bytes as
+    empty for a moment, so a reader that reads it at once gets nothing (measured: 5 of 1500).
     Both a failed write and a destination created concurrently leave that destination intact.
     The sibling shares the destination's directory, since AFS and EOS refuse hard links
     between directories, and gets the permissions of an ordinary new file.
@@ -23,6 +25,8 @@ def write_json(path: Path, value: object) -> None:
         with handle:
             json.dump(value, handle, indent=2, allow_nan=False)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.link(staged, path)
     finally:
         staged.unlink(missing_ok=True)

@@ -34,6 +34,28 @@ def test_the_file_is_staged_beside_its_destination(
     assert [path.parent for path in staged] == [tmp_path]
 
 
+def test_the_content_is_on_disk_before_it_is_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    fsync, link = jsonio.os.fsync, jsonio.os.link
+
+    def syncing(descriptor: int) -> None:
+        events.append("fsync")
+        fsync(descriptor)
+
+    def linking(source: Path, destination: Path) -> None:
+        # what EOS shows a reader of a hard link to unsynced bytes: nothing, for a moment
+        events.append(f"link {Path(source).read_text().count('value')}")
+        link(source, destination)
+
+    monkeypatch.setattr(jsonio.os, "fsync", syncing)
+    monkeypatch.setattr(jsonio.os, "link", linking)
+    jsonio.write_json(tmp_path / "summary.json", {"value": 1})
+    assert events == ["fsync", "link 1"]
+    assert json.loads((tmp_path / "summary.json").read_text()) == {"value": 1}
+
+
 def test_the_file_has_the_permissions_of_an_ordinary_file(tmp_path: Path) -> None:
     ordinary = tmp_path / "ordinary"
     ordinary.write_text("")

@@ -43,12 +43,15 @@ k4opt = ["py.typed"]
 
 # Supported development-tool minimums; hook and bootstrap versions are pinned separately.
 [project.optional-dependencies]
+# k4opt optimize; k4opt evaluate and everything else work without it
+optimize = ["optuna>=5.0,<6"]
 # numpy: the example evaluator uses it (k4opt itself does not)
-test = ["pytest>=9.1", "pytest-cov>=7.1", "numpy>=2.2"]
+test = ["pytest>=9.1", "pytest-cov>=7.1", "numpy>=2.2", "optuna>=5.0,<6"]
 dev = [
     "pytest>=9.1",
     "pytest-cov>=7.1",
     "numpy>=2.2",
+    "optuna>=5.0,<6",
     "ruff>=0.17.2",
     "mypy>=2.4",
     "types-PyYAML>=6.0.12",

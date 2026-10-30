@@ -6,6 +6,12 @@
 #       --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
 #       --param constants.ECal_cell_size=10.0 --output runs/cld-ecal-10mm
 #
+# or let the optimizer search the cell size (docs/optimization.md):
+#
+#   k4opt optimize examples/problem/cld-ecal-granularity.yaml \
+#       --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
+#       --trials 30 --seed 42 --output runs/cld-ecal-study
+#
 # Needs the Key4hep environment (ddsim, podio, $K4GEO); about 5 minutes per candidate on one core.
 schema_version: k4opt.problem/v1alpha1
 name: cld-ecal-granularity

@@ -2,8 +2,8 @@
 
 k4opt is a detector optimization framework for Key4hep. It is organized by
 **component**: each component is a subpackage with its own public API, errors,
-CLI command group, docs page and tests: `geometry`, `problem`, `evaluation` and
-`ddsim` exist, and an optimization component will sit beside them.
+CLI command group, docs page and tests: `geometry`, `problem`, `evaluation`, `ddsim`
+and `optimization`.
 
     k4opt/
       __init__.py      version + K4OptError, nothing else

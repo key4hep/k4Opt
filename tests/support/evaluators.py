@@ -12,6 +12,8 @@ CALO_PHOTON = f"{EXAMPLES / 'evaluators' / 'calo_photon.py'}:CaloPhoton"
 CELL_COUNT = f"{Path(__file__).with_name('cell_count.py')}:CellCount"
 HIT_ENERGY = f"{Path(__file__).with_name('hit_energy.py')}:HitEnergy"
 PARAMETER_ECHO = f"{Path(__file__).with_name('parameter_echo.py')}:ParameterEcho"
+TRADE_OFF = f"{Path(__file__).with_name('trade_off.py')}:TradeOff"
+CANDIDATE_CHECK = f"{Path(__file__).with_name('candidate_check.py')}:CandidateCheck"
 
 
 def calo_photon() -> Evaluator:
@@ -32,3 +34,13 @@ def hit_energy() -> Evaluator:
 def parameter_echo() -> Evaluator:
     """A new instance of the test evaluator ``test.parameter_echo``, which reads no stage."""
     return load_evaluator(PARAMETER_ECHO)
+
+
+def trade_off() -> Evaluator:
+    """A new instance of the test evaluator ``test.trade_off``, which reads no stage."""
+    return load_evaluator(TRADE_OFF)
+
+
+def candidate_check() -> Evaluator:
+    """A new instance of ``test.candidate_check``, which records what it is asked."""
+    return load_evaluator(CANDIDATE_CHECK)
