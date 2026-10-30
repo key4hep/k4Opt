@@ -51,13 +51,16 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    still are. So is an evaluator whose stage's file lacks a collection it declares, or holds it
    with another type: the message lists what the file holds;
 3. `<output>/summary.json` (`k4opt.run/1`) is written:
+   - `problem`: the original path and name plus `definition`, the normalized problem loaded
+     for this run, including parameter domains, objective directions and constraint limits;
    - `status` and `message` of the candidate ([how they follow from the evaluators'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
      the candidate and its key, whether the run `represents_candidate`, which stages were
      `supplied` with `--input`, and the `warnings` printed before the run;
    - `metrics`: every objective and constraint metric, the evaluator that owns it, and its
      value, unit and uncertainty, which are `null` unless that evaluator's result is `valid`;
-   - `evaluators`, in problem order: name, version, the stage it reads, the path and SHA-256 of
-     its file (`source`; its own code only, not the modules it imports), status, message,
+   - `evaluators`, in problem order: name, version, the stage it reads, its source identity
+     (`source`: path, size and SHA-256 of the file defining its class, taken at import;
+     [details](evaluation.md#loading-an-evaluator)), status, message,
      settings (`declared` as the problem wrote them, `used` as the evaluator received them, with
      defaults and quantities in the declared unit), the collection of each role, the stages it
      read, its measurements with uncertainty, the artifacts and
@@ -76,6 +79,11 @@ The command prints the candidate's status, each evaluator's status and metrics w
 uncertainty, the events, the fingerprint and the paths. The exit status is 0 only for a `valid`
 candidate; otherwise the message (each evaluator that is not `valid`, with its status and
 reason) goes to stderr and the exit status is 1.
+
+The summary is published only after it has been completely serialized and closed. A failed
+write leaves no partial `summary.json`, and an existing file is never overwritten. Filesystem
+failures while running a simulation or preparing an evaluator are recorded as failed outcomes;
+an unwritable summary is reported as a run error with the run directory for diagnosis.
 
 Several evaluators measure one candidate in the same run and share its simulation. For example,
 next to the example evaluator, an evaluator of your own that needs no simulation, say a readout

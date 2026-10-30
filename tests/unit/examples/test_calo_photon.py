@@ -133,6 +133,25 @@ def test_a_photon_without_fired_cells_counts_zero_cells_and_no_direction(
     )
 
 
+def test_cells_without_energy_give_no_direction_at_threshold_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install_events(monkeypatch, [event([cell(0), cell(2)]), event([cell(0, 0.0)])])
+    evaluator = calo_photon()
+    zero = request(tmp_path, settings={"threshold": 0.0})
+    measured = {m.metric: m for m in result_from(evaluator, evaluator.evaluate(zero)).measurements}
+    assert measured[CELLS].value == pytest.approx(1.5)  # at the threshold, so the cell fires
+    assert measured[RESIDUAL].value == pytest.approx(mrad(1))
+
+
+def test_a_centroid_at_the_vertex_gives_no_direction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    at_vertex = Hit(cell=0, energy=FIRES, position=(0.0, 0.0, 0.0))
+    measured = evaluate(tmp_path, monkeypatch, event([cell(0), cell(2)]), event([at_vertex]))
+    assert measured[RESIDUAL].value == pytest.approx(mrad(1))
+
+
 @pytest.mark.parametrize(
     "events",
     [
@@ -160,6 +179,7 @@ def test_nothing_to_measure_is_invalid_not_a_zero(
         ([event([cell(0)], PHOTON, PHOTON)], "one generated particle per event, found 2"),
         ([event([cell(0)], Particle((1.0, 0.0, 0.0), status=0))], "found 0"),
         ([event([cell(0)], Particle((10.0, 0.0, 0.0), pdg=11))], "expected a photon .* PDG 11"),
+        ([event([cell(0)], Particle((0.0, 0.0, 0.0)))], "photon has no momentum"),
     ],
 )
 def test_an_unusable_simulation_output_fails_never_gives_a_value(

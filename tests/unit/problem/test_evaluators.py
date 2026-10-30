@@ -249,6 +249,34 @@ def test_an_evaluator_is_given_the_same_request_alone_and_among_others(
     assert set(first.inputs) == set(second.inputs)
 
 
+def test_supplied_stage_files_only_reach_the_evaluators_that_read_them(
+    sample_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+) -> None:
+    spec = problem(
+        sample_doc,
+        "test.cell_count",
+        "test.sample_size",
+        "test.parameter_echo",
+        objectives=(CELLS, ("analysis", "sample.bytes"), ECHO),
+        sample="zh.hepmc",
+    )
+    events_file = tmp_path / "provided.root"
+    events_file.write_bytes(b"fake")
+    cells, sample, echo = Spy(cell_count(), log), SampleSize(), Spy(parameter_echo(), log)
+    result = _evaluate_candidate(
+        with_sample(spec, tmp_path),
+        {CELL: 6},
+        [cells, sample, echo],
+        inputs={"geometry": geometry, "simulation": events_file},
+        workdir=tmp_path / "run",
+    )
+    assert result.status is Status.VALID and "ddsim" not in log
+    assert set(cells.evaluated[0].inputs) == {"geometry", "simulation"}
+    assert set(sample.seen[0].inputs) == {"geometry", "generation"}
+    assert set(echo.evaluated[0].inputs) == {"geometry"}
+    assert result.reads[echo.name] == ()
+
+
 # --- a failure only concerns the evaluators that read the failed stage ---
 
 

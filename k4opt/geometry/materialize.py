@@ -106,8 +106,6 @@ class Additions:
     """Non-XML resources, with their hashes."""
     aliases: Mapping[str, str]
     """Symlinked names of the added files, mapped to the file they point at."""
-    externals: tuple[ExternalInclude, ...]
-    """References from the added files to files outside the geometry root."""
 
     @property
     def hashes(self) -> dict[str, str]:
@@ -127,7 +125,6 @@ def new_files(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> Additio
     files: dict[str, str] = {}
     resources: dict[str, str] = {}
     aliases: dict[str, str] = {}
-    externals: list[ExternalInclude] = []
 
     real_files = {os.path.realpath(catalog.root / f): f for f in catalog.files}
 
@@ -167,7 +164,6 @@ def new_files(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> Additio
                 for rel in graph.resources:
                     add(resources, rel)
                 aliases.update({a: f for a, f in graph.file_aliases.items() if a not in known})
-                externals.extend(e for e in graph.externals if e.reason == OUTSIDE_ROOT)
                 continue
             found, escapes = find_resource(catalog.root, root_real, base_dir, item.new_value)
             if escapes:
@@ -187,7 +183,7 @@ def new_files(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> Additio
                     )
             if found is not None:
                 add(resources, found)
-    return Additions(files, resources, aliases, tuple(externals))
+    return Additions(files, resources, aliases)
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,8 +294,17 @@ def materialize(
         _link_aliases(snapshot, {**catalog.file_aliases, **extra.aliases})
         _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes, **extra.hashes})
         changed = _apply_edits(source.root, snapshot, [r for r in resolved if r.changed])
-        graph = _verify_snapshot(snapshot, source.compact)
-        manifest = _build_manifest(source, catalog, out, resolved, changed, graph, extra)
+        graph = _verify_snapshot(source.root, snapshot, source.compact)
+        # a file reached under several names is walked from each, so a reference may repeat
+        externals = list(dict.fromkeys(graph.externals))
+        for external in externals:
+            if external.reason == OUTSIDE_ROOT:
+                raise MaterializationError(
+                    f"{external.file}: resource {external.ref!r} lies outside the geometry "
+                    f"root {source.root} and cannot keep its meaning after relocation; keep "
+                    "the file below the root or refer to it by an absolute or $VAR path"
+                )
+        manifest = _build_manifest(source, catalog, out, resolved, changed, graph, extra, externals)
         (snapshot / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
@@ -392,10 +397,14 @@ def _link_aliases(snapshot: Path, aliases: Mapping[str, str]) -> None:
         os.symlink(os.path.relpath(snapshot / target, link.parent), link)
 
 
-def _verify_snapshot(snapshot: Path, compact: str) -> IncludeGraph:
-    """Re-walk the include graph of the edited snapshot; every local include must still resolve."""
+def _verify_snapshot(source_root: Path, snapshot: Path, compact: str) -> IncludeGraph:
+    """Re-walk the include graph of the edited snapshot; every local include must still resolve.
+
+    Other references are looked up next to the source, where a reference that leaves the root
+    finds the file it names.
+    """
     try:
-        return walk_includes(snapshot, compact)
+        return walk_includes(snapshot, compact, resources_at=source_root)
     except IncludeError as exc:
         raise MaterializationError(f"generated snapshot is not self-consistent: {exc}") from exc
 
@@ -472,31 +481,6 @@ def _verify_edit(
             )
 
 
-def _externals(
-    catalog: Catalog,
-    graph: IncludeGraph,
-    resolved: Sequence[ResolvedOverride],
-    extra: Additions,
-) -> list[ExternalInclude]:
-    """External references of the *generated* geometry.
-
-    Include-style references come from the edited snapshot. References to files outside
-    the root depend on where the geometry lives, so those are taken from the source
-    catalog, minus the ones an override has replaced or made unreachable.
-    """
-    edited = {(r.file, r.locator) for r in resolved if r.changed and r.attribute == "ref"}
-    reachable = set(graph.files)
-    kept = [
-        e
-        for e in catalog.externals
-        if e.reason == OUTSIDE_ROOT and e.file in reachable and (e.file, e.locator) not in edited
-    ]
-    combined = (
-        [e for e in graph.externals if e.reason != OUTSIDE_ROOT] + kept + list(extra.externals)
-    )
-    return list(dict.fromkeys(combined))  # a file reached by several redirects is listed once
-
-
 def _build_manifest(
     source: GeometrySource,
     catalog: Catalog,
@@ -505,6 +489,7 @@ def _build_manifest(
     changed: Sequence[ChangedFile],
     graph: IncludeGraph,
     extra: Additions,
+    externals: Sequence[ExternalInclude],
 ) -> dict[str, Any]:
     from k4opt import __version__
 
@@ -524,8 +509,7 @@ def _build_manifest(
         "reachable_files": list(graph.files),
         "resources": [*catalog.resources, *extra.resources],
         "external_includes": [
-            {"file": e.file, "line": e.line, "ref": e.ref, "reason": e.reason}
-            for e in _externals(catalog, graph, resolved, extra)
+            {"file": e.file, "line": e.line, "ref": e.ref, "reason": e.reason} for e in externals
         ],
         "changes": [r.to_dict() for r in resolved],
         "files": [c.to_dict() for c in changed],

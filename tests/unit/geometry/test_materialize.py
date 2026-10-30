@@ -16,6 +16,7 @@ from k4opt.geometry import (
     MaterializationError,
     Override,
     SourceError,
+    includes,
 )
 from k4opt.geometry import materialize as materialize_module
 from k4opt.geometry.xmlio import parse_xml_file
@@ -483,8 +484,8 @@ def test_manifest_keeps_unchanged_external_with_the_same_value(tmp_path: Path) -
         {
             "d.xml": """
                 <lccdd>
-                  <shape name="A" ref="../outside.stl"/>
-                  <shape name="B" ref="../outside.stl"/>
+                  <shape name="A" ref="${CAD}/outside.stl"/>
+                  <shape name="B" ref="${CAD}/outside.stl"/>
                 </lccdd>
             """
         },
@@ -494,7 +495,94 @@ def test_manifest_keeps_unchanged_external_with_the_same_value(tmp_path: Path) -
     result = source.materialize([Override("A.ref", "${X}/new.stl")], tmp_path / "out")
     externals = [(e["ref"], e["line"]) for e in result.manifest["external_includes"]]
     # the override's own external value is listed too; B keeps its unchanged outside file
-    assert externals == [("${X}/new.stl", 2), ("../outside.stl", 3)]
+    assert externals == [("${X}/new.stl", 2), ("${CAD}/outside.stl", 3)]
+
+
+@pytest.mark.parametrize("redirect", [False, True])
+def test_relocation_rejects_reachable_resources_outside_the_root(
+    tmp_path: Path, redirect: bool
+) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a.xml"/></lccdd>',
+            "a.xml": '<lccdd><shape ref="../outside.stl"/></lccdd>',
+            "b.xml": '<lccdd><shape ref="../outside.stl"/></lccdd>',
+        },
+    )
+    (tmp_path / "outside.stl").write_text("solid x\nendsolid x\n")
+    source = GeometrySource("main.xml", root=geo)
+    edits = [Override("lccdd.include.ref", "b.xml")] if redirect else []
+    with pytest.raises(MaterializationError, match="cannot keep its meaning after relocation"):
+        source.materialize(edits, tmp_path / "elsewhere" / "out")
+    assert not (tmp_path / "elsewhere" / "out").exists()
+
+    # A broader root captures the original reference without rewriting it.
+    source = GeometrySource("geo/main.xml", root=tmp_path)
+    result = source.materialize(edits, tmp_path.parent / f"{tmp_path.name}-snapshot")
+    assert (result.output_root / "outside.stl").read_bytes() == (
+        tmp_path / "outside.stl"
+    ).read_bytes()
+
+
+def test_a_replaced_outside_reference_in_a_redirected_include_is_accepted(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a.xml"/></lccdd>',
+            "a.xml": '<lccdd><detectors><include ref="k.xml"/></detectors></lccdd>',
+            "b.xml": '<lccdd><detectors><include ref="k.xml"/></detectors></lccdd>',
+            "k.xml": '<lccdd><shape name="S" ref="../outside.stl"/></lccdd>',
+        },
+    )
+    (tmp_path / "outside.stl").write_text("solid x\nendsolid x\n")
+    edits = [Override("lccdd.include.ref", "b.xml"), Override("S.ref", "${CAD}/x.stl")]
+    result = GeometrySource("main.xml", root=geo).materialize(edits, tmp_path / "out")
+    assert [e["ref"] for e in result.manifest["external_includes"]] == ["${CAD}/x.stl"]
+
+
+def test_the_alias_left_reachable_decides_whether_a_resource_leaves_the_root(
+    tmp_path: Path,
+) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="sub/f.xml"/><include ref="g.xml"/></lccdd>',
+            "sub/f.xml": '<lccdd><shape name="S" ref="../x.stl"/></lccdd>',
+            "a.xml": "<lccdd/>",
+        },
+    )
+    (geo / "x.stl").write_text("inside\n")
+    (tmp_path / "x.stl").write_text("outside\n")
+    (geo / "g.xml").symlink_to("sub/f.xml")
+    source = GeometrySource("main.xml", root=geo)
+    # only g.xml remains, and from the root ../x.stl is the file outside it
+    with pytest.raises(MaterializationError, match=r"g\.xml: resource '\.\./x\.stl' lies outside"):
+        source.materialize([Override("lccdd.include[1].ref", "a.xml")], tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_an_edit_after_parsing_cannot_move_an_override_to_another_element(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {"main.xml": '<lccdd><box name="A" value="1"/><box name="B" value="1"/></lccdd>'},
+    )
+    read = includes.read_xml_file
+
+    def read_then_reorder(path: Path, *, label: str | None = None) -> bytes:
+        data = read(path, label=label)
+        path.write_text('<lccdd><box name="B" value="1"/><box name="A" value="1"/></lccdd>')
+        return data
+
+    source = GeometrySource("main.xml", root=geo)
+    monkeypatch.setattr(includes, "read_xml_file", read_then_reorder)
+    catalog = source.discover()
+    monkeypatch.undo()
+    with pytest.raises(MaterializationError, match="changed since discovery"):
+        source.materialize([Override("A.value", "9")], tmp_path / "out", catalog=catalog)
+    assert not (tmp_path / "out").exists()
 
 
 def test_unwritable_output_location_is_a_controlled_error(
@@ -695,8 +783,7 @@ def test_external_reference_of_a_redirected_include_is_listed_once(tmp_path: Pat
         {
             "main.xml": '<lccdd><include ref="a.xml"/><include ref="b.xml"/></lccdd>',
             "a.xml": '<lccdd><constant name="A" value="1"/></lccdd>',
-            "b.xml": '<lccdd><shape name="s" ref="../external.stl"/></lccdd>',
-            "../external.stl": "x\n",
+            "b.xml": '<lccdd><shape name="s" ref="${CAD}/external.stl"/></lccdd>',
         },
     )
     source = GeometrySource("main.xml", root=geo)

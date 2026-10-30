@@ -218,7 +218,10 @@ configuration: no entity expansion, no DTD loading, no network access.
    the one discovery recorded, sets the new value, serializes, re-parses the
    result and verifies that nothing but the intended attributes changed.
 4. Re-walks the include graph of the edited snapshot so every local include still
-   resolves.
+   resolves. A reachable relative resource outside the source root is rejected: moving the
+   XML would change which file it refers to. Keep the file below the root (or choose a
+   broader `root`), or refer to it by an absolute or `$VAR` path. Absolute paths and
+   environment-variable references retain their spelling and are recorded as external.
 5. Writes `k4opt-manifest.json` and atomically renames the copy to the output directory.
    On any failure the temporary copy is deleted; source and destination are
    untouched.

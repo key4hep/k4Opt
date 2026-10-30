@@ -471,6 +471,30 @@ def test_a_file_named_in_a_ddsim_option_is_passed_absolute_and_recorded(
     }
 
 
+def test_a_ddsim_option_file_that_changes_during_the_run_fails_the_stage(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    table = tmp_path / "particles.tbl"
+    table.write_bytes(b"pdg table")
+    simulate = stages_module.simulate
+
+    def replacing(**kwargs: Any) -> Any:
+        run = simulate(**kwargs)
+        table.write_bytes(b"another table")
+        return run
+
+    monkeypatch.setattr(stages_module, "simulate", replacing)
+    sim = Stage("simulation", executor="ddsim", events=3, options={"physics.pdgfile": table.name})
+    ctx = dataclasses.replace(with_stages(spec, simulation=sim), directory=tmp_path)
+    outcome = run_stage(ctx, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run")
+    assert outcome.error is not None and "physics.pdgfile" in outcome.error
+    assert "changed while ddsim ran" in outcome.error
+    # the record keeps the content that was there when ddsim started
+    recorded = outcome.provenance["files"]["physics.pdgfile"]  # type: ignore[index]
+    assert recorded["sha256"] == hashlib.sha256(b"pdg table").hexdigest()
+
+
 def test_only_the_stages_made_from_the_geometry_depend_on_it() -> None:
     assert not changed_by_geometry("generation")
     assert changed_by_geometry("simulation")

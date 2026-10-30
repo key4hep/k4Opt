@@ -427,8 +427,8 @@ def discover(root: Path, compact: str) -> Catalog:
             if text != entry.text:
                 aliases[text].append(parameter)
 
+    file_hashes = {rel: graph.file_hashes[rel] for rel in graph.files}  # of the bytes parsed
     try:
-        file_hashes = {rel: sha256_file(root / rel) for rel in graph.files}
         resource_hashes = {rel: sha256_file(root / rel) for rel in graph.resources}
     except OSError as exc:
         raise IncludeError(f"cannot read {exc.filename or root}: {exc.strerror or exc}") from exc

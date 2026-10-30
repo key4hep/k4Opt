@@ -44,14 +44,18 @@ def parse_xml_bytes(data: bytes, *, label: str) -> etree._ElementTree:
     return root.getroottree()
 
 
+def read_xml_file(path: Path, *, label: str | None = None) -> bytes:
+    """The bytes of the XML file at ``path``, raising :class:`IncludeError` if it is unreadable."""
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise IncludeError(f"{label or path}: cannot read file: {exc}") from exc
+
+
 def parse_xml_file(path: Path, *, label: str | None = None) -> etree._ElementTree:
     """Parse the XML file at ``path``."""
     label = label or str(path)
-    try:
-        data = path.read_bytes()
-    except OSError as exc:
-        raise IncludeError(f"{label}: cannot read file: {exc}") from exc
-    return parse_xml_bytes(data, label=label)
+    return parse_xml_bytes(read_xml_file(path, label=label), label=label)
 
 
 _DECLARATION_RE = re.compile(rb"\A\s*<\?xml\s(?P<body>.*?)\?>", re.DOTALL)

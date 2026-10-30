@@ -844,12 +844,99 @@ def test_the_preflight_request_has_the_conditions_the_evaluation_gets(
     spy = Spy()
     run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluators=[spy])
     (evaluated,) = spy.evaluated
-    # once before anything is created and once more when the candidate is evaluated
-    assert len(spy.checked) == 2
+    # The validated request is reused after materialization; check() runs exactly once.
+    assert len(spy.checked) == 1
     for checked in spy.checked:
         assert (checked.events, checked.seed) == (3, 5)  # those of the simulation it reads
         for field in ("settings", "events", "seed", "candidate"):
             assert getattr(checked, field) == getattr(evaluated, field)
+
+
+@pytest.mark.parametrize("invalid", ["settings", "collections"])
+def test_a_plain_evaluator_is_validated_before_materialization(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, invalid: str
+) -> None:
+    class Plain:
+        name = "test.cell_count"
+        version = "1"
+        stage = "simulation"
+        collections = {"hits": cell_count().collections["hits"]}
+        metrics = cell_count().metrics
+        settings = {"threshold": Quantity("GeV", default=1)}
+
+        def evaluate(self, request: Any) -> Any:
+            pytest.fail("invalid requests must be rejected before execution")
+
+    doc = yaml.safe_load(problem_file.read_text())
+    if invalid == "settings":
+        doc["evaluators"][0]["settings"] = {"threshold": {"value": 1, "unit": "bananas"}}
+    else:
+        doc["evaluators"][0]["collections"] = {}
+    problem_file.write_text(yaml.safe_dump(doc))
+    supplied = tmp_path / "events.root"
+    supplied.write_bytes(b"fake")
+    with pytest.raises(EvaluationContractError, match=invalid):
+        run_candidate(
+            problem_file,
+            [f"{RADIUS}=450"],
+            tmp_path / "a",
+            evaluators=[Plain()],
+            inputs=[f"simulation={supplied}"],
+        )
+    assert not (tmp_path / "a").exists() and fake.calls == []
+
+
+def test_summary_preserves_the_definition_loaded_before_execution(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    definition = load_problem(problem_file).to_dict()
+
+    class Editing(Spy):
+        def evaluate(self, request: Any) -> Any:
+            problem_file.write_text("replaced while evaluating")
+            return super().evaluate(request)
+
+    outcome = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[Editing()])
+    assert outcome.summary["problem"]["definition"] == definition
+    assert json.loads(outcome.summary_path.read_text())["problem"]["definition"] == definition
+
+
+def test_summary_write_failure_is_a_controlled_error(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from k4opt.problem import _run
+
+    def denied(*args: Any, **kwargs: Any) -> None:
+        raise PermissionError("summary is not writable")
+
+    monkeypatch.setattr(_run, "write_json", denied)
+    with pytest.raises(RunError, match="cannot write summary"):
+        run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
+    assert len(fake.calls) == 1
+    assert not (tmp_path / "a" / SUMMARY_NAME).exists()
+
+
+def test_an_unwritable_evaluator_directory_is_a_recorded_failure(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mkdir = Path.mkdir
+
+    def denied(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self.name == "test.cell_count":
+            raise PermissionError("evaluator directory is not writable")
+        mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", denied)
+    outcome = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
+    assert outcome.candidate.status == "failed"
+    assert "cannot create evaluator directory" in outcome.candidate.message
+    assert outcome.summary_path.is_file()
 
 
 # --- several evaluators of one candidate ---------------------------------------------------

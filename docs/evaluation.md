@@ -88,8 +88,9 @@ What the optional parts do:
   an `int` is a `float`). The request an evaluator gets carries the defaults and the converted
   quantities, so `request.settings` (and the record) show the settings that were used, next to
   those the problem wrote; a `dict` arrives as a read-only mapping and a `list` as a tuple. Override `check(request)` for rules beyond that and
-  call `super().check(request)`; plain evaluators can define `check` alone. `check` may run more
-  than once for one candidate, so keep it cheap and free of side effects.
+  call `super().check(request)`; plain evaluators can define `check` alone. Settings and
+  collection resolution always run, even without `check`. The check runs once per candidate,
+  before materialization, and the normalized request is reused during execution.
 - `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
   holds every returned measurement of those metrics to the declared unit, so one metric identity
   never carries two units. When a problem has several evaluators, every one must declare its
@@ -297,6 +298,15 @@ helpers unique names or, better, install the study as a package and use
 registry; the `name` of each entry of `evaluators` stays a label that must equal the `name` of
 an evaluator that is loaded.
 
+`evaluator_source(evaluator)` reports the path, size and SHA-256 of the file that defines the
+evaluator's class, taken when `load_evaluator` imports it. For `FILE.py:Class` these are the
+exact bytes compiled. For `package.module:Class` the file is read right after the import;
+Python may have run a cached `.pyc` of it, which only an edit that keeps size and timestamp
+leaves stale. Cached instances keep that identity if the file is later edited or removed. A
+class whose module was already imported before `load_evaluator` carries only its path: hashing
+the current file would not establish which code Python executed. Only the defining file is
+identified, not imported helpers.
+
 ## Problem, evaluator, record
 
 - **Problem** (`k4opt.problem`): the declared parameter domains and the requested objective and
@@ -318,8 +328,8 @@ an evaluator that is loaded.
 `result.provenance` is **evaluator-supplied**; the record's identity and elapsed time, and the
 record of the stages, are **framework-observed** (the executed `ddsim` command and exit code,
 the hashes of given files, the events found). `k4opt evaluate` also records the k4opt version,
-the active stack (`KEY4HEP_STACK`, `K4GEO`, the `ddsim` that ran) and the path and SHA-256 of
-each evaluator's file. That identifies the evaluator's own code, not the modules it imports;
+the active stack (`KEY4HEP_STACK`, `K4GEO`, the `ddsim` that ran) and each evaluator's source
+identity as described above. That identifies the evaluator's own code, not the modules it imports;
 `name` and `version` remain labels. The problem's `environment.key4hep` is a declared pin and is
 not compared with the stack that ran.
 

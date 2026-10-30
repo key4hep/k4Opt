@@ -3,6 +3,7 @@ values."""
 
 from __future__ import annotations
 
+import decimal
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from k4opt.evaluation import (
     declared_collections,
     metric_units,
     result_from,
+    units,
     with_defaults,
 )
 from tests.support import simulation
@@ -346,6 +348,8 @@ def test_a_quantity_arrives_in_its_declared_unit_and_its_default_is_used() -> No
         ({"value": 70, "unit": "keV", "extra": 1}, "needs value and unit"),
         ({"value": True, "unit": "keV"}, r"threshold\.value: must be a finite number"),
         ({"value": float("inf"), "unit": "keV"}, "finite number"),
+        ({"value": 10**320, "unit": "keV"}, r"threshold\.value: too large to express in GeV"),
+        ({"value": 1e308, "unit": "TeV"}, "too large to express in GeV"),
         ({"value": 70, "unit": "mm"}, r"threshold\.unit: must be a unit of energy"),
         ({"value": 70, "unit": "kev"}, "must be a unit of energy"),
     ],
@@ -355,6 +359,19 @@ def test_a_quantity_needs_a_value_and_a_unit_of_its_dimension(
 ) -> None:
     with pytest.raises(EvaluationContractError, match=message):
         with_defaults(Gated(), {"threshold": threshold})
+
+
+def test_a_conversion_is_exact_whatever_the_decimal_context() -> None:
+    # an evaluator or a library it imports may narrow the context of the process
+    with decimal.localcontext(prec=5):
+        received = with_defaults(Gated(), {"threshold": {"value": 123.456789, "unit": "GeV"}})
+        assert received["threshold"] == 123.456789
+        assert units.convert(123.456789, "GeV", "MeV") == 123456.789
+
+
+def test_an_int_beyond_a_float_is_converted_when_its_result_fits() -> None:
+    received = with_defaults(Gated(), {"threshold": {"value": 10**310, "unit": "eV"}})
+    assert received["threshold"] == 1e301
 
 
 def test_a_required_quantity_must_be_given_and_is_a_float() -> None:
@@ -369,7 +386,7 @@ def test_a_quantity_needs_a_known_unit() -> None:
         Quantity("furlong")
 
 
-@pytest.mark.parametrize("default", ["oops", True, float("nan"), float("inf"), [1.0]])
+@pytest.mark.parametrize("default", ["oops", True, float("nan"), float("inf"), [1.0], 10**400])
 def test_a_quantity_default_must_be_a_finite_number(default: Any) -> None:
     with pytest.raises(EvaluationContractError, match="Quantity: default must be a finite number"):
         Quantity("GeV", default=default)

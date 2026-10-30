@@ -13,6 +13,7 @@ DD4hep's preprocessing or of C++ detector constructors.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -21,7 +22,13 @@ from pathlib import Path, PurePosixPath
 from lxml import etree
 
 from k4opt.geometry.errors import IncludeError
-from k4opt.geometry.xmlio import element_locator, iter_elements, line_of, parse_xml_file
+from k4opt.geometry.xmlio import (
+    element_locator,
+    iter_elements,
+    line_of,
+    parse_xml_bytes,
+    read_xml_file,
+)
 
 #: Element tags whose ``ref`` attribute DD4hep treats as an XML file to include.
 INCLUDE_TAGS: frozenset[str] = frozenset({"include", "gdmlFile", "file", "xml"})
@@ -70,6 +77,9 @@ class IncludeGraph:
     """Local non-XML files referenced by ``ref`` attributes (root-relative, discovery order)."""
     file_aliases: dict[str, str] = field(default_factory=dict)
     """Other root-relative names (symlinks) under which a parsed file is referenced, by file."""
+    file_hashes: dict[str, str] = field(default_factory=dict)
+    """SHA-256 of the exact bytes each file was parsed from, so a later edit cannot pair the
+    locators of one revision with the hash of another."""
 
 
 def classify_ref(ref: str) -> str | None:
@@ -156,15 +166,21 @@ def find_resource(root: Path, root_real: Path, base_dir: Path, ref: str) -> tupl
     return to_root_relative(root, lexical), False
 
 
-def walk_includes(root: Path, compact: str) -> IncludeGraph:
+def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None) -> IncludeGraph:
     """Parse ``compact`` and every reachable local include below ``root``.
 
     ``root`` must be an absolute directory and ``compact`` a root-relative POSIX
     path. Each physical file is parsed once, even when it is included several
     times or through an include cycle; a symlinked name in another directory is followed
     again, because its relative references resolve against that directory.
+
+    Non-include references are looked up below ``resources_at`` (``root`` by default), at the
+    same root-relative directory. A snapshot is walked with its source there: a reference that
+    leaves the root names the file next to the source, not next to the copy.
     """
     root_real = Path(os.path.realpath(root))
+    lookup = root if resources_at is None else resources_at
+    lookup_real = Path(os.path.realpath(lookup))
     entry = resolve_local_path(root, root_real, root, compact, label="geometry")
 
     files: list[str] = []
@@ -173,6 +189,7 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
     externals: list[ExternalInclude] = []
     resources: dict[str, None] = {}
     file_aliases: dict[str, str] = {}
+    file_hashes: dict[str, str] = {}
     visited_real: dict[str, str] = {}
     scanned: set[tuple[str, Path]] = set()
     active: set[tuple[str, str]] = set()
@@ -184,7 +201,8 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
             if ref.strip() and looks_like_file(ref):
                 externals.append(ExternalInclude(rel, line, ref, reason, locator))
             return
-        found, escapes = find_resource(root, root_real, base_dir, ref)
+        where = lookup / base_dir.relative_to(root)
+        found, escapes = find_resource(lookup, lookup_real, where, ref)
         if escapes:
             externals.append(ExternalInclude(rel, line, ref, OUTSIDE_ROOT, locator))
         elif found is not None:
@@ -203,9 +221,11 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
             return canonical
         visited_real[real] = rel
         label = rel if not chain else f"{rel} (included via {' -> '.join(chain)})"
-        tree = parse_xml_file(lexical, label=label)
+        data = read_xml_file(lexical, label=label)
+        tree = parse_xml_bytes(data, label=label)
         files.append(rel)
         trees[rel] = tree
+        file_hashes[rel] = hashlib.sha256(data).hexdigest()
         scan(rel, lexical.parent, real, chain)
         return rel
 
@@ -262,4 +282,5 @@ def walk_includes(root: Path, compact: str) -> IncludeGraph:
         externals=tuple(externals),
         resources=tuple(r for r in resources if r not in trees),
         file_aliases={a: f for a, f in file_aliases.items() if a not in trees},
+        file_hashes=file_hashes,
     )

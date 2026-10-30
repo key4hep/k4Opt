@@ -49,7 +49,7 @@ from k4opt.evaluation.errors import (
     EvaluationInvalid,
     EvaluatorLoadError,
 )
-from k4opt.evaluation.loader import load_evaluator
+from k4opt.evaluation.loader import evaluator_source, load_evaluator
 from k4opt.evaluation.models import (
     CandidateKey,
     EvaluationRecord,
@@ -83,6 +83,7 @@ __all__ = [
     "collection_types",
     "count_events",
     "declared_collections",
+    "evaluator_source",
     "load_evaluator",
     "metric_units",
     "read_collection",
