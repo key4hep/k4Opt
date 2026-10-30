@@ -26,6 +26,7 @@ read that way are not matched up event by event.
 
 from __future__ import annotations
 
+import keyword
 import math
 import re
 from collections.abc import Iterable, Iterator, Mapping
@@ -195,15 +196,28 @@ def with_defaults(evaluator: object, settings: Mapping[str, Json]) -> Mapping[st
 def declared_collections(evaluator: object) -> dict[str, Collection]:
     """The ``collections`` ``evaluator`` declares, by role; raises
     :class:`EvaluationContractError` for a declaration that cannot be read."""
-    declared = getattr(evaluator, "collections", None) or {}
+    declared = getattr(evaluator, "collections", None)
+    if declared is None:
+        return {}
+    if not isinstance(declared, Mapping):
+        raise EvaluationContractError(
+            "collections: declare a mapping of role to Collection(type), such as "
+            f"{{'hits': Collection('SimCalorimeterHit')}}; got {declared!r}"
+        )
     if declared and getattr(evaluator, "stage", None) is None:
         raise EvaluationContractError(
             "collections are read from the file of the evaluator's stage; set stage = <stage>"
         )
     for role, collection in declared.items():
-        if not isinstance(role, str) or not role.isidentifier() or role.startswith("_"):
+        if (
+            not isinstance(role, str)
+            or not role.isidentifier()
+            or keyword.iskeyword(role)
+            or role.startswith("_")
+        ):
             raise EvaluationContractError(
-                f"collections: role {role!r} must be a Python identifier such as hits"
+                f"collections: role {role!r} must be a Python identifier such as hits, "
+                "not a keyword"
             )
         if not isinstance(collection, Collection):
             raise EvaluationContractError(

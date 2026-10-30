@@ -739,17 +739,47 @@ def test_collections_of_a_stage_that_makes_no_file_are_refused_before_anything_r
     assert log == [] and not (tmp_path / "run").exists()
 
 
-def test_collections_of_a_generation_given_as_a_file_are_read(
-    sample_doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
+def test_collections_of_an_edm4hep_generation_file_are_read(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # ddsim also reads generator events written as EDM4hep, which podio reads too
+    (tmp_path / "zh.edm4hep.root").write_bytes(b"fake")
     photon = Particle(momentum=(1.0, 0.0, 0.0))
     events = [Event(**{COLLECTION: Hits([1]), "MCParticles": Particles([photon])})] * 3
     simulation.install(monkeypatch, events)
     spec = problem(
-        sample_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH), sample="zh.hepmc"
+        doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH), sample="zh.edm4hep.root"
     )
     candidate = evaluate(with_sample(spec, tmp_path), [cell_count(), Truth()], tmp_path, geometry)
     assert candidate.status is Status.VALID and candidate.value(*TRUTH).value == 1
+
+
+@pytest.mark.parametrize("supplied", [False, True])
+def test_collections_of_a_file_podio_cannot_read_are_refused_before_anything_runs(
+    sample_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str], supplied: bool
+) -> None:
+    # a HepMC file is an input of ddsim, not a file an evaluator can read collections from: the
+    # simulation another evaluator needs must not run first only for this one to fail
+    spec = problem(
+        sample_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH), sample="zh.hepmc"
+    )
+    inputs = {"geometry": geometry}
+    if supplied:  # k4opt evaluate --input generation=zh.hepmc, with the gun in the problem
+        spec = problem(sample_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH))
+        inputs["generation"] = tmp_path / "zh.hepmc"
+    with pytest.raises(
+        EvaluationContractError,
+        match=r"'test\.truth' reads collections from the 'generation' stage, but its file "
+        r"zh\.hepmc is no EDM4hep file that podio reads \(\.root or \.sio\)",
+    ):
+        _evaluate_candidate(
+            with_sample(spec, tmp_path),
+            {CELL: 6},
+            [cell_count(), Truth()],
+            inputs=inputs,
+            workdir=tmp_path / "run",
+        )
+    assert log == [] and not (tmp_path / "run").exists()
 
 
 class Unpackable(Event):

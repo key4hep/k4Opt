@@ -302,13 +302,30 @@ def executors(stage: str) -> Mapping[str, _Executor]:
     return _STAGES[stage].executors
 
 
-def without_file(context: StageContext, stage: str, provided: Collection[str] = ()) -> str | None:
-    """Why ``stage`` makes no file that an evaluator could read collections from, ``None`` if it
-    does: it is supplied (``provided``) or given as a file, or its executor writes one. An
-    executor that runs inside another stage (the gun, fired by ddsim) writes none of its own."""
+# podio reads EDM4hep written with ROOT (TTree or RNTuple) or SIO; other event files (HepMC, ...)
+# are inputs of ddsim, not files an evaluator can read collections from
+_PODIO_SUFFIXES = (".root", ".sio")
+
+
+def no_edm4hep_file(
+    context: StageContext, stage: str, supplied: Mapping[str, Path] | None = None
+) -> str | None:
+    """Why ``stage`` makes no EDM4hep file that an evaluator could read collections from,
+    ``None`` if it does. A file the caller supplies or the problem gives must be one podio reads
+    (``.root``, ``.sio``), not an event file such as HepMC; an executor that runs inside another
+    stage (the gun, fired by ddsim) writes no file of its own."""
+    path = (supplied or {}).get(stage) or context.files().get(stage)
+    if path is not None:
+        if path.suffix in _PODIO_SUFFIXES:
+            return None
+        readable = " or ".join(_PODIO_SUFFIXES)
+        return (
+            f"its file {path.name} is no EDM4hep file that podio reads ({readable}); read the "
+            "collections from a stage that writes one, such as stages.simulation"
+        )
     spec = context.stages.get(stage)
-    if stage in provided or spec is None or spec.executor is None:
-        return None  # supplied, given as a file, or not defined (reported elsewhere)
+    if spec is None or spec.executor is None:
+        return None  # not defined: reported elsewhere
     inside = _STAGES[stage].executors[spec.executor].inside
     if inside is None:
         return None

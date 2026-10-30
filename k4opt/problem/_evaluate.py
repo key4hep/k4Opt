@@ -49,8 +49,8 @@ from k4opt.problem._stages import (
     StageRecords,
     changed_by_geometry,
     check_stages,
+    no_edm4hep_file,
     run_stages,
-    without_file,
 )
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
@@ -387,23 +387,26 @@ def _preflight(
     spec: ProblemSpec,
     values: Mapping[str, Scalar],
     evaluators: Sequence[EvaluatorProtocol],
-    provided: Collection[str] = (),
+    provided: Mapping[str, Path] | None = None,
 ) -> _Plan:
     """Check everything that can be checked before a file is created or a stage runs.
 
     Binds ``evaluators`` to the problem, checks the stages they read (those in ``provided``, the
-    stages the caller supplies, are not run), calls each evaluator's ``check()`` with the request
-    it would get (its settings and collections resolved) and decides which evaluator measures
-    each objective and constraint metric. Raises :class:`EvaluationContractError` (or what a
-    ``check()`` raises). Collections the simulation is not expected to write are only warnings.
+    files the caller supplies by stage, are not run), calls each evaluator's ``check()`` with the
+    request it would get (its settings and collections resolved) and decides which evaluator
+    measures each objective and constraint metric. An evaluator that declares collections of a
+    stage without an EDM4hep file (the gun's, or a HepMC file) is refused. Raises
+    :class:`EvaluationContractError` (or what a ``check()`` raises). Collections the simulation
+    is not expected to write are only warnings.
     """
+    provided = provided or {}
     context = StageContext.of(spec)
     bound = _bind(spec, evaluators)
     targets = tuple(stage for _, ev in bound if (stage := _stage(ev)) is not None)
     check_stages(context, *targets, provided=provided)
     for entry, evaluator in bound:
         stage = _stage(evaluator)
-        reason = None if stage is None else without_file(context, stage, provided)
+        reason = None if stage is None else no_edm4hep_file(context, stage, provided)
         if reason is not None and declared_collections(evaluator):
             raise EvaluationContractError(
                 f"evaluator {entry.name!r} reads collections from the {stage!r} stage, but {reason}"

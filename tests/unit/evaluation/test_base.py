@@ -459,7 +459,10 @@ def test_an_evaluator_without_collections_takes_none() -> None:
         ({"stage": None}, "read from the file of the evaluator's stage"),
         ({"collections": {"2hits": Collection("SimCalorimeterHit")}}, "Python identifier"),
         ({"collections": {"_hits": Collection("SimCalorimeterHit")}}, "Python identifier"),
+        ({"collections": {"class": Collection("SimCalorimeterHit")}}, "Python identifier"),
         ({"collections": {"hits": "SimCalorimeterHit"}}, r"declare it as Collection\(type\)"),
+        ({"collections": "hits"}, "declare a mapping of role to Collection"),
+        ({"collections": []}, "declare a mapping of role to Collection"),
     ],
 )
 def test_collection_declarations_that_cannot_be_read_are_refused(
