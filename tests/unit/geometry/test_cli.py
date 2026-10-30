@@ -11,9 +11,20 @@ import pytest
 
 from k4opt.cli import main
 from k4opt.geometry import GeometrySource
+from tests.support.common import tree_digest
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
-INSPECT = ("geometry", "inspect", MINI_COMPACT, "--root", str(MINI_GEO))
+GEOMETRY = (MINI_COMPACT, "--root", str(MINI_GEO))
+INSPECT = ("geometry", "inspect", *GEOMETRY)
+APPLY = (
+    "geometry",
+    "apply",
+    *GEOMETRY,
+    "--set",
+    "constants.InnerTracker_Barrel_radius_1=405*mm",
+    "--set",
+    "InnerTrackerBarrel.layer[id=1].rphi_layout.nphi=90",
+)
 
 
 def run(*argv: str) -> tuple[int, str, str]:
@@ -125,9 +136,139 @@ def test_inspect_json_matches_api() -> None:
     ]
 
 
+def test_apply_dry_run_writes_nothing(tmp_path: Path) -> None:
+    before = tree_digest(MINI_GEO)
+    output = tmp_path / "generated" / "mini"
+    code, out, err = run(*APPLY, "--output", str(output), "--dry-run")
+    assert code == 0 and err == ""
+    assert "compact/det_v1/tracker.xml\n" in out
+    assert "  constants.InnerTracker_Barrel_radius_1\n      400*mm  ->  405*mm\n" in out
+    assert "  InnerTrackerBarrel.layer[id=1].rphi_layout.nphi\n      43*2  ->  90\n" in out
+    assert f"would write:   {output}" in out
+    assert "dry run: 2 change(s) resolved; nothing written" in out
+    assert not output.exists() and not output.parent.exists()
+    assert tree_digest(MINI_GEO) == before
+
+    code, out, _ = run(*APPLY, "--output", str(output), "--dry-run", "--format", "json")
+    payload = json.loads(out)
+    assert payload["dry_run"] is True
+    assert [c["new_value"] for c in payload["changes"]] == ["405*mm", "90"]
+    assert not output.exists()
+
+
+def test_apply_success_then_existing_output_rejected(tmp_path: Path) -> None:
+    output = tmp_path / "generated" / "mini"
+    code, out, err = run(*APPLY, "--output", str(output))
+    assert code == 0
+    assert err == "" and "400*mm  ->  405*mm" in out
+    assert f"wrote snapshot: {output}" in out
+    assert f"compact:        {output / MINI_COMPACT}" in out
+    assert re.search(r"fingerprint:    [0-9a-f]{64}", out)
+    assert (output / MINI_COMPACT).is_file()
+    assert (output / "k4opt-manifest.json").is_file()
+
+    code, _, err = run(*APPLY, "--output", str(output))
+    assert code == 1
+    assert "already exists" in err
+
+
+def test_apply_json_output(tmp_path: Path) -> None:
+    output = tmp_path / "out"
+    code, out, _ = run(*APPLY, "--output", str(output), "--format", "json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["dry_run"] is False
+    assert payload["schema"] == "k4opt.geometry.apply/1"
+    manifest = json.loads((output / "k4opt-manifest.json").read_text())
+    assert payload["fingerprint"] == manifest["fingerprint"]
+    assert payload["output_root"] == str(output)
+    assert payload["compact_path"] == str(output / MINI_COMPACT)
+    assert payload["files"][0]["path"] == "compact/det_v1/tracker.xml"
+    assert manifest["changes"] == payload["changes"]
+
+
+def test_apply_without_set_copies_the_geometry_unchanged(tmp_path: Path) -> None:
+    output = tmp_path / "out"
+    code, out, _ = run("geometry", "apply", *GEOMETRY, "--output", str(output))
+    assert code == 0 and "No overrides given; nothing to change." in out
+    assert json.loads((output / "k4opt-manifest.json").read_text())["changes"] == []
+
+
+def test_apply_resolution_errors_exit_1_and_write_nothing(tmp_path: Path) -> None:
+    output = tmp_path / "out"
+    sets = ("--set", "constants.Nope=1", "--set", "constants.Tracker_cooling_gap=1")
+    for extra in ([], ["--dry-run"]):
+        code, out, err = run("geometry", "apply", *GEOMETRY, *sets, "--output", str(output), *extra)
+        assert code == 1
+        assert out == ""
+        assert "k4opt: error:" in err
+        assert "unknown target 'constants.Nope'" in err
+        assert "constants.Tracker_cooling_gap" in err and "--set FILE:TARGET=VALUE" in err
+        assert not output.exists()
+
+
+def test_set_file_prefix_selects_an_ambiguous_target(tmp_path: Path) -> None:
+    code, out, err = run(
+        "geometry",
+        "apply",
+        *GEOMETRY,
+        "--set",
+        "compact/det_v1/tracker.xml:constants.Tracker_cooling_gap=6*mm",
+        "--output",
+        str(tmp_path / "out"),
+        "--dry-run",
+    )
+    assert code == 0 and err == ""
+    assert "compact/det_v1/tracker.xml\n  constants.Tracker_cooling_gap\n" in out
+    assert "5*mm  ->  6*mm" in out
+
+
+def test_set_value_is_everything_after_the_target(tmp_path: Path) -> None:
+    code, out, _ = run(
+        "geometry",
+        "apply",
+        *GEOMETRY,
+        "--set",
+        "constants.SolenoidField=a=b:c",
+        "--output",
+        str(tmp_path / "out"),
+        "--dry-run",
+        "--format",
+        "json",
+    )
+    assert code == 0
+    change = json.loads(out)["changes"][0]
+    assert (change["target"], change["new_value"], change["file"]) == (
+        "constants.SolenoidField",
+        "a=b:c",
+        "compact/det_v1/det_v1.xml",
+    )
+
+
+@pytest.mark.parametrize(
+    ("assignment", "message"),
+    [
+        ("constants.SolenoidField", "expected [FILE:]TARGET=VALUE"),
+        ("layer[id=1]", "expected [FILE:]TARGET=VALUE"),
+        ("=5", "--set '=5':"),
+        ("constants.Solenoid Field=5", "--set 'constants.Solenoid Field=5':"),
+    ],
+)
+def test_set_syntax_errors_exit_1(tmp_path: Path, assignment: str, message: str) -> None:
+    output = tmp_path / "out"
+    code, out, err = run(
+        "geometry", "apply", *GEOMETRY, "--set", assignment, "--output", str(output)
+    )
+    assert code == 1 and out == "" and message in err
+    assert not output.exists()
+
+
 def test_geometry_usage_errors_exit_2() -> None:
     with pytest.raises(SystemExit) as info:
         run("geometry", "inspect")  # the geometry is required
+    assert info.value.code == 2
+    with pytest.raises(SystemExit) as info:
+        run("geometry", "apply", MINI_COMPACT)  # --output is required
     assert info.value.code == 2
     with pytest.raises(SystemExit) as info:
         run("geometry")  # an action is required

@@ -93,6 +93,13 @@ k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
     --param constants.ECal_cell_size=10.0 --output runs/cld-ecal-10mm
 ```
 
+To write a modified geometry without simulating it, for example for an event display:
+
+```bash
+k4opt geometry apply FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml \
+    --set 'constants.ECal_cell_size=10*mm' --output ./generated/cld-ecal-10mm
+```
+
 The guides: [geometry](docs/geometry.md) (target references, include handling, override
 semantics, manifest, Python API, limitations), [problem](docs/problem.md) and
 [evaluators](docs/evaluators.md).
