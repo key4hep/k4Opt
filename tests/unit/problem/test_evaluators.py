@@ -38,6 +38,14 @@ SETTINGS = {
     name: {"collection": COLLECTION}
     for name in ("test.cell_count", "test.hit_energy", "test.busiest")
 }
+# the stage each evaluator of these tests reads; the others read none
+STAGES = {
+    "test.cell_count": "simulation",
+    "test.hit_energy": "simulation",
+    "test.busiest": "simulation",
+    "test.rival": "simulation",
+    "test.sample_size": "generation",
+}
 
 
 def problem(
@@ -45,19 +53,25 @@ def problem(
     *names: str,
     objectives: tuple[tuple[str, str], ...] = (CELLS,),
     constraints: tuple[dict[str, Any], ...] = (),
-    **evaluation: Any,
+    sample: str | None = None,
 ) -> ProblemSpec:
-    """The shared problem with evaluators ``names`` (version 1) and these objectives; an
-    ``evaluation`` key given as ``None`` is left out."""
+    """The shared problem with evaluators ``names`` (version 1), each reading its stage, the
+    stages they need (the gun, or the generation file ``sample``, and 3 simulated events) and
+    these objectives."""
     doc = copy.deepcopy(doc)
-    doc["evaluation"].update({"events": 3, "generation": GUN} | evaluation)
-    for key, value in evaluation.items():
-        if value is None:
-            del doc["evaluation"][key]
-    doc["evaluation"]["evaluators"] = [
-        {"name": name, "version": "1"} | ({"settings": SETTINGS[name]} if name in SETTINGS else {})
+    doc["evaluators"] = [
+        {"name": name, "version": "1"}
+        | ({"stage": STAGES[name]} if name in STAGES else {})
+        | ({"settings": SETTINGS[name]} if name in SETTINGS else {})
         for name in names
     ]
+    read = {STAGES[name] for name in names if name in STAGES}
+    doc["stages"] = {}
+    if read:
+        gun = {"executor": "gun", **GUN}
+        doc["stages"]["generation"] = gun if sample is None else {"file": sample}
+    if "simulation" in read:
+        doc["stages"]["simulation"] = {"executor": "ddsim", "events": 3}
     doc["objectives"] = [{"stage": s, "metric": m, "direction": "minimize"} for s, m in objectives]
     doc["constraints"] = list(constraints)
     return parse_problem(doc)
@@ -92,7 +106,7 @@ class Spy:
     def __init__(self, inner: Any, log: list[str]) -> None:
         self.inner, self.log = inner, log
         self.name, self.version = inner.name, inner.version
-        self.requires, self.metrics = inner.requires, inner.metrics
+        self.stage, self.metrics = inner.stage, inner.metrics
         self.evaluated: list[EvaluationRequest] = []
 
     def check(self, request: EvaluationRequest) -> None:
@@ -156,11 +170,12 @@ def test_evaluators_are_matched_by_name_and_kept_in_problem_order(
     ]
 
 
-def test_an_evaluator_that_requires_no_stage_runs_no_simulation(
+def test_an_evaluator_that_reads_no_stage_runs_no_simulation(
     doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
 ) -> None:
-    # without a simulation, neither events nor a generation are needed
-    spec = problem(doc, "test.parameter_echo", objectives=(ECHO,), events=None, generation=None)
+    # without a simulation, the problem needs no stages at all
+    spec = problem(doc, "test.parameter_echo", objectives=(ECHO,))
+    assert spec.stages == {}
     candidate = evaluate(spec, [parameter_echo()], tmp_path, geometry)
     assert log == [] and not (tmp_path / "run" / "simulation").exists()
     assert candidate.stages.provenance == {} and candidate.reads == {"test.parameter_echo": ()}
@@ -172,7 +187,7 @@ class SampleSize(Evaluator):
 
     name = "test.sample_size"
     version = "1"
-    requires = "generation"
+    stage = "generation"
     metrics = {("analysis", "sample.bytes"): "B"}
 
     def __init__(self) -> None:
@@ -201,7 +216,7 @@ def test_each_evaluator_reads_the_files_of_the_stages_it_needs_and_no_others(
         "test.cell_count",
         "test.sample_size",
         objectives=(CELLS, ("analysis", "sample.bytes")),
-        generation={"sample": "zh.hepmc"},
+        sample="zh.hepmc",
     )
     cells, size = Spy(cell_count(), log), SampleSize()
     candidate = evaluate(with_sample(spec, tmp_path), [cells, size], tmp_path, geometry)
@@ -227,7 +242,7 @@ def test_an_evaluator_is_given_the_same_request_alone_and_among_others(
     )
     evaluate(spec, others, tmp_path / "among", geometry)
     first, second = alone.evaluated[0], among.evaluated[0]
-    for field in ("candidate", "settings", "events", "seed", "backend_args", "generation"):
+    for field in ("candidate", "settings", "events", "seed"):
         assert getattr(first, field) == getattr(second, field)
     assert set(first.inputs) == set(second.inputs)
 
@@ -263,7 +278,7 @@ def test_a_generation_reader_keeps_its_result_when_the_simulation_fails(
         "test.cell_count",
         "test.sample_size",
         objectives=(CELLS, ("analysis", "sample.bytes")),
-        generation={"sample": "zh.hepmc"},
+        sample="zh.hepmc",
     )
     size = SampleSize()
     candidate = evaluate(with_sample(spec, tmp_path), [cell_count(), size], tmp_path, geometry)
@@ -290,7 +305,7 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
         "test.cell_count",
         "test.sample_size",
         objectives=(CELLS, ("analysis", "sample.bytes")),
-        generation={"sample": "zh.hepmc"},
+        sample="zh.hepmc",
     )
     sample, events_file = tmp_path / "zh.hepmc", tmp_path / "mine.edm4hep.root"
     events_file.write_bytes(b"fake")
@@ -320,7 +335,7 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
         assert sized.result.status is Status.VALID and candidate.status is Status.VALID
     else:
         assert sized.result.status is Status.FAILED
-        assert "cannot read the sample" in (sized.result.message or "")
+        assert f"cannot read {sample}: denied" in (sized.result.message or "")
 
 
 # --- the candidate's status: incomplete is never reported as scientifically invalid ---
@@ -380,7 +395,7 @@ class Rival(Evaluator):
 
     name = "test.rival"
     version = "1"
-    requires = "simulation"
+    stage = "simulation"
     metrics = {"ecal_barrel.mean_hit_cells": "1"}
 
 
@@ -396,7 +411,7 @@ class Ahead(Evaluator):
 
     name = "test.ahead"
     version = "1"
-    requires = "reconstruction"
+    stage = "reconstruction"
     metrics = {("reconstruction", "pfo.count"): "1"}
 
 
@@ -446,7 +461,8 @@ class Ahead(Evaluator):
             ("test.cell_count", "test.ahead"),
             (cell_count, Ahead),
             {},
-            r"unknown stage 'reconstruction'",
+            r"evaluator 'test\.ahead' does not read the stage the problem says: add stage: "
+            r"reconstruction to its entry",
         ),
     ],
 )
@@ -468,13 +484,8 @@ def test_evaluators_that_do_not_fit_the_problem_are_refused_before_anything_runs
 
 def test_another_version_is_refused(doc: dict[str, Any], tmp_path: Path, log: list[str]) -> None:
     spec = problem(doc, "test.cell_count", "test.hit_energy")
-    entries = (
-        spec.evaluation.evaluators[0],
-        dataclasses.replace(spec.evaluation.evaluators[1], version="2"),
-    )
-    spec = dataclasses.replace(
-        spec, evaluation=dataclasses.replace(spec.evaluation, evaluators=entries)
-    )
+    entries = (spec.evaluators[0], dataclasses.replace(spec.evaluators[1], version="2"))
+    spec = dataclasses.replace(spec, evaluators=entries)
     with pytest.raises(
         EvaluationContractError, match=r"'test\.hit_energy' version '2', got version '1'"
     ):
@@ -482,17 +493,44 @@ def test_another_version_is_refused(doc: dict[str, Any], tmp_path: Path, log: li
     assert log == []
 
 
+@pytest.mark.parametrize(
+    ("name", "stage", "message"),
+    [
+        ("test.cell_count", None, r"add stage: simulation to its entry in the problem"),
+        ("test.cell_count", "generation", r"it reads 'simulation', not 'generation'"),
+        ("test.parameter_echo", "simulation", r"it reads no stage; remove stage: simulation"),
+    ],
+)
+def test_the_stage_in_the_problem_must_be_the_one_the_evaluator_reads(
+    doc: dict[str, Any],
+    tmp_path: Path,
+    geometry: Path,
+    log: list[str],
+    name: str,
+    stage: str | None,
+    message: str,
+) -> None:
+    spec = problem(doc, name, objectives=(CELLS if name in STAGES else ECHO,))
+    spec = dataclasses.replace(
+        spec, evaluators=(dataclasses.replace(spec.evaluators[0], stage=stage),)
+    )
+    given = cell_count() if name in STAGES else parameter_echo()
+    with pytest.raises(
+        EvaluationContractError, match=rf"evaluator '{name}' does not read .*{message}"
+    ):
+        evaluate(spec, [given], tmp_path, geometry)
+    assert log == [] and not (tmp_path / "run").exists()
+
+
 def test_invalid_settings_of_the_second_evaluator_are_refused_before_anything_runs(
     doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
 ) -> None:
     spec = problem(doc, "test.cell_count", "test.hit_energy")
     entries = (
-        spec.evaluation.evaluators[0],
-        dataclasses.replace(spec.evaluation.evaluators[1], settings={"collection": 3}),
+        spec.evaluators[0],
+        dataclasses.replace(spec.evaluators[1], settings={"collection": 3}),
     )
-    spec = dataclasses.replace(
-        spec, evaluation=dataclasses.replace(spec.evaluation, evaluators=entries)
-    )
+    spec = dataclasses.replace(spec, evaluators=entries)
     with pytest.raises(EvaluationContractError, match=r"settings\.collection: expected str"):
         evaluate(spec, [cell_count(), hit_energy()], tmp_path, geometry)
     assert log == [] and not (tmp_path / "run").exists()
@@ -600,7 +638,7 @@ def test_analysis_metrics_need_no_analysis_stage(
     class Busiest(Evaluator):
         name = "test.busiest"
         version = "1"
-        requires = "simulation"
+        stage = "simulation"
         settings = {"collection": str}
         metrics = {("analysis", "ecal.max_hits"): "1"}
 

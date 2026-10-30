@@ -31,7 +31,7 @@ def test_relative_paths_are_made_absolute_before_ddsim_runs_in_workdir(
         events=1,
         seed=1,
         particle_gun=generator(),  # type: ignore[arg-type]
-        args=(),
+        options={},
     )
 
     ((argv, kwargs),) = fake.calls
@@ -56,7 +56,7 @@ def test_a_relative_executable_found_on_path_is_made_absolute(
         events=1,
         seed=None,
         particle_gun=generator(),  # type: ignore[arg-type]
-        args=(),
+        options={},
     )
     ((argv, _),) = fake.calls
     assert argv[0] == str(tmp_path / "bin" / "ddsim")
@@ -71,7 +71,7 @@ def test_an_existing_workdir_is_refused(tmp_path: Path, monkeypatch: pytest.Monk
             events=1,
             seed=None,
             particle_gun=generator(),  # type: ignore[arg-type]
-            args=(),
+            options={},
         )
     assert fake.calls == []
 
@@ -87,7 +87,7 @@ def test_a_sample_is_passed_as_an_absolute_input_file(
         events=1,
         seed=None,
         sample=Path("zh.hepmc"),
-        args=(),
+        options={},
     )
     ((argv, _),) = fake.calls
     assert f"--inputFiles={tmp_path / 'zh.hepmc'}" in argv

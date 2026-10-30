@@ -1,9 +1,10 @@
 """Loading and validation of the problem YAML document (``k4opt.problem/v1alpha1``).
 
-:func:`parse_problem` makes the checks that need no Key4hep: shape, types, ranges and
-syntactic duplicates. :func:`load_problem` adds the resolution of the geometry targets; that
-an evaluator or metric is defined, or that the bounds are physically sensible, is
-deliberately not decided. See ``docs/problem.md``.
+:func:`parse_problem` makes the checks that need no Key4hep: shape, types, ranges, syntactic
+duplicates, the executors and options of the stages and whether the stages fit together and
+fit the evaluators. :func:`load_problem` adds the resolution of the geometry targets; that an
+evaluator or metric is defined, or that the bounds are physically sensible, is deliberately not
+decided. See ``docs/problem.md``.
 """
 
 from __future__ import annotations
@@ -18,8 +19,10 @@ from typing import Any, cast
 
 import yaml
 
+from k4opt.ddsim import DdsimError
 from k4opt.frozen import Json
 from k4opt.geometry import AmbiguousTargetError, GeometrySource, TargetError
+from k4opt.problem._stages import STAGE_TYPES, changed_by_geometry, executors, stage_reads
 from k4opt.problem.errors import ProblemConfigError
 from k4opt.problem.models import (
     SCHEMA_VERSION,
@@ -27,7 +30,6 @@ from k4opt.problem.models import (
     Constraint,
     Direction,
     Environment,
-    Evaluation,
     EvaluatorSpec,
     GeometrySelector,
     GeometrySpec,
@@ -37,6 +39,7 @@ from k4opt.problem.models import (
     Parameter,
     ParameterKind,
     ProblemSpec,
+    Stage,
     freeze,
 )
 from k4opt.yamlio import UniqueKeyLoader
@@ -47,7 +50,8 @@ _TOP_KEYS = (
     "environment",
     "geometry",
     "parameters",
-    "evaluation",
+    "stages",
+    "evaluators",
     "objectives",
     "constraints",
 )
@@ -56,13 +60,13 @@ _REQUIRED_TOP = (
     "environment",
     "geometry",
     "parameters",
-    "evaluation",
+    "evaluators",
     "objectives",
 )
 _CHANNELS = ("release", "nightly")
 _KINDS = ("continuous", "integer", "categorical")
 _DIRECTIONS = ("minimize", "maximize")
-_BACKENDS = ("ddsim", "k4run")
+_STAGE_KEYS = ("executor", "file", "events", "seed")  # the rest of a stage are executor options
 _SCHEMA_FAMILY = "k4opt.problem/"
 _EVALUATOR_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -234,19 +238,28 @@ def _parse(data: object, source: Path | None) -> ProblemSpec:
     name = _optional_text(top, "name", "")
     if name is None and source is not None:
         name = source.stem
+    environment = _environment(top["environment"])
+    geometry = GeometrySpec(
+        entry=_text(
+            _mapping(top["geometry"], "geometry", ("entry",), ("entry",))["entry"],
+            "geometry.entry",
+        )
+    )
+    parameters = _parameters(top["parameters"])
+    stages = _stages(top["stages"]) if "stages" in top else {}
+    evaluators = _evaluators(top["evaluators"])
+    objectives = _objectives(top["objectives"])
+    constraints = _constraints(top["constraints"]) if "constraints" in top else ()
+    _check_pipeline(stages, evaluators, parameters)
     return ProblemSpec(
         name=name,
-        environment=_environment(top["environment"]),
-        geometry=GeometrySpec(
-            entry=_text(
-                _mapping(top["geometry"], "geometry", ("entry",), ("entry",))["entry"],
-                "geometry.entry",
-            )
-        ),
-        parameters=_parameters(top["parameters"]),
-        evaluation=_evaluation(top["evaluation"]),
-        objectives=_objectives(top["objectives"]),
-        constraints=_constraints(top["constraints"]) if "constraints" in top else (),
+        environment=environment,
+        geometry=geometry,
+        parameters=parameters,
+        stages=stages,
+        evaluators=evaluators,
+        objectives=objectives,
+        constraints=constraints,
     )
 
 
@@ -365,29 +378,60 @@ def _choices(raw: object, path: str) -> tuple[str | bool | Number, ...]:
     return tuple(items)
 
 
-def _evaluation(raw: object) -> Evaluation:
-    path = "evaluation"
-    m = _mapping(
-        raw, path, ("events", "seed", "generation", "backend", "evaluators"), ("evaluators",)
-    )
-    return Evaluation(
-        evaluators=_evaluators(m["evaluators"]),
-        events=_integer(m["events"], "evaluation.events", minimum=1) if "events" in m else None,
-        seed=_integer(m["seed"], "evaluation.seed") if "seed" in m else None,
-        generation=_generation(m["generation"]) if "generation" in m else {},
-        backend=_backend(m["backend"]) if "backend" in m else {},
-    )
+def _stages(raw: object) -> dict[str, Stage]:
+    """The ``stages`` mapping, in pipeline order whatever the order of the document."""
+    m = _mapping(raw, "stages", STAGE_TYPES)
+    return {name: _stage(name, m[name]) for name in STAGE_TYPES if name in m}
+
+
+def _stage(name: str, raw: object) -> Stage:
+    path = f"stages.{name}"
+    # any string keys: which ones the stage takes depends on its executor, checked below
+    m = _mapping(raw, path, tuple(raw) if isinstance(raw, Mapping) else ())
+    if ("executor" in m) == ("file" in m):
+        raise _fail(
+            path, "needs exactly one of 'executor' (k4opt runs it) and 'file' (its output exists)"
+        )
+    if "file" in m:
+        others = [key for key in m if key != "file"]
+        if others:
+            raise _fail(path, f"a stage given as a file is not run, so it takes no {others}")
+        return Stage(name, file=_text(m["file"], f"{path}.file"))
+    allowed = executors(name)
+    executor = _choice(m["executor"], f"{path}.executor", tuple(allowed))
+    spec = allowed[executor]
+    events = seed = None
+    if spec.events:
+        if "events" not in m:
+            raise _fail(path, f"missing required key 'events': how many events {executor} runs")
+        events = _integer(m["events"], f"{path}.events", minimum=1)
+        seed = _integer(m["seed"], f"{path}.seed") if "seed" in m else None
+    else:
+        for key in ("events", "seed"):
+            if key in m:
+                raise _fail(
+                    f"{path}.{key}",
+                    f"{executor} runs inside stages.{spec.inside}, which sets the {key}; set "
+                    f"stages.{spec.inside}.{key} instead",
+                )
+    options = freeze({key: value for key, value in m.items() if key not in _STAGE_KEYS}, path)
+    assert isinstance(options, Mapping)
+    try:
+        spec.options(options)
+    except DdsimError as exc:  # its message starts with the stage: generation.particle: ...
+        raise ProblemConfigError(f"stages.{exc}") from exc
+    return Stage(name, executor=executor, events=events, seed=seed, options=options)
 
 
 def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
-    items = _sequence(raw, "evaluation.evaluators")
+    items = _sequence(raw, "evaluators")
     if not items:
-        raise _fail("evaluation.evaluators", "must list at least one evaluator")
+        raise _fail("evaluators", "must list at least one evaluator")
     evaluators: list[EvaluatorSpec] = []
     first: dict[str, int] = {}
     for index, item in enumerate(items):
-        path = f"evaluation.evaluators[{index}]"
-        m = _mapping(item, path, ("name", "version", "settings"), ("name", "version"))
+        path = f"evaluators[{index}]"
+        m = _mapping(item, path, ("name", "version", "stage", "settings"), ("name", "version"))
         name = _text(m["name"], f"{path}.name")
         # the name also names the evaluator's directory in a run
         if not _EVALUATOR_NAME.fullmatch(name):
@@ -408,44 +452,68 @@ def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
             frozen = freeze(m["settings"], f"{path}.settings")
             assert isinstance(frozen, Mapping)
             settings = frozen
-        evaluators.append(EvaluatorSpec(name, _text(m["version"], f"{path}.version"), settings))
+        stage = _choice(m["stage"], f"{path}.stage", STAGE_TYPES) if "stage" in m else None
+        evaluators.append(
+            EvaluatorSpec(name, _text(m["version"], f"{path}.version"), settings, stage)
+        )
     return tuple(evaluators)
 
 
-def _generation(raw: object) -> Mapping[str, Json]:
-    """The particle gun (``particle``, ``energy``, ...) or a ``sample`` file, never both.
+def _check_pipeline(
+    stages: Mapping[str, Stage],
+    evaluators: tuple[EvaluatorSpec, ...],
+    parameters: tuple[Parameter, ...],
+) -> None:
+    """The stages fit together and fit the evaluators.
 
-    The gun keys are validated where the gun is built (:mod:`k4opt.ddsim`).
+    Every stage an evaluator reads is defined; a stage that runs has the stages it reads; no
+    file stands in for a stage the parameters change (it was not made from the candidate); and
+    every stage is used, by an evaluator or by a stage that runs.
     """
-    path = "evaluation.generation"
-    if not isinstance(raw, Mapping):
-        raise _fail(path, f"must be a mapping, got {type(raw).__name__}")
-    if not raw:
-        raise _fail(path, "set a particle gun (particle, energy, ...) or a sample")
-    if "sample" in raw:
-        if len(raw) != 1:
-            others = [key for key in raw if key != "sample"]
-            raise _fail(path, f"sample cannot be combined with particle gun keys {others}")
-        return {"sample": _text(raw["sample"], f"{path}.sample")}
-    frozen = freeze(raw, path)
-    assert isinstance(frozen, Mapping)
-    return frozen
-
-
-def _backend(raw: object) -> dict[str, tuple[str, ...]]:
-    backends = _mapping(raw, "evaluation.backend", _BACKENDS)
-    result: dict[str, tuple[str, ...]] = {}
-    for name, entry in backends.items():
-        path = f"evaluation.backend.{name}"
-        args = _sequence(_mapping(entry, path, ("args",), ("args",))["args"], f"{path}.args")
-        for index, arg in enumerate(args):
-            if not isinstance(arg, str):
+    for index, evaluator in enumerate(evaluators):
+        if evaluator.stage is not None and evaluator.stage not in stages:
+            raise _fail(
+                f"evaluators[{index}].stage",
+                f"the problem defines no {evaluator.stage} stage; add stages.{evaluator.stage}",
+            )
+    for name, stage in stages.items():
+        if stage.executor is None:
+            continue
+        for need in stage_reads(name):
+            if need not in stages:
+                choices = " or ".join(executors(need))
                 raise _fail(
-                    f"{path}.args[{index}]",
-                    f"must be a string, got {type(arg).__name__} {_show(arg)}; quote it",
+                    f"stages.{name}",
+                    f"{name} reads {need}: add stages.{need} with executor: {choices}, or give "
+                    "its output as file:",
                 )
-        result[name] = tuple(args)
-    return result
+    if parameters:  # every parameter varies the geometry
+        for name, stage in stages.items():
+            if stage.file is not None and changed_by_geometry(name):
+                raise _fail(
+                    f"stages.{name}.file",
+                    "the parameters vary the geometry, but this file was not made with a "
+                    "candidate's geometry, so every candidate would measure the same events; let "
+                    f"an executor run the stage (to try an evaluator on an existing file, use "
+                    f"k4opt evaluate --input {name}=FILE)",
+                )
+    used: set[str] = set()
+
+    def use(name: str) -> None:
+        if name not in used:
+            used.add(name)
+            if stages[name].executor is not None:
+                for need in stage_reads(name):
+                    use(need)
+
+    for evaluator in evaluators:
+        if evaluator.stage is not None:
+            use(evaluator.stage)
+    for name in stages:
+        if name not in used:
+            raise _fail(
+                f"stages.{name}", "is not used: no evaluator reads it, and no stage that runs does"
+            )
 
 
 def _objectives(raw: object) -> tuple[Objective, ...]:

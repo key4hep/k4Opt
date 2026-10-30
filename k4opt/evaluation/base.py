@@ -8,14 +8,14 @@ class adds what most evaluators would write anyway:
   for a required key, a default value for an optional one. ``check`` rejects missing and
   unknown keys, wrong types and blank required text before anything runs, and the request
   carries the defaults;
-* ``metrics = {"hit_cells": "1"}`` maps each metric to its unit; its stage is ``requires``,
+* ``metrics = {"hit_cells": "1"}`` maps each metric to its unit; its stage is ``stage``,
   or the metric is written ``(stage, metric)``;
 * ``evaluate`` may return ``{"hit_cells": 3.2}`` or ``{"hit_cells": [3, 4, 2]}`` (a number, or
   per-event values, a list or a numpy array, that become their mean with its standard error)
   instead of an :class:`EvaluationResult`;
 * ``self.invalid(...)`` and ``self.fail(...)`` end an evaluation with that status;
 * ``self.read(request, collection, type)`` reads a collection of the file of the stage in
-  ``requires`` (``request.read(stage, ...)`` names any stage).
+  ``stage`` (``request.read(stage, ...)`` names any stage).
 """
 
 from __future__ import annotations
@@ -33,17 +33,17 @@ type Values = Mapping[MetricKey, int | float | Iterable[int | float]]
 
 
 def _qualified(evaluator: object, key: MetricKey) -> tuple[str, str]:
-    """``(stage, metric)`` of a metric written as ``metric`` (stage: ``requires``) or a pair."""
+    """``(stage, metric)`` of a metric written as ``metric`` (stage: ``stage``) or a pair."""
     if isinstance(key, tuple) and len(key) == 2 and all(isinstance(part, str) for part in key):
         return key
     if not isinstance(key, str):
         raise EvaluationContractError(
             f"metric {key!r}: write it as 'metric' or as a pair of strings (stage, metric)"
         )
-    stage = getattr(evaluator, "requires", None)
+    stage = getattr(evaluator, "stage", None)
     if stage is None:
         raise EvaluationContractError(
-            f"metric {key!r}: write it as (stage, metric) or set requires = <stage>"
+            f"metric {key!r}: write it as (stage, metric) or set stage = <stage>"
         )
     return stage, key
 
@@ -130,11 +130,11 @@ def result_from(evaluator: object, returned: EvaluationResult | Values) -> Evalu
 
 class Evaluator:
     """Base class of evaluators; see the module documentation. ``name`` and ``version`` are
-    required, ``requires``, ``settings`` and ``metrics`` optional."""
+    required, ``stage`` (the pipeline stage it reads), ``settings`` and ``metrics`` optional."""
 
     name: str
     version: str
-    requires: str | None = None
+    stage: str | None = None
     settings: Mapping[str, Any] | None = None
     metrics: Mapping[MetricKey, str] | None = None
 
@@ -171,10 +171,10 @@ class Evaluator:
                 raise EvaluationContractError(f"settings.{key}: must not be blank")
 
     def read(self, request: EvaluationRequest, collection: str, value_type: str) -> Iterator[Any]:
-        """The collection of each event of the file of the stage in ``requires``."""
-        if self.requires is None:
-            raise EvaluationContractError("read() needs requires = <stage> (or request.read)")
-        return request.read(self.requires, collection, value_type)
+        """The collection of each event of the file of the stage in ``stage``."""
+        if self.stage is None:
+            raise EvaluationContractError("read() needs stage = <stage> (or request.read)")
+        return request.read(self.stage, collection, value_type)
 
     def invalid(self, message: str) -> NoReturn:
         """End the evaluation: it ran, but its result is not usable."""

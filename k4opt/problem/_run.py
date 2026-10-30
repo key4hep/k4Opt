@@ -1,15 +1,17 @@
 """Internal: evaluate one candidate of a problem file end to end (behind ``k4opt evaluate``).
 
-Not a workflow API. In order it loads the problem, parses and validates the candidate, binds
-and checks the evaluators (nothing is created before this succeeds), creates the new run
-directory, materializes the candidate's geometry into it, measures the candidate with every
-evaluator through :func:`k4opt.problem._evaluate._evaluate_candidate`, which runs each pipeline
-stage once, and writes ``summary.json``.
+Not a workflow API. In order it loads the problem, parses and validates the candidate and the
+stage files the caller supplies, binds and checks the evaluators (nothing is created before this
+succeeds), creates the new run directory, materializes the candidate's geometry into it,
+measures the candidate with every evaluator through
+:func:`k4opt.problem._evaluate._evaluate_candidate`, which runs each pipeline stage once, and
+writes ``summary.json``.
 """
 
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import math
 import os
@@ -19,6 +21,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+from k4opt import __version__
 from k4opt.evaluation import EvaluationRecord, EvaluatorProtocol, Measurement, Scalar
 from k4opt.frozen import Json, thaw
 from k4opt.geometry import Override
@@ -28,6 +31,7 @@ from k4opt.problem._evaluate import (
     _preflight,
     _validate_candidate,
 )
+from k4opt.problem._stages import STAGE_TYPES, file_identity, plan_stages
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
 from k4opt.problem.models import Parameter, ProblemSpec
@@ -60,6 +64,12 @@ class RunOutcome:
     def events_read(self) -> object:
         """The events found in the simulation output, ``None`` if it was not inspected."""
         return self.candidate.stages.provenance.get("simulation", {}).get("events_read")
+
+    @property
+    def events_requested(self) -> object:
+        """The events the simulation stage asks for, ``None`` if it asks for none."""
+        events = self.summary.get("events")
+        return events.get("requested") if isinstance(events, Mapping) else None
 
 
 def _int(reference: str, text: str) -> int:
@@ -177,12 +187,51 @@ def _measurement(m: Measurement | None) -> dict[str, object]:
     }
 
 
-def _evaluator(record: EvaluationRecord, reads: Sequence[str]) -> dict[str, object]:
+def _parse_inputs(assignments: Sequence[str]) -> dict[str, Path]:
+    """``STAGE=FILE`` strings as absolute paths by stage; each must name a stage and a file."""
+    inputs: dict[str, Path] = {}
+    for assignment in assignments:
+        stage, separator, text = assignment.partition("=")
+        if not separator or not stage or not text:
+            raise RunError(f"--input {assignment!r}: expected STAGE=FILE")
+        if stage not in STAGE_TYPES:
+            raise RunError(f"--input {assignment!r}: unknown stage; use {', '.join(STAGE_TYPES)}")
+        if stage in inputs:
+            raise RunError(f"--input {stage} is given more than once")
+        path = Path(os.path.abspath(Path(text).expanduser()))
+        if not path.is_file():
+            raise RunError(f"--input {assignment!r}: {path} is not a file")
+        inputs[stage] = path
+    return inputs
+
+
+def _source(evaluator: EvaluatorProtocol) -> dict[str, Json]:
+    """The file that defines the class of ``evaluator``, with its size and SHA-256.
+
+    It identifies the evaluator's own code only, not the modules it imports.
+    """
+    try:
+        path = inspect.getsourcefile(type(evaluator))
+    except TypeError:  # defined in no file
+        path = None
+    if path is None:
+        return {"path": None}
+    source: dict[str, Json] = {"path": path}
+    with contextlib.suppress(OSError):
+        source |= file_identity(Path(path))
+    return source
+
+
+def _evaluator(
+    record: EvaluationRecord, reads: Sequence[str], stage: str | None, source: Json
+) -> dict[str, object]:
     """One evaluator's own part of the summary: nothing of the stages it shares."""
     result, request = record.result, record.request
     return {
         "name": record.evaluator_name,
         "version": record.evaluator_version,
+        "stage": stage,
+        "source": source,
         "status": result.status,
         "message": result.message,
         "settings": thaw(request.settings),
@@ -204,11 +253,13 @@ def _summary(
     candidate: CandidateRecord,
     run_dir: Path,
     geometry: object,
+    sources: Mapping[str, Json],
 ) -> dict[str, object]:
     stages = candidate.stages
     simulation = stages.provenance.get("simulation", {})
     argv = simulation.get("argv")
-    generation: Json = stages.provenance.get("generation") or spec.evaluation.generation
+    simulate = spec.stages.get("simulation")
+    entries = {entry.name: entry for entry in spec.evaluators}
     stage_records: dict[str, object] = {}
     for stage, provenance in stages.provenance.items():  # pipeline order
         entry = thaw(provenance)
@@ -225,6 +276,9 @@ def _summary(
         "candidate_key": [list(part) for part in candidate.candidate_key],
         "status": candidate.status,
         "message": candidate.message,
+        # False if a supplied stage file was not made from this candidate (--input)
+        "represents_candidate": candidate.represents_candidate,
+        "supplied": sorted(stages.supplied),
         # the objective and constraint metrics, each from the evaluator that owns it
         "metrics": [
             {"stage": stage, "metric": metric, "evaluator": owner}
@@ -232,14 +286,21 @@ def _summary(
             for (stage, metric), owner in candidate.owners.items()
         ],
         "evaluators": [
-            _evaluator(record, candidate.reads[record.evaluator_name])
+            _evaluator(
+                record,
+                candidate.reads[record.evaluator_name],
+                entries[record.evaluator_name].stage,
+                sources.get(record.evaluator_name),
+            )
             for record in candidate.records
         ],
         "stages": stage_records,
-        "events": {"requested": spec.evaluation.events, "observed": simulation.get("events_read")},
+        "events": {
+            "requested": None if simulate is None else simulate.events,
+            "observed": simulation.get("events_read"),
+        },
         "elapsed_seconds": candidate.elapsed_seconds,
         "geometry": geometry,
-        "generation": thaw(generation),
         "paths": {"run_dir": str(run_dir)}
         | {
             f"{stage}.{role}": str(path)
@@ -251,6 +312,7 @@ def _summary(
             "declared": spec.environment.to_dict()["key4hep"],
             # observed in this process; ddsim is the executable that was started
             "observed": {
+                "k4opt": __version__,
                 "KEY4HEP_STACK": os.environ.get("KEY4HEP_STACK"),
                 "K4GEO": os.environ.get("K4GEO"),
                 "ddsim": argv[0] if isinstance(argv, (list, tuple)) and argv else None,
@@ -265,13 +327,17 @@ def run_candidate(
     output: str | os.PathLike[str],
     *,
     evaluators: Sequence[EvaluatorProtocol],
+    inputs: Sequence[str] = (),
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
-    ``evaluators`` implement the problem's ``evaluation.evaluators``, in any order. Raises a
-    :class:`~k4opt.errors.K4OptError` for an invalid problem, candidate, evaluator, settings or
-    output location before anything is created. Execution problems are reported as ``failed``
-    or ``invalid`` results in the outcome.
+    ``evaluators`` implement the problem's ``evaluators``, in any order. ``inputs`` are
+    ``STAGE=FILE`` strings: each file stands in for its stage, which then does not run, nor do
+    the stages only it needs. A supplied stage that the parameters change was not made from the
+    candidate, and the outcome says so (``represents_candidate``). Raises a
+    :class:`~k4opt.errors.K4OptError` for an invalid problem, candidate, input, evaluator,
+    settings or output location before anything is created. Execution problems are reported as
+    ``failed`` or ``invalid`` results in the outcome.
     """
     problem_path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
     spec = load_problem(problem_path)
@@ -279,7 +345,11 @@ def run_candidate(
     assert spec._catalog is not None
 
     values, _ = _validate_candidate(spec, _parse_candidate(spec, assignments))
-    _preflight(spec, values, evaluators)
+    supplied = _parse_inputs(inputs)
+    plan = _preflight(spec, values, evaluators, provided=supplied)
+    for stage in supplied:  # read by an evaluator, given the other supplied stages
+        if stage not in plan_stages(*plan.targets, provided=supplied.keys() - {stage}):
+            raise RunError(f"--input {stage}: no evaluator of the problem reads that stage")
     overrides = _overrides(spec, values)
 
     run_dir = Path(os.path.abspath(output))
@@ -295,7 +365,11 @@ def run_candidate(
         raise
 
     candidate = _evaluate_candidate(
-        spec, values, evaluators, inputs={"geometry": snapshot.compact_path}, workdir=run_dir
+        spec,
+        values,
+        evaluators,
+        inputs={"geometry": snapshot.compact_path, **supplied},
+        workdir=run_dir,
     )
     geometry = {
         "fingerprint": snapshot.fingerprint,
@@ -307,7 +381,8 @@ def run_candidate(
             for c in snapshot.changes
         ],
     }
-    summary = _summary(problem_path.absolute(), spec, values, candidate, run_dir, geometry)
+    sources = {evaluator.name: _source(evaluator) for evaluator in evaluators}
+    summary = _summary(problem_path.absolute(), spec, values, candidate, run_dir, geometry, sources)
     with (run_dir / SUMMARY_NAME).open("x", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
         handle.write("\n")

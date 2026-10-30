@@ -26,7 +26,7 @@ from tests.support.simulation import COLLECTION, HIT_TYPE, events_with
 class Counter(Evaluator):
     name = "demo.counter"
     version = "1"
-    requires = "simulation"
+    stage = "simulation"
     settings = {"collection": str, "n": int, "scale": float, "flag": bool}
     metrics = {"cells": "1", ("analysis", "rms"): "mm"}
 
@@ -120,7 +120,7 @@ def test_no_declared_metrics_is_not_an_empty_declaration() -> None:
 
 def test_a_metric_declared_twice_is_a_contract_error_not_overwritten() -> None:
     class Twice(Evaluator):
-        name, version, requires = "demo.twice", "1", "simulation"
+        name, version, stage = "demo.twice", "1", "simulation"
         metrics = {"energy": "GeV", ("simulation", "energy"): "MeV"}
 
     with pytest.raises(EvaluationContractError, match="simulation/energy is declared twice"):
@@ -130,7 +130,7 @@ def test_a_metric_declared_twice_is_a_contract_error_not_overwritten() -> None:
 @pytest.mark.parametrize("unit", [None, "", "  ", 123])
 def test_a_declared_unit_must_be_a_nonblank_string(unit: Any) -> None:
     class Unitless(Evaluator):
-        name, version, requires = "demo.unitless", "1", "simulation"
+        name, version, stage = "demo.unitless", "1", "simulation"
         metrics = {"energy": unit}
 
     with pytest.raises(EvaluationContractError, match="simulation/energy: unit must be"):
@@ -142,7 +142,7 @@ def test_a_bare_metric_needs_a_stage() -> None:
         name, version = "demo.stageless", "1"
         metrics = {"cells": "1"}
 
-    with pytest.raises(EvaluationContractError, match="requires"):
+    with pytest.raises(EvaluationContractError, match=r"set stage = <stage>"):
         metric_units(Stageless())
 
 
@@ -158,7 +158,7 @@ def test_returned_values_become_measurements_with_the_declared_units() -> None:
 
 
 def test_an_evaluator_without_a_stage_names_the_stage_of_its_metrics() -> None:
-    # the package documentation's example: nothing runs first, so there is no `requires`
+    # the package documentation's example: nothing runs first, so there is no `stage`
     class Constant(Evaluator):
         name, version = "demo.constant", "1"
 
@@ -218,7 +218,7 @@ def test_a_zero_dimensional_numpy_array_is_a_contract_error() -> None:
 @pytest.mark.parametrize("key", [("simulation", "a", "b"), ("simulation",), ("s", 5), 5])
 def test_a_metric_is_a_name_or_a_pair_of_names(key: Any) -> None:
     class Odd(Evaluator):
-        name, version, requires = "demo.odd", "1", "simulation"
+        name, version, stage = "demo.odd", "1", "simulation"
         metrics = {key: "1"}
 
     with pytest.raises(EvaluationContractError, match="pair of strings"):
@@ -256,7 +256,7 @@ def test_request_read_of_a_stage_without_a_file_is_a_contract_error() -> None:
 class Tuned(Evaluator):
     name = "demo.tuned"
     version = "1"
-    requires = "simulation"
+    stage = "simulation"
     settings = {"collection": str, "threshold": 0.5, "rings": 3, "strict": False}
 
     def evaluate(self, request: EvaluationRequest) -> Any:
@@ -307,15 +307,15 @@ def test_with_defaults_leaves_other_evaluators_alone() -> None:
     assert with_defaults(Counter(), {"collection": "C"}) == {"collection": "C"}  # no defaults
 
 
-def test_self_read_uses_the_required_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_self_read_uses_the_stage_it_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     simulation.install_events(monkeypatch, events_with([1, 2], [3]))
     request = EvaluationRequest(inputs={"simulation": Path("events.root")})
     assert [len(h) for h in Counter().read(request, COLLECTION, "SimCalorimeterHit")] == [2, 1]
 
 
-def test_self_read_needs_requires() -> None:
+def test_self_read_needs_a_stage() -> None:
     class Stageless(Evaluator):
         name, version = "demo.stageless", "1"
 
-    with pytest.raises(EvaluationContractError, match="requires"):
+    with pytest.raises(EvaluationContractError, match=r"read\(\) needs stage = <stage>"):
         Stageless().read(EvaluationRequest(), COLLECTION, "SimCalorimeterHit")

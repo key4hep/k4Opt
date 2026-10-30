@@ -1,12 +1,15 @@
 """Internal bridge: one candidate of a problem, measured by each of its evaluators.
 
 Not a public workflow. It validates a candidate against the declared parameter domains, binds
-the given evaluators to the problem's ``evaluation.evaluators`` and checks, before anything runs,
-their identity, their settings, the pipeline stages they require and which evaluator measures
-each objective and constraint metric. It then runs every stage the evaluators require once
-(:mod:`k4opt.problem._stages`), calls each evaluator once with the files of the stages it reads,
-and checks that each ``valid`` result carries the metrics its evaluator owns. It neither locates
-evaluators nor materializes geometry.
+the given evaluators to the problem's ``evaluators`` and checks, before anything runs, their
+identity, the stage each reads, their settings, the pipeline stages and which evaluator measures
+each objective and constraint metric. It then makes every stage the evaluators read available,
+running each once (:mod:`k4opt.problem._stages`), calls each evaluator once with the files of the
+stages it reads, and checks that each ``valid`` result carries the metrics its evaluator owns.
+It neither locates evaluators nor materializes geometry.
+
+Each entry of ``evaluators`` becomes one evaluator instance, identified by its ``name`` today;
+records, run directories and metric owners use that identity.
 """
 
 from __future__ import annotations
@@ -35,7 +38,13 @@ from k4opt.evaluation import (
     with_defaults,
 )
 from k4opt.frozen import FrozenMap
-from k4opt.problem._stages import StageContext, StageRecords, check_stages, run_stages
+from k4opt.problem._stages import (
+    StageContext,
+    StageRecords,
+    changed_by_geometry,
+    check_stages,
+    run_stages,
+)
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
 
@@ -146,9 +155,9 @@ def _check_units(evaluator: EvaluatorProtocol, result: EvaluationResult) -> None
             )
 
 
-def _requires(evaluator: EvaluatorProtocol) -> str | None:
+def _stage(evaluator: EvaluatorProtocol) -> str | None:
     """The pipeline stage the evaluator reads, ``None`` if it reads none."""
-    stage: str | None = getattr(evaluator, "requires", None)
+    stage: str | None = getattr(evaluator, "stage", None)
     return stage
 
 
@@ -157,10 +166,11 @@ def _bind(
 ) -> list[tuple[EvaluatorSpec, EvaluatorProtocol]]:
     """Pair every evaluator the problem declares with the one given for it, in problem order.
 
-    Evaluators are matched by ``name`` and must have the declared ``version``; one that is
-    missing, not declared or given twice is an :class:`EvaluationContractError`.
+    Evaluators are matched by ``name`` and must have the declared ``version`` and read the
+    declared ``stage``; one that is missing, not declared, given twice or reads another stage is
+    an :class:`EvaluationContractError`.
     """
-    declared = {entry.name: entry for entry in spec.evaluation.evaluators}
+    declared = {entry.name: entry for entry in spec.evaluators}
     given: dict[str, EvaluatorProtocol] = {}
     for evaluator in evaluators:
         name, version = evaluator.name, evaluator.version  # read once: the record reuses them
@@ -176,15 +186,26 @@ def _bind(
                 f"problem declares evaluator {name!r} version {entry.version!r}, "
                 f"got version {version!r}"
             )
+        stage = _stage(evaluator)
+        if stage != entry.stage:
+            if entry.stage is None:
+                fix = f"add stage: {stage} to its entry in the problem"
+            elif stage is None:
+                fix = f"it reads no stage; remove stage: {entry.stage} from its entry"
+            else:
+                fix = f"it reads {stage!r}, not {entry.stage!r}"
+            raise EvaluationContractError(
+                f"evaluator {name!r} does not read the stage the problem says: {fix}"
+            )
         given[name] = evaluator
     missing = [
         f"{entry.name!r} version {entry.version!r}"
-        for entry in spec.evaluation.evaluators
+        for entry in spec.evaluators
         if entry.name not in given
     ]
     if missing:
         raise EvaluationContractError(f"no evaluator given for {', '.join(missing)}")
-    return [(entry, given[entry.name]) for entry in spec.evaluation.evaluators]
+    return [(entry, given[entry.name]) for entry in spec.evaluators]
 
 
 def _show(metrics: Collection[MetricKey]) -> str:
@@ -194,13 +215,16 @@ def _show(metrics: Collection[MetricKey]) -> str:
 def _owners(
     spec: ProblemSpec, evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]]
 ) -> tuple[dict[MetricKey, str], dict[MetricKey, str]]:
-    """``(owners, declared)``: the evaluator that measures each metric an objective or a
-    constraint names, and the evaluator that declares each metric any of them declares.
+    """``(owners, declared)``: the evaluator instance that measures each metric an objective or
+    a constraint names, and the evaluator that declares each metric any of them declares.
 
     A single evaluator measures all of them; if it declares ``metrics``, they must be among them.
-    Several evaluators must each declare their metrics, no metric may be declared twice, and
-    every objective and constraint metric must be declared by one of them. A constraint ``unit``
-    must be the unit its evaluator declares. Raises :class:`EvaluationContractError`.
+    Several evaluators must each declare their metrics, and no metric may be declared by two
+    implementations. Each objective and constraint metric is then resolved: of the instances
+    whose implementation declares it, exactly one must remain (objectives have no filters yet
+    that narrow them down; with one instance per implementation, at most one declares it). A
+    constraint ``unit`` must be the unit its evaluator declares. Raises
+    :class:`EvaluationContractError`.
     """
     wanted = [(o.stage, o.metric) for o in spec.objectives]
     wanted = list(dict.fromkeys(wanted + [(c.stage, c.metric) for c in spec.constraints]))
@@ -223,7 +247,11 @@ def _owners(
                     f"{name!r}; a metric must have one owner"
                 )
             declared[key] = name
-    unmeasured = [key for key in wanted if key not in declared]
+    measured_by = {
+        key: [name for name, metrics in units.items() if metrics is not None and key in metrics]
+        for key in wanted
+    }
+    unmeasured = [key for key in wanted if not measured_by[key]]
     if unmeasured:
         if len(units) == 1:
             ((name, metrics),) = units.items()
@@ -236,7 +264,7 @@ def _owners(
             f"{name!r} measures {_show(sorted(metrics or {}))}" for name, metrics in units.items()
         )
         raise EvaluationContractError(f"no evaluator measures {_show(unmeasured)}; {supported}")
-    owners = {key: declared[key] for key in wanted}
+    owners = {key: _resolve(key, measured_by[key]) for key in wanted}
     for constraint in spec.constraints:
         key = (constraint.stage, constraint.metric)
         metrics = units[owners[key]]
@@ -249,13 +277,24 @@ def _owners(
     return owners, declared
 
 
+def _resolve(key: MetricKey, instances: Sequence[str]) -> str:
+    """The one evaluator instance of ``instances`` (those that measure ``key``) left after the
+    objective's filters; there are none yet, so exactly one must measure it."""
+    if len(instances) != 1:
+        raise EvaluationContractError(
+            f"metric {_show([key])} is measured by {', '.join(map(repr, instances))}; it must "
+            "resolve to one evaluator"
+        )
+    return instances[0]
+
+
 @dataclass(frozen=True, slots=True)
 class _Plan:
     """What the preflight established before anything runs."""
 
     context: StageContext
     evaluators: tuple[tuple[EvaluatorSpec, EvaluatorProtocol], ...]  # problem order
-    targets: tuple[str, ...]  # the pipeline stages the evaluators require
+    targets: tuple[str, ...]  # the pipeline stages the evaluators read
     owners: Mapping[MetricKey, str]  # objective or constraint metric -> evaluator
     declared: Mapping[MetricKey, str]  # any declared metric -> evaluator
 
@@ -268,14 +307,14 @@ def _preflight(
 ) -> _Plan:
     """Check everything that can be checked before a file is created or a stage runs.
 
-    Binds ``evaluators`` to the problem, checks the stages they require (those in
-    ``provided`` are not run), calls each evaluator's ``check()`` with the request it would get
-    and decides which evaluator measures each objective and constraint metric. Raises
-    :class:`EvaluationContractError` (or what a ``check()`` raises).
+    Binds ``evaluators`` to the problem, checks the stages they read (those in ``provided``, the
+    stages the caller supplies, are not run), calls each evaluator's ``check()`` with the request
+    it would get and decides which evaluator measures each objective and constraint metric.
+    Raises :class:`EvaluationContractError` (or what a ``check()`` raises).
     """
     context = StageContext.of(spec)
     bound = _bind(spec, evaluators)
-    targets = tuple(stage for _, ev in bound if (stage := _requires(ev)) is not None)
+    targets = tuple(stage for _, ev in bound if (stage := _stage(ev)) is not None)
     check_stages(context, *targets, provided=provided)
     for entry, evaluator in bound:
         check = getattr(evaluator, "check", None)
@@ -327,18 +366,16 @@ def _request(
     """The request an evaluator receives, for ``check()`` and ``evaluate()`` alike.
 
     ``settings`` are those of its ``entry`` in the problem plus the defaults the evaluator
-    declares; ``events``, ``seed``, the backend arguments and ``generation`` are the context's,
-    the same for every evaluator.
+    declares; ``events`` and ``seed`` are those of the stage it reads.
     """
+    events, seed = context.conditions(entry.stage)
     return EvaluationRequest(
         candidate=values,
         settings=with_defaults(evaluator, entry.settings),
         inputs=inputs or {},
         workdir=workdir,
-        events=context.events,
-        seed=context.seed,
-        backend_args=context.backend,
-        generation=context.generation,
+        events=events,
+        seed=seed,
     )
 
 
@@ -359,9 +396,9 @@ def _measure(
     is not called. Its own directory, ``workdir/evaluators/<name>``, is created just before the
     call; ``elapsed_seconds`` is the time of the call alone.
     """
-    required = _requires(evaluator)
-    given = {**inputs, **stages.inputs(required)}
-    error = stages.error(required)
+    stage = _stage(evaluator)
+    given = {**inputs, **stages.inputs(stage)}
+    error = stages.error(stage)
     if error is not None:
         request = _request(plan.context, values, entry, evaluator, given)
         return _record(spec, plan, entry, evaluator, key, request, EvaluationResult.failed(error))
@@ -405,6 +442,10 @@ class CandidateRecord:
     or constraint names to the evaluator that measures it. ``elapsed_seconds`` is the wall time
     of the whole evaluation: the stages, the evaluator calls and k4opt's checks. Its mappings are
     read-only copies, so a reader cannot change which evaluator owns a metric.
+
+    ``represents_candidate`` is ``False`` when the caller supplied a stage that the parameters
+    change (``k4opt evaluate --input simulation=FILE``): that file was not made from the
+    candidate, so the record must never count as an evaluation of it, whatever its status.
     """
 
     candidate_key: CandidateKey
@@ -413,6 +454,7 @@ class CandidateRecord:
     owners: Mapping[MetricKey, str]
     reads: Mapping[str, tuple[str, ...]]
     elapsed_seconds: float
+    represents_candidate: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "records", tuple(self.records))
@@ -478,13 +520,14 @@ def _evaluate_candidate(
     """Evaluate one complete ``candidate`` of ``spec`` with each of ``evaluators``, once.
 
     The candidate maps each canonical parameter reference to a scalar; ``evaluators`` implement
-    the problem's ``evaluation.evaluators``, in any order. Before any stage runs, raises
+    the problem's ``evaluators``, in any order. Before any stage runs, raises
     :class:`CandidateError` for a candidate outside the declared domains and
     :class:`EvaluationContractError` for evaluators that do not match the problem (missing,
     undeclared, given twice, another version), settings an evaluator's ``check()`` rejects, a
     stage that cannot run, or an objective or constraint metric that no evaluator, or two,
-    declare. The stages the evaluators require and ``inputs`` does not supply then run once each
-    (on ``inputs["geometry"]``, in ``workdir``). An evaluator whose stage failed, or whose stage
+    declare. The stages the evaluators read and ``inputs`` does not supply then run once each
+    (on ``inputs["geometry"]``, in ``workdir``); any other entry of ``inputs`` supplies the file
+    of the stage it is named after. An evaluator whose stage failed, or whose stage
     output lacks the requested events, gets a ``failed`` result without being called; the others
     are still called. An evaluator that raises :class:`EvaluationFailed` or
     :class:`EvaluationInvalid` gets that result; any other exception propagates, and so does an
@@ -500,7 +543,8 @@ def _evaluate_candidate(
         for entry, evaluator in plan.evaluators
     )
     reads = {
-        entry.name: tuple(stages.chain(_requires(evaluator)))
-        for entry, evaluator in plan.evaluators
+        entry.name: tuple(stages.chain(_stage(evaluator))) for entry, evaluator in plan.evaluators
     }
-    return CandidateRecord(key, records, stages, plan.owners, reads, time.perf_counter() - started)
+    represents = not any(changed_by_geometry(name) for name in stages.supplied)
+    elapsed = time.perf_counter() - started
+    return CandidateRecord(key, records, stages, plan.owners, reads, elapsed, represents)

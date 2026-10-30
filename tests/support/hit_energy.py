@@ -7,7 +7,7 @@ from k4opt.evaluation import Evaluator
 class HitEnergy(Evaluator):
     name = "test.hit_energy"
     version = "1"
-    requires = "simulation"
+    stage = "simulation"
     settings = {"collection": str}
     metrics = {"ecal_barrel.mean_hit_energy": "GeV"}
 

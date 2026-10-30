@@ -309,7 +309,6 @@ def test_result_equality() -> None:
 def test_empty_request_needs_nothing() -> None:
     request = EvaluationRequest()
     assert not request.candidate and not request.settings and not request.inputs
-    assert not request.backend_args
     assert request.workdir is None and request.events is None and request.seed is None
 
 
@@ -342,34 +341,6 @@ def test_candidate_values_are_scalars() -> None:
             EvaluationRequest(candidate={"p": cast(Any, bad)})
     with pytest.raises(EvaluationContractError, match="candidate parameter"):
         EvaluationRequest(candidate={"": 1})
-
-
-def test_backend_args_are_preserved_exactly() -> None:
-    args = ["--physics.list", "FTFP_BERT", "-v", "-v", "", " spaced ", "--physics.list", "QBBC"]
-    source: dict[str, Any] = {"ddsim": args, "k4run": ()}
-    request = EvaluationRequest(backend_args=source)
-    args.append("--late")
-    assert request.backend_args["ddsim"] == (
-        "--physics.list",
-        "FTFP_BERT",
-        "-v",
-        "-v",
-        "",
-        " spaced ",
-        "--physics.list",
-        "QBBC",
-    )
-    assert request.backend_args["k4run"] == ()
-    assert list(request.backend_args) == ["ddsim", "k4run"]
-
-
-def test_backend_args_reject_bare_strings_and_non_strings() -> None:
-    with pytest.raises(EvaluationContractError, match="list or tuple of strings"):
-        EvaluationRequest(backend_args={"ddsim": "--physics.list FTFP_BERT"})  # type: ignore[dict-item]
-    with pytest.raises(EvaluationContractError, match=r"\[1\] must be a string"):
-        EvaluationRequest(backend_args={"ddsim": ("-N", 5)})  # type: ignore[dict-item]
-    with pytest.raises(EvaluationContractError, match="tool"):
-        EvaluationRequest(backend_args={"": ("-N",)})
 
 
 def test_path_inputs_are_preserved(tmp_path: Path) -> None:
@@ -419,7 +390,7 @@ def test_package_does_not_pull_in_problem_or_geometry() -> None:
     )
 
 
-@pytest.mark.parametrize("field", ["candidate", "settings", "inputs", "backend_args"])
+@pytest.mark.parametrize("field", ["candidate", "settings", "inputs"])
 def test_request_mappings_must_be_mappings(field: str) -> None:
     with pytest.raises(EvaluationContractError, match=field):
         EvaluationRequest(**{field: [("a", 1)]})  # type: ignore[arg-type]
@@ -436,34 +407,7 @@ def test_message_must_be_text() -> None:
         EvaluationResult.failed(cast(Any, ValueError("boom")))
 
 
-@pytest.mark.parametrize(
-    "args", [{"--physics.list": "FTFP_BERT"}, {"-v", "-N"}, iter(["-v"]), "-v"]
-)
-def test_backend_args_must_be_ordered_sequences(args: Any) -> None:
-    with pytest.raises(EvaluationContractError, match="list or tuple of strings"):
-        EvaluationRequest(backend_args={"ddsim": args})
-
-
 @pytest.mark.parametrize("measurements", [{Measurement("s", "m", 1)}, iter([]), {"a": 1}])
 def test_measurements_must_be_ordered_sequences(measurements: Any) -> None:
     with pytest.raises(EvaluationContractError, match="list or tuple"):
         EvaluationResult("valid", measurements)
-
-
-# --- the generation context of a request ---
-
-
-def test_the_generation_context_is_copied_and_read_only() -> None:
-    gun: dict[str, Any] = {"particle": "gamma", "energy": {"value": 10, "unit": "GeV"}}
-    request = EvaluationRequest(generation=gun)
-    gun["energy"]["value"] = 1
-    assert request.generation == {"particle": "gamma", "energy": {"value": 10, "unit": "GeV"}}
-    with pytest.raises(TypeError):
-        request.generation["particle"] = "mu-"  # type: ignore[index]
-    assert not EvaluationRequest().generation
-    assert EvaluationRequest(generation={"sample": "zh.hepmc"}).generation == {"sample": "zh.hepmc"}
-
-
-def test_the_generation_context_must_be_a_mapping() -> None:
-    with pytest.raises(EvaluationContractError, match="generation"):
-        EvaluationRequest(generation=[("sample", "zh.hepmc")])  # type: ignore[arg-type]

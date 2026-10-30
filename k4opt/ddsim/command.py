@@ -1,14 +1,16 @@
-"""Translation of the evaluation settings into a ``ddsim`` command line.
+"""Translation of the stage settings into a ``ddsim`` command line.
 
-Verified against the ``ddsim`` of the Key4hep nightly 2026-10-20 (``ddsim --help``):
-``--gun.*`` values are DD4hep expressions, so a value carries its unit (``10*GeV``,
-``60*deg``, ``0*mm``), and ``--gun.distribution cos(theta)`` is flat in cos(theta), whereas
-``uniform`` is flat in theta. Everything here is pure: nothing is run or read.
+Verified against the ``ddsim`` of the Key4hep nightly 2026-10-20 (``ddsim --help`` and the
+sources ``DDSim/DD4hepSimulation.py`` and ``DDSim/Helper/ConfigHelper.py``): ``--gun.*`` values
+are DD4hep expressions, so a value carries its unit (``10*GeV``, ``60*deg``, ``0*mm``), and
+``--gun.distribution cos(theta)`` is flat in cos(theta), whereas ``uniform`` is flat in theta.
+Everything here is pure: nothing is run or read.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -43,6 +45,39 @@ _MANAGED_LONG = (
     "--crossingAngleBoost",
 )
 _MANAGED_SHORT = "NOGIM"  # -N, -O, -G, -I and -M, the short spellings of the above
+
+# where a managed option comes from instead, for the error message; the rest are primaries
+_MANAGED_BY = (
+    ("--numberOfEvents", "set events instead"),
+    ("--random.", "set seed instead"),
+    ("--compactFile", "the geometry comes from the problem"),
+    ("--outputFile", "k4opt chooses the output file"),
+    ("--runType", "k4opt runs ddsim in batch mode"),
+)
+
+# How ddsim's argparse reads an option (DD4hepSimulation.parseOptions and
+# ConfigHelper.addAllHelper): an option of a group (``group.name``) whose name starts with
+# "enable" or "force" is a flag without a value (store_true), and so are these top-level ones
+_FLAGS = ("enableDetailedShowerMode", "disableSignalHandler")
+# these options repeat (action="append") or take several values (nargs="+"); every other one
+# takes a single value
+_REPEATED = ("action.run", "action.event", "action.track", "action.step", "action.stack")
+_SEVERAL = ("meta.eventParameters", "meta.runParameters")
+# options k4opt refuses although it does not set them, with the reason
+_REFUSED = {
+    "steeringFile": "ddsim executes it as Python, which can change anything k4opt sets",
+    "skipNEvents": "it changes which events are simulated, which the problem defines",
+    "dumpParameter": "ddsim prints its configuration and exits without simulating",
+    "dumpSteeringFile": "ddsim prints a steering file and exits without simulating",
+    "gdb": "it runs ddsim under a debugger",
+}
+# options whose value is a file ddsim reads; the caller passes an absolute path and records it
+FILE_OPTIONS = ("physics.pdgfile",)
+
+_NESTED = (
+    "write each option under its full ddsim name (physics.list: FTFP_BERT), not as a nested mapping"
+)
+_OPTION_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)?")
 
 
 def _fail(path: str, message: str) -> DdsimError:
@@ -91,7 +126,7 @@ def _range(value: Json, path: str) -> tuple[int | float, int | float]:
 
 
 def particle_gun_args(particle_gun: Json) -> tuple[str, ...]:
-    """The ``ddsim`` particle-gun arguments for ``evaluation.generation``.
+    """The ``ddsim`` particle-gun arguments for the generation stage of a problem.
 
     ``particle``, ``energy`` and ``direction`` are required, ``vertex`` defaults to the
     origin. ``energy`` is the total energy of the primary. ``direction.distribution`` is passed
@@ -194,6 +229,103 @@ def managed_conflict(arg: str) -> bool:
     )
 
 
+def _check_option_name(key: object, path: str) -> str:
+    """``key`` if it may name a ``ddsim`` option the problem sets; raises otherwise."""
+    if not isinstance(key, str) or not _OPTION_NAME.fullmatch(key):
+        raise _fail(
+            path,
+            "must be a ddsim option as `ddsim --help` names it, without the leading --, "
+            "such as physics.list",
+        )
+    option = f"--{key}"
+    if managed_conflict(option):
+        hint = next(
+            (
+                hint
+                for managed, hint in _MANAGED_BY
+                if option.startswith(managed) or managed.startswith(option)
+            ),
+            "the primaries come from the generation stage",
+        )
+        raise _fail(path, f"is an option that k4opt sets itself: {hint}")
+    for refused, reason in _REFUSED.items():
+        if refused.startswith(key):  # ddsim also accepts a prefix of an option's name
+            raise _fail(path, f"--{refused} is not supported: {reason}")
+    known = (*_FLAGS, *_REPEATED, *_SEVERAL, *FILE_OPTIONS)
+    longer = [name for name in known if name.startswith(key) and name != key]
+    if longer:
+        raise _fail(path, f"write the full option name ({', '.join(longer)})")
+    return key
+
+
+def _is_flag(key: str) -> bool:
+    _, dot, name = key.partition(".")
+    return name.startswith(("enable", "force")) if dot else key in _FLAGS
+
+
+def _option_text(value: Json, path: str) -> str:
+    """One value as ddsim reads it: text unchanged, a number as written, a boolean as
+    ``True``/``False`` (ddsim's ``ConfigHelper.makeBool``)."""
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, (int, float)):
+        return repr(_number(value, path))
+    if isinstance(value, str) and value.strip():
+        return value
+    if isinstance(value, Mapping):
+        raise _fail(path, _NESTED)
+    raise _fail(path, f"must be a text, a number or a boolean, got {value!r}")
+
+
+def option_args(options: Mapping[str, Json]) -> tuple[str, ...]:
+    """The ``ddsim`` arguments for ``options``, ddsim option names mapped to values, in order.
+
+    A flag (``enableDetailedShowerMode``, a group option named ``enable*`` or ``force*``) is
+    switched on with ``true``; ``false`` is an error, since ddsim cannot switch a flag off on
+    its command line. The options that repeat (``action.run``, ...) or take several values
+    (``meta.eventParameters``, ...) accept a list. Every other option takes one value, given as
+    ``--name=value``. Options that k4opt sets itself (the geometry, output, event count, seed
+    and primaries) and those it refuses (``steeringFile``, ...) raise :class:`DdsimError`, as
+    does a value that cannot be written faithfully. Option names and values are otherwise
+    validated by ddsim when it starts.
+    """
+    if not isinstance(options, Mapping):
+        raise _fail("simulation", f"options must be a mapping, got {options!r}")
+    args: list[str] = []
+    for key, value in options.items():
+        path = f"simulation.{key}"
+        if isinstance(value, Mapping):
+            raise _fail(path, _NESTED)
+        key = _check_option_name(key, path)
+        if _is_flag(key):
+            if value is not True:
+                raise _fail(
+                    path,
+                    "ddsim cannot switch a flag off on its command line; leave it out"
+                    if value is False
+                    else f"is a flag: write true to switch it on, got {value!r}",
+                )
+            args.append(f"--{key}")
+        elif key in _REPEATED or key in _SEVERAL:
+            values = list(value) if isinstance(value, (list, tuple)) else [value]
+            if not values:
+                raise _fail(path, "must not be an empty list")
+            texts = [_option_text(item, f"{path}[{i}]") for i, item in enumerate(values)]
+            if key in _REPEATED:
+                args.extend(f"--{key}={text}" for text in texts)
+            else:
+                args.extend((f"--{key}", *texts))
+        elif isinstance(value, (list, tuple)):
+            raise _fail(
+                path,
+                "ddsim reads a single value for this option; write it as one text the way "
+                "ddsim's command line expects it",
+            )
+        else:
+            args.append(f"--{key}={_option_text(value, path)}")
+    return tuple(args)
+
+
 def ddsim_arguments(
     *,
     compact: Path,
@@ -202,16 +334,16 @@ def ddsim_arguments(
     seed: int | None,
     particle_gun: Json = None,
     sample: Path | None = None,
-    user_args: Sequence[str],
+    options: Mapping[str, Json],
 ) -> tuple[str, ...]:
-    """The arguments of ``ddsim`` (without the executable): managed ones, then ``user_args``.
+    """The arguments of ``ddsim`` (without the executable): managed ones, then ``options``.
 
     The primaries come from exactly one of ``particle_gun`` (see :func:`particle_gun_args`) and
     ``sample``, an event file that ``ddsim`` reads with ``--inputFiles`` (it picks the reader
-    from the file extension and validates the content). ``user_args`` are appended unchanged
-    and in order; one that sets an option managed by k4opt raises :class:`DdsimError` instead of
-    silently winning or losing. ``events`` must be a positive integer and ``seed`` an integer
-    or ``None``.
+    from the file extension and validates the content). ``options`` follow in order, translated
+    by :func:`option_args`; one that sets an option managed by k4opt raises :class:`DdsimError`
+    instead of silently winning or losing. ``events`` must be a positive integer and ``seed`` an
+    integer or ``None``.
     """
     if isinstance(events, bool) or not isinstance(events, int) or events < 1:
         raise DdsimError(f"events must be a positive integer, got {events!r}")
@@ -222,13 +354,7 @@ def ddsim_arguments(
             "generation: set exactly one of particle_gun and sample "
             f"(got {'both' if sample is not None else 'neither'})"
         )
-    for arg in user_args:
-        if managed_conflict(arg):
-            raise DdsimError(
-                f"backend.ddsim.args: {arg!r} sets an option that k4opt manages (geometry, "
-                "output, event count, seed and generation come from the problem); "
-                "remove it from the arguments"
-            )
+    user = option_args(options)
     managed = [
         f"--compactFile={compact}",
         f"--outputFile={output}",
@@ -237,4 +363,4 @@ def ddsim_arguments(
     ]
     if seed is not None:
         managed.append(f"--random.seed={seed}")
-    return (*managed, *user_args)
+    return (*managed, *user)

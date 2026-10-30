@@ -17,8 +17,9 @@ class EvaluatorProtocol(Protocol):
     needed; a class with these members, or an object built by a function, is one.
 
     ``name`` and ``version`` identify the evaluator's measurement contract, the
-    counterparts of ``name`` and ``version`` of an entry of ``evaluation.evaluators`` in the
-    problem file. They are plain labels: the protocol does not look evaluators up by them.
+    counterparts of ``name`` and ``version`` of an entry of ``evaluators`` in the problem file.
+    They are plain labels: the protocol does not look evaluators up by them. An optional
+    ``stage`` attribute names the pipeline stage it reads.
     """
 
     @property

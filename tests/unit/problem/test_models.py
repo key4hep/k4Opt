@@ -9,7 +9,7 @@ from typing import Any, cast
 import pytest
 
 from k4opt import frozen as frozen_module
-from k4opt.problem import Evaluation, EvaluatorSpec, ProblemConfigError, parse_problem
+from k4opt.problem import EvaluatorSpec, ProblemConfigError, ProblemSpec, Stage, parse_problem
 from k4opt.problem.models import freeze, thaw
 
 
@@ -40,8 +40,9 @@ def test_round_trip(doc: dict[str, Any]) -> None:
 def test_mutating_the_input_does_not_change_the_spec(doc: dict[str, Any]) -> None:
     problem = parse_problem(doc)
     before = problem.to_dict()
-    doc["evaluation"]["generation"]["particle"] = "e-"
-    doc["evaluation"]["backend"]["ddsim"]["args"].append("--extra")
+    doc["stages"]["generation"]["particle"] = "e-"
+    doc["stages"]["generation"]["direction"]["theta"].append(1)
+    doc["evaluators"][0]["settings"]["collection"] = "Other"
     doc["parameters"][0]["bounds"][0] = -1
     doc["objectives"].clear()
     assert problem.to_dict() == before
@@ -51,39 +52,56 @@ def test_mutating_to_dict_does_not_change_the_spec(doc: dict[str, Any]) -> None:
     problem = parse_problem(doc)
     before = problem.to_dict()
     data = cast(dict[str, Any], problem.to_dict())
-    data["evaluation"]["generation"]["particle"] = "e-"
-    data["evaluation"]["backend"]["ddsim"]["args"].append("--extra")
+    data["stages"]["generation"]["particle"] = "e-"
+    data["stages"]["simulation"]["physics.list"] = "QGSP_BERT"
     data["parameters"].clear()
     assert problem.to_dict() == before
 
 
 def test_stored_values_are_read_only(doc: dict[str, Any]) -> None:
-    evaluation = parse_problem(doc).evaluation
+    problem = parse_problem(doc)
+    generation = problem.stages["generation"]
     with pytest.raises(TypeError):
-        evaluation.generation["particle"] = 1  # type: ignore[index]
+        generation.options["particle"] = 1  # type: ignore[index]
+    with pytest.raises(TypeError):
+        problem.stages["other"] = generation  # type: ignore[index]
     with pytest.raises(AttributeError):
-        evaluation.events = 1  # type: ignore[misc]
-    assert isinstance(evaluation.backend["ddsim"], tuple)
+        problem.stages["simulation"].events = 1  # type: ignore[misc]
+    assert isinstance(generation.options["direction"]["theta"], tuple)  # type: ignore[index]
 
 
-def test_directly_constructed_evaluation_copies_its_input() -> None:
+def test_directly_constructed_models_copy_their_input(doc: dict[str, Any]) -> None:
     settings: dict[str, Any] = {"a": {"b": [1, 2]}}
-    evaluators = [EvaluatorSpec("e", "1", settings=settings)]
-    evaluation = Evaluation(evaluators)  # type: ignore[arg-type]
+    options: dict[str, Any] = {"action.run": ["A"]}
+    evaluators = [EvaluatorSpec("e", "1", settings=settings, stage="simulation")]
+    stages = {"simulation": Stage("simulation", executor="ddsim", events=1, options=options)}
+    problem = parse_problem(doc)
+    spec = ProblemSpec(
+        problem.environment,
+        problem.geometry,
+        problem.parameters,
+        evaluators,  # type: ignore[arg-type]
+        problem.objectives,
+        stages=stages,
+    )
     settings["a"]["b"].append(3)
+    options["action.run"].append("B")
     evaluators.append(EvaluatorSpec("f", "1"))
-    assert evaluation.to_dict()["evaluators"] == [
-        {"name": "e", "version": "1", "settings": {"a": {"b": [1, 2]}}}
+    stages.clear()
+    data = spec.to_dict()
+    assert data["evaluators"] == [
+        {"name": "e", "version": "1", "stage": "simulation", "settings": {"a": {"b": [1, 2]}}}
     ]
-    assert isinstance(evaluation.evaluators, tuple)
+    assert data["stages"] == {"simulation": {"executor": "ddsim", "events": 1, "action.run": ["A"]}}
+    assert isinstance(spec.evaluators, tuple)
 
 
-@pytest.mark.parametrize("args", ["--physics.list", ["--n", 1], {"--a", "--b"}])
-def test_directly_constructed_evaluation_needs_backend_args_as_a_list_of_strings(
-    args: Any,
-) -> None:
-    with pytest.raises(ProblemConfigError, match=r"backend\.ddsim\.args: must be a list"):
-        Evaluation((EvaluatorSpec("e", "1"),), backend={"ddsim": args})
+@pytest.mark.parametrize(
+    "fields", [{}, {"executor": "gun", "file": "events.hepmc"}], ids=["neither", "both"]
+)
+def test_a_stage_is_run_or_given_as_a_file(fields: dict[str, Any]) -> None:
+    with pytest.raises(ProblemConfigError, match="needs exactly one of 'executor' and 'file'"):
+        Stage("generation", **fields)
 
 
 def test_spec_is_hashable_and_picklable(doc: dict[str, Any]) -> None:
@@ -93,16 +111,18 @@ def test_spec_is_hashable_and_picklable(doc: dict[str, Any]) -> None:
 
 
 def test_optional_parts_are_omitted_from_to_dict(doc: dict[str, Any]) -> None:
-    for key in ("name", "constraints"):
+    for key in ("name", "constraints", "stages"):
         del doc[key]
-    for key in ("events", "seed", "generation", "backend"):
-        del doc["evaluation"][key]
-    del doc["evaluation"]["evaluators"][0]["settings"]
+    del doc["evaluators"][0]["settings"], doc["evaluators"][0]["stage"]
     data = parse_problem(doc).to_dict()
-    assert "name" not in data and "constraints" not in data
-    assert data["evaluation"] == {
-        "evaluators": [{"name": "calo.single_particle_shower", "version": "1"}]
-    }
+    assert "name" not in data and "constraints" not in data and "stages" not in data
+    assert data["evaluators"] == [{"name": "calo.single_particle_shower", "version": "1"}]
+
+
+def test_a_stage_without_seed_omits_it(doc: dict[str, Any]) -> None:
+    del doc["stages"]["simulation"]["seed"]
+    simulation = parse_problem(doc).to_dict()["stages"]["simulation"]  # type: ignore[index]
+    assert simulation == {"executor": "ddsim", "events": 1000, "physics.list": "FTFP_BERT"}
 
 
 def test_canonical_target(doc: dict[str, Any]) -> None:
@@ -183,27 +203,28 @@ def test_aliases_below_the_limit_are_kept_and_shared_results_are_equal() -> None
 
 
 def test_alias_tower_in_a_document_parses_quickly(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["evaluators"][0]["settings"] = {"tower": _alias_tower(17)}
+    doc["evaluators"][0]["settings"] = {"tower": _alias_tower(17)}
     problem = parse_problem(doc)
     assert parse_problem(doc) == problem
 
 
 def test_equal_specs_hash_equally_whatever_the_key_order(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["evaluators"][0]["settings"] = {"x": 1, "y": {"a": 1, "b": 2}}
+    doc["evaluators"][0]["settings"] = {"x": 1, "y": {"a": 1, "b": 2}}
     first = parse_problem(doc)
-    doc["evaluation"]["evaluators"][0]["settings"] = {"y": {"b": 2, "a": 1}, "x": 1}
+    doc["evaluators"][0]["settings"] = {"y": {"b": 2, "a": 1}, "x": 1}
     second = parse_problem(doc)
     assert first == second
     assert hash(first) == hash(second)
     assert len({first, second}) == 1
     # insertion order is still what iteration and serialization show
-    assert list(second.evaluation.evaluators[0].settings) == ["y", "x"]
-    evaluators = second.to_dict()["evaluation"]["evaluators"]  # type: ignore[index]
+    assert list(second.evaluators[0].settings) == ["y", "x"]
+    evaluators: Any = second.to_dict()["evaluators"]
     assert list(evaluators[0]["settings"]) == ["y", "x"]
 
 
 def test_different_specs_are_still_different(doc: dict[str, Any]) -> None:
-    other = {**doc, "evaluation": {**doc["evaluation"], "seed": 43}}
+    other = {**doc, "stages": {**doc["stages"], "simulation": {**doc["stages"]["simulation"]}}}
+    other["stages"]["simulation"]["seed"] = 43
     assert parse_problem(doc) != parse_problem(other)
 
 

@@ -6,11 +6,11 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from k4opt.ddsim.command import ddsim_arguments
+from k4opt.ddsim.command import ddsim_arguments, option_args, particle_gun_args
 from k4opt.ddsim.errors import DdsimError
 from k4opt.frozen import Json
 
@@ -47,13 +47,24 @@ class SimulationRun:
         return {role: path for role, path in roles.items() if path.is_file()}
 
 
+def check_particle_gun(particle_gun: Json) -> None:
+    """Raise :class:`DdsimError` if ``particle_gun`` does not describe a gun ddsim can fire."""
+    particle_gun_args(particle_gun)
+
+
+def check_options(options: Mapping[str, Json]) -> None:
+    """Raise :class:`DdsimError` if ``options`` (ddsim option names mapped to values) cannot be
+    passed to ddsim faithfully, or set what k4opt manages."""
+    option_args(options)
+
+
 def check_arguments(
     *,
     events: int,
     seed: int | None,
     particle_gun: Json = None,
     sample: Path | None = None,
-    args: Sequence[str],
+    options: Mapping[str, Json],
 ) -> None:
     """Raise :class:`DdsimError` if these settings cannot be turned into a ``ddsim`` command.
 
@@ -66,7 +77,7 @@ def check_arguments(
         seed=seed,
         particle_gun=particle_gun,
         sample=sample,
-        user_args=args,
+        options=options,
     )
 
 
@@ -86,16 +97,18 @@ def simulate(
     seed: int | None,
     particle_gun: Json = None,
     sample: Path | None = None,
-    args: Sequence[str],
+    options: Mapping[str, Json],
 ) -> SimulationRun:
     """Run the ``ddsim`` found on ``PATH`` on ``compact``, in the new directory ``workdir``.
 
     The command is an argument list without a shell: the options k4opt manages (geometry,
-    output, event count, seed, particle gun or input sample) followed by ``args`` unchanged.
-    Relative paths are taken from the current directory. ``workdir`` receives
-    ``events.edm4hep.root``, ``ddsim.stdout.log``, ``ddsim.stderr.log`` and ``ddsim.json``
-    (command, directory, exit code). Raises :class:`DdsimError` for unsupported settings or
-    arguments or an existing ``workdir``.
+    output, event count, seed, particle gun or input sample) followed by ``options`` in order
+    (see :func:`~k4opt.ddsim.command.option_args`). Relative ``compact`` and ``sample`` paths
+    are taken from the current directory; option values are passed unchanged and ddsim runs in
+    ``workdir``, so a file named in an option (``physics.pdgfile``) must be absolute.
+    ``workdir`` receives ``events.edm4hep.root``, ``ddsim.stdout.log``, ``ddsim.stderr.log``
+    and ``ddsim.json`` (command, directory, exit code). Raises :class:`DdsimError` for
+    unsupported settings or options or an existing ``workdir``.
     """
     # ddsim runs inside workdir, so every path in its command line must be absolute
     compact = Path(os.path.abspath(compact))
@@ -112,7 +125,7 @@ def simulate(
         seed=seed,
         particle_gun=particle_gun,
         sample=sample,
-        user_args=args,
+        options=options,
     )
     try:
         workdir.mkdir(parents=True)

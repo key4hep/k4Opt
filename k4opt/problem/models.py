@@ -3,10 +3,10 @@
 The models describe the draft ``k4opt.problem/v1alpha1`` format of ``docs/problem.md``.
 They hold declarative data only: nothing here looks up an evaluator or metric or touches
 the Key4hep stack; :func:`k4opt.problem.load_problem` attaches the resolved geometry targets
-to the :class:`ProblemSpec` as private runtime state. Evaluator-owned content (each
-evaluator's ``settings``, the generation and the backend arguments) is stored as an immutable
-copy, so neither the caller's YAML data nor the object handed out by
-:meth:`ProblemSpec.to_dict` aliases the stored state.
+to the :class:`ProblemSpec` as private runtime state. Executor- and evaluator-owned content
+(each stage's options, each evaluator's ``settings``) is stored as an immutable copy, so
+neither the caller's YAML data nor the object handed out by :meth:`ProblemSpec.to_dict`
+aliases the stored state.
 """
 
 from __future__ import annotations
@@ -130,13 +130,15 @@ class Parameter:
 class EvaluatorSpec:
     """One evaluator of a problem: the label of its measurement contract and its settings.
 
-    ``name`` and ``version`` must equal those of the evaluator that measures; ``settings`` is
-    owned by that evaluator's contract.
+    ``name`` and ``version`` must equal those of the evaluator that measures, and so must
+    ``stage``, the pipeline stage it reads (``None``: it reads none); ``settings`` is owned by
+    that evaluator's contract.
     """
 
     name: str
     version: str
     settings: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    stage: str | None = None
 
     def __post_init__(self) -> None:
         # Direct construction gets the same defensive copy as parsing does.
@@ -146,56 +148,53 @@ class EvaluatorSpec:
 
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {"name": self.name, "version": self.version}
+        if self.stage is not None:
+            data["stage"] = self.stage
         if self.settings:
             data["settings"] = thaw(self.settings)
         return data
 
 
 @dataclass(frozen=True, slots=True)
-class Evaluation:
-    """How a candidate is measured: the evaluators and the one context they share.
+class Stage:
+    """One entry of ``stages``: a pipeline stage, run by an ``executor`` or given as a ``file``.
 
-    Each of ``evaluators`` measures the candidate with its own settings. The other fields are
-    the conditions of the pipeline stages, shared by every evaluator: ``events``, ``seed``,
-    ``generation`` (where the primary particles come from: a particle gun, interpreted by
-    :mod:`k4opt.ddsim`, or ``sample``, the path of an event file) and ``backend``, which maps a
-    tool name to its ordered, uninterpreted argument list.
+    ``type`` says what the stage does (``generation``, ``simulation``); the entry is named after
+    it. A stage that runs has its executor's ``options``: the particle gun's keys for ``gun``,
+    ddsim options for ``ddsim``, which also has ``events`` (how many to simulate) and ``seed``.
+    A stage given as a ``file`` (a path; a relative one is read from the problem file's
+    directory) is not run: the file is its output. Which executors and options are valid is
+    checked by :func:`k4opt.problem.parse_problem`.
     """
 
-    evaluators: tuple[EvaluatorSpec, ...]
+    type: str
+    executor: str | None = None
+    file: str | None = None
     events: int | None = None
     seed: int | None = None
-    generation: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
-    backend: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: FrozenMap({}))
+    options: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
+        if (self.executor is None) == (self.file is None):
+            raise ProblemConfigError(
+                f"stages.{self.type}: needs exactly one of 'executor' and 'file'"
+            )
         # Direct construction gets the same defensive copy as parsing does.
-        object.__setattr__(self, "evaluators", tuple(self.evaluators))
-        generation = freeze(self.generation, "generation")
-        assert isinstance(generation, Mapping)
-        object.__setattr__(self, "generation", generation)
-        for name, args in self.backend.items():
-            # a str would become its characters, a set an arbitrary order
-            if not isinstance(args, (list, tuple)) or not all(isinstance(a, str) for a in args):
-                raise ProblemConfigError(f"backend.{name}.args: must be a list of strings")
-        object.__setattr__(
-            self,
-            "backend",
-            FrozenMap({name: tuple(args) for name, args in self.backend.items()}),
-        )
+        options = freeze(self.options, f"stages.{self.type}")
+        assert isinstance(options, Mapping)
+        object.__setattr__(self, "options", options)
 
     def to_dict(self) -> dict[str, object]:
-        data: dict[str, object] = {}
+        if self.file is not None:
+            return {"file": self.file}
+        data: dict[str, object] = {"executor": self.executor}
         if self.events is not None:
             data["events"] = self.events
         if self.seed is not None:
             data["seed"] = self.seed
-        if self.generation:
-            data["generation"] = thaw(self.generation)
-        if self.backend:
-            data["backend"] = {name: {"args": list(args)} for name, args in self.backend.items()}
-        data["evaluators"] = [evaluator.to_dict() for evaluator in self.evaluators]
-        return data
+        options = thaw(self.options)
+        assert isinstance(options, dict)
+        return data | options
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,8 +243,9 @@ class ProblemSpec:
     environment: Environment
     geometry: GeometrySpec
     parameters: tuple[Parameter, ...]
-    evaluation: Evaluation
+    evaluators: tuple[EvaluatorSpec, ...]
     objectives: tuple[Objective, ...]
+    stages: Mapping[str, Stage] = field(default_factory=lambda: FrozenMap({}))
     constraints: tuple[Constraint, ...] = ()
     name: str | None = None
     # Runtime state of a loaded problem (see load_problem): the geometry discovered once and
@@ -256,8 +256,12 @@ class ProblemSpec:
     _targets: tuple[GeometryParameter, ...] = field(
         default=(), kw_only=True, repr=False, compare=False
     )
-    # the directory of the problem file, against which a relative ``generation.sample`` is read
+    # the directory of the problem file, against which a relative stage ``file`` is read
     _directory: Path | None = field(default=None, kw_only=True, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evaluators", tuple(self.evaluators))
+        object.__setattr__(self, "stages", FrozenMap(self.stages))
 
     def to_dict(self) -> dict[str, object]:
         """Plain JSON-compatible data in schema order; a fresh copy on every call.
@@ -270,7 +274,9 @@ class ProblemSpec:
         data["environment"] = self.environment.to_dict()
         data["geometry"] = self.geometry.to_dict()
         data["parameters"] = [parameter.to_dict() for parameter in self.parameters]
-        data["evaluation"] = self.evaluation.to_dict()
+        if self.stages:
+            data["stages"] = {name: stage.to_dict() for name, stage in self.stages.items()}
+        data["evaluators"] = [evaluator.to_dict() for evaluator in self.evaluators]
         data["objectives"] = [objective.to_dict() for objective in self.objectives]
         if self.constraints:
             data["constraints"] = [constraint.to_dict() for constraint in self.constraints]

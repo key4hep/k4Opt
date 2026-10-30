@@ -1,11 +1,12 @@
 # ddsim
 
 `k4opt.ddsim` runs Key4hep's `ddsim` once on a prepared geometry with a particle gun or an input
-sample: it builds the command from the problem's `evaluation.generation`, `events`, `seed` and
-`evaluation.backend.ddsim`, runs the `ddsim` of the active Key4hep environment
-and keeps the command, exit code and logs. It does not read the output; an evaluator does
-(see [evaluators.md](evaluators.md)). `k4opt evaluate` runs it as the `simulation`
-[stage](evaluation.md#stages) once per candidate, so evaluators never call it. Checked against the `ddsim` of the nightly 2026-10-20.
+sample: it builds the command from the problem's `stages` (the gun of `stages.generation`, or its
+`file`, and `events`, `seed` and the ddsim options of `stages.simulation`), runs the `ddsim` of
+the active Key4hep environment and keeps the command, exit code and logs. It does not read the
+output; an evaluator does (see [evaluators.md](evaluators.md)). `k4opt evaluate` runs it as the
+`simulation` [stage](evaluation.md#stages) once per candidate, so evaluators never call it.
+Checked against the `ddsim` of the nightly 2026-10-20 (its `--help` and its sources).
 
 ```python
 from k4opt.ddsim import simulate
@@ -15,23 +16,25 @@ run = simulate(
     workdir=new_dir,
     events=100,
     seed=42,
-    particle_gun=generation,  # evaluation.generation; or sample=Path("events.hepmc") instead
-    args=("--physics.list", "FTFP_BERT"),
+    particle_gun=gun,  # the keys of stages.generation; or sample=Path("events.hepmc") instead
+    options={"physics.list": "FTFP_BERT"},
 )
 print(run.error or run.output)
 ```
 
-`simulate` raises `DdsimError` for unsupported settings, conflicting arguments or an existing
-`workdir`, before anything is run. A `ddsim` that cannot run or fails is reported in
+`simulate` raises `DdsimError` for unsupported settings, options it cannot pass on faithfully or
+an existing `workdir`, before anything is run. A `ddsim` that cannot run or fails is reported in
 `SimulationRun.error` (not found, not started, nonzero exit with the tail of its standard
 error, no output file) with `returncode`, `argv` and the files. `check_arguments` does the first
-part alone. `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`, `ddsim.stderr.log` and
-`ddsim.json` (argument list, directory, exit code).
+part alone, `check_particle_gun` and `check_options` check a gun or options on their own (the
+problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`,
+`ddsim.stderr.log` and `ddsim.json` (argument list, directory, exit code).
 
-## Particle gun (`evaluation.generation`)
+## Particle gun (`stages.generation`, `executor: gun`)
 
-Without a `sample`, the keys of `evaluation.generation` describe a particle gun. Unknown keys are
-errors.
+The keys of a generation stage run by the `gun` describe the particle gun. Unknown keys are
+errors. The gun is fired inside `ddsim`, so it has no `events` or `seed` of its own: those of
+`stages.simulation` apply.
 
 | Key | Meaning |
 | --- | --- |
@@ -41,32 +44,68 @@ errors.
 | `direction` | `distribution` (`cos(theta)` or `uniform`, passed to `--gun.distribution`), `theta` and `phi` as `[low, high]` and `unit` (`deg`, `rad`); theta within 0 to a half turn, phi at most a full turn |
 
 One primary per event (`--gun.multiplicity=1`). `cos(theta)` is flat in cos(theta) (isotropic
-in solid angle) and phi, whereas `uniform` is flat in theta. Checked on the nightly: of 4000 events with theta in 10-170 degrees,
-50.2 % fell in |cos(theta)| < 0.5 (flat in cos: 50.8 %) against 37 % for `uniform`. Another
-distribution is an error, never a fallback.
+in solid angle) and phi, whereas `uniform` is flat in theta. Checked on the nightly: of 4000
+events with theta in 10-170 degrees, 50.2 % fell in |cos(theta)| < 0.5 (flat in cos: 50.8 %)
+against 37 % for `uniform`. Another distribution is an error, never a fallback.
 
-## Input sample (`evaluation.generation.sample`)
+## Event file (`stages.generation`, `file:`)
 
-Instead of a gun, `generation: {sample: events.hepmc}` simulates the events of a file. A relative
-path is read from the directory of the problem file. `ddsim` receives it as `--inputFiles`,
-chooses the reader from the file extension and validates the content, so k4opt accepts every
-format `ddsim` does. The `generation` stage checks that the file exists and records its path,
-size and SHA-256 in the provenance, so a changed sample is a different measurement. A gun and a
-sample together, or neither, are errors. `events` is the number of events to process; a sample
-with fewer events gives an incomplete simulation, which the simulation stage reports as `failed`.
+Instead of a gun, a generation stage given as a file simulates its events:
+
+```yaml
+stages:
+  generation:
+    file: samples/zh.hepmc
+  simulation:
+    executor: ddsim
+    events: 500
+```
+
+A relative path is read from the directory of the problem file. `ddsim` receives it as
+`--inputFiles`, chooses the reader from the file extension and validates the content, so k4opt
+accepts every format `ddsim` does. The file must exist before anything runs; its path, size and
+SHA-256 are recorded in the provenance, so a changed file is a different measurement.
+`stages.simulation.events` is the number of events to simulate; a file with fewer events gives
+an incomplete simulation, which the simulation stage reports as `failed`.
+
+## Options (`stages.simulation`)
+
+Every key of the simulation stage other than `executor`, `events` and `seed` is a ddsim option,
+named as `ddsim --help` names it without the leading `--`, and is passed on in the order of the
+problem. ddsim's command line reads options in four ways, and k4opt writes each value the way
+ddsim reads it:
+
+| ddsim option | YAML | Command line |
+| --- | --- | --- |
+| a flag: an option of a group named `enable*` or `force*` (`geometry.enableDebugVolumes`), and `enableDetailedShowerMode`, `disableSignalHandler` | `true` | `--geometry.enableDebugVolumes` |
+| a flag | `false` | error: ddsim cannot switch a flag off on its command line, so leave it out |
+| most options | a text, a number or a boolean | `--physics.list=FTFP_BERT`, `--physics.rangecut=0.7`, `--part.keepAllParticles=True` (ddsim reads `True`/`False`) |
+| options that repeat: `action.run`, `action.event`, `action.track`, `action.step`, `action.stack` | a list | `--action.run=A --action.run=B` |
+| options with several values: `meta.eventParameters`, `meta.runParameters` | a list | `--meta.eventParameters a/F=1 b/I=2` |
+
+A list for any other option, a nested mapping (write `physics.list: FTFP_BERT`, not
+`physics: {list: FTFP_BERT}`), an empty value or a prefix of a known option's name is an error,
+never a guess. An integration test (`tests/integration/ddsim`) checks with
+`ddsim --dumpParameter` that ddsim parses every kind as intended. Option names and values are
+otherwise validated by ddsim when it starts, seconds before the first event.
+
+What an evaluation defines cannot be changed by an option: `compactFile`, `outputFile`,
+`numberOfEvents` (set `events`), `runType`, `inputFiles`, `macroFile`, `enableGun`,
+`enableG4GPS`, `enableG4Gun`, any `gun.*` and `random.*` (set `seed`), `vertexSigma`,
+`vertexOffset` and `crossingAngleBoost` are rejected with a pointer to where they come from,
+also as unambiguous abbreviations (`ddsim` accepts them). These are refused too:
+`steeringFile` (ddsim executes it as Python, which can change anything k4opt sets),
+`skipNEvents` (it changes which events are simulated), `dumpParameter` and `dumpSteeringFile`
+(ddsim exits without simulating) and `gdb`. A file named by `physics.pdgfile` is read from the
+problem's directory if relative, passed to ddsim as an absolute path and recorded with its size
+and SHA-256.
 
 ## Command
 
-`--compactFile`, `--outputFile`, `--numberOfEvents`, the gun options and (if given)
-`--random.seed` are written by k4opt (as `--option=value`, so values may start with `-`),
-followed by `backend.ddsim.args` unchanged, in order, repeats included. The argument list is
-run without a shell (`shell=False`), so `$VARS` are not expanded, from `workdir`. An argument
-that sets an option k4opt manages is rejected: `--compactFile`, `--outputFile`,
-`--numberOfEvents`, `--runType`, `--inputFiles`, `--macroFile`, `--enableGun`, `--enableG4GPS`,
-`--enableG4Gun`, any `--gun.*` and `--random.*`, `--vertexSigma`, `--vertexOffset`,
-`--crossingAngleBoost`, the short forms `-N -O -G -I -M` and unambiguous abbreviations
-(`ddsim` accepts them). Everything else is validated by `ddsim`. A `--steeringFile` is passed on
-but not hashed, and it can change what is simulated.
+`--compactFile`, `--outputFile`, `--numberOfEvents`, the gun options or `--inputFiles` and (if
+given) `--random.seed` are written by k4opt, followed by the options. Every value is written as
+`--option=value`, so values may start with `-`. The argument list is run without a shell
+(`shell=False`), so `$VARS` are not expanded, from `workdir`.
 
 ## Geometry
 

@@ -20,7 +20,7 @@ Typical use::
         version = "1"
 
         def evaluate(self, request):
-            # no `requires`: nothing runs first, so the metric names its stage itself
+            # no `stage`: nothing runs first, so the metric names its stage itself
             return {("analysis", "answer"): 42}
 """
 

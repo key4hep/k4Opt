@@ -8,10 +8,10 @@ command line::
         --evaluator examples/evaluators/calo_photon.py:CaloPhoton \\
         --param constants.ECal_cell_size=10.0 --output runs/cld-ecal-10mm
 
-It only reads: ``requires = "simulation"`` makes k4opt run generation and ``ddsim`` first, check
-that the EDM4hep file holds the requested events and hand it over. The two measurements,
-``simulation`` / ``ecal_barrel.angular_residual`` and ``ecal_barrel.fired_cells``, are defined
-in ``docs/evaluators.md``.
+It only reads: ``stage = "simulation"`` makes k4opt run the problem's stages (the gun and
+``ddsim``) first, check that the EDM4hep file holds the requested events and hand it over. The
+two measurements, ``simulation`` / ``ecal_barrel.angular_residual`` and
+``ecal_barrel.fired_cells``, are defined in ``docs/evaluators.md``.
 """
 
 import numpy as np
@@ -24,15 +24,16 @@ PHOTON = 22  # PDG code
 
 
 class CaloPhoton(Evaluator):
-    # must match the name of an entry of evaluation.evaluators in the problem file
+    # must match the name of an entry of evaluators in the problem file
     name = "calo.photon"
     # must match the version of that entry
     version = "1"
-    # k4opt runs generation and ddsim first and checks the event count
-    requires = "simulation"
+    # the stage it reads: k4opt runs the gun and ddsim first and checks the event count; the
+    # problem's entry says the same, stage: simulation
+    stage = "simulation"
     # the settings of that entry: the calorimeter hits to read (required)
     settings = {"collection": str}
-    # metric -> unit; its stage is `requires`
+    # metric -> unit; the metrics are classified under `stage`
     metrics = {"ecal_barrel.angular_residual": "mrad", "ecal_barrel.fired_cells": "1"}
 
     def evaluate(self, request):
