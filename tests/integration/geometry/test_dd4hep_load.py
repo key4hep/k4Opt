@@ -8,6 +8,7 @@ a fresh process.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -50,10 +51,7 @@ def load_with_dd4hep(compact: Path) -> dict[str, object]:
 
 @pytest.fixture(scope="module")
 def dd4hep_available() -> None:
-    probe = subprocess.run(
-        [sys.executable, "-c", "import dd4hep"], capture_output=True, check=False, timeout=120
-    )
-    if probe.returncode != 0:
+    if importlib.util.find_spec("dd4hep") is None:
         pytest.skip("the DD4hep Python bindings are not importable (source the Key4hep stack)")
 
 
