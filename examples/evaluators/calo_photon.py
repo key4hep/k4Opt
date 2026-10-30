@@ -60,6 +60,10 @@ class CaloPhoton(Evaluator):
             # look valid but measure something else
             if photon.getPDG() != PHOTON:
                 self.fail(f"expected a photon (PDG {PHOTON}), generated PDG {photon.getPDG()}")
+            # its true direction; checked first, so no skipped event hides a malformed gun
+            true = xyz(photon.getMomentum())
+            if not np.linalg.norm(true):
+                self.fail("the generated photon has no momentum, so no direction to compare with")
             # a photon that converted in the tracker arrives as an electron and a positron
             if photon.isDecayedInTracker():
                 continue
@@ -72,9 +76,7 @@ class CaloPhoton(Evaluator):
             # measured direction: from the vertex to the energy-weighted center of the fired
             # cells (a hit sits at the center of its cell)
             center = np.average([xyz(hit.getPosition()) for hit in fired], axis=0, weights=energies)
-            measured, true = center - xyz(photon.getVertex()), xyz(photon.getMomentum())
-            if not np.linalg.norm(true):
-                self.fail("the generated photon has no momentum, so no direction to compare with")
+            measured = center - xyz(photon.getVertex())
             if not np.linalg.norm(measured):  # a center at the vertex points nowhere
                 continue
             cosine = measured @ true / (np.linalg.norm(measured) * np.linalg.norm(true))

@@ -13,7 +13,21 @@ import yaml
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
-    """``yaml.SafeLoader`` that raises :class:`yaml.YAMLError` for a duplicate mapping key."""
+    """``yaml.SafeLoader`` that raises :class:`yaml.YAMLError` for a duplicate mapping key, and
+    for a value PyYAML recognizes but cannot construct (``2026-02-30``, ``!!int abc``), where
+    the base class lets the constructor's own exception escape."""
+
+    def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
+        try:
+            return super().construct_object(node, deep)
+        except yaml.YAMLError:
+            raise
+        except (ValueError, TypeError, AttributeError, OverflowError) as exc:
+            kind = node.tag.rpartition(":")[2]
+            value = f" {node.value!r}" if isinstance(node, yaml.ScalarNode) else ""
+            raise yaml.constructor.ConstructorError(
+                None, None, f"invalid {kind}{value}: {exc}", node.start_mark
+            ) from exc
 
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
         seen: set[Any] = set()

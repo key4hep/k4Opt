@@ -209,16 +209,19 @@ configuration: no entity expansion, no DTD loading, no network access.
    XML it includes, and local resource files they reference), into a temporary
    sibling of the output directory, keeping their root-relative layout so
    relative includes keep working. Symlinks are followed; a file included under
-   several names (symlinks) is copied once and the other names become relative
-   links in the snapshot. A redirected include (or resource) `ref` also brings
-   along the file it points at and everything that file includes. Nothing else
+   several names (symlinks), or also named by a resource `ref`, is copied once and the
+   other names become relative links in the snapshot, so an edit reaches every name. A
+   redirected include (or resource) `ref` also brings along the file it points at and
+   everything that file includes; an edit of a file reached under a new name is resolved
+   from that name's directory too. Nothing else
    from the tree is copied, so the snapshot of a 60 MB k4geo installation is a few dozen
    XML files.
 3. Re-parses each affected file from the copy, checks that the current value is
    the one discovery recorded, sets the new value, serializes, re-parses the
    result and verifies that nothing but the intended attributes changed.
 4. Re-walks the include graph of the edited snapshot so every local include still
-   resolves. A reachable relative resource outside the source root is rejected: moving the
+   resolves and every resource it references was copied. A reachable relative resource
+   outside the source root is rejected: moving the
    XML would change which file it refers to. Keep the file below the root (or choose a
    broader `root`), or refer to it by an absolute or `$VAR` path. Absolute paths and
    environment-variable references retain their spelling and are recorded as external.

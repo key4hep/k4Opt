@@ -77,6 +77,7 @@ def test_cached_evaluator_keeps_the_identity_of_the_executed_bytes(evaluator_fil
             "path": str(evaluator_file),
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
+            "executed": True,
         }
     )
     evaluator_file.unlink()
@@ -91,10 +92,12 @@ def test_a_module_imported_by_the_loader_is_identified_right_after_the_import(
     try:
         evaluator = load_evaluator("my_evaluator:Good")
         evaluator_file.write_text("# edited after the import\n")
+        # not the bytes Python compiled, which may have come from a cached .pyc
         assert evaluator_source(evaluator) == {
             "path": str(evaluator_file),
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
+            "executed": False,
         }
     finally:
         sys.modules.pop("my_evaluator", None)

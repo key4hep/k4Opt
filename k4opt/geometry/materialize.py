@@ -142,12 +142,18 @@ def new_files(catalog: Catalog, resolved: Sequence[ResolvedOverride]) -> Additio
         except OSError as exc:
             raise MaterializationError(f"cannot read {rel}: {exc}") from exc
 
-    for item in resolved:
-        if not item.changed or item.attribute != "ref":
-            continue
+    # a redirected include can reach a file under a new name (symlink), from which the other
+    # edits of that file resolve as well, so redirects go first
+    edits = sorted(
+        (item for item in resolved if item.changed and item.attribute == "ref"),
+        key=lambda item: item.parameter.tag not in INCLUDE_TAGS,
+    )
+    for item in edits:
         # relative references resolve against the directory of the name a file is reached by,
         # so an edit has to be resolved from every name (symlink) the edited file has
-        names = [item.file, *(a for a, f in catalog.file_aliases.items() if f == item.file)]
+        real = os.path.realpath(catalog.root / item.file)
+        others = [*catalog.file_aliases, *aliases]
+        names = [item.file, *(a for a in others if os.path.realpath(catalog.root / a) == real)]
         for base_dir in dict.fromkeys((catalog.root / n).parent for n in names):
             if item.parameter.tag in INCLUDE_TAGS:
                 if classify_ref(item.new_value) is not None:
@@ -289,12 +295,22 @@ def materialize(
         raise MaterializationError(f"materialization failed: {exc}") from exc
     try:
         snapshot = staging / "snapshot"
-        _verify_aliases(source.root, {**catalog.file_aliases, **extra.aliases})
-        _copy_closure(source.root, snapshot, [*catalog.files, *catalog.resources, *extra.hashes])
-        _link_aliases(snapshot, {**catalog.file_aliases, **extra.aliases})
+        aliases = _aliases(source.root, catalog, extra)
+        copies = [
+            r for r in (*catalog.files, *catalog.resources, *extra.hashes) if r not in aliases
+        ]
+        _verify_aliases(source.root, aliases)
+        _copy_closure(source.root, snapshot, copies)
+        _link_aliases(snapshot, aliases)
         _verify_copies(snapshot, {**catalog.file_hashes, **catalog.resource_hashes, **extra.hashes})
         changed = _apply_edits(source.root, snapshot, [r for r in resolved if r.changed])
         graph = _verify_snapshot(source.root, snapshot, source.compact)
+        for rel in graph.resources:
+            if not (snapshot / rel).is_file():
+                raise MaterializationError(
+                    f"generated snapshot is not self-consistent: the edited geometry references "
+                    f"{rel}, which was not copied"
+                )
         # a file reached under several names is walked from each, so a reference may repeat
         externals = list(dict.fromkeys(graph.externals))
         for external in externals:
@@ -387,12 +403,28 @@ def _copy_closure(source_root: Path, snapshot: Path, files: Sequence[str]) -> No
         destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
 
 
+def _aliases(root: Path, catalog: Catalog, extra: Additions) -> dict[str, str]:
+    """Every other name of a parsed XML file, mapped to that file.
+
+    Besides the include names discovery followed, a ``ref`` resource may name a parsed file;
+    each such name stays a symlink in the snapshot, or an edit would reach only one copy.
+    """
+    aliases = {**catalog.file_aliases, **extra.aliases}
+    parsed = {os.path.realpath(root / f): f for f in (*catalog.files, *extra.files)}
+    for rel in (*catalog.resources, *extra.resources):
+        target = parsed.get(os.path.realpath(root / rel))
+        if target is not None and target != rel:
+            aliases[rel] = target
+    return aliases
+
+
 def _link_aliases(snapshot: Path, aliases: Mapping[str, str]) -> None:
-    """Recreate symlinked include names as relative links, so edits reach every name."""
+    """Recreate symlinked names as relative links, so edits reach every name.
+
+    No alias is copied, so a name that already exists is an error, never silently a copy.
+    """
     for alias, target in aliases.items():
         link = snapshot / alias
-        if os.path.lexists(link):
-            continue
         link.parent.mkdir(parents=True, exist_ok=True)
         os.symlink(os.path.relpath(snapshot / target, link.parent), link)
 

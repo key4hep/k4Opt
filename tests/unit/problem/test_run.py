@@ -203,6 +203,7 @@ def test_summary_is_written_and_truthful(
     source = Path(evaluator["source"]["path"])
     assert source.name == "cell_count.py"
     assert evaluator["source"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert evaluator["source"]["executed"] is True  # loaded as FILE.py:Class
     assert evaluator["provenance"] == {} and evaluator["artifacts"] == {}  # none of its own
     assert evaluator["stages"] == ["generation", "simulation"]
     assert evaluator["workdir"] == str(tmp_path / "a" / "evaluators" / "test.cell_count")

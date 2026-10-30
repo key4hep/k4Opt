@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -560,6 +562,68 @@ def test_the_alias_left_reachable_decides_whether_a_resource_leaves_the_root(
     with pytest.raises(MaterializationError, match=r"g\.xml: resource '\.\./x\.stl' lies outside"):
         source.materialize([Override("lccdd.include[1].ref", "a.xml")], tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_a_symlinked_file_also_named_as_a_resource_stays_one_file(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a.xml"/><include ref="b.xml"/>'
+            '<shape name="S" ref="b.xml"/></lccdd>',
+            "a.xml": '<lccdd><define><constant name="X" value="1"/></define></lccdd>',
+        },
+    )
+    (geo / "b.xml").symlink_to("a.xml")
+    out = tmp_path / "out"
+    GeometrySource("main.xml", root=geo).materialize([Override("constants.X", "2")], out)
+    assert (out / "b.xml").is_symlink()
+    assert (out / "b.xml").read_text() == (out / "a.xml").read_text()
+    assert 'value="2"' in (out / "a.xml").read_text()
+
+
+def test_a_resource_edit_resolves_from_an_alias_a_redirect_introduces(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="sub/f.xml"/><include ref="a.xml"/></lccdd>',
+            "sub/f.xml": '<lccdd><shape name="S" ref="old.stl"/></lccdd>',
+            "sub/old.stl": "old\n",
+            "sub/new.stl": "new below sub\n",
+            "other/new.stl": "new below other\n",
+            "a.xml": "<lccdd/>",
+        },
+    )
+    (geo / "other" / "f.xml").symlink_to("../sub/f.xml")
+    edits = [Override("lccdd.include[2].ref", "other/f.xml"), Override("S.ref", "new.stl")]
+    out = tmp_path / "out"
+    GeometrySource("main.xml", root=geo).materialize(edits, out)
+    # other/f.xml is sub/f.xml, and from other/ its new reference names other/new.stl
+    assert (out / "other" / "new.stl").read_text() == "new below other\n"
+    assert (out / "sub" / "new.stl").read_text() == "new below sub\n"
+
+
+def test_a_resource_the_edited_geometry_needs_must_be_in_the_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><shape name="S" ref="a.stl"/></lccdd>',
+            "a.stl": "a\n",
+            "b.stl": "b\n",
+        },
+    )
+    additions = materialize_module.new_files
+
+    def forgetting(*args: Any) -> Any:
+        return dataclasses.replace(additions(*args), resources={})
+
+    monkeypatch.setattr(materialize_module, "new_files", forgetting)
+    with pytest.raises(MaterializationError, match=r"references b\.stl, which was not copied"):
+        GeometrySource("main.xml", root=geo).materialize(
+            [Override("S.ref", "b.stl")], tmp_path / "o"
+        )
+    assert not (tmp_path / "o").exists()
 
 
 def test_an_edit_after_parsing_cannot_move_an_override_to_another_element(

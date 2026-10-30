@@ -38,8 +38,10 @@ def evaluator_source(evaluator: EvaluatorProtocol) -> dict[str, Json]:
     return {"path": path}
 
 
-def _identity(path: str, data: bytes) -> FrozenMap[str, Json]:
-    return FrozenMap({"path": path, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+def _identity(path: str, data: bytes, *, executed: bool) -> FrozenMap[str, Json]:
+    """``executed``: ``data`` are the bytes Python compiled, not the file read after the import."""
+    digest = hashlib.sha256(data).hexdigest()
+    return FrozenMap({"path": path, "bytes": len(data), "sha256": digest, "executed": executed})
 
 
 def _identify_import(module: ModuleType) -> None:
@@ -52,7 +54,7 @@ def _identify_import(module: ModuleType) -> None:
         return
     if path is not None:
         with contextlib.suppress(OSError):
-            _SOURCES[module] = _identity(path, Path(path).read_bytes())
+            _SOURCES[module] = _identity(path, Path(path).read_bytes(), executed=False)
 
 
 def _load_file(path: Path) -> ModuleType:
@@ -81,7 +83,7 @@ def _load_file(path: Path) -> ModuleType:
         data = path.read_bytes()
         code = compile(data, str(path), "exec", dont_inherit=True)
         exec(code, module.__dict__)
-        _SOURCES[module] = _identity(str(path), data)
+        _SOURCES[module] = _identity(str(path), data, executed=True)
     except BaseException as exc:
         del sys.modules[name]
         if added:

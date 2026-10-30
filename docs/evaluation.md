@@ -299,10 +299,12 @@ registry; the `name` of each entry of `evaluators` stays a label that must equal
 an evaluator that is loaded.
 
 `evaluator_source(evaluator)` reports the path, size and SHA-256 of the file that defines the
-evaluator's class, taken when `load_evaluator` imports it. For `FILE.py:Class` these are the
-exact bytes compiled. For `package.module:Class` the file is read right after the import;
-Python may have run a cached `.pyc` of it, which only an edit that keeps size and timestamp
-leaves stale. Cached instances keep that identity if the file is later edited or removed. A
+evaluator's class, taken when `load_evaluator` imports it, and whether those are the bytes
+Python `executed`. For `FILE.py:Class` they are (`executed: true`): the bytes hashed are the
+bytes compiled. For `package.module:Class` the file is read right after the import
+(`executed: false`); Python may have run a cached `.pyc` of it, which only an edit that keeps
+size and timestamp leaves stale. Cached instances keep that identity if the file is later
+edited or removed. A
 class whose module was already imported before `load_evaluator` carries only its path: hashing
 the current file would not establish which code Python executed. Only the defining file is
 identified, not imported helpers.

@@ -59,8 +59,9 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    - `metrics`: every objective and constraint metric, the evaluator that owns it, and its
      value, unit and uncertainty, which are `null` unless that evaluator's result is `valid`;
    - `evaluators`, in problem order: name, version, the stage it reads, its source identity
-     (`source`: path, size and SHA-256 of the file defining its class, taken at import;
-     [details](evaluation.md#loading-an-evaluator)), status, message,
+     (`source`: path, size and SHA-256 of the file defining its class, taken at import, and
+     whether they are the bytes `executed`; [details](evaluation.md#loading-an-evaluator)),
+     status, message,
      settings (`declared` as the problem wrote them, `used` as the evaluator received them, with
      defaults and quantities in the declared unit), the collection of each role, the stages it
      read, its measurements with uncertainty, the artifacts and
