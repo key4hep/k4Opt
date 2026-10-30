@@ -15,8 +15,7 @@ environment:
     channel: nightly
     version: "2026-10-20"
 
-geometry:
-  entry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 
 parameters:
   # CLD uses 5.1 mm; 20 mm is about the width of a photon shower

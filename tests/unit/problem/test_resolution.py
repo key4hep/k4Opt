@@ -26,7 +26,7 @@ def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def problem_doc(doc: dict[str, Any]) -> dict[str, Any]:
-    doc["geometry"] = {"entry": MINI_COMPACT}
+    doc["geometry"] = MINI_COMPACT
     doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
     return doc
 
@@ -125,8 +125,8 @@ def test_missing_k4geo(
         load_problem(write_problem(tmp_path, problem_doc))
 
 
-def test_missing_geometry_entry(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
-    problem_doc["geometry"]["entry"] = "compact/det_v1/nope.xml"
+def test_missing_geometry_file(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
+    problem_doc["geometry"] = "compact/det_v1/nope.xml"
     with pytest.raises(SourceError, match="not found"):
         load_problem(write_problem(tmp_path, problem_doc))
 
@@ -146,7 +146,7 @@ def test_parse_problem_needs_no_geometry(
     problem_doc: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("K4GEO")
-    problem_doc["geometry"]["entry"] = "does/not/exist.xml"
+    problem_doc["geometry"] = "does/not/exist.xml"
     problem = parse_problem(problem_doc)
     assert (problem._source, problem._catalog, problem._targets) == (None, None, ())
 

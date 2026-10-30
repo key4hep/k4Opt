@@ -32,7 +32,6 @@ from k4opt.problem.models import (
     Environment,
     EvaluatorSpec,
     GeometrySelector,
-    GeometrySpec,
     Key4hepStack,
     Number,
     Objective,
@@ -74,11 +73,11 @@ _EVALUATOR_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
     """Read the UTF-8 YAML file ``path``, validate it and resolve its geometry parameters.
 
-    The geometry entry is located in the active k4geo tree (``$K4GEO`` for a relative
-    entry) and discovered once; every ``parameters[*].geometry`` must then select exactly
-    one attribute of it. Raises :class:`ProblemConfigError` for an invalid document or an
-    unresolvable target and :class:`~k4opt.geometry.GeometryError` when the geometry itself
-    cannot be located or read. The result keeps the discovered geometry for later use.
+    The geometry is located in the active k4geo tree (``$K4GEO`` for a relative path) and
+    discovered once; every ``parameters[*].geometry`` must then select exactly one attribute
+    of it. Raises :class:`ProblemConfigError` for an invalid document or an unresolvable
+    target and :class:`~k4opt.geometry.GeometryError` when the geometry itself cannot be
+    located or read. The result keeps the discovered geometry for later use.
     """
     problem_path = Path(path).expanduser()
     if not problem_path.is_file():
@@ -116,7 +115,7 @@ def parse_problem(data: object, *, source: str | os.PathLike[str] | None = None)
 
 def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ProblemSpec:
     """Return ``spec`` with its geometry discovered once and every parameter target resolved."""
-    source = GeometrySource(spec.geometry.entry)
+    source = GeometrySource(spec.geometry)
     catalog = source.discover()
     targets = []
     for index, parameter in enumerate(spec.parameters):
@@ -239,12 +238,7 @@ def _parse(data: object, source: Path | None) -> ProblemSpec:
     if name is None and source is not None:
         name = source.stem
     environment = _environment(top["environment"])
-    geometry = GeometrySpec(
-        entry=_text(
-            _mapping(top["geometry"], "geometry", ("entry",), ("entry",))["entry"],
-            "geometry.entry",
-        )
-    )
+    geometry = _text(top["geometry"], "geometry")
     parameters = _parameters(top["parameters"])
     stages = _stages(top["stages"]) if "stages" in top else {}
     evaluators = _evaluators(top["evaluators"])

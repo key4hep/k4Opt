@@ -10,7 +10,7 @@ _BASE: dict[str, object] = {
     "schema_version": "k4opt.problem/v1alpha1",
     "name": "demo",
     "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
-    "geometry": {"entry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml"},
+    "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
     "parameters": [
         {
             "geometry": {"constant": "ECal_cell_size"},

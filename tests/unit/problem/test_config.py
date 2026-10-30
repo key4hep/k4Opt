@@ -46,7 +46,7 @@ def test_loads_the_checked_in_example() -> None:
     assert problem.name == "cld-ecal-granularity"
     assert problem.environment.key4hep.channel == "nightly"
     assert problem.environment.key4hep.version == "2026-10-20"
-    assert problem.geometry.entry == "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml"
+    assert problem.geometry == "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml"
     (parameter,) = problem.parameters
     assert parameter.geometry.constant == "ECal_cell_size"
     assert parameter.geometry.canonical_target == "constants.ECal_cell_size"
@@ -373,7 +373,6 @@ def test_missing_top_level_sections(doc: dict[str, Any], key: str) -> None:
         ((), "top level: unknown key(s) ['extra']"),
         (("environment",), "environment: unknown key(s) ['extra']"),
         (("environment", "key4hep"), "environment.key4hep: unknown key(s) ['extra']"),
-        (("geometry",), "geometry: unknown key(s) ['extra']"),
         (("parameters", 0), "parameters[0]: unknown key(s) ['extra']"),
         (("parameters", 0, "geometry"), "parameters[0].geometry: unknown key(s) ['extra']"),
         (("stages",), "stages: unknown key(s) ['extra']"),
@@ -478,7 +477,7 @@ def test_evaluator_list_errors(doc: dict[str, Any], evaluators: object, message:
     [
         ("environment", [], "environment: must be a mapping, got list"),
         ("environment", {}, "missing required key(s) ['key4hep']"),
-        ("geometry", "a.xml", "geometry: must be a mapping, got str"),
+        ("geometry", {"entry": "a.xml"}, "geometry: must be a non-empty string, got dict"),
         ("parameters", {}, "parameters: must be a list, got dict"),
         ("parameters", [], "parameters: must list at least one parameter"),
         ("parameters", ["x"], "parameters[0]: must be a mapping, got str"),
@@ -513,8 +512,7 @@ def test_document_must_be_a_mapping(data: object) -> None:
             lambda d: d["environment"]["key4hep"].update(version=datetime.date(2026, 10, 20)),
             "got date",
         ),
-        (lambda d: d["geometry"].update(entry="  "), "geometry.entry: must be a non-empty string"),
-        (lambda d: d["geometry"].clear(), "missing required key(s) ['entry']"),
+        (lambda d: d.update(geometry="  "), "geometry: must be a non-empty string"),
         (lambda d: d.update(name=""), "name: must be a non-empty string"),
         (
             lambda d: d["evaluators"][0].update(name=""),
@@ -561,10 +559,10 @@ def test_field_errors(
 
 
 def test_identifiers_are_not_altered(doc: dict[str, Any]) -> None:
-    doc["geometry"]["entry"] = " padded/Entry.xml "
+    doc["geometry"] = " padded/Entry.xml "
     doc["objectives"][0]["metric"] = " odd Metric "
     problem = parse_problem(doc)
-    assert problem.geometry.entry == " padded/Entry.xml "
+    assert problem.geometry == " padded/Entry.xml "
     assert problem.objectives[0].metric == " odd Metric "
 
 
@@ -857,7 +855,7 @@ def test_yaml_level_errors(write: Write, text: str) -> None:
 
 def test_duplicate_key_message_has_the_line(write: Write) -> None:
     with pytest.raises(ProblemConfigError, match=r"duplicate key 'geometry' \(line 3\)"):
-        load_problem(write("name: x\ngeometry: {entry: a}\ngeometry: {entry: b}\n"))
+        load_problem(write("name: x\ngeometry: a.xml\ngeometry: b.xml\n"))
 
 
 def test_nested_duplicate_keys(write: Write) -> None:
@@ -927,7 +925,7 @@ def test_aliases_and_merge_keys_are_supported(write: Write) -> None:
     text = """
 schema_version: k4opt.problem/v1alpha1
 environment: {key4hep: {channel: release, version: "2026-04-08"}}
-geometry: {entry: g.xml}
+geometry: g.xml
 parameters:
   - {geometry: {constant: X}, type: integer, bounds: [1, 3]}
 evaluators: [{name: e, version: "1"}]

@@ -35,8 +35,7 @@ environment:
     channel: nightly
     version: "2026-10-20"
 
-geometry:
-  entry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 
 parameters:
   # CLD uses 5.1 mm; 20 mm is about the width of a photon shower
@@ -99,7 +98,7 @@ comparable.
 | Stages | `stages`: executors, `events`, `seed`, the gun or a `file` | the physicist, checked by k4opt; shared by every evaluator | 1000 photons of 10 GeV, seed 42 |
 | Evaluator inputs | `evaluators[*].collections`, `.settings` | each evaluator's contract, filled by the physicist | the hits in `ECalBarrelCollection`, a threshold of 70 keV |
 | Executor options | the other keys of a stage, such as `physics.list` | the physicist, validated by the tool | `physics.list: FTFP_BERT` |
-| Execution environment | `environment`, `geometry.entry` | the physicist pins, k4opt resolves | nightly `2026-10-20`, CLD_o2_v09 |
+| Execution environment | `environment`, `geometry` | the physicist pins, k4opt resolves | nightly `2026-10-20`, CLD_o2_v09 |
 | Measured results | evaluation records | the evaluator | `angular_residual = 0.90 ± 0.03 mrad` |
 | Provenance | evaluation records | k4opt records | resolved versions, geometry fingerprint, argv |
 
@@ -132,15 +131,15 @@ stay separate (see [Identity](#identity-and-provenance)).
 
 The pin identifies an environment; it does not archive its binaries. A nightly may
 disappear, so a record must also hold the *resolved* versions (see
-[Provenance](#identity-and-provenance)). `environment.key4hep` and `geometry.entry` are
-not substitutes: the former selects the software and the installed k4geo, the latter a
+[Provenance](#identity-and-provenance)). `environment.key4hep` and `geometry` are not
+substitutes: the former selects the software and the installed k4geo, the latter a
 compact file inside that k4geo.
 
 ### `geometry`
 
-- `entry`: compact geometry file, relative to the installed k4geo (`$K4GEO`), resolved as
-  described in [docs/geometry.md](geometry.md#where-the-geometry-comes-from).
-  Resolution is the job of `k4opt.geometry`, not of this component.
+The compact geometry file, relative to the installed k4geo (`$K4GEO`), resolved as
+described in [docs/geometry.md](geometry.md#where-the-geometry-comes-from). Resolution is
+the job of `k4opt.geometry`, not of this component.
 
 ### `parameters`
 
@@ -393,7 +392,7 @@ Three identities are kept separate, even though the draft YAML shows them in one
 1. **Problem identity**: parameters (sources, kinds, bounds, units), objectives,
    constraints.
 2. **Evaluation context identity**: everything that can change what a measurement means
-   for the same candidate: the pinned and resolved Key4hep stack, geometry entry, the
+   for the same candidate: the pinned and resolved Key4hep stack, geometry, the
    evaluators' names, versions, `collections` and `settings`, and the `stages`: their executors, `events`,
    `seed`, the gun or file, and the exact executor options. Changing the nightly or a ddsim
    option does not change the problem, but it **does** change the context.
@@ -428,7 +427,7 @@ A candidate is checked against the parameter domains above before it is evaluate
 
 `k4opt.problem` turns a file into immutable, typed models. `load_problem(path)` is the
 complete loading operation: it validates the YAML **and** resolves its geometry. It locates
-`geometry.entry` in the active k4geo tree (`$K4GEO` for a relative entry), discovers the
+`geometry` in the active k4geo tree (`$K4GEO` for a relative path), discovers the
 geometry catalog once, including reachable XML includes, and resolves every
 `parameters[*].geometry` selector against it. It fails with a clear error if the geometry
 cannot be located or read, or if a target is missing, malformed or ambiguous. The result

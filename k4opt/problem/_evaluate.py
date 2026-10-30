@@ -324,7 +324,7 @@ def _unexpected_collections(
             hint = f"; did you mean {close[0]!r}?" if close else "."
             warnings.append(
                 f"evaluator {entry.name!r}: ddsim is not expected to write the collection "
-                f"{name!r} ({role}) for {spec.geometry.entry}{hint} The simulation's output "
+                f"{name!r} ({role}) for {spec.geometry}{hint} The simulation's output "
                 "decides."
             )
     return tuple(warnings)

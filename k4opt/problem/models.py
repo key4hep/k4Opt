@@ -65,16 +65,6 @@ class Environment:
 
 
 @dataclass(frozen=True, slots=True)
-class GeometrySpec:
-    """The starting detector description: a compact file name, relative to the k4geo tree."""
-
-    entry: str
-
-    def to_dict(self) -> dict[str, object]:
-        return {"entry": self.entry}
-
-
-@dataclass(frozen=True, slots=True)
 class GeometrySelector:
     """Which geometry quantity a parameter varies.
 
@@ -246,7 +236,8 @@ class ProblemSpec:
     """
 
     environment: Environment
-    geometry: GeometrySpec
+    # the starting detector description: a compact file, relative to the k4geo tree
+    geometry: str
     parameters: tuple[Parameter, ...]
     evaluators: tuple[EvaluatorSpec, ...]
     objectives: tuple[Objective, ...]
@@ -277,7 +268,7 @@ class ProblemSpec:
         if self.name is not None:
             data["name"] = self.name
         data["environment"] = self.environment.to_dict()
-        data["geometry"] = self.geometry.to_dict()
+        data["geometry"] = self.geometry
         data["parameters"] = [parameter.to_dict() for parameter in self.parameters]
         if self.stages:
             data["stages"] = {name: stage.to_dict() for name, stage in self.stages.items()}
