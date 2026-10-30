@@ -133,9 +133,12 @@ def test_a_margin_that_fits_no_float_cannot_be_told() -> None:
 def test_objective_values_are_floats_in_the_problems_order() -> None:
     measured = (Measurement("analysis", "b", 3), Measurement("analysis", "a", 0.5))
     assert objective_values(assessment(objectives=measured)) == [3.0, 0.5]
-    huge = (Measurement("analysis", "a", 10**400),)
-    with pytest.raises(OptimizationError, match="does not fit in a float"):
-        objective_values(assessment(objectives=huge))
+    for value in (10**400, 2**53 + 1):  # too large for a float, or told as another value
+        with pytest.raises(OptimizationError, match=r"no float holds .* exactly"):
+            objective_values(assessment(objectives=(Measurement("analysis", "a", value),)))
+    assert objective_values(assessment(objectives=(Measurement("analysis", "a", 2**53),))) == [
+        2.0**53
+    ]
 
 
 def test_each_bound_of_a_constraint_is_a_limit_of_its_own() -> None:

@@ -131,17 +131,22 @@ def probe(spec: ProblemSpec) -> dict[str, Scalar]:
 
 
 def objective_values(assessment: Assessment) -> list[float]:
-    """The objective values of a valid candidate, in the problem's order."""
+    """The objective values of a valid candidate, in the problem's order, as the floats the
+    optimizer is told; a value no float holds exactly (an integer beyond 2**53) is refused, as
+    it would be told as another value."""
     assert assessment.objectives is not None
     values = []
     for measurement in assessment.objectives:
         try:
-            values.append(float(measurement.value))
+            value = float(measurement.value)
         except OverflowError:
+            value = None
+        if value is None or value != measurement.value:
             raise OptimizationError(
-                f"{measurement.stage}/{measurement.metric}: {measurement.value} does not fit in "
-                "a float, which the optimizer is told"
-            ) from None
+                f"{measurement.stage}/{measurement.metric}: no float holds {measurement.value} "
+                "exactly, so the optimizer cannot be told it"
+            )
+        values.append(value)
     return values
 
 
@@ -353,8 +358,9 @@ def _close_interrupted(run: _Study, trial: Trial, output: Path) -> None:
 
 def _recover(run: _Study) -> None:
     """Finish the trials a session left running, before any new one: one without a record is
-    FAIL, its directory left as it is, and one with a record is told it. A trial directory that
-    no trial of the study names makes the resume refuse, before anything changes."""
+    FAIL, its directory left as it is, and one with a record is told it. Before anything
+    changes, the resume refuses if a trial directory belongs to no trial, or if the record a
+    finished trial was told is gone or was changed (its SHA-256)."""
     trials = run.study.get_trials(deepcopy=False)
     known = {trial.user_attrs.get("k4opt.dir", trial_directory(trial.number)) for trial in trials}
     stray = [name for name in trial_directories(run.directory) if name not in known]
@@ -363,6 +369,8 @@ def _recover(run: _Study) -> None:
             f"{', '.join(stray)} in {run.directory} belong(s) to no trial of the study; move "
             "them out of the study directory to resume it"
         )
+    for frozen in trials:  # the evidence of what the optimizer was told is still there
+        _check_told_record(run, frozen)
     for frozen in trials:
         if frozen.state != TrialState.RUNNING:
             continue
@@ -372,6 +380,24 @@ def _recover(run: _Study) -> None:
         else:
             trial.set_user_attr("k4opt.recovered", True)
             run.study.tell(trial, state=TrialState.FAIL)
+
+
+def _check_told_record(run: _Study, frozen: FrozenTrial) -> None:
+    """A trial the optimizer was told a record of still has that record, byte for byte."""
+    told = frozen.user_attrs.get("k4opt.record")
+    if frozen.state == TrialState.RUNNING or not isinstance(told, Mapping):
+        return
+    path = run.directory / str(told.get("path"))
+    try:
+        found = _sha256(path.read_bytes())
+    except OSError:
+        found = None
+    if found != told.get("sha256"):
+        state = "is gone" if found is None else "is not the record the optimizer was told"
+        raise OptimizationError(
+            f"trial {frozen.number}: {path} {state}, so nothing shows what its values rest on; "
+            "put the record back to resume the study"
+        )
 
 
 def _trial_report(run: _Study, frozen: FrozenTrial) -> TrialReport:

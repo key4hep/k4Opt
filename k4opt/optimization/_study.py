@@ -181,6 +181,8 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
                     "name": entry["name"],
                     "version": entry["version"],
                     "sha256": entry["source"].get("sha256"),
+                    # the units its values are in: an instance can declare them otherwise
+                    "metrics": entry.get("metrics"),
                 }
                 for entry in identity["evaluators"]
             ],
@@ -240,6 +242,11 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
         ):
             if old["sha256"] != new["sha256"]:
                 found.append(f"evaluator {old['name']!r}: {entry['source'].get('path')} changed")
+            elif old["metrics"] != new["metrics"]:
+                found.append(
+                    f"evaluator {old['name']!r} declares other metrics or units: "
+                    f"{new['metrics']}, not {old['metrics']}"
+                )
     if then["geometry"] != now_["geometry"]:
         found.append("the geometry the candidates start from changed (another fingerprint)")
     if then["stack"] != now_["stack"]:
@@ -330,6 +337,11 @@ def check_record(
         if _get(new, "source", "sha256") != old["source"].get("sha256"):
             raise OptimizationError(
                 f"{where}: evaluator {old['name']!r} ran other code than the study's"
+            )
+        if _get(new, "metrics") != old.get("metrics"):
+            raise OptimizationError(
+                f"{where}: evaluator {old['name']!r} declared other metrics or units than in the "
+                "study"
             )
     observed = _get(summary, "environment", "observed")
     if _get(observed, "KEY4HEP_STACK") != study["environment"]["KEY4HEP_STACK"]:

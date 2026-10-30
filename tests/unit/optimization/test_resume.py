@@ -119,6 +119,34 @@ def test_a_study_does_not_resume_with_other_evaluator_code(
         run(problem, output, 1, resume=True, evaluators=[edited])
 
 
+UNITS = """
+    import os
+    from k4opt.evaluation import Evaluator
+
+    class Probe(Evaluator):
+        name, version = "test.trade_off", "1"
+
+        def __init__(self):  # the same code, configured to report in another unit
+            unit = os.environ.get("K4OPT_TEST_UNIT", "mm")
+            self.metrics = {("analysis", "a"): unit, ("analysis", "b"): "1/mm"}
+
+        def evaluate(self, request):
+            x, *_ = request.candidate.values()
+            return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
+"""
+
+
+def test_a_study_does_not_resume_with_metrics_in_other_units(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1, evaluators=[evaluator_from(tmp_path / "e", "units", UNITS)])
+    monkeypatch.setenv("K4OPT_TEST_UNIT", "cm")
+    other = evaluator_from(tmp_path / "e", "units", UNITS)  # the same bytes, another instance
+    with pytest.raises(OptimizationError, match=r"declares other metrics or units: .*'cm'"):
+        run(problem, output, 1, resume=True, evaluators=[other])
+
+
 def test_location_is_not_identity(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -308,6 +336,30 @@ def test_a_left_record_that_does_not_hold_up_refuses_the_resume(
     with pytest.raises(OptimizationError, match="its assessment is not the one its measurements"):
         run(problem, output, 1, resume=True)
     assert optuna_study(output).trials[0].state == TrialState.RUNNING  # left for a person
+
+
+@pytest.mark.parametrize(
+    ("change", "state"),
+    [("remove", "is gone"), ("edit", "is not the record the optimizer was told")],
+)
+def test_a_finished_trial_keeps_the_record_the_optimizer_was_told(
+    tmp_path: Path, write_problem: Callable[..., Path], change: str, state: str
+) -> None:
+    settings = {"failed_below": 300}  # failed trials keep their records too
+    problem = write_problem(
+        evaluators=[{"name": "test.trade_off", "version": "1", "settings": settings}]
+    )
+    output = tmp_path / "s"
+    run(problem, output, 3, seed=1)
+    record = output / "trial-000001" / "summary.json"
+    if change == "remove":
+        record.unlink()
+    else:
+        record.write_text(record.read_text() + " ")  # the same content to JSON, other bytes
+    before = tree_digest(output)
+    with pytest.raises(OptimizationError, match=rf"trial 1: .*summary\.json {state}"):
+        run(problem, output, 1, resume=True)
+    assert tree_digest(output) == before
 
 
 def test_a_trial_directory_of_no_trial_refuses_the_resume(

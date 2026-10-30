@@ -58,7 +58,8 @@ values are written into the geometry as they are, with nothing rounded or snappe
 **Objectives.** The optimizer is told each objective's value, in the problem's order and with
 its `direction`. One objective and several take the same path. The values are those of the
 run's [assessment](evaluation.md#assessment-objectives-limits-and-feasibility): the evaluator's
-measurement, as a float.
+measurement, as a float. A value that no float holds exactly (an integer beyond 2**53) stops
+the study rather than being told as another value.
 
 **Constraints.** Each bound of a constraint is a *limit*, named `stage/metric:bound`
 (`simulation/ecal_barrel.angular_residual:max`). For each limit the optimizer is told its
@@ -184,7 +185,7 @@ directory itself is fine.
 | --- | --- | --- |
 | problem | its definition, but not its `name` | the path of the file |
 | files the problem names | size and SHA-256 of each | their paths |
-| evaluators | name, version, SHA-256 of the source file (one without a hash cannot make a study) | path, whether the bytes were `executed`, the git revision (a change warns) |
+| evaluators | name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units (an instance may declare others) | path, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file | compact path, source root, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
 | k4opt | the SHA-256 of its code | version, git commit |
@@ -233,6 +234,10 @@ left running:
   directory is left as it is and never rerun or reused;
 - a trial with a `summary.json` is told that record, after the same checks as a live one; a
   record that does not hold up makes the resume refuse.
+
+Before that, every finished trial must still have the record the optimizer was told: the same
+bytes as the SHA-256 in its `k4opt.record`. A record that is gone or was changed makes the
+resume refuse, since nothing would show what the trial's values rest on.
 
 A `trial-*` directory that no trial of the study names makes the resume refuse. Recovered
 trials do not count among the `--trials` of the resume, and interrupted trials are not retried
