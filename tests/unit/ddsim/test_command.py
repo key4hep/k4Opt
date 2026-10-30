@@ -221,7 +221,7 @@ def test_seed_is_optional() -> None:
         ({"part.keepAllParticles": False}, ("--part.keepAllParticles=False",)),
         ({"enableDetailedShowerMode": True}, ("--enableDetailedShowerMode",)),
         ({"geometry.enableDebugVolumes": True}, ("--geometry.enableDebugVolumes",)),
-        ({"outputConfig.forceLCIO": True}, ("--outputConfig.forceLCIO",)),
+        ({"outputConfig.forceEDM4HEP": True}, ("--outputConfig.forceEDM4HEP",)),
         ({"action.run": ["A", "B"]}, ("--action.run=A", "--action.run=B")),
         ({"action.event": "A"}, ("--action.event=A",)),
         (
@@ -263,6 +263,8 @@ def test_options_are_written_the_way_ddsim_reads_them(
         ({"random.seed": 3}, "set seed instead"),
         ({"compactFile": "c.xml"}, "the geometry comes from the problem"),
         ({"outputFile": "o.root"}, "chooses the output file"),
+        ({"outputConfig.forceLCIO": True}, "reads the output as EDM4hep"),
+        ({"outputConfig.forceDD4HEP": True}, "reads the output as EDM4hep"),
         ({"runType": "vis"}, "batch mode"),
         ({"gun.energy": "1*GeV"}, "primaries come from the generation stage"),
         ({"inputFiles": "other.hepmc"}, "primaries come from the generation stage"),

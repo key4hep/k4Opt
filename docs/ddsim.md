@@ -90,6 +90,7 @@ never a guess. An integration test (`tests/integration/ddsim`) checks with
 otherwise validated by ddsim when it starts, seconds before the first event.
 
 What an evaluation defines cannot be changed by an option: `compactFile`, `outputFile`,
+`outputConfig.forceLCIO` and `outputConfig.forceDD4HEP` (k4opt reads the output as EDM4hep),
 `numberOfEvents` (set `events`), `runType`, `inputFiles`, `macroFile`, `enableGun`,
 `enableG4GPS`, `enableG4Gun`, any `gun.*` and `random.*` (set `seed`), `vertexSigma`,
 `vertexOffset` and `crossingAngleBoost` are rejected with a pointer to where they come from,

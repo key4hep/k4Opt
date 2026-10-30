@@ -31,6 +31,8 @@ _ANGLE_UNITS = {"deg": 180.0, "rad": math.pi}  # the unit of a half turn
 _MANAGED_LONG = (
     "--compactFile",
     "--outputFile",
+    "--outputConfig.forceLCIO",
+    "--outputConfig.forceDD4HEP",
     "--numberOfEvents",
     "--runType",
     "--inputFiles",
@@ -52,6 +54,7 @@ _MANAGED_BY = (
     ("--random.", "set seed instead"),
     ("--compactFile", "the geometry comes from the problem"),
     ("--outputFile", "k4opt chooses the output file"),
+    ("--outputConfig.force", "k4opt reads the output as EDM4hep"),
     ("--runType", "k4opt runs ddsim in batch mode"),
 )
 
