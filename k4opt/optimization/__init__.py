@@ -43,6 +43,7 @@ def optimize(
     seed: int | None = None,
     resume: bool = False,
     storage: str | None = None,
+    timeout: float | None = None,
     warn: Callable[[str], None] | None = None,
     progress: Callable[[TrialReport], None] | None = None,
 ) -> StudyReport:
@@ -54,7 +55,9 @@ def optimize(
     with the same problem, files, evaluators, geometry, Key4hep stack, k4opt code and Optuna
     version, and is refused otherwise; trials an interrupted session left running are finished
     first and do not count among ``trials``. ``storage`` is an Optuna database URL in place of
-    the journal file in ``output``, given again on every resume.
+    the journal file in ``output``, given again on every resume. ``timeout`` is how many
+    seconds a trial's simulation may take before ddsim is killed and the trial fails; it is not
+    part of the study, so a resume may set another one.
 
     ``warn`` is called with each warning, ``progress`` with each trial as it ends, the trials a
     resume finishes first (``recovered``). Invalid and failed candidates are FAIL trials and the
@@ -81,6 +84,7 @@ def optimize(
         seed=seed,
         resume=resume,
         storage=storage,
+        timeout=timeout,
         warn=warn or (lambda message: None),
         progress=progress or (lambda trial: None),
     )

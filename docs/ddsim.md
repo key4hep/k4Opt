@@ -18,6 +18,7 @@ run = simulate(
     seed=42,
     particle_gun=gun,  # the keys of stages.generation; or sample=Path("events.hepmc") instead
     options={"physics.list": "FTFP_BERT"},
+    timeout=3600,  # seconds; no limit without it
 )
 print(run.error or run.output)
 ```
@@ -25,10 +26,11 @@ print(run.error or run.output)
 `simulate` raises `DdsimError` for unsupported settings, options it cannot pass on faithfully or
 an existing `workdir`, before anything is run. A `ddsim` that cannot run or fails is reported in
 `SimulationRun.error` (not found, not started, nonzero exit with the tail of its standard
-error, no output file) with `returncode`, `argv` and the files. `check_arguments` does the first
+error, no output file, killed when it ran longer than `timeout` seconds) with `returncode`
+(`None` when it was killed), `argv` and the files. `check_arguments` does the first
 part alone, `check_particle_gun` and `check_options` check a gun or options on their own (the
 problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`,
-`ddsim.stderr.log` and `ddsim.json` (argument list, directory, exit code).
+`ddsim.stderr.log` and `ddsim.json` (argument list, directory, exit code, time limit).
 
 An unwritable simulation directory or command record is also reported in `SimulationRun.error`.
 If the process already ran, its actual exit code and existing output and logs remain available.

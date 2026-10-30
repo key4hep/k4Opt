@@ -495,6 +495,7 @@ def optimize(
     seed: int | None,
     resume: bool,
     storage: str | None,
+    timeout: float | None,
     warn: Warn,
     progress: Progress,
 ) -> StudyReport:
@@ -509,7 +510,7 @@ def optimize(
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
     # everything that can be checked before a file is created
-    session = EvaluationSession.open(problem, evaluators)
+    session = EvaluationSession.open(problem, evaluators, timeout=timeout)
     spec = session.spec
     space = search_space(spec)  # the evaluators' settings were checked when the session opened
     identity: dict[str, Any] = session.identity()

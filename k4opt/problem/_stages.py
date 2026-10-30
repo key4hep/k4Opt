@@ -60,11 +60,14 @@ class StageContext:
 
     ``directory`` is where a relative stage ``file`` (or a file named in an option, such as
     ``physics.pdgfile``) is read from: the directory of the problem file, the current one if it
-    is ``None``.
+    is ``None``. ``timeout`` is how many seconds a stage that runs a program (ddsim) may take
+    before the program is killed and the stage fails; ``None`` for no limit. It is the caller's,
+    not the problem's.
     """
 
     stages: Mapping[str, Stage] = field(default_factory=dict)
     directory: Path | None = None
+    timeout: float | None = None
 
     @classmethod
     def of(cls, spec: ProblemSpec) -> StageContext:
@@ -216,11 +219,13 @@ def _run_simulation(
         particle_gun=particle_gun,
         sample=sample,
         options={key: str(files[key]) if key in files else v for key, v in stage.options.items()},
+        timeout=context.timeout,
     )
     provenance: dict[str, Json] = {
         "argv": run.argv,
         "cwd": str(run.cwd),
         "returncode": run.returncode,
+        "timeout": context.timeout,
     }
     error = run.error
     if files:

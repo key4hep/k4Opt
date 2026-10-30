@@ -8,8 +8,9 @@ lays out its output.
 Whether a study may be resumed, and whether the record of a trial belongs to its study, are
 decided by one comparison (:func:`compared`) of what must be equal: the problem's definition
 (but not its name), the content of every file it names, each evaluator's name, version and
-source hash, the unmodified geometry's fingerprint, ``KEY4HEP_STACK`` and the hash of k4opt's
-code. Locations are recorded and never compared, so a study whose files moved resumes.
+source hash, the unmodified geometry's fingerprint and the content of the files its external
+references read, ``KEY4HEP_STACK`` and the hash of k4opt's code. Locations are recorded and
+never compared, so a study whose files moved resumes.
 """
 
 from __future__ import annotations
@@ -171,6 +172,16 @@ def read_study(directory: Path) -> dict[str, Any]:
     return document
 
 
+def _contents(externals: object) -> object:
+    """What the external references of a geometry read, without where the files are."""
+    if not isinstance(externals, Mapping):
+        return externals
+    return {
+        ref: {k: v for k, v in entry.items() if k != "path"} if isinstance(entry, Mapping) else None
+        for ref, entry in externals.items()
+    }
+
+
 def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
     """What must be equal for two runs to belong to one study, from an identity
     (:meth:`k4opt.problem.EvaluationSession.identity`, or ``study.json`` which holds one)."""
@@ -193,7 +204,10 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
                 }
                 for entry in identity["evaluators"]
             ],
-            "geometry": identity["geometry"]["fingerprint"],
+            "geometry": {
+                "fingerprint": identity["geometry"]["fingerprint"],
+                "externals": _contents(identity["geometry"]["externals"]),
+            },
             "stack": identity["environment"]["KEY4HEP_STACK"],
             "k4opt": identity["k4opt"]["sha256"],
         }
@@ -254,8 +268,16 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
                     f"evaluator {old['name']!r} declares other metrics or units: "
                     f"{new['metrics']}, not {old['metrics']}"
                 )
-    if then["geometry"] != now_["geometry"]:
+    if then["geometry"]["fingerprint"] != now_["geometry"]["fingerprint"]:
         found.append("the geometry the candidates start from changed (another fingerprint)")
+    old, new = then["geometry"]["externals"], now_["geometry"]["externals"]
+    for ref in dict.fromkeys([*old, *new]):
+        if old.get(ref) != new.get(ref):
+            path = (current["geometry"]["externals"].get(ref) or {}).get("path")
+            found.append(
+                f"the geometry's reference {ref} does not read the files the study read (it "
+                f"reads {path or 'no file'} now)"
+            )
     if then["stack"] != now_["stack"]:
         found.append(f"KEY4HEP_STACK is {now_['stack']!r}, not {then['stack']!r}")
     if then["k4opt"] != now_["k4opt"]:
@@ -355,6 +377,11 @@ def check_record(
         raise OptimizationError(f"{where} ran in another KEY4HEP_STACK than the study")
     if _get(observed, "k4opt_source", "sha256") != study["k4opt"]["sha256"]:
         raise OptimizationError(f"{where} was made by other k4opt code than the study")
+    externals = _get(summary, "geometry", "externals")
+    if externals is None or _contents(externals) != _contents(study["geometry"]["externals"]):
+        raise OptimizationError(
+            f"{where} read other files through the geometry's external references than the study"
+        )
     for label, entry in study["inputs"].items():
         recorded = _recorded_input(summary, label)
         if recorded is not None and (recorded.get("bytes"), recorded.get("sha256")) != (

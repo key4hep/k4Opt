@@ -422,7 +422,8 @@ a precise implementation revision (for example a release of the package that shi
 evaluator), and that revision is what the record stores.
 
 Provenance recorded per evaluation: `k4opt evaluate` writes the geometry snapshot fingerprint
-(see [Fingerprint](geometry.md#fingerprint)), each evaluator's identity, version, stage,
+and what its external references read (see [Fingerprint](geometry.md#fingerprint)), each
+evaluator's identity, version, stage,
 settings and the import-time SHA-256 of the file defining its class, the executed `ddsim`
 command (which holds the options in
 order), the size and SHA-256 of every given or supplied file and of the files options name, the

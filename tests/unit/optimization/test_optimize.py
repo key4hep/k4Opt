@@ -310,6 +310,25 @@ def test_a_record_that_does_not_hold_up_stops_the_study(
     assert trial.state == TrialState.FAIL and "k4opt.status" not in trial.user_attrs
 
 
+def test_a_record_of_other_external_geometry_files_stops_the_study(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evaluate = EvaluationSession.evaluate
+
+    def tampering(self: EvaluationSession, *args: Any, **kwargs: Any) -> Any:
+        outcome = evaluate(self, *args, **kwargs)
+        data = json.loads(outcome.summary_path.read_text())
+        for entry in data["geometry"]["externals"].values():
+            entry["sha256"] = "0" * 64  # not what the study read
+        outcome.summary_path.write_text(json.dumps(data))
+        return outcome
+
+    monkeypatch.setattr(EvaluationSession, "evaluate", tampering)
+    message = r"trial 0 stops the study.*through the geometry's external references"
+    with pytest.raises(OptimizationError, match=message):
+        study(write_problem(), tmp_path / "s")
+
+
 def test_the_optimizer_is_told_what_the_record_on_disk_holds(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:

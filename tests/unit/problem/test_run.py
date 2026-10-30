@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import shutil
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -17,6 +18,7 @@ import yaml
 
 from k4opt import __version__
 from k4opt.cli import main
+from k4opt.ddsim import run as ddsim_run
 from k4opt.errors import K4OptError
 from k4opt.evaluation import (
     EvaluationContractError,
@@ -1316,6 +1318,7 @@ def test_the_identity_of_a_session_is_what_it_evaluates_with(
         "compact": MINI_COMPACT,
         "source_root": str(MINI_GEO.resolve()),
         "fingerprint": baseline,
+        "externals": GeometrySource(MINI_COMPACT).external_files(),
     }
     assert identity["environment"]["K4GEO"] == str(MINI_GEO)  # type: ignore[index]
     assert identity["k4opt"]["sha256"] == code_fingerprint()  # type: ignore[index]
@@ -1399,6 +1402,147 @@ def test_a_session_does_not_open_once_k4opt_changed_on_disk(
     monkeypatch.setattr(revision, "source_digest", lambda directory: "edited since")
     with pytest.raises(RunError, match="k4opt's code changed on disk after this process"):
         EvaluationSession.open(problem_file, [cell_count()])
+
+
+def test_a_session_evaluates_no_candidate_once_k4opt_changed_on_disk(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt import revision
+
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    monkeypatch.setattr(revision, "source_digest", lambda directory: "edited since")
+    message = "k4opt's code changed on disk after this process"
+    with pytest.raises(RunError, match=message):
+        session.check({RADIUS: 500.0})
+    with pytest.raises(RunError, match=message):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and len(fake.calls) == 1
+
+
+DETECTOR_TYPES = "${DD4hepINSTALL}/DDDetectors/compact/detector_types.xml"  # the mini geometry's
+
+
+@pytest.fixture
+def dd4hep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The file the mini geometry includes through ``${DD4hepINSTALL}``, in the test's own tree."""
+    types = tmp_path / "dd4hep" / "DDDetectors" / "compact" / "detector_types.xml"
+    types.parent.mkdir(parents=True)
+    types.write_text('<define><constant name="DetType_TRACKER" value="0x1"/></define>')
+    monkeypatch.setenv("DD4hepINSTALL", str(tmp_path / "dd4hep"))
+    return types
+
+
+def test_a_record_names_what_the_geometry_reads_outside_its_root(
+    tmp_path: Path, problem_file: Path, dd4hep: Path, fake: simulation.FakeDdsim
+) -> None:
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    read = {"path": str(dd4hep), "sha256": hashlib.sha256(dd4hep.read_bytes()).hexdigest()}
+    expected = {DETECTOR_TYPES: read | {"files": {}}}
+    assert outcome.summary["geometry"]["externals"] == expected  # type: ignore[index]
+    assert session.identity()["geometry"]["externals"] == expected  # type: ignore[index]
+    dd4hep.write_text("<define/>")  # between two candidates
+    message = r"geometry: \$\{DD4hepINSTALL\}/.*detector_types\.xml does not read the files it read"
+    with pytest.raises(RunError, match=message):
+        session.check({RADIUS: 500.0})
+    assert len(fake.calls) == 1
+
+
+@pytest.mark.parametrize("change", ["generation file", "external file", "k4opt code"])
+def test_what_changes_while_a_candidate_runs_leaves_it_without_a_record(
+    tmp_path: Path,
+    problem_file: Path,
+    named_files: tuple[Path, Path],
+    dd4hep: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    from k4opt import revision
+
+    sample, _ = named_files
+    session = EvaluationSession.open(problem_file, [cell_count()])
+
+    def changing(argv: list[str], **kwargs: Any) -> Any:  # while ddsim reads the files
+        if Path(argv[0]).name == "ddsim":
+            if change == "generation file":
+                sample.write_bytes(b"HepMC::Version 3\nE 0\n")
+            elif change == "external file":
+                dd4hep.write_text("<define/>")
+            else:
+                monkeypatch.setattr(revision, "source_digest", lambda directory: "edited since")
+        return fake(argv, **kwargs)
+
+    monkeypatch.setattr(ddsim_run.subprocess, "run", changing)
+    message = {
+        "generation file": rf"stages\.generation\.file: {sample} changed after the session",
+        "external file": r"geometry: \$\{DD4hepINSTALL\}/.*detector_types\.xml does not read",
+        "k4opt code": "k4opt's code changed on disk",
+    }[change]
+    with pytest.raises(RunError, match=rf"{message}.*while the candidate in .*/a ran"):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert (tmp_path / "a" / "simulation").is_dir() and len(fake.calls) == 1
+    assert not (tmp_path / "a" / SUMMARY_NAME).exists()
+    with pytest.raises(RunError, match=message):  # nor is the next candidate evaluated
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and len(fake.calls) == 1
+
+
+def test_a_simulation_that_runs_out_of_time_fails_its_candidate(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def stuck(argv: list[str], **kwargs: Any) -> Any:
+        if Path(argv[0]).name != "ddsim":
+            return fake(argv, **kwargs)
+        fake.calls.append((argv, kwargs))
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])  # killed by subprocess.run
+
+    monkeypatch.setattr(ddsim_run.subprocess, "run", stuck)
+    session = EvaluationSession.open(problem_file, [cell_count()], timeout=90)
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert outcome.candidate.status == "failed"
+    assert "ddsim ran longer than 90 s and was killed" in (outcome.candidate.message or "")
+    ((_, kwargs),) = fake.calls
+    assert kwargs["timeout"] == 90.0
+    simulated = outcome.summary["stages"]["simulation"]  # type: ignore[index]
+    assert (simulated["timeout"], simulated["returncode"]) == (90.0, None)
+    assert "ran longer than 90 s" in simulated["error"]
+    assert (tmp_path / "a" / "simulation" / "ddsim.stderr.log").is_file()
+
+
+def test_a_session_without_a_timeout_lets_ddsim_run(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    ((_, kwargs),) = fake.calls
+    assert kwargs["timeout"] is None
+    assert outcome.summary["stages"]["simulation"]["timeout"] is None  # type: ignore[index]
+
+
+@pytest.mark.parametrize("timeout", [0, -5.0, float("nan"), float("inf"), True, "60"])
+def test_a_timeout_must_be_a_positive_number_of_seconds(
+    problem_file: Path, timeout: object
+) -> None:
+    with pytest.raises(RunError, match="timeout must be a positive number of seconds"):
+        EvaluationSession.open(problem_file, [cell_count()], timeout=timeout)  # type: ignore[arg-type]
+
+
+def test_command_passes_its_timeout_to_ddsim(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    output = str(tmp_path / "a")
+    code, _, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--timeout", "1.5", "--output", output
+    )
+    assert code == 0, err
+    ((_, kwargs),) = fake.calls
+    assert kwargs["timeout"] == 1.5
+    code, _, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--timeout", "0", "--output", output + "b"
+    )
+    assert code == 1 and "timeout must be a positive number of seconds, got 0.0" in err
 
 
 def test_a_run_reference_is_recorded_as_given(

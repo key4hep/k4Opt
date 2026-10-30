@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -150,3 +152,29 @@ def test_a_sample_is_passed_as_an_absolute_input_file(
     assert f"--inputFiles={tmp_path / 'zh.hepmc'}" in argv
     assert not any(a.startswith("--gun") for a in argv)
     assert run.error is None
+
+
+def test_a_ddsim_that_runs_out_of_time_is_killed_and_its_logs_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ddsim = tmp_path / "bin" / "ddsim"
+    ddsim.parent.mkdir()
+    ddsim.write_text("#!/bin/sh\necho 'G4 stuck in event 3' >&2\nexec sleep 60\n")
+    ddsim.chmod(0o755)
+    monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: str(ddsim))
+    started = time.monotonic()
+    run = simulate(
+        compact=tmp_path / "c.xml",
+        workdir=tmp_path / "run",
+        events=1,
+        seed=None,
+        sample=tmp_path / "events.hepmc",
+        options={},
+        timeout=0.5,
+    )
+    assert time.monotonic() - started < 30
+    assert run.returncode is None and run.error is not None
+    assert run.error.startswith("ddsim ran longer than 0.5 s and was killed")
+    assert run.error.endswith("G4 stuck in event 3")
+    assert json.loads(run.files["command"].read_text())["timeout"] == 0.5
+    assert {"stdout", "stderr", "command"} <= run.files.keys()

@@ -1,7 +1,7 @@
 """Command-line interface of the optimization component: ``k4opt optimize``.
 
     k4opt optimize PROBLEM --evaluator FILE.py:Class [--evaluator ...] --trials N --output DIR
-        [--seed S] [--resume] [--storage URL]
+        [--seed S] [--resume] [--storage URL] [--timeout SECONDS]
 
 A thin wrapper over :func:`k4opt.optimization.optimize`; :func:`register` plugs it into the
 top-level ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 when every trial asked for has
@@ -68,6 +68,15 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         metavar="URL",
         help="an Optuna database URL in place of DIR/study.journal (needs SQLAlchemy)",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        metavar="SECONDS",
+        help=(
+            "kill ddsim if a trial's simulation runs longer than this; the trial is FAIL and the "
+            "study goes on (no limit without it)"
+        ),
+    )
     parser.set_defaults(func=cmd_optimize)
 
 
@@ -83,6 +92,7 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 seed=args.seed,
                 resume=args.resume,
                 storage=args.storage,
+                timeout=args.timeout,
                 warn=progress.warning,
                 progress=progress.trial,
             )

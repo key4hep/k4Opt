@@ -15,8 +15,10 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from k4opt.frozen import Json
 from k4opt.geometry.discovery import Catalog, discover
 from k4opt.geometry.errors import SourceError
+from k4opt.geometry.includes import external_files
 from k4opt.geometry.overrides import Override, ResolvedOverride, resolve_overrides
 from k4opt.revision import GitInfo, detect_git, git_toplevel
 
@@ -173,6 +175,14 @@ class GeometrySource:
 
         catalog = self._catalog_for(catalog)
         return compute_fingerprint(catalog, resolve_overrides(catalog, overrides))
+
+    def external_files(self, catalog: Catalog | None = None) -> dict[str, dict[str, Json]]:
+        """What the external references of the unmodified geometry (``${DD4hepINSTALL}/...``,
+        absolute paths) read now, which its :meth:`fingerprint` leaves out: by reference, the
+        ``path`` it resolves to and the ``sha256`` of that file, and for an include the
+        ``files`` it reaches in turn (:func:`~k4opt.geometry.includes.external_files`)."""
+        catalog = self._catalog_for(catalog)
+        return external_files(catalog.root, catalog.externals)
 
     def materialize(
         self,

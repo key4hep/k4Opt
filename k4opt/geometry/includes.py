@@ -5,10 +5,10 @@ include element is classified as either a *local* include (a relative path that
 stays inside the geometry root) or an *external* reference (environment
 variables such as ``${DD4hepINSTALL}``, URLs, absolute paths). Local includes
 are parsed recursively in document order; external references are reported and
-left untouched. ``ref`` attributes on other elements that point at an existing
-local file (e.g. a CAD ``.stl`` model) are recorded as *resources* so a snapshot
-can carry them along. This is an XML include walker, not an interpreter of
-DD4hep's preprocessing or of C++ detector constructors.
+left untouched, and :func:`external_files` says what they read. ``ref`` attributes on
+other elements that point at an existing local file (e.g. a CAD ``.stl`` model) are
+recorded as *resources* so a snapshot can carry them along. This is an XML include
+walker, not an interpreter of DD4hep's preprocessing or of C++ detector constructors.
 """
 
 from __future__ import annotations
@@ -16,11 +16,14 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from lxml import etree
 
+from k4opt.frozen import Json
 from k4opt.geometry.errors import IncludeError
 from k4opt.geometry.xmlio import (
     element_locator,
@@ -28,6 +31,7 @@ from k4opt.geometry.xmlio import (
     line_of,
     parse_xml_bytes,
     read_xml_file,
+    sha256_file,
 )
 
 #: Element tags whose ``ref`` attribute DD4hep treats as an XML file to include.
@@ -53,6 +57,8 @@ class ExternalInclude:
     reason: str
     locator: str = ""
     """Structural XPath of the referencing element within its file."""
+    include: bool = False
+    """Whether it is the ``ref`` of an include element (an XML file), not of a resource."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,7 +273,9 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
             reason = classify_ref(ref)
             if reason is not None:
                 externals.append(
-                    ExternalInclude(file=rel, line=line, ref=ref, reason=reason, locator=locator)
+                    ExternalInclude(
+                        file=rel, line=line, ref=ref, reason=reason, locator=locator, include=True
+                    )
                 )
                 continue
             here = f"{rel}:{line}"
@@ -286,3 +294,53 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
         file_aliases={a: f for a, f in file_aliases.items() if a not in trees},
         file_hashes=file_hashes,
     )
+
+
+def resolve_external(root: Path, external: ExternalInclude) -> Path | None:
+    """The file ``external`` names now: its environment variables expanded, a relative result
+    taken from the directory of the file that holds it (below ``root``). ``None`` if it names no
+    existing file: a variable that is not set, a URL, a file that is not there."""
+    ref = os.path.expandvars(external.ref)
+    if "$" in ref or not ref.strip() or (_URL_RE.match(ref) and not os.path.isabs(ref)):
+        return None
+    path = Path(os.path.normpath((root / external.file).parent / ref))
+    return path if path.is_file() else None
+
+
+def external_files(root: Path, externals: Iterable[ExternalInclude]) -> dict[str, dict[str, Json]]:
+    """What the ``externals`` of the files below ``root`` read now, by reference as written.
+
+    Each entry holds the ``path`` the reference resolves to (:func:`resolve_external`) and the
+    ``sha256`` of that file, ``None`` where there is no file or it cannot be read. An include
+    also holds the ``files`` it reaches in turn (its local includes and the resources they
+    reference) by path relative to its directory, each with its SHA-256, or ``None`` if they
+    cannot be followed; the external references of those files are entries of their own.
+    """
+    found: dict[str, dict[str, Json]] = {}
+    pending = deque((root, external) for external in externals)
+    while pending:
+        base, external = pending.popleft()
+        if external.ref in found or not external.ref.strip():
+            continue
+        path = resolve_external(base, external)
+        try:
+            digest = None if path is None else sha256_file(path)
+        except OSError:
+            digest = None
+        entry: dict[str, Json] = {"path": None if path is None else str(path), "sha256": digest}
+        found[external.ref] = entry
+        if path is None or digest is None or not external.include:
+            continue
+        top = Path(path.anchor)  # an external file may include from anywhere
+        try:
+            graph = walk_includes(top, path.relative_to(top).as_posix())
+            reached = {rel: graph.file_hashes[rel] for rel in graph.files[1:]}
+            reached |= {rel: sha256_file(top / rel) for rel in graph.resources}
+        except (IncludeError, OSError):
+            entry["files"] = None
+            continue
+        entry["files"] = {
+            os.path.relpath(top / rel, path.parent): sha for rel, sha in sorted(reached.items())
+        }
+        pending.extend((top, nested) for nested in graph.externals)
+    return found

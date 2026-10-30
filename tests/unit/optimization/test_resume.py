@@ -100,6 +100,30 @@ def test_a_problem_that_only_has_another_name_resumes(
     assert len(run(problem, output, 1, resume=True).trials) == 2
 
 
+def test_a_study_resumes_only_with_the_files_its_geometry_reads_outside_its_root(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the mini geometry includes ${DD4hepINSTALL}/DDDetectors/compact/detector_types.xml
+    types = tmp_path / "dd4hep" / "DDDetectors" / "compact" / "detector_types.xml"
+    types.parent.mkdir(parents=True)
+    types.write_text("<define/>")
+    monkeypatch.setenv("DD4hepINSTALL", str(tmp_path / "dd4hep"))
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1)
+    moved = shutil.copytree(tmp_path / "dd4hep", tmp_path / "elsewhere")
+    monkeypatch.setenv("DD4hepINSTALL", str(moved))  # the same file elsewhere
+    assert len(run(problem, output, 1, resume=True).trials) == 2
+    (moved / types.relative_to(tmp_path / "dd4hep")).write_text("<define>edited</define>")
+    before = tree_digest(output)
+    message = (
+        r"cannot resume trade-.*the geometry's reference \$\{DD4hepINSTALL\}/DDDetectors/compact/"
+        r"detector_types\.xml does not read the files the study read"
+    )
+    with pytest.raises(OptimizationError, match=message):
+        run(problem, output, 1, resume=True)
+    assert tree_digest(output) == before
+
+
 def _copy_evaluator(directory: Path, comment: str = "") -> Any:
     source = Path(TRADE_OFF.partition(":")[0])
     directory.mkdir(parents=True)

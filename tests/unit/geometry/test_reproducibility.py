@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pickle
+import shutil
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from k4opt.geometry import (
     TargetError,
     UnknownTargetError,
 )
+from tests.support.common import write_tree
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
 RADIUS = "constants.InnerTracker_Barrel_radius_1"
@@ -87,8 +90,6 @@ def test_fingerprint_tracks_effective_edits_only(mini_source: GeometrySource) ->
 
 
 def test_fingerprint_depends_on_source_content(tmp_path: Path) -> None:
-    import shutil
-
     geo = tmp_path / "geo"
     shutil.copytree(MINI_GEO, geo)
     source = GeometrySource(MINI_COMPACT, root=geo)
@@ -117,3 +118,65 @@ def test_manifest_records_the_software_stack(
     bare = mini_source.materialize([], tmp_path / "without-stack")
     assert bare.manifest["environment"] == {}
     assert bare.fingerprint == result.fingerprint, "the stack does not alter the geometry identity"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_external_files_say_what_the_fingerprint_leaves_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aux = write_tree(
+        tmp_path / "aux",
+        {
+            "component.xml": '<lccdd><include ref="parts/a.xml"/><shape ref="model.stl"/></lccdd>',
+            "parts/a.xml": '<lccdd><include ref="${CAD}/b.xml"/></lccdd>',
+            "model.stl": "solid support",
+            "broken.xml": '<lccdd><include ref="missing.xml"/></lccdd>',
+        },
+    )
+    cad = write_tree(tmp_path / "cad", {"b.xml": "<lccdd/>"})
+    stl = aux / "model.stl"
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": f"""\
+                <lccdd>
+                  <include ref="${{AUX}}/component.xml"/>
+                  <include ref="${{AUX}}/broken.xml"/>
+                  <include ref="${{UNSET}}/x.xml"/>
+                  <shape ref="{stl}"/>
+                </lccdd>
+            """,
+        },
+    )
+    monkeypatch.setenv("AUX", str(aux))
+    monkeypatch.setenv("CAD", str(cad))
+    monkeypatch.delenv("UNSET", raising=False)
+    source = GeometrySource("main.xml", root=geo)
+    found = source.external_files()
+    assert found == {
+        "${AUX}/component.xml": {
+            "path": str(aux / "component.xml"),
+            "sha256": _sha256(aux / "component.xml"),
+            "files": {"parts/a.xml": _sha256(aux / "parts/a.xml"), "model.stl": _sha256(stl)},
+        },
+        "${AUX}/broken.xml": {
+            "path": str(aux / "broken.xml"),
+            "sha256": _sha256(aux / "broken.xml"),
+            "files": None,  # its include cannot be followed
+        },
+        "${UNSET}/x.xml": {"path": None, "sha256": None},
+        str(stl): {"path": str(stl), "sha256": _sha256(stl)},
+        # reached through an external include, an entry of its own
+        "${CAD}/b.xml": {"path": str(cad / "b.xml"), "sha256": _sha256(cad / "b.xml"), "files": {}},
+    }
+
+    # the same files elsewhere read the same content, which an edit then changes
+    monkeypatch.setenv("AUX", str(shutil.copytree(aux, tmp_path / "moved")))
+    moved = source.external_files()["${AUX}/component.xml"]
+    assert moved["path"] != found["${AUX}/component.xml"]["path"]
+    assert moved["files"] == found["${AUX}/component.xml"]["files"]
+    (tmp_path / "moved" / "parts" / "a.xml").write_text("<lccdd/>")
+    assert source.external_files()["${AUX}/component.xml"]["files"] != moved["files"]

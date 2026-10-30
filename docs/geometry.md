@@ -262,10 +262,22 @@ software stack, so two evaluations with equal fingerprints may still differ. It
 is not sufficient as an evaluation cache key on its own; a cache key must also
 include the software environment and any external dependencies that matter.
 
+`source.external_files(catalog)` says what the fingerprint leaves out. For each
+external reference, as written, it gives the file the reference names now
+(environment variables expanded, a relative path taken from the directory of the
+file that holds it) and its SHA-256, or `null` for both when it names no file (a
+variable that is not set, a URL, a missing file). An external include is followed
+like a local one: it also lists the `files` it reaches (its includes and the
+resources they reference) by path relative to its directory, with their SHA-256,
+and their own external references are entries of their own. An evaluation session
+records this with the fingerprint and checks it around every candidate; a study
+compares it by content, not by path ([resuming](optimization.md#resuming-a-study)).
+
 ```python
 fingerprint = source.fingerprint(overrides, catalog)  # without writing anything
 result = source.materialize(overrides, output, catalog)
 assert result.fingerprint == fingerprint
+externals = source.external_files(catalog)  # what the fingerprint leaves out
 ```
 
 ### Parallel and batch use

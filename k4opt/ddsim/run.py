@@ -23,8 +23,9 @@ class SimulationRun:
     """What one ``ddsim`` invocation left behind.
 
     ``error`` is ``None`` only if ``ddsim`` exited with status 0 and wrote ``output``; otherwise
-    it says what went wrong. ``returncode`` is ``None`` if the process never ran. The files
-    ``stdout``, ``stderr``, ``command`` and ``output`` exist only if the process got that far.
+    it says what went wrong. ``returncode`` is ``None`` if the process never ran, or was killed
+    because it ran out of time. The files ``stdout``, ``stderr``, ``command`` and ``output`` exist
+    only if the process got that far.
     """
 
     argv: tuple[str, ...]
@@ -100,6 +101,7 @@ def simulate(
     particle_gun: Json = None,
     sample: Path | None = None,
     options: Mapping[str, Json],
+    timeout: float | None = None,
 ) -> SimulationRun:
     """Run the ``ddsim`` found on ``PATH`` on ``compact``, in the new directory ``workdir``.
 
@@ -109,8 +111,9 @@ def simulate(
     are taken from the current directory; option values are passed unchanged and ddsim runs in
     ``workdir``, so a file named in an option (``physics.pdgfile``) must be absolute.
     ``workdir`` receives ``events.edm4hep.root``, ``ddsim.stdout.log``, ``ddsim.stderr.log``
-    and ``ddsim.json`` (command, directory, exit code). Raises :class:`DdsimError` for
-    unsupported settings or options or an existing ``workdir``.
+    and ``ddsim.json`` (command, directory, exit code, time limit). A ``ddsim`` that runs longer
+    than ``timeout`` seconds is killed, and the run fails with its logs kept. Raises
+    :class:`DdsimError` for unsupported settings or options or an existing ``workdir``.
     """
     # ddsim runs inside workdir, so every path in its command line must be absolute
     compact = Path(os.path.abspath(compact))
@@ -145,9 +148,10 @@ def simulate(
         return run((), None, "ddsim not found on PATH (is the Key4hep environment set up?)")
     # a relative PATH entry would no longer resolve from inside workdir
     argv = (os.path.abspath(found), *arguments)
+    returncode: int | None = None  # None: killed when its time ran out
     try:
         with stdout.open("wb") as out, stderr.open("wb") as err:
-            completed = subprocess.run(
+            returncode = subprocess.run(
                 list(argv),
                 cwd=workdir,
                 stdin=subprocess.DEVNULL,
@@ -155,19 +159,24 @@ def simulate(
                 stderr=err,
                 shell=False,
                 check=False,
-            )
+                timeout=timeout,
+            ).returncode
+    except subprocess.TimeoutExpired:
+        pass  # subprocess.run killed it and waited for it to end
     except OSError as exc:
         return run(argv, None, f"ddsim could not be started: {exc}")
     error = None
-    if completed.returncode != 0:
-        error = f"ddsim exited with status {completed.returncode} (logs in {workdir}):\n" + _tail(
-            stderr
-        )
+    if returncode is None:
+        error = f"ddsim ran longer than {timeout:g} s and was killed (logs in {workdir}):\n"
+        error += _tail(stderr)
+    elif returncode != 0:
+        error = f"ddsim exited with status {returncode} (logs in {workdir}):\n" + _tail(stderr)
     elif not output.is_file():
         error = f"ddsim finished but wrote no {output.name} (logs in {workdir})"
+    record = {"argv": argv, "cwd": str(workdir), "returncode": returncode, "timeout": timeout}
     try:
-        write_json(command, {"argv": argv, "cwd": str(workdir), "returncode": completed.returncode})
+        write_json(command, record)
     except OSError as exc:
         failure = f"cannot record ddsim command in {command}: {exc}"
         error = failure if error is None else f"{error}\n{failure}"
-    return run(argv, completed.returncode, error)
+    return run(argv, returncode, error)
