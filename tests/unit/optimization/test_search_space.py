@@ -28,6 +28,7 @@ from k4opt.optimization._optuna import (
 )
 from k4opt.problem import Assessment, Limit, parse_problem
 from tests.support.evaluators import candidate_check, trade_off
+from tests.support.geometry import MINI_GEO
 from tests.unit.optimization.conftest import Log, problem_document, summary
 
 CHECK = [{"name": "test.candidate_check", "version": "1"}]
@@ -175,6 +176,30 @@ def test_a_storage_url_is_recorded_and_shown_without_its_secrets(
     message = str(info.value)
     assert "hush" not in message and "s3cr" not in message and "lost the connection" in message
     assert info.value.__cause__ is None and info.value.__suppress_context__  # nor in a traceback
+
+    # a secret only in what an error was raised from, which a traceback shows too
+    monkeypatch.undo()
+    monkeypatch.setenv("K4GEO", str(MINI_GEO))
+    made: list[str] = []
+
+    def database(given: str) -> Any:
+        made.append(given)
+        return optuna.storages.InMemoryStorage()
+
+    def asking(self: Any, *args: Any, **kwargs: Any) -> None:
+        try:
+            raise RuntimeError(f"driver: {url}")
+        except RuntimeError as cause:
+            raise optuna.exceptions.StorageInternalError("lost the database") from cause
+
+    monkeypatch.setattr(_optuna, "RDBStorage", database)
+    monkeypatch.setattr(optuna.Study, "ask", asking)
+    with pytest.raises(
+        OptimizationError, match="the study cannot go on: StorageInternalError"
+    ) as info:
+        optimize(write_problem(), [trade_off()], tmp_path / "u", trials=1, storage=url)
+    assert info.value.__cause__ is None and info.value.__suppress_context__
+    assert len(made) == 1  # the database is set up once, before the directory is made
 
 
 def test_each_bound_of_a_constraint_is_a_limit_of_its_own() -> None:

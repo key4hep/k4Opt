@@ -125,7 +125,9 @@ is printed as it ends, so a broken environment shows at once.
   unit), or an evaluator raises anything but `EvaluationFailed` or `EvaluationInvalid`;
 - the record does not hold up when it is read back (below);
 - a value cannot be held by a float;
-- writing fails, or Optuna fails.
+- writing fails, or Optuna or its storage fails (a database that goes away, an I/O error of the
+  journal): this also stops a study outside a trial, as an `OptimizationError`, while a bug of
+  k4opt propagates as itself.
 
 Each evaluator's settings and collections are checked once, when the study opens and before
 any file is created, so a mistake in them costs no trial. They need no candidate, so an
@@ -194,7 +196,9 @@ directory itself is fine.
 
 The `identity` digest covers the compared column only. A resume is refused, with what changed,
 for any difference in it. It is also refused for `--seed` with `--resume` (a study keeps its
-seed), and for a directory that holds no `study.json`; using a study directory without
+seed), for a recorded optimizer (sampler, seed, startup trials, distributions, limits,
+constraint-value policy) other than the one this k4opt would run the study with, and for a
+directory that holds no `study.json`; using a study directory without
 `--resume` is refused too. A changed Optuna version and changed k4opt code have no override:
 install the recorded Optuna version, and run a long campaign from a k4opt checkout of its own.
 A resume only warns when an evaluator's git checkout is at another commit or has other
@@ -252,7 +256,9 @@ The default storage is `study.journal` in the study directory: Optuna's journal 
 JSON line per operation, appended and synced, with Optuna's own file lock. It needs no database
 and no SQLAlchemy, and it is replayed when it is read, which is fine for thousands of trials.
 `--storage URL` keeps the Optuna study in a database instead (SQLite on a local disk,
-PostgreSQL), while the trial directories stay in the study directory. Its password and the
+PostgreSQL), while the trial directories stay in the study directory. The database is reached,
+and set up once, before the study directory is made, so a wrong URL creates nothing; a relative
+SQLite path is relative to the working directory. Its password and the
 values of its query parameters are never recorded or shown, also not in an error from the
 database, and every resume needs the same URL.
 

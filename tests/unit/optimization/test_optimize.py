@@ -13,6 +13,7 @@ import pytest
 
 pytest.importorskip("optuna")
 
+from optuna.exceptions import StorageInternalError
 from optuna.study import StudyDirection
 from optuna.trial import TrialState
 
@@ -321,6 +322,48 @@ def test_the_optimizer_is_told_what_the_record_on_disk_holds(
         assert trial.values == [float(m.value) for m in assessment.objectives or ()]
         assert trial.constraints == {limit.name: limit.margin for limit in assessment.limits}
         assert trial.user_attrs["k4opt.feasible"] is assessment.feasible
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (
+            lambda: StorageInternalError("the database is gone"),
+            "StorageInternalError: the database",
+        ),
+        (lambda: OSError(5, "Input/output error"), "OSError: [Errno 5] Input/output error"),
+    ],
+)
+def test_a_failure_of_the_optimizer_or_its_storage_stops_the_study_as_an_error(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Callable[[], Exception],
+    message: str,
+) -> None:
+    import optuna
+
+    def failing(self: optuna.Study, *args: Any, **kwargs: Any) -> Any:
+        raise failure()
+
+    monkeypatch.setattr(optuna.Study, "ask", failing)  # outside any trial
+    with pytest.raises(OptimizationError, match="the study cannot go on: ") as info:
+        study(write_problem(), tmp_path / "s")
+    assert message in str(info.value)
+    assert not (tmp_path / "s" / ".lock").exists()
+
+
+def test_a_bug_of_k4opt_is_not_dressed_up_as_a_study_error(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.optimization import _optuna
+
+    def buggy(run: Any) -> Any:
+        return 1 / 0
+
+    monkeypatch.setattr(_optuna, "_study_report", buggy)
+    with pytest.raises(ZeroDivisionError):
+        study(write_problem(), tmp_path / "s")
 
 
 @pytest.mark.parametrize(

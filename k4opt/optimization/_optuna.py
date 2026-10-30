@@ -18,6 +18,7 @@ import json
 import os
 import secrets
 import signal
+import sys
 import threading
 import urllib.parse
 import uuid
@@ -518,12 +519,13 @@ def optimize(
             "ranks infeasible ones by the sum of their violations, which adds values in different "
             "units (docs/optimization.md)"
         )
+    database: BaseStorage | None = None  # made in the directory, or reached once below
     if resume:
         document = read_study(directory)
     else:
         document = _new_document(spec, identity, space, names, seed, storage)
-        if storage is not None:  # a database is reached before the directory is made
-            _storage(directory, storage)
+        # a database is reached, and set up once, before a file is made: a wrong URL makes none
+        database = None if storage is None else _storage(directory, storage)
         _refuse_used(directory)
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -533,11 +535,12 @@ def optimize(
     try:
         with _quiet(), _terminate_as_interrupt(), Lock(directory):
             if resume:
-                _check_resume(document, identity, storage, warn)
+                _check_resume(document, identity, spec, space, names, storage, warn)
             else:
                 _refuse_used(directory, LOCK_NAME)  # again, now that no one else can start here
                 write_study(directory, document)
-            study = _open_optuna(directory, document, storage, resume)
+            storage_ = database or _storage(directory, storage)
+            study = _open_optuna(directory, document, storage_, resume)
             run = _Study(directory, document, spec, study, warn)
             if resume:
                 _check_optuna_study(study, document)
@@ -551,10 +554,53 @@ def optimize(
                 progress(_trial_report(run, _evaluate(run, session, space, seed_now)))
             return _study_report(run)
     except Exception as exc:
-        # a database may name its URL in any error, raised by Optuna as by k4opt
-        if storage is None or _scrubbed(str(exc), storage) == str(exc):
+        replacement, secret = _leaving(exc, storage)
+        if replacement is None:
             raise
-        raise OptimizationError(_scrubbed(str(exc), storage)) from None
+        if secret:  # nothing of the original, which names it, is kept for a traceback
+            raise replacement from None
+        raise replacement from exc
+
+
+def _chain(exc: BaseException) -> list[BaseException]:
+    """``exc`` and the exceptions it was raised from or during, as a traceback shows them."""
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and all(current is not seen for seen in chain):
+        chain.append(current)
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    return chain
+
+
+def _storage_errors() -> tuple[type[BaseException], ...]:
+    """What Optuna and the storage raise when they fail, as opposed to a bug of k4opt."""
+    errors: tuple[type[BaseException], ...] = (optuna.exceptions.OptunaError, OSError)
+    database = sys.modules.get("sqlalchemy.exc")  # imported only if a database was used
+    if database is not None:
+        errors += (database.SQLAlchemyError,)
+    return errors
+
+
+def _leaving(exc: Exception, url: str | None) -> tuple[Exception | None, bool]:
+    """What leaves :func:`optimize` in place of ``exc`` (``None``: ``exc`` itself), and whether it
+    must leave without ``exc``, which then names a secret of the storage URL ``url``.
+
+    A k4opt error leaves as it is, and so does a bug of k4opt; a failure of Optuna or the
+    storage becomes an :class:`OptimizationError`. Each is redacted when anything in its chain
+    names a secret of ``url``.
+    """
+    text = "\n".join(str(e) for e in _chain(exc))
+    secret = url is not None and _scrubbed(text, url) != text
+    if isinstance(exc, K4OptError) or not isinstance(exc, _storage_errors()):
+        message = str(exc) if isinstance(exc, K4OptError) else f"{type(exc).__name__}: {exc}"
+        if not secret:
+            return None, False
+        assert url is not None
+        return OptimizationError(_scrubbed(message, url)), True
+    message = f"the study cannot go on: {type(exc).__name__}: {exc}"
+    return OptimizationError(message if url is None else _scrubbed(message, url)), secret
 
 
 def _refuse_used(directory: Path, *ours: str) -> None:
@@ -581,34 +627,68 @@ def _new_document(
     document: dict[str, Any] = {"schema": STUDY_SCHEMA, "id": study_id, "created": now()}
     document |= dict(identity)
     document["identity"] = digest(identity)
-    document["optimizer"] = {
+    seed = secrets.randbelow(2**32) if seed is None else seed
+    name = f"{spec.name}-{study_id[:8]}"
+    document["optimizer"] = _optimizer(spec, space, names, name=name, seed=seed, storage=storage)
+    return document
+
+
+def _optimizer(
+    spec: ProblemSpec,
+    space: Mapping[str, BaseDistribution],
+    names: Sequence[str],
+    *,
+    name: str,
+    seed: int,
+    storage: str | None,
+) -> dict[str, Any]:
+    """How the study is optimized, as ``study.json`` records it under ``optimizer``."""
+    return {
         "backend": "optuna",
         "version": optuna.__version__,
-        "study": f"{spec.name}-{study_id[:8]}",
+        "study": name,
         "storage": _storage_record(storage),
         "sampler": {
             "name": "TPESampler",
-            "seed": secrets.randbelow(2**32) if seed is None else seed,
+            "seed": seed,
             "n_startup_trials": _STARTUP_TRIALS,
             "seeding": "per session, from the seed and the number of trials",
         },
         "directions": [o.direction for o in spec.objectives],
         "parameters": {
-            name: json.loads(distribution_to_json(distribution))
-            for name, distribution in space.items()
+            key: json.loads(distribution_to_json(distribution))
+            for key, distribution in space.items()
         },
         "constraints": list(names),
         "constraint_values": CONSTRAINT_VALUES,
     }
-    return document
 
 
 def _check_resume(
-    document: Mapping[str, Any], identity: Mapping[str, Any], storage: str | None, warn: Warn
+    document: Mapping[str, Any],
+    identity: Mapping[str, Any],
+    spec: ProblemSpec,
+    space: Mapping[str, BaseDistribution],
+    names: Sequence[str],
+    storage: str | None,
+    warn: Warn,
 ) -> None:
-    """Refuse to resume a study with anything it compares otherwise than it was made with."""
+    """Refuse to resume a study with anything it compares otherwise than it was made with, and
+    one whose recorded optimizer is not the one this k4opt would run it with."""
     optimizer = document["optimizer"]
     found = differences(document, identity)
+    seed = (optimizer.get("sampler") or {}).get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**32:
+        found.append(f"its sampler seed {seed!r} is no seed in [0, 2**32)")
+    else:
+        expected = _optimizer(
+            spec, space, names, name=str(optimizer.get("study")), seed=seed, storage=storage
+        )
+        found += [
+            f"its recorded optimizer {key} is {optimizer.get(key)!r}, not {value!r}"
+            for key, value in expected.items()
+            if key not in ("version", "storage") and optimizer.get(key) != value
+        ]
     if optimizer.get("version") != optuna.__version__:
         found.append(
             f"the study was made with Optuna {optimizer.get('version')}, this is Optuna "
@@ -631,10 +711,11 @@ def _check_resume(
 
 
 def _open_optuna(
-    directory: Path, document: Mapping[str, Any], url: str | None, resume: bool
+    directory: Path, document: Mapping[str, Any], storage: BaseStorage, resume: bool
 ) -> optuna.Study:
+    """The Optuna study of ``document``: made for a new study; loaded for a resumed one, or made
+    again if its setup was cut short before its first trial."""
     optimizer = document["optimizer"]
-    storage = _storage(directory, url)
     name = optimizer["study"]
     if resume:
         try:

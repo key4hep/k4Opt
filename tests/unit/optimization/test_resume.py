@@ -206,6 +206,19 @@ def _edit_study(output: Path, change: Callable[[dict[str, Any]], None]) -> None:
         ),
         (lambda d: d["k4opt"].update(sha256="0" * 64), "k4opt's code changed"),
         (lambda d: d.update(identity="0" * 64), "does not hold together"),
+        (
+            lambda d: d["optimizer"]["sampler"].update(n_startup_trials=5),
+            "its recorded optimizer sampler is",
+        ),
+        (lambda d: d["optimizer"]["sampler"].update(seed="7"), "its sampler seed '7' is no seed"),
+        (
+            lambda d: d["optimizer"].update(constraint_values="scaled"),
+            "its recorded optimizer constraint_values is 'scaled'",
+        ),
+        (
+            lambda d: d["optimizer"]["parameters"][RADIUS]["attributes"].update(low=50.0),
+            "its recorded optimizer parameters is",
+        ),
     ],
 )
 def test_other_software_than_the_study_was_made_with_refuses(
