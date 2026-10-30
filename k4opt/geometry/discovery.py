@@ -240,7 +240,7 @@ class Catalog(Sequence[Parameter]):
             listing = "\n".join(f"  - {m.file}:{m.line} (value {m.value!r})" for m in matches)
             raise AmbiguousTargetError(
                 f"target {key!r} matches {len(matches)} attributes in different files; "
-                f"add 'file: <path>' to the override to choose one:\n{listing}",
+                f"give the override a file to choose one:\n{listing}",
                 candidates=matches,
             )
         raise UnknownTargetError(self._unknown_message(key))

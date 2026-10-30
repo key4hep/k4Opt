@@ -25,7 +25,7 @@ def test_no_command_is_a_usage_error() -> None:
 
 def test_expected_errors_exit_1_with_a_prefixed_message() -> None:
     err = io.StringIO()
-    code = main(["geometry", "inspect", "does-not-exist.yaml"], stdout=io.StringIO(), stderr=err)
+    code = main(["geometry", "inspect", "/does/not/exist.xml"], stdout=io.StringIO(), stderr=err)
     assert code == 1
     assert err.getvalue().startswith("k4opt: error: ")
 
@@ -34,9 +34,9 @@ def test_unexpected_errors_are_not_swallowed(monkeypatch: pytest.MonkeyPatch) ->
     def boom(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("a genuine bug")
 
-    monkeypatch.setattr("k4opt.geometry.cli.load_config", boom)
+    monkeypatch.setattr("k4opt.geometry.cli.GeometrySource", boom)
     with pytest.raises(RuntimeError, match="a genuine bug"):
-        main(["geometry", "inspect", "x.yaml"], stdout=io.StringIO(), stderr=io.StringIO())
+        main(["geometry", "inspect", "x.xml"], stdout=io.StringIO(), stderr=io.StringIO())
 
 
 def test_module_entry_point_and_version() -> None:

@@ -55,29 +55,47 @@ pin one: `KEY4HEP_VERSION=2026-10-20 source setup.sh` (a dated Spack nightly) or
 Without CVMFS you can still develop and run the unit tests in any Python ≥ 3.13
 environment with `pip install -e ".[dev]"`.
 
-## A first look: the geometry component
+## A first look
 
-```yaml
-# examples/geometry/cld.yaml
-geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml   # relative to $K4GEO
-
-overrides:
-  - target: constants.InnerTracker_Barrel_radius_1
-    value: "405*mm"
-  - target: InnerTrackerBarrel.layer[id=1].rphi_layout.nphi
-    value: "90"
-```
+Find the parameter to vary in a geometry from k4geo:
 
 ```bash
-k4opt geometry inspect examples/geometry/cld.yaml --filter InnerTracker_Barrel_radius
-k4opt geometry apply examples/geometry/cld.yaml --output ./generated/cld-test --dry-run
-k4opt geometry apply examples/geometry/cld.yaml --output ./generated/cld-test
-ddsim --compactFile ./generated/cld-test/FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml ...
+k4opt geometry inspect FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml --filter ECal_cell_size
 ```
 
-The values are technical examples only, not validated detector variants. The full
-guide (target references, include handling, override semantics, manifest, Python
-API, limitations) is in [docs/geometry.md](docs/geometry.md).
+```text
+FCCee/CLD/compact/CLD_o2_v09/ECalBarrel_o2_v01_03.xml  (4)
+     ECal_cell_size.name                            ECal_cell_size
+     constants.ECal_cell_size                       5.1*mm
+     ...
+```
+
+name it in a problem, here
+[examples/problem/cld-ecal-granularity.yaml](examples/problem/cld-ecal-granularity.yaml):
+
+```yaml
+geometry:
+  entry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml   # relative to $K4GEO
+
+parameters:
+  - geometry:
+      constant: ECal_cell_size
+    type: continuous
+    bounds: [2.5, 20.0]
+    unit: mm
+```
+
+and evaluate one candidate (about 5 minutes on one core):
+
+```bash
+k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
+    --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
+    --param constants.ECal_cell_size=10.0 --output runs/cld-ecal-10mm
+```
+
+The guides: [geometry](docs/geometry.md) (target references, include handling, override
+semantics, manifest, Python API, limitations), [problem](docs/problem.md) and
+[evaluators](docs/evaluators.md).
 
 ## Development
 

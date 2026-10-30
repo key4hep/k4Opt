@@ -1,4 +1,4 @@
-"""Human-readable rendering of catalogs and resolved changes.
+"""Human-readable rendering of a catalog.
 
 Parameters are grouped under the file they live in; targets are never shortened
 (they must stay copy-pastable), long values are shortened only when a terminal
@@ -11,7 +11,6 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from k4opt.geometry.discovery import Catalog, Parameter
-from k4opt.geometry.overrides import ResolvedOverride
 
 ELLIPSIS = "…"
 INDENT = 2
@@ -21,7 +20,7 @@ MAX_EXTERNALS_SHOWN = 5
 TIP_THRESHOLD = 40
 
 LEGEND = {
-    "A": "ambiguous: also defined in another file, so an override needs `file: <path>`",
+    "A": "ambiguous: also defined in another file; the target alone does not select one",
     "O": "order-sensitive: positional [index] in the target, breaks if siblings are reordered",
 }
 
@@ -40,12 +39,6 @@ class Style:
 
     def dim(self, text: str) -> str:
         return self._wrap("2", text)
-
-    def red(self, text: str) -> str:
-        return self._wrap("31", text)
-
-    def green(self, text: str) -> str:
-        return self._wrap("32", text)
 
     def yellow(self, text: str) -> str:
         return self._wrap("33", text)
@@ -147,28 +140,3 @@ def render_parameters(
             style.dim("Tip: narrow the list with --filter TEXT (matches target, value and file)."),
             file=out,
         )
-
-
-def render_changes(
-    changes: Sequence[ResolvedOverride], out: TextIO, *, color: bool = False
-) -> None:
-    """Print resolved overrides grouped by file as ``old -> new``."""
-    style = Style(color)
-    if not changes:
-        print("No overrides given; nothing to change.", file=out)
-        return
-    seen: list[str] = []
-    for change in changes:
-        if change.file not in seen:
-            seen.append(change.file)
-    for index, file in enumerate(seen):
-        if index:
-            print(file=out)
-        print(style.bold(file), file=out)
-        for change in (c for c in changes if c.file == file):
-            line = f"{style.red(display_value(change.old_value))}  ->  "
-            line += style.green(display_value(change.new_value))
-            if not change.changed:
-                line += style.dim("  (unchanged)")
-            print(f"  {change.target}", file=out)
-            print(f"      {line}", file=out)

@@ -40,7 +40,7 @@ class Override:
             raise InvalidTargetError(
                 f"override value for {self.target!r} must be a string, got "
                 f"{type(self.value).__name__} ({self.value!r}); "
-                f'quote it, e.g. value: "{self.value}"'
+                f'pass it as text, e.g. "{self.value}"'
             )
         if _XML_INVALID.search(self.value):
             raise InvalidTargetError(

@@ -130,8 +130,8 @@ compact file inside that k4geo.
 
 ### `geometry`
 
-- `entry`: compact geometry file, relative to the installed k4geo (`$K4GEO`), with the
-  same meaning as `geometry` in [docs/geometry.md](geometry.md#where-the-geometry-comes-from).
+- `entry`: compact geometry file, relative to the installed k4geo (`$K4GEO`), resolved as
+  described in [docs/geometry.md](geometry.md#where-the-geometry-comes-from).
   Resolution is the job of `k4opt.geometry`, not of this component.
 
 ### `parameters`

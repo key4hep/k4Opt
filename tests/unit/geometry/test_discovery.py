@@ -341,7 +341,7 @@ def test_cross_file_collision_requires_file(mini_catalog: Catalog) -> None:
     with pytest.raises(AmbiguousTargetError) as info:
         mini_catalog.lookup("constants.Tracker_cooling_gap")
     assert len(info.value.candidates) == 2
-    assert "file:" in str(info.value)
+    assert "give the override a file" in str(info.value)
     tracker = mini_catalog.lookup(
         "constants.Tracker_cooling_gap", file="compact/det_v1/tracker.xml"
     )
