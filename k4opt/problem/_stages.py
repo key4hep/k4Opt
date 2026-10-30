@@ -302,6 +302,22 @@ def executors(stage: str) -> Mapping[str, _Executor]:
     return _STAGES[stage].executors
 
 
+def without_file(context: StageContext, stage: str, provided: Collection[str] = ()) -> str | None:
+    """Why ``stage`` makes no file that an evaluator could read collections from, ``None`` if it
+    does: it is supplied (``provided``) or given as a file, or its executor writes one. An
+    executor that runs inside another stage (the gun, fired by ddsim) writes none of its own."""
+    spec = context.stages.get(stage)
+    if stage in provided or spec is None or spec.executor is None:
+        return None  # supplied, given as a file, or not defined (reported elsewhere)
+    inside = _STAGES[stage].executors[spec.executor].inside
+    if inside is None:
+        return None
+    return (
+        f"executor {spec.executor!r} runs inside stages.{inside} and writes no file of its own; "
+        f"read the collections from stages.{inside}, or give stages.{stage} as a file"
+    )
+
+
 def changed_by_geometry(stage: str) -> bool:
     """Whether ``stage`` depends on the candidate geometry: it reads it, or reads a stage that
     does. A file given for such a stage was not made from the candidate."""

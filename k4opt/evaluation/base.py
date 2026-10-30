@@ -80,6 +80,15 @@ class Quantity:
     default: float | None = None
 
     def __post_init__(self) -> None:
+        default = self.default
+        if default is not None and (
+            isinstance(default, bool)
+            or not isinstance(default, (int, float))
+            or not math.isfinite(default)
+        ):
+            raise EvaluationContractError(
+                f"Quantity: default must be a finite number in its unit, got {default!r}"
+            )
         if not isinstance(self.unit, str) or units.dimension(self.unit) is None:
             known = ", ".join(u for name in ("energy", "length") for u in units.units(name))
             raise EvaluationContractError(

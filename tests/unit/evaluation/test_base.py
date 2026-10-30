@@ -369,6 +369,13 @@ def test_a_quantity_needs_a_known_unit() -> None:
         Quantity("furlong")
 
 
+@pytest.mark.parametrize("default", ["oops", True, float("nan"), float("inf"), [1.0]])
+def test_a_quantity_default_must_be_a_finite_number(default: Any) -> None:
+    with pytest.raises(EvaluationContractError, match="Quantity: default must be a finite number"):
+        Quantity("GeV", default=default)
+    assert Quantity("GeV", default=1).default == 1
+
+
 # --- collections and events ---
 
 

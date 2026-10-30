@@ -24,7 +24,7 @@ from k4opt.problem import ProblemSpec, _evaluate, _stages, parse_problem
 from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate
 from tests.support import simulation
 from tests.support.evaluators import cell_count, hit_energy, parameter_echo
-from tests.support.simulation import COLLECTION, Event, Hits, events_with
+from tests.support.simulation import COLLECTION, Event, Hits, Particle, Particles, events_with
 
 CELL = "constants.ECal_cell_size"
 GUN = {
@@ -45,6 +45,7 @@ STAGES = {
     "test.busiest": "simulation",
     "test.rival": "simulation",
     "test.sample_size": "generation",
+    "test.truth": "generation",
 }
 
 
@@ -706,3 +707,47 @@ def test_the_collections_of_a_file_are_listed_once_for_all_its_readers(
     candidate = evaluate(spec, [cell_count(), hit_energy()], tmp_path, geometry)
     assert candidate.status is Status.VALID
     assert listed == [tmp_path / "run" / "simulation" / "events.edm4hep.root"]
+
+
+class Truth(Evaluator):
+    """Reads the generated particles from the generation stage's file."""
+
+    name = "test.truth"
+    version = "1"
+    stage = "generation"
+    collections = {"particles": Collection("MCParticle", default="MCParticles")}
+    metrics = {("analysis", "truth.particles"): "1"}
+
+    def evaluate(self, request: EvaluationRequest) -> Any:
+        return {("analysis", "truth.particles"): [len(e.particles) for e in self.events(request)]}
+
+
+TRUTH = ("analysis", "truth.particles")
+
+
+def test_collections_of_a_stage_that_makes_no_file_are_refused_before_anything_runs(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+) -> None:
+    # the gun is fired inside ddsim: there is no generation file to read, and the simulation
+    # another evaluator needs must not run first only for this one to fail
+    spec = problem(doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH))
+    with pytest.raises(
+        EvaluationContractError,
+        match=r"'test\.truth' reads collections from the 'generation' stage, but executor 'gun' "
+        r"runs inside stages\.simulation and writes no file of its own",
+    ):
+        evaluate(spec, [cell_count(), Truth()], tmp_path, geometry)
+    assert log == [] and not (tmp_path / "run").exists()
+
+
+def test_collections_of_a_generation_given_as_a_file_are_read(
+    sample_doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photon = Particle(momentum=(1.0, 0.0, 0.0))
+    events = [Event(**{COLLECTION: Hits([1]), "MCParticles": Particles([photon])})] * 3
+    simulation.install(monkeypatch, events)
+    spec = problem(
+        sample_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH), sample="zh.hepmc"
+    )
+    candidate = evaluate(with_sample(spec, tmp_path), [cell_count(), Truth()], tmp_path, geometry)
+    assert candidate.status is Status.VALID and candidate.value(*TRUTH).value == 1

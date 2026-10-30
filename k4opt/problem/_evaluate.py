@@ -49,6 +49,7 @@ from k4opt.problem._stages import (
     changed_by_geometry,
     check_stages,
     run_stages,
+    without_file,
 )
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
@@ -393,6 +394,13 @@ def _preflight(
     bound = _bind(spec, evaluators)
     targets = tuple(stage for _, ev in bound if (stage := _stage(ev)) is not None)
     check_stages(context, *targets, provided=provided)
+    for entry, evaluator in bound:
+        stage = _stage(evaluator)
+        reason = None if stage is None else without_file(context, stage, provided)
+        if reason is not None and declared_collections(evaluator):
+            raise EvaluationContractError(
+                f"evaluator {entry.name!r} reads collections from the {stage!r} stage, but {reason}"
+            )
     for entry, evaluator in bound:
         check = getattr(evaluator, "check", None)
         if check is not None:
