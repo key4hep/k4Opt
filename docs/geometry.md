@@ -21,7 +21,7 @@ validate that the result is a sensible detector.
 
 `k4opt geometry inspect` lists the parameters of a geometry, so you can copy a target into the
 `parameters` of a [problem](problem.md#parameters). The geometry is named as in a problem's
-`geometry.entry`, relative to `$K4GEO`:
+`geometry`, relative to `$K4GEO`:
 
 ```bash
 k4opt geometry inspect FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml --filter ECal_cell_size

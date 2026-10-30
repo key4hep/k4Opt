@@ -74,8 +74,7 @@ name it in a problem, here
 [examples/problem/cld-ecal-granularity.yaml](examples/problem/cld-ecal-granularity.yaml):
 
 ```yaml
-geometry:
-  entry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml   # relative to $K4GEO
+geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml   # relative to $K4GEO
 
 parameters:
   - geometry:

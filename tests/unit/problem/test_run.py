@@ -70,7 +70,7 @@ def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
-    doc["geometry"] = {"entry": MINI_COMPACT}
+    doc["geometry"] = MINI_COMPACT
     doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
     doc["parameters"][0]["bounds"] = [100.0, 600.0]
     doc["stages"]["simulation"].update(events=3, seed=5)

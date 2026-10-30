@@ -3,7 +3,7 @@
 Reads and strictly validates a ``k4opt.problem/v1alpha1`` YAML document into immutable,
 typed models: the parameters, the pipeline ``stages`` (each run by an executor or given as a
 file), the ``evaluators`` and the objectives and constraints. ``load_problem`` also resolves the
-geometry entry and every parameter target in the active k4geo tree (``$K4GEO``);
+geometry and every parameter target in the active k4geo tree (``$K4GEO``);
 ``parse_problem`` is the pure variant that needs no geometry. Evaluators and metrics are not
 checked. See ``docs/problem.md``.
 
@@ -24,7 +24,6 @@ from k4opt.problem.models import (
     Environment,
     EvaluatorSpec,
     GeometrySelector,
-    GeometrySpec,
     Key4hepStack,
     Objective,
     Parameter,
@@ -39,7 +38,6 @@ __all__ = [
     "Environment",
     "EvaluatorSpec",
     "GeometrySelector",
-    "GeometrySpec",
     "Key4hepStack",
     "Objective",
     "Parameter",
