@@ -331,6 +331,10 @@ def option_args(options: Mapping[str, Json]) -> tuple[str, ...]:
             if key in _REPEATED:
                 args.extend(f"--{key}={text}" for text in texts)
             else:
+                # nargs='+' stops at an option token, even inside a list of metadata.
+                # Passing it through would let a value override a managed option.
+                if any(text.startswith("-") for text in texts):
+                    raise _fail(path, "metadata values must not start with '-' (a ddsim option)")
                 args.extend((f"--{key}", *texts))
         elif isinstance(value, (list, tuple)):
             raise _fail(

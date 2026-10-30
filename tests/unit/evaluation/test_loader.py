@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib
+import os
+import py_compile
 import sys
 from pathlib import Path
 
 import pytest
 
 from k4opt.errors import K4OptError
-from k4opt.evaluation import EvaluatorLoadError, load_evaluator
+from k4opt.evaluation import EvaluatorLoadError, evaluator_source, load_evaluator
 
 GOOD = """
 from k4opt.evaluation import EvaluationResult, Measurement
@@ -58,6 +62,103 @@ def test_loading_a_file_twice_shares_the_module(evaluator_file: Path) -> None:
     second = load_evaluator(f"{evaluator_file}:Good")
     assert type(first) is type(second)
     assert type(first).__module__ in sys.modules
+
+
+def test_cached_evaluator_keeps_the_identity_of_the_executed_bytes(evaluator_file: Path) -> None:
+    data = evaluator_file.read_bytes()
+    first = load_evaluator(f"{evaluator_file}:Good")
+    evaluator_file.write_text(GOOD.replace('"answer", 42', '"answer", 99'))
+    second = load_evaluator(f"{evaluator_file}:Good")
+    assert second.evaluate(None).measurements[0].value == 42  # type: ignore[arg-type]
+    assert (
+        evaluator_source(first)
+        == evaluator_source(second)
+        == {
+            "path": str(evaluator_file),
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "executed": True,
+        }
+    )
+    evaluator_file.unlink()
+    assert evaluator_source(first)["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_a_module_imported_by_the_loader_is_identified_right_after_the_import(
+    evaluator_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = evaluator_file.read_bytes()
+    monkeypatch.syspath_prepend(str(evaluator_file.parent))
+    try:
+        evaluator = load_evaluator("my_evaluator:Good")
+        evaluator_file.write_text("# edited after the import\n")
+        # not the bytes Python compiled, which may have come from a cached .pyc
+        assert evaluator_source(evaluator) == {
+            "path": str(evaluator_file),
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "executed": False,
+        }
+    finally:
+        sys.modules.pop("my_evaluator", None)
+
+
+def test_a_reloaded_module_does_not_keep_the_identity_of_the_code_it_replaced(
+    evaluator_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(str(evaluator_file.parent))
+    try:
+        first = load_evaluator("my_evaluator:Good")
+        evaluator_file.write_text(GOOD.replace('"answer", 42', '"answer", 12345'))
+        importlib.reload(sys.modules["my_evaluator"])
+        second = load_evaluator("my_evaluator:Good")
+        assert second.evaluate(None).measurements[0].value == 12345  # type: ignore[arg-type]
+        assert evaluator_source(second) == {"path": str(evaluator_file)}
+        # the instance created before the reload still runs, and names, the original code
+        assert evaluator_source(first)["sha256"] == hashlib.sha256(GOOD.encode()).hexdigest()
+    finally:
+        sys.modules.pop("my_evaluator", None)
+
+
+def test_a_class_re_exported_by_a_package_is_identified_by_its_own_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "study"
+    package.mkdir()
+    (package / "__init__.py").write_text("from study.impl import Good\n")
+    (package / "impl.py").write_text(GOOD)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        source = evaluator_source(load_evaluator("study:Good"))
+        assert source["path"] == str(package / "impl.py")
+        assert source["sha256"] == hashlib.sha256(GOOD.encode()).hexdigest()
+    finally:
+        for name in ("study", "study.impl"):
+            sys.modules.pop(name, None)
+
+
+def test_a_module_imported_before_does_not_claim_an_unverified_source_hash(
+    evaluator_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(str(evaluator_file.parent))
+    try:
+        importlib.import_module("my_evaluator")
+        evaluator = load_evaluator("my_evaluator:Good")
+        assert evaluator_source(evaluator) == {"path": str(evaluator_file)}
+    finally:
+        sys.modules.pop("my_evaluator", None)
+
+
+def test_a_stale_bytecode_cache_cannot_disagree_with_the_source_hash(evaluator_file: Path) -> None:
+    py_compile.compile(str(evaluator_file), doraise=True)
+    original = evaluator_file.stat()
+    data = GOOD.replace('"answer", 42', '"answer", 99').encode()
+    evaluator_file.write_bytes(data)
+    os.utime(evaluator_file, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert evaluator_file.stat().st_size == original.st_size
+    evaluator = load_evaluator(f"{evaluator_file}:Good")
+    assert evaluator.evaluate(None).measurements[0].value == 99  # type: ignore[arg-type]
+    assert evaluator_source(evaluator)["sha256"] == hashlib.sha256(data).hexdigest()
 
 
 def test_an_importable_module_name_works(

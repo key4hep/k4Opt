@@ -18,7 +18,7 @@ import difflib
 import math
 import time
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -45,6 +45,7 @@ from k4opt.evaluation import (
 )
 from k4opt.frozen import FrozenMap
 from k4opt.problem._stages import (
+    STAGE_TYPES,
     StageContext,
     StageRecords,
     changed_by_geometry,
@@ -380,6 +381,7 @@ class _Plan:
     targets: tuple[str, ...]  # the pipeline stages the evaluators read
     owners: Mapping[MetricKey, str]  # objective or constraint metric -> evaluator
     declared: Mapping[MetricKey, str]  # any declared metric -> evaluator
+    requests: Mapping[str, EvaluationRequest]  # normalized and checked before execution
     warnings: tuple[str, ...] = ()  # collections the simulation is not expected to write
 
 
@@ -411,13 +413,16 @@ def _preflight(
             raise EvaluationContractError(
                 f"evaluator {entry.name!r} reads collections from the {stage!r} stage, but {reason}"
             )
+    requests = {}
     for entry, evaluator in bound:
+        request = _request(context, values, entry, evaluator)
+        requests[entry.name] = request
         check = getattr(evaluator, "check", None)
         if check is not None:
-            check(_request(context, values, entry, evaluator))
+            check(request)
     owners, declared = _owners(spec, bound)
     warnings = _unexpected_collections(spec, context, bound, provided)
-    return _Plan(context, tuple(bound), targets, owners, declared, warnings)
+    return _Plan(context, tuple(bound), targets, owners, declared, FrozenMap(requests), warnings)
 
 
 def _check_result(spec: ProblemSpec, plan: _Plan, name: str, result: EvaluationResult) -> None:
@@ -456,8 +461,6 @@ def _request(
     values: Mapping[str, Scalar],
     entry: EvaluatorSpec,
     evaluator: EvaluatorProtocol | None = None,
-    inputs: Mapping[str, Path] | None = None,
-    workdir: Path | None = None,
 ) -> EvaluationRequest:
     """The request an evaluator receives, for ``check()`` and ``evaluate()`` alike.
 
@@ -470,8 +473,6 @@ def _request(
         candidate=values,
         settings=with_defaults(evaluator, entry.settings),
         collections=collection_names(evaluator, entry.collections),
-        inputs=inputs or {},
-        workdir=workdir,
         events=events,
         seed=seed,
     )
@@ -480,7 +481,6 @@ def _request(
 def _measure(
     spec: ProblemSpec,
     plan: _Plan,
-    values: Mapping[str, Scalar],
     key: CandidateKey,
     entry: EvaluatorSpec,
     evaluator: EvaluatorProtocol,
@@ -497,15 +497,20 @@ def _measure(
     call; ``elapsed_seconds`` is the time of the call alone.
     """
     stage = _stage(evaluator)
-    given = {**inputs, **stages.inputs(stage)}
-    request = _request(plan.context, values, entry, evaluator, given)
+    given = {name: path for name, path in inputs.items() if name not in STAGE_TYPES}
+    given.update(stages.inputs(stage))
+    request = replace(plan.requests[entry.name], inputs=given)
     error = stages.error(stage) or _collection_error(evaluator, request, seen)
     if error is not None:
         return _record(spec, plan, entry, evaluator, key, request, EvaluationResult.failed(error))
     own = None if workdir is None else workdir / "evaluators" / entry.name
-    request = _request(plan.context, values, entry, evaluator, given, own)
+    request = replace(request, workdir=own)
     if own is not None:
-        own.mkdir(parents=True)
+        try:
+            own.mkdir(parents=True)
+        except OSError as exc:
+            result = EvaluationResult.failed(f"cannot create evaluator directory {own}: {exc}")
+            return _record(spec, plan, entry, evaluator, key, request, result)
     started = time.perf_counter()
     try:
         result = result_from(evaluator, evaluator.evaluate(request))
@@ -639,10 +644,29 @@ def _evaluate_candidate(
     values, key = _validate_candidate(spec, candidate)
     inputs = dict(inputs or {})
     plan = _preflight(spec, values, evaluators, inputs)
+    checked = time.perf_counter() - started
+    return _execute_plan(spec, plan, key, inputs=inputs, workdir=workdir, checked_seconds=checked)
+
+
+def _execute_plan(
+    spec: ProblemSpec,
+    plan: _Plan,
+    key: CandidateKey,
+    *,
+    inputs: Mapping[str, Path],
+    workdir: Path | None,
+    checked_seconds: float,
+) -> CandidateRecord:
+    """Execute an already validated plan; evaluator checks and defaults are not repeated.
+
+    ``checked_seconds``, the time the candidate's validation and preflight took, counts towards
+    ``elapsed_seconds``, which thus covers k4opt's checks too (not what the caller does between).
+    """
+    started = time.perf_counter() - checked_seconds
     stages = run_stages(plan.context, *plan.targets, inputs=inputs, workdir=workdir)
     seen: dict[Path, tuple[str, ...] | str] = {}  # the collection names of each stage file
     records = tuple(
-        _measure(spec, plan, values, key, entry, evaluator, stages, inputs, workdir, seen)
+        _measure(spec, plan, key, entry, evaluator, stages, inputs, workdir, seen)
         for entry, evaluator in plan.evaluators
     )
     reads = {

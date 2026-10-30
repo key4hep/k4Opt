@@ -41,7 +41,7 @@ include = ["k4opt*"]
 [tool.setuptools.package-data]
 k4opt = ["py.typed"]
 
-# Development tools are pinned to current releases; runtime dependencies above are not.
+# Supported development-tool minimums; hook and bootstrap versions are pinned separately.
 [project.optional-dependencies]
 # numpy: the example evaluator uses it (k4opt itself does not)
 test = ["pytest>=9.1", "pytest-cov>=7.1", "numpy>=2.2"]

@@ -85,7 +85,7 @@ class Quantity:
         if default is not None and (
             isinstance(default, bool)
             or not isinstance(default, (int, float))
-            or not math.isfinite(default)
+            or not _fits_float(default)
         ):
             raise EvaluationContractError(
                 f"Quantity: default must be a finite number in its unit, got {default!r}"
@@ -109,7 +109,7 @@ class Quantity:
         if (
             isinstance(number, bool)
             or not isinstance(number, (int, float))
-            or not math.isfinite(number)
+            or (isinstance(number, float) and not math.isfinite(number))  # an int is finite
         ):
             raise EvaluationContractError(f"{path}.value: must be a finite number, got {number!r}")
         if not isinstance(unit, str) or units.dimension(unit) != name:
@@ -117,7 +117,18 @@ class Quantity:
                 f"{path}.unit: must be a unit of {name} ({', '.join(units.units(name))}), "
                 f"got {unit!r}"
             )
-        return units.convert(number, unit, self.unit)
+        converted = units.convert(number, unit, self.unit)
+        if not math.isfinite(converted):
+            raise EvaluationContractError(f"{path}.value: too large to express in {self.unit}")
+        return converted
+
+
+def _fits_float(number: int | float) -> bool:
+    """Whether ``number`` is finite and within the range of a float, as an int need not be."""
+    try:
+        return math.isfinite(number)
+    except OverflowError:
+        return False
 
 
 type MetricKey = str | tuple[str, str]

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +13,7 @@ from pathlib import Path
 from k4opt.ddsim.command import ddsim_arguments, option_args, particle_gun_args
 from k4opt.ddsim.errors import DdsimError
 from k4opt.frozen import Json
+from k4opt.jsonio import write_json
 
 _LOG_TAIL = 15  # lines of standard error quoted in a failure message
 
@@ -83,10 +84,11 @@ def check_arguments(
 
 def _tail(path: Path) -> str:
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            lines = deque(handle, maxlen=_LOG_TAIL)
     except OSError:
         return ""
-    return "\n".join(lines[-_LOG_TAIL:])
+    return "\n".join(line.rstrip("\r\n") for line in lines)
 
 
 def simulate(
@@ -127,13 +129,16 @@ def simulate(
         sample=sample,
         options=options,
     )
+
+    def run(argv: tuple[str, ...], returncode: int | None, error: str | None) -> SimulationRun:
+        return SimulationRun(argv, workdir, returncode, output, stdout, stderr, command, error)
+
     try:
         workdir.mkdir(parents=True)
     except FileExistsError as exc:
         raise DdsimError(f"{workdir} already exists; use a new directory") from exc
-
-    def run(argv: tuple[str, ...], returncode: int | None, error: str | None) -> SimulationRun:
-        return SimulationRun(argv, workdir, returncode, output, stdout, stderr, command, error)
+    except OSError as exc:
+        return run((), None, f"cannot create simulation directory {workdir}: {exc}")
 
     found = shutil.which("ddsim")
     if found is None:
@@ -153,18 +158,16 @@ def simulate(
             )
     except OSError as exc:
         return run(argv, None, f"ddsim could not be started: {exc}")
-    command.write_text(
-        json.dumps(
-            {"argv": argv, "cwd": str(workdir), "returncode": completed.returncode}, indent=2
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    error = None
     if completed.returncode != 0:
         error = f"ddsim exited with status {completed.returncode} (logs in {workdir}):\n" + _tail(
             stderr
         )
-        return run(argv, completed.returncode, error)
-    if not output.is_file():
-        return run(argv, 0, f"ddsim finished but wrote no {output.name} (logs in {workdir})")
-    return run(argv, 0, None)
+    elif not output.is_file():
+        error = f"ddsim finished but wrote no {output.name} (logs in {workdir})"
+    try:
+        write_json(command, {"argv": argv, "cwd": str(workdir), "returncode": completed.returncode})
+    except OSError as exc:
+        failure = f"cannot record ddsim command in {command}: {exc}"
+        error = failure if error is None else f"{error}\n{failure}"
+    return run(argv, completed.returncode, error)

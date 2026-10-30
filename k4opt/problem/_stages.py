@@ -207,6 +207,7 @@ def _run_simulation(
     assert workdir is not None  # checked by check_run_inputs
     particle_gun, sample = _primaries(context, inputs.get("generation"))
     files = _option_files(context, stage.options)
+    read = {key: _identity_if_readable(path) for key, path in files.items()}  # before ddsim does
     run = simulate(
         compact=inputs["geometry"],
         workdir=workdir / "simulation",
@@ -221,16 +222,27 @@ def _run_simulation(
         "cwd": str(run.cwd),
         "returncode": run.returncode,
     }
+    error = run.error
     if files:
         recorded: dict[str, Json] = {}
         for key, path in files.items():
-            recorded[key] = {"path": str(path)}
-            with contextlib.suppress(OSError):  # a missing file is ddsim's error to report
-                recorded[key] = {"path": str(path), **file_identity(path)}
+            identity = read[key]
+            recorded[key] = {"path": str(path), **(identity or {})}
+            if identity is not None and _identity_if_readable(path) != identity:
+                changed = f"{key}: {path} changed while ddsim ran; the record cannot say which"
+                error = changed if error is None else f"{error}\n{changed}"
         provenance["files"] = recorded
-    if run.error is not None:
-        return StageOutcome(artifacts=run.files, provenance=provenance, error=run.error)
+    if error is not None:
+        return StageOutcome(artifacts=run.files, provenance=provenance, error=error)
     return StageOutcome({"events": run.output}, run.files, provenance)
+
+
+def _identity_if_readable(path: Path) -> dict[str, Json] | None:
+    """:func:`file_identity`, or ``None`` for a file that cannot be read (ddsim's to report)."""
+    try:
+        return file_identity(path)
+    except OSError:
+        return None
 
 
 def _inspect_simulation(context: StageContext, path: Path) -> tuple[dict[str, Json], str | None]:

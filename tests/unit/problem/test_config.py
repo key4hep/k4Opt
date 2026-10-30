@@ -846,11 +846,21 @@ def test_error_names_the_file_and_location(write: Write) -> None:
         "a: !!python/object/apply:os.system ['true']\n",  # code-executing tag
         "a: !!python/name:os.system\n",
         "? [1, 2]\n: x\n",  # unhashable key
+        "a: 2026-02-30\n",  # a date PyYAML recognizes but cannot construct
+        "a: 2026-13-01 10:00:00\n",
+        "a: !!timestamp nonsense\n",
+        "a: !!int abc\n",
+        "a: !!float abc\n",
     ],
 )
 def test_yaml_level_errors(write: Write, text: str) -> None:
     with pytest.raises(ProblemConfigError, match="invalid YAML"):
         load_problem(write(text))
+
+
+def test_an_unconstructible_value_names_its_position(write: Write) -> None:
+    with pytest.raises(ProblemConfigError, match=r"(?s)invalid timestamp '2026-02-30'.*line 2"):
+        load_problem(write("name: x\nenvironment: {key4hep: 2026-02-30}\n"))
 
 
 def test_duplicate_key_message_has_the_line(write: Write) -> None:

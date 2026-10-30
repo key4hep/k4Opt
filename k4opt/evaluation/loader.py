@@ -2,15 +2,62 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
 from types import ModuleType
+from weakref import WeakKeyDictionary
 
 from k4opt.evaluation.errors import EvaluatorLoadError
 from k4opt.evaluation.protocol import EvaluatorProtocol
+from k4opt.frozen import FrozenMap, Json
+
+# by class, not module: importlib.reload() runs new code in the same module object, and the
+# classes it creates must not inherit the identity of the code they replace
+_SOURCES: WeakKeyDictionary[type, FrozenMap[str, Json]] = WeakKeyDictionary()
+
+
+def evaluator_source(evaluator: EvaluatorProtocol) -> dict[str, Json]:
+    """Identify the source of an evaluator without hashing a file that may have changed.
+
+    The identity is taken when :func:`load_evaluator` imports the file that defines the class
+    and is shared by cached instances: for ``FILE.py:Class`` the exact bytes executed, for a
+    module that call imported its file read right after the import (Python may have executed
+    a cached ``.pyc`` instead). For a class whose module was imported before, or reloaded
+    since, only the path is known: the current file cannot establish which bytes Python
+    executed.
+    """
+    identity = _SOURCES.get(type(evaluator))
+    if identity is not None:
+        return dict(identity)
+    try:
+        path = inspect.getsourcefile(type(evaluator))
+    except TypeError:
+        path = None
+    return {"path": path}
+
+
+def _identity(path: str, data: bytes, *, executed: bool) -> FrozenMap[str, Json]:
+    """``executed``: ``data`` are the bytes Python compiled, not the file read after the import."""
+    digest = hashlib.sha256(data).hexdigest()
+    return FrozenMap({"path": path, "bytes": len(data), "sha256": digest, "executed": executed})
+
+
+def _identify_import(cls: type) -> None:
+    """Record the source file of a class whose module was imported just now, if readable."""
+    if cls in _SOURCES:  # defined in a FILE.py, identified by the bytes it executed
+        return
+    try:
+        path = inspect.getsourcefile(cls)
+    except TypeError:  # defined in a built-in module
+        return
+    if path is not None:
+        with contextlib.suppress(OSError):
+            _SOURCES[cls] = _identity(path, Path(path).read_bytes(), executed=False)
 
 
 def _load_file(path: Path) -> ModuleType:
@@ -34,11 +81,21 @@ def _load_file(path: Path) -> ModuleType:
     if added:
         sys.path.insert(0, directory)
     try:
-        spec.loader.exec_module(module)
-    except Exception as exc:
+        # Read, hash and compile the same bytes. exec_module() may use a stale .pyc
+        # when a same-sized edit preserves the source's timestamp.
+        data = path.read_bytes()
+        code = compile(data, str(path), "exec", dont_inherit=True)
+        exec(code, module.__dict__)
+        identity = _identity(str(path), data, executed=True)
+        for value in vars(module).values():  # the classes these bytes defined
+            if isinstance(value, type) and value.__module__ == name:
+                _SOURCES[value] = identity
+    except BaseException as exc:
         del sys.modules[name]
         if added:
             sys.path.remove(directory)
+        if not isinstance(exc, Exception):
+            raise
         raise EvaluatorLoadError(f"importing {path} failed: {type(exc).__name__}: {exc}") from exc
     return module
 
@@ -60,6 +117,7 @@ def load_evaluator(reference: str) -> EvaluatorProtocol:
         raise EvaluatorLoadError(
             f"evaluator {reference!r}: expected FILE.py:Class or package.module:Class"
         )
+    imported_before = set(sys.modules)
     if where.endswith(".py") or "/" in where:
         module = _load_file(Path(where))
     else:
@@ -86,5 +144,7 @@ def load_evaluator(reference: str) -> EvaluatorProtocol:
             f"{attribute} is not an evaluator: needs name, version and an evaluate() method"
             + (f" (missing {', '.join(missing)})" if missing else "")
         )
+    if type(evaluator).__module__ not in imported_before:
+        _identify_import(type(evaluator))
     result: EvaluatorProtocol = evaluator
     return result

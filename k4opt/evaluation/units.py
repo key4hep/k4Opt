@@ -8,7 +8,10 @@ mm, so those are the units an evaluator usually declares.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
+
+# wide enough that scaling by a power of ten never rounds, independent of decimal.getcontext()
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
 
 # the power of ten of each unit, per dimension
 _UNITS: Mapping[str, Mapping[str, int]] = {
@@ -28,8 +31,14 @@ def units(name: str) -> tuple[str, ...]:
 
 
 def convert(value: int | float, unit: str, to: str) -> float:
-    """``value`` in ``unit`` expressed in ``to``; both must be units of one dimension."""
+    """``value`` in ``unit`` expressed in ``to``; both must be units of one dimension.
+
+    The scaling is exact whatever the caller's decimal context; only the final ``float`` rounds,
+    and a value beyond its range becomes infinite.
+    """
     name = dimension(unit)
     assert name is not None
     assert dimension(to) == name
-    return float(Decimal(repr(value)).scaleb(_UNITS[name][unit] - _UNITS[name][to]))
+    # an int exactly; a float as its shortest spelling, so 0.1 keV is 100 eV and not 100.000...
+    number = Decimal(value) if isinstance(value, int) else Decimal(repr(value))
+    return float(number.scaleb(_UNITS[name][unit] - _UNITS[name][to], context=_EXACT))

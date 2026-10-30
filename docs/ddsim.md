@@ -30,6 +30,9 @@ part alone, `check_particle_gun` and `check_options` check a gun or options on t
 problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`,
 `ddsim.stderr.log` and `ddsim.json` (argument list, directory, exit code).
 
+An unwritable simulation directory or command record is also reported in `SimulationRun.error`.
+If the process already ran, its actual exit code and existing output and logs remain available.
+
 ## Particle gun (`stages.generation`, `executor: gun`)
 
 The keys of a generation stage run by the `gun` describe the particle gun. Unknown keys are
@@ -88,6 +91,10 @@ A list for any other option, a nested mapping (write `physics.list: FTFP_BERT`, 
 never a guess. An integration test (`tests/integration/ddsim`) checks with
 `ddsim --dumpParameter` that ddsim parses every kind as intended. Option names and values are
 otherwise validated by ddsim when it starts, seconds before the first event.
+
+Metadata values (`meta.eventParameters`, `meta.runParameters`) must not start with `-`, since
+ddsim would interpret such a value as another option. This rule also protects the options
+managed by k4opt when they appear inside a metadata list.
 
 What an evaluation defines cannot be changed by an option: `compactFile`, `outputFile`,
 `outputConfig.forceLCIO` and `outputConfig.forceDD4HEP` (k4opt reads the output as EDM4hep),

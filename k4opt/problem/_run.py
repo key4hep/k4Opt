@@ -4,34 +4,40 @@ Not a workflow API. In order it loads the problem, parses and validates the cand
 stage files the caller supplies, binds and checks the evaluators (nothing is created before this
 succeeds), creates the new run directory, materializes the candidate's geometry into it,
 measures the candidate with every evaluator through
-:func:`k4opt.problem._evaluate._evaluate_candidate`, which runs each pipeline stage once, and
+:func:`k4opt.problem._evaluate._execute_plan`, which runs each pipeline stage once, and
 writes ``summary.json``.
 """
 
 from __future__ import annotations
 
 import contextlib
-import inspect
-import json
 import math
 import os
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
 from k4opt import __version__
-from k4opt.evaluation import EvaluationRecord, EvaluatorProtocol, Measurement, Scalar
+from k4opt.evaluation import (
+    EvaluationRecord,
+    EvaluatorProtocol,
+    Measurement,
+    Scalar,
+    evaluator_source,
+)
 from k4opt.frozen import Json, thaw
 from k4opt.geometry import Override
+from k4opt.jsonio import write_json
 from k4opt.problem._evaluate import (
     CandidateRecord,
-    _evaluate_candidate,
+    _execute_plan,
     _preflight,
     _validate_candidate,
 )
-from k4opt.problem._stages import STAGE_TYPES, file_identity, plan_stages
+from k4opt.problem._stages import STAGE_TYPES, plan_stages
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
@@ -205,23 +211,6 @@ def _parse_inputs(assignments: Sequence[str]) -> dict[str, Path]:
     return inputs
 
 
-def _source(evaluator: EvaluatorProtocol) -> dict[str, Json]:
-    """The file that defines the class of ``evaluator``, with its size and SHA-256.
-
-    It identifies the evaluator's own code only, not the modules it imports.
-    """
-    try:
-        path = inspect.getsourcefile(type(evaluator))
-    except TypeError:  # defined in no file
-        path = None
-    if path is None:
-        return {"path": None}
-    source: dict[str, Json] = {"path": path}
-    with contextlib.suppress(OSError):
-        source |= file_identity(Path(path))
-    return source
-
-
 def _evaluator(
     record: EvaluationRecord, reads: Sequence[str], entry: EvaluatorSpec, source: Json
 ) -> dict[str, object]:
@@ -274,7 +263,7 @@ def _summary(
         stage_records[stage] = entry
     return {
         "schema": SUMMARY_SCHEMA,
-        "problem": {"path": str(problem_path), "name": spec.name},
+        "problem": {"path": str(problem_path), "name": spec.name, "definition": spec.to_dict()},
         "candidate": dict(values),
         "candidate_key": [list(part) for part in candidate.candidate_key],
         "status": candidate.status,
@@ -351,9 +340,11 @@ def run_candidate(
     assert spec._source is not None
     assert spec._catalog is not None
 
-    values, _ = _validate_candidate(spec, _parse_candidate(spec, assignments))
+    started = time.perf_counter()
+    values, key = _validate_candidate(spec, _parse_candidate(spec, assignments))
     supplied = _parse_inputs(inputs)
     plan = _preflight(spec, values, evaluators, provided=supplied)
+    checked = time.perf_counter() - started  # part of the candidate's time; materializing is not
     if warn is not None:
         for warning in plan.warnings:
             warn(warning)
@@ -361,6 +352,7 @@ def run_candidate(
         if stage not in plan_stages(*plan.targets, provided=supplied.keys() - {stage}):
             raise RunError(f"--input {stage}: no evaluator of the problem reads that stage")
     overrides = _overrides(spec, values)
+    sources = {evaluator.name: evaluator_source(evaluator) for evaluator in evaluators}
 
     run_dir = Path(os.path.abspath(output))
     if run_dir.exists() or run_dir.is_symlink():
@@ -374,12 +366,13 @@ def run_candidate(
             run_dir.rmdir()  # created by the failed attempt; only removed while empty
         raise
 
-    candidate = _evaluate_candidate(
+    candidate = _execute_plan(
         spec,
-        values,
-        evaluators,
+        plan,
+        key,
         inputs={"geometry": snapshot.compact_path, **supplied},
         workdir=run_dir,
+        checked_seconds=checked,
     )
     geometry = {
         "fingerprint": snapshot.fingerprint,
@@ -391,9 +384,9 @@ def run_candidate(
             for c in snapshot.changes
         ],
     }
-    sources = {evaluator.name: _source(evaluator) for evaluator in evaluators}
     summary = _summary(problem_path.absolute(), spec, values, candidate, run_dir, geometry, sources)
-    with (run_dir / SUMMARY_NAME).open("x", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2)
-        handle.write("\n")
+    try:
+        write_json(run_dir / SUMMARY_NAME, summary)
+    except OSError as exc:
+        raise RunError(f"cannot write summary in {run_dir}: {exc}") from exc
     return RunOutcome(candidate, summary, run_dir, snapshot.fingerprint)

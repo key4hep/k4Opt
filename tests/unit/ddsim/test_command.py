@@ -283,6 +283,15 @@ def test_plain_python_lists_are_accepted() -> None:
     assert particle_gun_args(GENERATOR) == args(GENERATOR)
 
 
+@pytest.mark.parametrize("key", ["meta.eventParameters", "meta.runParameters"])
+@pytest.mark.parametrize(
+    "injected", ["--random.seed=999", "--compactFile=other.xml", "-N1", "--steeringFile=x.py", "--"]
+)
+def test_metadata_cannot_introduce_another_option(key: str, injected: str) -> None:
+    with pytest.raises(DdsimError, match="metadata values must not start"):
+        build({key: ["tag/I=1", injected]})
+
+
 @pytest.mark.parametrize("events", [0, -4, True, 2.0, "3"])
 def test_invalid_event_counts_are_rejected(events: Any) -> None:
     with pytest.raises(DdsimError, match="events"):

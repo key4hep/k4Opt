@@ -242,7 +242,8 @@ The executor options are a pass-through, with three rules:
    primaries come from the problem; an option that would change one of them is an error rather
    than silently winning or losing, and so is a steering file, which ddsim executes as Python
    and which could change anything. A file an option names (`physics.pdgfile`) is recorded with
-   its hash.
+   its hash, taken before ddsim starts; a file that changes while ddsim runs fails the
+   simulation, since the record could not say which content was read.
 
 Options are part of the evaluation context: they can change physics, not only logging, so the
 same evaluator name and version with different options is a **different evaluation context**,
@@ -414,9 +415,12 @@ evaluator), and that revision is what the record stores.
 
 Provenance recorded per evaluation: `k4opt evaluate` writes the geometry snapshot fingerprint
 (see [Fingerprint](geometry.md#fingerprint)), each evaluator's identity, version, stage,
-settings and the SHA-256 of its file, the executed `ddsim` command (which holds the options in
+settings and the import-time SHA-256 of the file defining its class, the executed `ddsim`
+command (which holds the options in
 order), the size and SHA-256 of every given or supplied file and of the files options name, the
 k4opt version and the active stack to `summary.json` ([evaluators](evaluators.md#k4opt-evaluate)).
+The normalized problem definition is kept in the summary, so later edits to the YAML cannot
+change the parameter domains, objectives or constraints recorded for an earlier run.
 The resolved versions of the individual Key4hep packages are not recorded yet.
 
 A candidate is checked against the parameter domains above before it is evaluated, by
