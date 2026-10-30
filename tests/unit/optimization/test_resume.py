@@ -392,6 +392,22 @@ def test_a_trial_another_client_added_to_the_storage_refuses_the_resume(
     assert tree_digest(output) == before
 
 
+def test_a_failed_trial_another_client_added_refuses_the_resume(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 2, seed=1)
+    study = optuna_study(output)  # no values, but one more trial: another seed for the next session
+    trial = optuna.trial.create_trial(
+        params={RADIUS: 300.0},
+        distributions=search_space(load_problem(problem)),
+        state=TrialState.FAIL,
+    )
+    study.add_trial(trial)
+    with pytest.raises(OptimizationError, match=r"trial 2 is FAIL without .* any mark of k4opt"):
+        run(problem, output, 1, resume=True)
+
+
 def test_a_trial_directory_of_no_trial_refuses_the_resume(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:

@@ -396,17 +396,25 @@ def _recover(run: _Study) -> None:
 
 def _check_told_record(run: _Study, frozen: FrozenTrial) -> None:
     """A trial the optimizer was told a record of still has that record, byte for byte, and
-    every trial but an interrupted one, or one that stopped the study, has such a record: a
-    trial without one was not made by k4opt (another client of the storage added it)."""
-    told = frozen.user_attrs.get("k4opt.record")
+    every other finished trial is one k4opt made: interrupted, or one that stopped the study.
+
+    k4opt marks each trial it asks for with ``k4opt.dir`` at once, and recovery marks one that
+    a killed session left without it (``k4opt.recovered``). A finished trial with a result but
+    no record, or with no mark of k4opt at all, was added by another client of the storage: it
+    would count among the study's trials (and so change the next session's seed) without being
+    one of its evaluations.
+    """
+    attrs = frozen.user_attrs
+    told = attrs.get("k4opt.record")
     if frozen.state == TrialState.RUNNING:
         return  # recovery decides about it
     if not isinstance(told, Mapping):
-        if frozen.state != TrialState.FAIL or "k4opt.status" in frozen.user_attrs:
+        ours = "k4opt.dir" in attrs or attrs.get("k4opt.recovered") is True
+        if frozen.state != TrialState.FAIL or "k4opt.status" in attrs or not ours:
             raise OptimizationError(
                 f"trial {frozen.number} is {frozen.state.name} without the record k4opt tells a "
-                "trial with, so it was not made by k4opt optimize and nothing shows what its "
-                "values rest on; resume needs every trial to be one of the study's own"
+                "trial with, or any mark of k4opt, so it was not made by k4opt optimize; resume "
+                "needs every trial to be one of the study's own"
             )
         return
     path = run.directory / str(told.get("path"))

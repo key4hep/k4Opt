@@ -243,8 +243,12 @@ left running:
 Before that, every finished trial must still have the record the optimizer was told: the same
 bytes as the SHA-256 in its `k4opt.record`. A record that is gone or was changed makes the
 resume refuse, since nothing would show what the trial's values rest on. So does a trial
-without any record, other than an interrupted one or one that stopped the study: another
-client of the storage added it, and its values rest on no evaluation.
+without any record, other than an interrupted one or one that stopped the study, and a trial
+without any mark of k4opt (each trial is marked with its directory when it is asked for, or as
+`k4opt.recovered`): another client of the storage added it, and it would count among the
+study's trials, and so change the next session's seed, without being one of its evaluations.
+A trial that another client leaves RUNNING cannot be told from one of a killed k4opt process,
+and recovery closes it as FAIL.
 
 A `trial-*` directory that no trial of the study names makes the resume refuse. Recovered
 trials do not count among the `--trials` of the resume, and interrupted trials are not retried
