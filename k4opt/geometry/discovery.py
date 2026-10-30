@@ -206,6 +206,17 @@ class Catalog(Sequence[Parameter]):
     def targets(self) -> tuple[str, ...]:
         return tuple(self._by_target)
 
+    @property
+    def readouts(self) -> tuple[str, ...]:
+        """The names of the ``<readout>`` and ``<hits_collection>`` elements, in discovery order:
+        the hit collections a simulation names after them (raw text, never evaluated)."""
+        names = (
+            p.value
+            for p in self._parameters
+            if p.attribute == "name" and p.tag in ("readout", "hits_collection")
+        )
+        return tuple(dict.fromkeys(names))
+
     # -- queries ------------------------------------------------------------
     def filter(self, text: str) -> tuple[Parameter, ...]:
         """Case-insensitive substring filter over target, file and value."""

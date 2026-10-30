@@ -302,6 +302,39 @@ def executors(stage: str) -> Mapping[str, _Executor]:
     return _STAGES[stage].executors
 
 
+# podio reads EDM4hep written with ROOT (TTree or RNTuple) or SIO; other event files (HepMC, ...)
+# are inputs of ddsim, not files an evaluator can read collections from
+_PODIO_SUFFIXES = (".root", ".sio")
+
+
+def no_edm4hep_file(
+    context: StageContext, stage: str, supplied: Mapping[str, Path] | None = None
+) -> str | None:
+    """Why ``stage`` makes no EDM4hep file that an evaluator could read collections from,
+    ``None`` if it does. A file the caller supplies or the problem gives must be one podio reads
+    (``.root``, ``.sio``), not an event file such as HepMC; an executor that runs inside another
+    stage (the gun, fired by ddsim) writes no file of its own."""
+    path = (supplied or {}).get(stage) or context.files().get(stage)
+    if path is not None:
+        if path.suffix in _PODIO_SUFFIXES:
+            return None
+        readable = " or ".join(_PODIO_SUFFIXES)
+        return (
+            f"its file {path.name} is no EDM4hep file that podio reads ({readable}); read the "
+            "collections from a stage that writes one, such as stages.simulation"
+        )
+    spec = context.stages.get(stage)
+    if spec is None or spec.executor is None:
+        return None  # not defined: reported elsewhere
+    inside = _STAGES[stage].executors[spec.executor].inside
+    if inside is None:
+        return None
+    return (
+        f"executor {spec.executor!r} runs inside stages.{inside} and writes no file of its own; "
+        f"read the collections from stages.{inside}, or give stages.{stage} as a file"
+    )
+
+
 def changed_by_geometry(stage: str) -> bool:
     """Whether ``stage`` depends on the candidate geometry: it reads it, or reads a stage that
     does. A file given for such a stage was not made from the candidate."""

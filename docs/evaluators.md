@@ -33,10 +33,12 @@ One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, 
 `--param REFERENCE=VALUE` uses the canonical reference of the problem file and is repeated for
 each declared parameter. `--output` must not exist. Before anything is created, the candidate
 (keys, types, bounds), the supplied inputs, the evaluators (each declared one given once, with
-its version and the stage it reads, and no other), their settings and their metrics (every
-objective and constraint measured by exactly one evaluator, see
+its version and the stage it reads, and no other), their settings and collections and their
+metrics (every objective and constraint measured by exactly one evaluator, see
 [problem](problem.md#evaluators)) are validated; an error exits with status 1 and creates
-nothing. Then, in order:
+nothing. A collection that ddsim is not expected to write for the geometry is printed as a
+warning (`k4opt: warning: ...`, with the closest expected name) before anything runs, and the
+run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
 
 1. the candidate becomes `Override`s (`6.0` with unit `mm` is written `6.0*mm`; units are limited
    to `um mm cm m mrad rad deg MeV GeV TeV`, expressions are not interpreted) and the geometry
@@ -46,16 +48,19 @@ nothing. Then, in order:
    `<output>/simulation`. Then each evaluator, in the order of the problem, reads the files of
    the stages it needs and may write in `<output>/evaluators/<name>`. If a stage fails or its
    output lacks events, the evaluators that read it are `failed` and not called; the others
-   still are;
+   still are. So is an evaluator whose stage's file lacks a collection it declares, or holds it
+   with another type: the message lists what the file holds;
 3. `<output>/summary.json` (`k4opt.run/1`) is written:
    - `status` and `message` of the candidate ([how they follow from the evaluators'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
-     the candidate and its key, whether the run `represents_candidate` and which stages were
-     `supplied` with `--input`;
+     the candidate and its key, whether the run `represents_candidate`, which stages were
+     `supplied` with `--input`, and the `warnings` printed before the run;
    - `metrics`: every objective and constraint metric, the evaluator that owns it, and its
      value, unit and uncertainty, which are `null` unless that evaluator's result is `valid`;
    - `evaluators`, in problem order: name, version, the stage it reads, the path and SHA-256 of
      its file (`source`; its own code only, not the modules it imports), status, message,
-     settings, the stages it read, its measurements with uncertainty, the artifacts and
+     settings (`declared` as the problem wrote them, `used` as the evaluator received them, with
+     defaults and quantities in the declared unit), the collection of each role, the stages it
+     read, its measurements with uncertainty, the artifacts and
      provenance it returned, its directory and the time of its `evaluate()` call (`null` if it
      was not called);
    - `stages`, each once and in pipeline order: the particle gun, or the size and SHA-256 of a
@@ -82,8 +87,12 @@ evaluators:
   - name: calo.photon
     version: "1"
     stage: simulation
+    collections:
+      hits: ECalBarrelCollection
     settings:
-      collection: ECalBarrelCollection
+      threshold:
+        value: 70
+        unit: keV
   - name: my.readout_cost  # reads no stage
     version: "1"
 
@@ -112,7 +121,8 @@ count for some evaluator is a separate problem for now.
 framework's simulation stage ([ddsim](ddsim.md)) wrote, and runs no tool. The stage uses its
 `events` (required, and checked against the file), `seed` (optional, passed to ddsim when given)
 and ddsim options, and the generation stage (a particle gun or an event file); the evaluator
-itself uses only `settings`.
+itself uses only its `collections` and `settings`. It reads each event with `self.events()`, so
+the hits and the generated photon of an event always come from that one event.
 
 **Selection.** In each event the photon is the one `MCParticles` entry with generator status 1;
 it must be a photon (PDG 22), since both metrics are defined for photons. A photon that
@@ -121,10 +131,10 @@ reaches the calorimeter as an electron and a positron; its event is left out of 
 
 **Metrics**, both in the `simulation` stage:
 
-- `ecal_barrel.fired_cells`, unit `1`: the hits of `settings.collection` (type
-  `edm4hep::SimCalorimeterHit`, one hit per cell) with at least 70 keV, half the most probable
-  deposit of a minimum-ionizing particle in the 0.5 mm silicon of the CLD ECAL. An event without
-  such a hit counts 0.
+- `ecal_barrel.fired_cells`, unit `1`: the hits of the collection `hits` (type
+  `edm4hep::SimCalorimeterHit`, one hit per cell) with at least `settings.threshold`; the
+  example uses 70 keV, half the most probable deposit of a minimum-ionizing particle in the
+  0.5 mm silicon of the CLD ECAL. An event without such a hit counts 0.
 - `ecal_barrel.angular_residual`, unit `mrad`: the angle between the photon's generated momentum
   and the line from its generated vertex to the energy-weighted center of the fired cells. A
   hit's position is the center of its cell, which is how the cell size enters. An event without
@@ -137,20 +147,27 @@ seed, one sample). There is no electronics noise, digitization or reconstruction
 change both numbers. The residual measures a direction, not whether two nearby showers can be
 told apart, the main reason for fine cells in particle flow; that needs reconstruction.
 
-**Status.** The result is `failed` for an unreadable file, a collection (`settings.collection` or
-`MCParticles`) that is missing in any event or has another element type (`read_collection`
-raises `EvaluationFailed`), an event without exactly one generated particle or whose generated
+**Status.** The result is `failed` for an unreadable file, a collection (`hits` or `particles`)
+that is missing in any event or has another element type (`self.events` raises
+`EvaluationFailed`; one missing from the file altogether fails it before it is called), an event
+without exactly one generated particle or whose generated
 particle is not a photon, or an event count different from `events` (the stage checks it, see
 [the flow](evaluation.md#problem-evaluator-record)), and `invalid` if no photon reached the
 calorimeter and fired a cell (`EvaluationInvalid`). A `ddsim` that is not found, not started,
 exits nonzero or writes no output is a `failed` result of the stage. Misuse (unsupported
 settings, conflicting ddsim options, a missing generation stage) raises before anything runs.
 
-**Settings** (unknown keys are errors): `collection` is the collection to read (required, the
-only key). The threshold is part of the metric definition, so another threshold is another
-evaluator version. The primary particles are the generation stage (a particle gun or an event
-file), which [ddsim](ddsim.md) defines, together with the run, its command and the geometry it
-simulates.
+**Collections**: `hits`, the calorimeter hits to measure (`SimCalorimeterHit`, named by the
+problem: `ECalBarrelCollection` in the example), and `particles`, the generated particles
+(`MCParticle`, `MCParticles` unless the problem names another).
+
+**Settings** (unknown keys are errors): `threshold`, the energy above which a cell fires,
+required and written with its unit (`value: 70`, `unit: keV`; the evaluator receives GeV, the
+energy unit of EDM4hep). It has no default because it is part of what `fired_cells` and the
+centroid mean: two runs with different thresholds measure different things, and the summary
+records the threshold as written and as used. The primary particles are the generation stage (a
+particle gun or an event file), which [ddsim](ddsim.md) defines, together with the run, its
+command and the geometry it simulates.
 
 ## The example study
 

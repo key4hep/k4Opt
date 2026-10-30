@@ -1,4 +1,5 @@
-"""The Evaluator base class: settings schema, metric shorthand and returning plain values."""
+"""The Evaluator base class: settings schema, collections, metric shorthand and returning plain
+values."""
 
 from __future__ import annotations
 
@@ -8,19 +9,31 @@ from typing import Any
 import pytest
 
 from k4opt.evaluation import (
+    Collection,
     EvaluationContractError,
     EvaluationFailed,
     EvaluationInvalid,
     EvaluationRequest,
     EvaluationResult,
     Evaluator,
+    Quantity,
     Status,
+    collection_names,
+    declared_collections,
     metric_units,
     result_from,
     with_defaults,
 )
 from tests.support import simulation
-from tests.support.simulation import COLLECTION, HIT_TYPE, events_with
+from tests.support.simulation import (
+    COLLECTION,
+    HIT_TYPE,
+    Event,
+    Hits,
+    Particle,
+    Particles,
+    events_with,
+)
 
 
 class Counter(Evaluator):
@@ -307,15 +320,185 @@ def test_with_defaults_leaves_other_evaluators_alone() -> None:
     assert with_defaults(Counter(), {"collection": "C"}) == {"collection": "C"}  # no defaults
 
 
-def test_self_read_uses_the_stage_it_reads(monkeypatch: pytest.MonkeyPatch) -> None:
-    simulation.install_events(monkeypatch, events_with([1, 2], [3]))
-    request = EvaluationRequest(inputs={"simulation": Path("events.root")})
-    assert [len(h) for h in Counter().read(request, COLLECTION, "SimCalorimeterHit")] == [2, 1]
+# --- quantities: a setting with a unit ---
 
 
-def test_self_read_needs_a_stage() -> None:
-    class Stageless(Evaluator):
-        name, version = "demo.stageless", "1"
+class Gated(Evaluator):
+    name, version = "demo.gated", "1"
+    settings = {"threshold": Quantity("GeV"), "radius": Quantity("mm", default=1800.0)}
 
-    with pytest.raises(EvaluationContractError, match=r"read\(\) needs stage = <stage>"):
-        Stageless().read(EvaluationRequest(), COLLECTION, "SimCalorimeterHit")
+
+def test_a_quantity_arrives_in_its_declared_unit_and_its_default_is_used() -> None:
+    received = with_defaults(Gated(), {"threshold": {"value": 70, "unit": "keV"}})
+    assert received == {"threshold": 70e-6, "radius": 1800.0}
+    Gated().check(EvaluationRequest(settings=received))
+    radius = {"value": 1.9, "unit": "m"}
+    assert with_defaults(Gated(), {"threshold": {"value": 1, "unit": "GeV"}, "radius": radius}) == {
+        "threshold": 1.0,
+        "radius": 1900.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("threshold", "message"),
+    [
+        (70, r"settings\.threshold: needs value and unit"),
+        ({"value": 70, "unit": "keV", "extra": 1}, "needs value and unit"),
+        ({"value": True, "unit": "keV"}, r"threshold\.value: must be a finite number"),
+        ({"value": float("inf"), "unit": "keV"}, "finite number"),
+        ({"value": 70, "unit": "mm"}, r"threshold\.unit: must be a unit of energy"),
+        ({"value": 70, "unit": "kev"}, "must be a unit of energy"),
+    ],
+)
+def test_a_quantity_needs_a_value_and_a_unit_of_its_dimension(
+    threshold: object, message: str
+) -> None:
+    with pytest.raises(EvaluationContractError, match=message):
+        with_defaults(Gated(), {"threshold": threshold})
+
+
+def test_a_required_quantity_must_be_given_and_is_a_float() -> None:
+    with pytest.raises(EvaluationContractError, match=r"missing \['threshold'\]"):
+        Gated().check(EvaluationRequest(settings={"radius": 1800.0}))
+    with pytest.raises(EvaluationContractError, match=r"settings\.threshold: expected float"):
+        Gated().check(EvaluationRequest(settings={"threshold": "70 keV"}))
+
+
+def test_a_quantity_needs_a_known_unit() -> None:
+    with pytest.raises(EvaluationContractError, match="Quantity: unit must be one of"):
+        Quantity("furlong")
+
+
+@pytest.mark.parametrize("default", ["oops", True, float("nan"), float("inf"), [1.0]])
+def test_a_quantity_default_must_be_a_finite_number(default: Any) -> None:
+    with pytest.raises(EvaluationContractError, match="Quantity: default must be a finite number"):
+        Quantity("GeV", default=default)
+    assert Quantity("GeV", default=1).default == 1
+
+
+# --- collections and events ---
+
+
+class Pairing(Evaluator):
+    name, version, stage = "demo.pairing", "1", "simulation"
+    collections = {
+        "hits": Collection("SimCalorimeterHit"),
+        "particles": Collection("MCParticle", default="MCParticles"),
+    }
+
+
+def pairing(**collections: str) -> EvaluationRequest:
+    return EvaluationRequest(
+        collections=collections or {"hits": COLLECTION},
+        inputs={"simulation": Path("events.root")},
+    )
+
+
+def test_events_hold_each_declared_collection_of_one_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    photon = Particle(momentum=(1.0, 0.0, 0.0))
+    simulation.install_events(
+        monkeypatch,
+        [
+            Event(**{COLLECTION: Hits([1, 2]), "MCParticles": Particles([photon])}),
+            Event(**{COLLECTION: Hits([3]), "MCParticles": Particles([photon, photon])}),
+        ],
+    )
+    events = list(Pairing().events(pairing()))
+    assert [(len(e.hits), len(e.particles)) for e in events] == [(2, 1), (1, 2)]
+    with pytest.raises(AttributeError, match="has no collection 'hit'; it has hits, particles"):
+        events[0].hit  # noqa: B018
+
+
+def test_the_problem_may_name_another_collection_for_a_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    simulation.install_events(
+        monkeypatch, [Event(Other=Hits([1, 2, 3]), Truth=Particles([Particle((1.0, 0, 0))]))]
+    )
+    (event,) = Pairing().events(pairing(hits="Other", particles="Truth"))
+    assert (len(event.hits), len(event.particles)) == (3, 1)
+
+
+def test_a_missing_or_mistyped_collection_of_an_event_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    simulation.install_events(monkeypatch, [Event(**{COLLECTION: Hits([1])})])
+    with pytest.raises(EvaluationFailed, match="'MCParticles' is missing in event 0"):
+        list(Pairing().events(pairing()))
+    simulation.install_events(
+        monkeypatch,
+        [Event(**{COLLECTION: Hits([1]), "MCParticles": Hits([1])})],
+    )
+    with pytest.raises(EvaluationFailed, match="'MCParticles' holds 'edm4hep::SimCalorimeterHit'"):
+        list(Pairing().events(pairing()))
+
+
+def test_roles_are_resolved_from_the_problem_and_the_defaults() -> None:
+    assert collection_names(Pairing(), {"hits": "H"}) == {"hits": "H", "particles": "MCParticles"}
+    for given, message in [
+        ({}, r"expected the roles \['hits', 'particles'\], missing \['hits'\]"),
+        ({"hits": "H", "jets": "J"}, r"unknown \['jets'\]"),
+        ({"hits": " "}, r"collections\.hits: must be the name of a collection"),
+        ({"hits": 3}, r"collections\.hits: must be the name of a collection"),
+    ]:
+        with pytest.raises(EvaluationContractError, match=message):
+            collection_names(Pairing(), given)
+
+
+def test_an_evaluator_without_collections_takes_none() -> None:
+    assert collection_names(Counter(), {}) == {}
+    with pytest.raises(EvaluationContractError, match=r"unknown \['hits'\]"):
+        collection_names(Counter(), {"hits": COLLECTION})
+
+
+@pytest.mark.parametrize(
+    ("attributes", "message"),
+    [
+        ({"stage": None}, "read from the file of the evaluator's stage"),
+        ({"collections": {"2hits": Collection("SimCalorimeterHit")}}, "Python identifier"),
+        ({"collections": {"_hits": Collection("SimCalorimeterHit")}}, "Python identifier"),
+        ({"collections": {"class": Collection("SimCalorimeterHit")}}, "Python identifier"),
+        ({"collections": {"hits": "SimCalorimeterHit"}}, r"declare it as Collection\(type\)"),
+        ({"collections": "hits"}, "declare a mapping of role to Collection"),
+        ({"collections": []}, "declare a mapping of role to Collection"),
+    ],
+)
+def test_collection_declarations_that_cannot_be_read_are_refused(
+    attributes: dict[str, Any], message: str
+) -> None:
+    evaluator = type("Broken", (Pairing,), attributes)()
+    with pytest.raises(EvaluationContractError, match=message):
+        declared_collections(evaluator)
+
+
+@pytest.mark.parametrize(
+    ("type_", "default"),
+    [("Sim Hit", None), ("", None), ("edm4hep::", None), ("MCParticle", "")],
+)
+def test_a_collection_needs_a_type_name_and_a_nonblank_default(
+    type_: str, default: str | None
+) -> None:
+    with pytest.raises(EvaluationContractError, match="Collection: "):
+        Collection(type_, default)
+
+
+def test_a_collection_type_is_qualified_as_podio_names_it() -> None:
+    assert Collection("SimCalorimeterHit").podio_type == "edm4hep::SimCalorimeterHit"
+    assert Collection("edm4hep::MCParticle").podio_type == "edm4hep::MCParticle"
+
+
+def test_events_need_a_stage_collections_and_the_stage_file() -> None:
+    with pytest.raises(EvaluationContractError, match=r"events\(\) needs stage"):
+        Counter().events(EvaluationRequest())
+    with pytest.raises(EvaluationContractError, match=r"inputs\['simulation'\] is missing"):
+        Pairing().events(EvaluationRequest(collections={"hits": COLLECTION}))
+
+
+def test_an_empty_per_event_list_points_to_invalid() -> None:
+    class Empty(Evaluator):
+        name, version, stage = "demo.empty", "1", "simulation"
+
+    with pytest.raises(EvaluationContractError, match=r"no per-event values .* self\.invalid"):
+        result_from(Empty(), {"cells": []})

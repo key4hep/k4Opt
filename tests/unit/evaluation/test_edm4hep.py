@@ -9,9 +9,26 @@ from typing import Any
 
 import pytest
 
-from k4opt.evaluation import EvaluationFailed, count_events, edm4hep, read_collection
+from k4opt.evaluation import (
+    EvaluationFailed,
+    available_collections,
+    collection_types,
+    count_events,
+    edm4hep,
+    read_collection,
+    read_events,
+)
 from tests.support import simulation
-from tests.support.simulation import COLLECTION, HIT_TYPE, Event, Hits, events_with
+from tests.support.simulation import (
+    COLLECTION,
+    HIT_TYPE,
+    PARTICLE_TYPE,
+    Event,
+    Hits,
+    Particle,
+    Particles,
+    events_with,
+)
 
 PATH = Path("events.edm4hep.root")
 
@@ -170,3 +187,56 @@ def test_without_podio_reading_fails_with_a_hint(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setitem(__import__("sys").modules, "podio", None)
     with pytest.raises(EvaluationFailed, match="podio is not available"):
         count_events(PATH)
+
+
+def test_the_collections_of_an_event_come_from_that_one_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    photon = Particle(momentum=(1.0, 0.0, 0.0))
+    frames = [
+        Event(**{COLLECTION: Hits([1, 2]), "MCParticles": Particles([photon])}),
+        Event(**{COLLECTION: Hits([]), "MCParticles": Particles([photon, photon])}),
+    ]
+    simulation.install_events(monkeypatch, frames)
+    wanted = {
+        "hits": (COLLECTION, "SimCalorimeterHit"),
+        "particles": ("MCParticles", PARTICLE_TYPE),
+    }
+    events = list(read_events(PATH, wanted))
+    assert [(len(e.hits), len(e.particles)) for e in events] == [(2, 1), (0, 2)]
+    assert events[0].hits.event is frames[0] and events[0].particles.event is frames[0]
+    assert repr(events[1]) == "Event(hits=0, particles=2)"
+
+
+class Unreadable(Event):
+    """An event with a collection that podio cannot unpack (an unknown datamodel, say)."""
+
+    def get(self, name: str) -> Any:
+        if name == "Broken":
+            raise CppException("no dictionary for the collection type")
+        return super().get(name)
+
+
+def test_the_collections_of_a_file_are_listed_without_reading_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    simulation.install_events(monkeypatch, [Unreadable(Broken=Hits([1]), **{COLLECTION: Hits([])})])
+    assert available_collections(PATH) == ("Broken", COLLECTION)
+    simulation.install_events(monkeypatch, [])
+    assert available_collections(PATH) == ()
+
+
+def test_only_the_collections_asked_for_are_read_for_their_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    photon = Particle(momentum=(1.0, 0.0, 0.0))
+    event = Unreadable(
+        Broken=Hits([1]), **{COLLECTION: Hits([1]), "MCParticles": Particles([photon])}
+    )
+    simulation.install_events(monkeypatch, [event])
+    wanted = [COLLECTION, "MCParticles", "Missing"]
+    assert collection_types(PATH, wanted) == {COLLECTION: HIT_TYPE, "MCParticles": PARTICLE_TYPE}
+    with pytest.raises(EvaluationFailed, match="no dictionary"):
+        collection_types(PATH, ["Broken"])
+    simulation.install_events(monkeypatch, [])
+    assert collection_types(PATH, wanted) == {}

@@ -21,13 +21,17 @@ from k4opt.evaluation import (
     EvaluationInvalid,
     EvaluationRequest,
     Status,
+    collection_names,
     result_from,
+    with_defaults,
 )
 from tests.support import simulation
 from tests.support.evaluators import calo_photon
 from tests.support.simulation import COLLECTION, Event, Hit, Hits, Particle, Particles
 
-SETTINGS: dict[str, Any] = {"collection": COLLECTION}
+# what the evaluator receives for the problem's threshold of 70 keV, and the collections
+SETTINGS: dict[str, Any] = {"threshold": 7e-05}
+COLLECTIONS = {"hits": COLLECTION, "particles": "MCParticles"}
 PHOTON = Particle(momentum=(10.0, 0.0, 0.0))
 FIRES = 1e-3  # GeV, well above the threshold of 70 keV
 RESIDUAL = "ecal_barrel.angular_residual"
@@ -49,7 +53,11 @@ def event(hits: Sequence[Hit], *particles: Particle) -> Event:
 def request(tmp_path: Path, **changes: Any) -> EvaluationRequest:
     events_file = tmp_path / "events.edm4hep.root"
     events_file.write_bytes(b"fake")
-    fields: dict[str, Any] = {"settings": SETTINGS, "inputs": {"simulation": events_file}}
+    fields: dict[str, Any] = {
+        "settings": SETTINGS,
+        "collections": COLLECTIONS,
+        "inputs": {"simulation": events_file},
+    }
     return EvaluationRequest(**(fields | changes))
 
 
@@ -165,17 +173,51 @@ def test_an_unusable_simulation_output_fails_never_gives_a_value(
 @pytest.mark.parametrize(
     "settings",
     [
-        {},
-        {"collection": 3},
-        {"collection": ""},
-        {"collection": "   "},
-        {**SETTINGS, "threshold": 1e-4},
+        {},  # the threshold is part of the metric definition: no default
+        {"threshold": "70 keV"},
+        {**SETTINGS, "collection": COLLECTION},  # a collection is no setting
         {**SETTINGS, "generator": {"particle": "gamma"}},  # configures the simulation stage
     ],
 )
 def test_unsupported_settings_raise(tmp_path: Path, settings: dict[str, Any]) -> None:
     with pytest.raises(EvaluationContractError):
         calo_photon().check(request(tmp_path, settings=settings))
+
+
+@pytest.mark.parametrize(
+    ("threshold", "received"),
+    [
+        ({"value": 70, "unit": "keV"}, 70e-6),  # exactly the float an author would write
+        ({"value": 0.07, "unit": "MeV"}, 70e-6),
+        ({"value": 1e-4, "unit": "GeV"}, 1e-4),
+    ],
+)
+def test_the_threshold_is_received_in_gev(threshold: dict[str, Any], received: float) -> None:
+    assert with_defaults(calo_photon(), {"threshold": threshold}) == {"threshold": received}
+
+
+@pytest.mark.parametrize(
+    ("threshold", "message"),
+    [
+        (7e-05, "needs value and unit"),
+        ({"value": 70}, "needs value and unit"),
+        ({"value": 70, "unit": "mm"}, r"unit: must be a unit of energy \(eV, keV, MeV, GeV, TeV\)"),
+        ({"value": "70", "unit": "keV"}, "value: must be a finite number"),
+    ],
+)
+def test_a_threshold_without_an_energy_unit_is_refused(threshold: Any, message: str) -> None:
+    with pytest.raises(EvaluationContractError, match=rf"settings\.threshold.*{message}"):
+        with_defaults(calo_photon(), {"threshold": threshold})
+
+
+def test_the_problem_names_the_hits_and_may_rename_the_particles() -> None:
+    assert collection_names(calo_photon(), {"hits": COLLECTION}) == COLLECTIONS
+    renamed = {"hits": COLLECTION, "particles": "Truth"}
+    assert collection_names(calo_photon(), renamed) == renamed
+    with pytest.raises(EvaluationContractError, match=r"missing \['hits'\]"):
+        collection_names(calo_photon(), {})
+    with pytest.raises(EvaluationContractError, match=r"unknown \['hit'\]"):
+        collection_names(calo_photon(), {"hit": COLLECTION})
 
 
 def test_importing_the_evaluator_does_not_import_podio() -> None:

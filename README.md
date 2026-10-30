@@ -103,8 +103,12 @@ evaluators:
   - name: calo.photon
     version: "1"
     stage: simulation
+    collections:
+      hits: ECalBarrelCollection
     settings:
-      collection: ECalBarrelCollection
+      threshold:
+        value: 70
+        unit: keV
 ```
 
 and evaluate one candidate (about 5 minutes on one core):

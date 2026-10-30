@@ -460,3 +460,7 @@ def test_unreadable_resource_is_a_controlled_error(
     monkeypatch.setattr(Path, "open", deny_stl)
     with pytest.raises(IncludeError, match=r"cannot read .*cad\.stl"):
         GeometrySource("main.xml", root=geo).discover()
+
+
+def test_readouts_are_the_named_readout_elements(mini_catalog: Catalog) -> None:
+    assert mini_catalog.readouts == ("InnerTrackerBarrelCollection",)

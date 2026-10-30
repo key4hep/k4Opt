@@ -84,7 +84,9 @@ class EvaluationRequest:
     ``candidate`` holds the parameter values, keyed by the problem's canonical parameter
     identity (for a geometry parameter the canonical target, ``constants.ECal_cell_size``);
     the request does not check them against any search domain. ``settings`` is the
-    evaluator-defined content of its entry in ``evaluators``. ``inputs`` names already prepared
+    evaluator-defined content of its entry in ``evaluators``, with defaults filled in and each
+    quantity in its declared unit. ``collections`` maps each role the evaluator reads to the
+    collection the problem names for it (or the declared default). ``inputs`` names already prepared
     local files (an EDM4hep file, by the stage that made it); which names an evaluator accepts
     is part of its documentation. ``workdir`` is where the evaluator may write; it is neither
     created nor checked here. ``events`` (positive) and ``seed`` are those of the stage the
@@ -95,6 +97,7 @@ class EvaluationRequest:
 
     candidate: Mapping[str, Scalar] = field(default_factory=lambda: FrozenMap({}))
     settings: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    collections: Mapping[str, str] = field(default_factory=lambda: FrozenMap({}))
     inputs: Mapping[str, Path] = field(default_factory=lambda: FrozenMap({}))
     workdir: Path | None = None
     events: int | None = None
@@ -123,6 +126,12 @@ class EvaluationRequest:
                 )
         object.__setattr__(self, "candidate", FrozenMap(self.candidate))
         object.__setattr__(self, "settings", _json_mapping(self.settings, "settings"))
+        if not isinstance(self.collections, Mapping):
+            raise EvaluationContractError("collections must be a mapping of role to collection")
+        for role, name in self.collections.items():
+            _name(role, "collections role")
+            _name(name, f"collections[{role!r}]")
+        object.__setattr__(self, "collections", FrozenMap(self.collections))
         object.__setattr__(self, "inputs", _paths(self.inputs, "inputs"))
         if self.workdir is not None and not isinstance(self.workdir, Path):
             raise EvaluationContractError("workdir must be a pathlib.Path")

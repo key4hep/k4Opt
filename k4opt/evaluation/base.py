@@ -4,28 +4,121 @@ Subclassing :class:`Evaluator` is optional: anything with ``name``, ``version`` 
 ``evaluate`` is accepted (see :class:`~k4opt.evaluation.protocol.EvaluatorProtocol`). The base
 class adds what most evaluators would write anyway:
 
-* ``settings = {"collection": str, "threshold": 0.5}`` declares the evaluator's settings: a type
-  for a required key, a default value for an optional one. ``check`` rejects missing and
-  unknown keys, wrong types and blank required text before anything runs, and the request
-  carries the defaults;
+* ``collections = {"hits": Collection("SimCalorimeterHit")}`` declares the EDM4hep collections
+  the evaluator reads from the file of its stage, by role: the problem names each one (or a
+  ``default`` does), and ``self.events(request)`` yields every event with them as attributes
+  (``event.hits``), all read from that one event;
+* ``settings = {"threshold": Quantity("GeV"), "cut": 0.5}`` declares the evaluator's settings:
+  a type for a required key, a default value for an optional one, a :class:`Quantity` for a
+  number with a unit. ``check`` rejects missing and unknown keys, wrong types and blank required
+  text before anything runs; the request carries the defaults, and each quantity as a float in
+  its declared unit;
 * ``metrics = {"hit_cells": "1"}`` maps each metric to its unit; its stage is ``stage``,
   or the metric is written ``(stage, metric)``;
 * ``evaluate`` may return ``{"hit_cells": 3.2}`` or ``{"hit_cells": [3, 4, 2]}`` (a number, or
   per-event values, a list or a numpy array, that become their mean with its standard error)
   instead of an :class:`EvaluationResult`;
-* ``self.invalid(...)`` and ``self.fail(...)`` end an evaluation with that status;
-* ``self.read(request, collection, type)`` reads a collection of the file of the stage in
-  ``stage`` (``request.read(stage, ...)`` names any stage).
+* ``self.invalid(...)`` and ``self.fail(...)`` end an evaluation with that status.
+
+``request.read(stage, collection, type)`` reads one collection of any stage's file; collections
+read that way are not matched up event by event.
 """
 
 from __future__ import annotations
 
+import keyword
+import math
+import re
 from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from typing import Any, NoReturn, cast
 
+from k4opt.evaluation import units
+from k4opt.evaluation.edm4hep import Event, read_events
 from k4opt.evaluation.errors import EvaluationContractError, EvaluationFailed, EvaluationInvalid
 from k4opt.evaluation.models import EvaluationRequest, EvaluationResult, Measurement
 from k4opt.frozen import Json
+
+_TYPE = re.compile(r"[A-Za-z_]\w*(::[A-Za-z_]\w*)?")
+
+
+@dataclass(frozen=True, slots=True)
+class Collection:
+    """An EDM4hep collection an evaluator reads from the file of its stage.
+
+    ``type`` is the type of its elements, ``"SimCalorimeterHit"`` (the ``edm4hep::`` prefix is
+    implied). The problem names the collection in the evaluator's ``collections``, unless
+    ``default`` names it (``"MCParticles"``); the problem may still name another.
+    """
+
+    type: str
+    default: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str) or not _TYPE.fullmatch(self.type):
+            raise EvaluationContractError(
+                f"Collection: type must be an EDM4hep type such as 'SimCalorimeterHit', "
+                f"got {self.type!r}"
+            )
+        if self.default is not None and (not isinstance(self.default, str) or not self.default):
+            raise EvaluationContractError(
+                f"Collection: default must be a collection name, got {self.default!r}"
+            )
+
+    @property
+    def podio_type(self) -> str:
+        """``type`` as podio names it, ``edm4hep::SimCalorimeterHit``."""
+        return self.type if "::" in self.type else f"edm4hep::{self.type}"
+
+
+@dataclass(frozen=True, slots=True)
+class Quantity:
+    """A setting with a unit. The problem writes ``value`` and ``unit`` (any unit of the same
+    dimension, ``70`` and ``keV``); the evaluator receives a float in ``unit``. ``default``, if
+    given, is in ``unit`` and makes the setting optional."""
+
+    unit: str
+    default: float | None = None
+
+    def __post_init__(self) -> None:
+        default = self.default
+        if default is not None and (
+            isinstance(default, bool)
+            or not isinstance(default, (int, float))
+            or not math.isfinite(default)
+        ):
+            raise EvaluationContractError(
+                f"Quantity: default must be a finite number in its unit, got {default!r}"
+            )
+        if not isinstance(self.unit, str) or units.dimension(self.unit) is None:
+            known = ", ".join(u for name in ("energy", "length") for u in units.units(name))
+            raise EvaluationContractError(
+                f"Quantity: unit must be one of {known}, got {self.unit!r}"
+            )
+
+    def convert(self, value: Json, path: str) -> float:
+        """``value``, ``{"value": ..., "unit": ...}`` as the problem writes it, in ``unit``."""
+        name = units.dimension(self.unit)
+        assert name is not None
+        if not isinstance(value, Mapping) or set(value) != {"value", "unit"}:
+            raise EvaluationContractError(
+                f"{path}: needs value and unit, such as value: 70 and unit: {self.unit}; "
+                f"got {value!r}"
+            )
+        number, unit = value["value"], value["unit"]
+        if (
+            isinstance(number, bool)
+            or not isinstance(number, (int, float))
+            or not math.isfinite(number)
+        ):
+            raise EvaluationContractError(f"{path}.value: must be a finite number, got {number!r}")
+        if not isinstance(unit, str) or units.dimension(unit) != name:
+            raise EvaluationContractError(
+                f"{path}.unit: must be a unit of {name} ({', '.join(units.units(name))}), "
+                f"got {unit!r}"
+            )
+        return units.convert(number, unit, self.unit)
+
 
 type MetricKey = str | tuple[str, str]
 type Values = Mapping[MetricKey, int | float | Iterable[int | float]]
@@ -70,13 +163,91 @@ def _declared(evaluator: object) -> Mapping[str, Any]:
     return getattr(evaluator, "settings", None) or {}
 
 
+def _kind(declared: object) -> type:
+    """The type a declared setting holds in the request: a quantity is a float."""
+    if isinstance(declared, Quantity):
+        return float
+    return declared if isinstance(declared, type) else type(declared)
+
+
+def _required(declared: object) -> bool:
+    return isinstance(declared, type) or (
+        isinstance(declared, Quantity) and declared.default is None
+    )
+
+
 def with_defaults(evaluator: object, settings: Mapping[str, Json]) -> Mapping[str, Json]:
-    """``settings`` plus the default of every optional setting that ``evaluator`` declares."""
+    """``settings`` as ``evaluator`` receives them: each :class:`Quantity` converted to its
+    declared unit, plus the default of every optional setting it declares. Raises
+    :class:`EvaluationContractError` for a quantity that is not a ``value`` and a ``unit`` of the
+    declared dimension."""
     merged = dict(settings)
     for key, declared in _declared(evaluator).items():
-        if not isinstance(declared, type):
+        if isinstance(declared, Quantity):
+            if key in merged:
+                merged[key] = declared.convert(merged[key], f"settings.{key}")
+            elif declared.default is not None:
+                merged[key] = float(declared.default)
+        elif not isinstance(declared, type):
             merged.setdefault(key, declared)
     return merged
+
+
+def declared_collections(evaluator: object) -> dict[str, Collection]:
+    """The ``collections`` ``evaluator`` declares, by role; raises
+    :class:`EvaluationContractError` for a declaration that cannot be read."""
+    declared = getattr(evaluator, "collections", None)
+    if declared is None:
+        return {}
+    if not isinstance(declared, Mapping):
+        raise EvaluationContractError(
+            "collections: declare a mapping of role to Collection(type), such as "
+            f"{{'hits': Collection('SimCalorimeterHit')}}; got {declared!r}"
+        )
+    if declared and getattr(evaluator, "stage", None) is None:
+        raise EvaluationContractError(
+            "collections are read from the file of the evaluator's stage; set stage = <stage>"
+        )
+    for role, collection in declared.items():
+        if (
+            not isinstance(role, str)
+            or not role.isidentifier()
+            or keyword.iskeyword(role)
+            or role.startswith("_")
+        ):
+            raise EvaluationContractError(
+                f"collections: role {role!r} must be a Python identifier such as hits, "
+                "not a keyword"
+            )
+        if not isinstance(collection, Collection):
+            raise EvaluationContractError(
+                f"collections.{role}: declare it as Collection(type), got {collection!r}"
+            )
+    return dict(declared)
+
+
+def collection_names(evaluator: object, given: Mapping[str, Json]) -> dict[str, str]:
+    """The collection each role of ``evaluator`` reads: the one the problem names in ``given``,
+    or the declared default. Raises :class:`EvaluationContractError` for an unknown or missing
+    role or a name that is not text."""
+    declared = declared_collections(evaluator)
+    unknown = [role for role in given if role not in declared]
+    missing = [r for r, c in declared.items() if c.default is None and r not in given]
+    if unknown or missing:
+        raise EvaluationContractError(
+            f"collections: expected the roles {sorted(declared)}"
+            + (f", unknown {unknown}" if unknown else "")
+            + (f", missing {missing}" if missing else "")
+        )
+    names: dict[str, str] = {}
+    for role, collection in declared.items():
+        name = given.get(role, collection.default)
+        if not isinstance(name, str) or not name.strip():
+            raise EvaluationContractError(
+                f"collections.{role}: must be the name of a collection, got {name!r}"
+            )
+        names[role] = name
+    return names
 
 
 def metric_units(evaluator: object) -> dict[tuple[str, str], str] | None:
@@ -122,6 +293,11 @@ def result_from(evaluator: object, returned: EvaluationResult | Values) -> Evalu
                 raise EvaluationContractError(
                     f"metric {stage}/{metric}: {value!r} is neither a number nor per-event values"
                 ) from None
+            if not samples:  # may be a bug, so judging validity is left to the evaluator
+                raise EvaluationContractError(
+                    f"metric {stage}/{metric}: no per-event values to average; if nothing could "
+                    "be measured, end the evaluation with self.invalid('...')"
+                )
             measurements.append(Measurement.from_samples(stage, metric, samples, unit))
         else:  # a number; Measurement rejects anything else
             measurements.append(Measurement(stage, metric, cast(float, value), unit))
@@ -130,11 +306,13 @@ def result_from(evaluator: object, returned: EvaluationResult | Values) -> Evalu
 
 class Evaluator:
     """Base class of evaluators; see the module documentation. ``name`` and ``version`` are
-    required, ``stage`` (the pipeline stage it reads), ``settings`` and ``metrics`` optional."""
+    required; ``stage`` (the pipeline stage it reads), ``collections``, ``settings`` and
+    ``metrics`` are optional."""
 
     name: str
     version: str
     stage: str | None = None
+    collections: Mapping[str, Collection] | None = None
     settings: Mapping[str, Any] | None = None
     metrics: Mapping[MetricKey, str] | None = None
 
@@ -146,15 +324,15 @@ class Evaluator:
         if self.settings is None:
             return
         given = request.settings
-        kinds = {k: d if isinstance(d, type) else type(d) for k, d in self.settings.items()}
+        kinds = {key: _kind(declared) for key, declared in self.settings.items()}
         for key, kind in kinds.items():
             if kind not in _KINDS:
                 raise EvaluationContractError(
-                    f"settings.{key}: cannot declare {kind.__name__}; "
-                    "use str, int, float, bool, list or dict (or a default of one of them)"
+                    f"settings.{key}: cannot declare {kind.__name__}; use str, int, float, bool, "
+                    "list or dict (or a default of one of them), or Quantity(unit)"
                 )
         unknown = [key for key in given if key not in kinds]
-        missing = [k for k, d in self.settings.items() if isinstance(d, type) and k not in given]
+        missing = [k for k, d in self.settings.items() if _required(d) and k not in given]
         if unknown or missing:
             raise EvaluationContractError(
                 f"settings: expected {sorted(kinds)}"
@@ -170,11 +348,20 @@ class Evaluator:
             if isinstance(value, str) and not value.strip() and self.settings[key] is str:
                 raise EvaluationContractError(f"settings.{key}: must not be blank")
 
-    def read(self, request: EvaluationRequest, collection: str, value_type: str) -> Iterator[Any]:
-        """The collection of each event of the file of the stage in ``stage``."""
-        if self.stage is None:
-            raise EvaluationContractError("read() needs stage = <stage> (or request.read)")
-        return request.read(self.stage, collection, value_type)
+    def events(self, request: EvaluationRequest) -> Iterator[Event]:
+        """Each event of the file of ``stage``, with the declared ``collections`` as attributes
+        (``event.hits``), all read from that one event; see
+        :func:`~k4opt.evaluation.edm4hep.read_events`."""
+        declared = declared_collections(self)
+        if self.stage is None or not declared:
+            raise EvaluationContractError(
+                "events() needs stage = <stage> and collections = {role: Collection(type)}"
+            )
+        if self.stage not in request.inputs:
+            raise EvaluationContractError(f"inputs[{self.stage!r}] is missing")
+        names = collection_names(self, request.collections)
+        wanted = {role: (names[role], declared[role].type) for role in declared}
+        return read_events(request.inputs[self.stage], wanted)
 
     def invalid(self, message: str) -> NoReturn:
         """End the evaluation: it ran, but its result is not usable."""

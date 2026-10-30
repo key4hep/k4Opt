@@ -71,8 +71,13 @@ evaluators:
   - name: calo.photon
     version: "1"
     stage: simulation
+    collections:
+      hits: ECalBarrelCollection
     settings:
-      collection: ECalBarrelCollection
+      # a cell fires above half the most probable energy a MIP leaves in 0.5 mm of silicon
+      threshold:
+        value: 70
+        unit: keV
 
 objectives:
   - stage: simulation
@@ -92,7 +97,7 @@ comparable.
 | --- | --- | --- | --- |
 | Scientific choices | `parameters`, `objectives`, `constraints` | the physicist | vary `ECal_cell_size` in 2.5-20 mm, minimize the photon's angular residual and the number of fired cells (and, optionally, limit a metric) |
 | Stages | `stages`: executors, `events`, `seed`, the gun or a `file` | the physicist, checked by k4opt; shared by every evaluator | 1000 photons of 10 GeV, seed 42 |
-| Evaluator settings | `evaluators[*].settings` | each evaluator's contract, filled by the physicist | the collection `ECalBarrelCollection` |
+| Evaluator inputs | `evaluators[*].collections`, `.settings` | each evaluator's contract, filled by the physicist | the hits in `ECalBarrelCollection`, a threshold of 70 keV |
 | Executor options | the other keys of a stage, such as `physics.list` | the physicist, validated by the tool | `physics.list: FTFP_BERT` |
 | Execution environment | `environment`, `geometry.entry` | the physicist pins, k4opt resolves | nightly `2026-10-20`, CLD_o2_v09 |
 | Measured results | evaluation records | the evaluator | `angular_residual = 0.90 ± 0.03 mrad` |
@@ -257,12 +262,13 @@ Who measures a candidate: one or more evaluators. Each entry:
 | `name` | Logical name of a versioned evaluator, e.g. `calo.photon`. It must equal the `name` of an evaluator that `k4opt evaluate --evaluator` loads. Unique within the problem; letters, digits, `.`, `_` and `-`, starting with a letter or digit, because it also names the evaluator's directory in a run. |
 | `version` | Version of that evaluator's contract. A string. |
 | `stage` | The pipeline stage it reads, one of the `stages`. Required when the evaluator reads one, and absent when it reads none (a cost model working from the parameters alone needs no stage). It must equal the evaluator's own `stage`, so the problem file shows what each evaluator reads. |
-| `settings` | Optional. Evaluator-defined, semantically meaningful inputs (readouts, ...). |
+| `collections` | The collection of the stage's file that each role the evaluator declares reads, such as `hits: ECalBarrelCollection`. Roles with a default (`particles`, read from `MCParticles`) may be left out. Only with a `stage`. |
+| `settings` | Optional. Evaluator-defined, semantically meaningful inputs (a threshold, a cut, ...). |
 
 **One set of stages, several evaluators.** The stages run once per candidate, however many
-evaluators read them (see [Stages](evaluation.md#stages)). An evaluator's `settings` hold only
-what is its own, such as the collection it reads; they may select among the shared events but
-never change how the events are made. Evaluators that need different samples, event counts or
+evaluators read them (see [Stages](evaluation.md#stages)). An evaluator's `collections` and
+`settings` hold only what is its own, such as the collection it reads and a threshold; they may
+select among the shared events but never change how the events are made. Evaluators that need different samples, event counts or
 seeds need separate problems for now; several named samples in one problem are a planned
 extension, which is why these keys belong to the stages and not to an evaluator.
 
@@ -283,12 +289,24 @@ the command line, `k4opt evaluate --evaluator FILE.py:Class` (once per evaluator
 `version` and `stage` must equal those of its entry. A registry that resolves the label itself
 is deferred.
 
-**Settings.** The allowed keys of an evaluator's `settings` belong to that evaluator's
-contract, and the evaluator checks them before anything runs. In the example:
+**Collections.** The roles an evaluator reads and the type of each belong to its contract, and
+the roles of its entry are checked against them before anything runs; a collection name the
+simulation is not expected to write is a warning, and the simulation's file decides
+([evaluation](evaluation.md#collections)). In the example:
 
-| Key | Illustrative meaning |
+| Role | Meaning |
 | --- | --- |
-| `collection` | the output collection to read (`ECalBarrelCollection`). The evaluator contract says how a collection is turned into hits |
+| `hits` | the calorimeter hits to measure (`SimCalorimeterHit`), here `ECalBarrelCollection` |
+| `particles` | the generated particles (`MCParticle`), `MCParticles` unless named |
+
+**Settings.** The allowed keys of an evaluator's `settings` belong to that evaluator's
+contract, and the evaluator checks them before anything runs. A setting with a unit is written
+as `value` and `unit`, in any unit of its dimension; the evaluator receives it in the unit it
+declares, and the run records both. In the example:
+
+| Key | Meaning |
+| --- | --- |
+| `threshold` | the energy above which a cell fires (`value: 70`, `unit: keV`); the evaluator receives GeV |
 
 ### `objectives`
 
@@ -297,7 +315,7 @@ A non-empty list. Each item:
 | Key | Meaning |
 | --- | --- |
 | `stage` | Scientific classification of the measurement: `simulation` now; `reconstruction` and `analysis` possible later. It is not a request to run a particular pipeline step (that is the evaluator's `stage`), and it does not create separate problem types. |
-| `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.angular_residual` (measured by `calo.photon`). The part before the dot names what is measured (here the ECAL barrel); collection names appear only in `settings`. |
+| `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.angular_residual` (measured by `calo.photon`). The part before the dot names what is measured (here the ECAL barrel); collection names appear only in `collections`. |
 | `direction` | `minimize` or `maximize`. |
 
 `stage` and `metric` are separate fields, not a combined `simulation.some_metric` string.
@@ -376,7 +394,7 @@ Three identities are kept separate, even though the draft YAML shows them in one
    constraints.
 2. **Evaluation context identity**: everything that can change what a measurement means
    for the same candidate: the pinned and resolved Key4hep stack, geometry entry, the
-   evaluators' names, versions and `settings`, and the `stages`: their executors, `events`,
+   evaluators' names, versions, `collections` and `settings`, and the `stages`: their executors, `events`,
    `seed`, the gun or file, and the exact executor options. Changing the nightly or a ddsim
    option does not change the problem, but it **does** change the context.
 3. **Run identity**: one execution session.
@@ -456,7 +474,8 @@ What is checked, with the location of the first problem in the message
   the file name when loaded from a file.
 - `evaluators` lists at least one evaluator, each with `name` and `version` and optionally the
   `stage` it reads; names are unique and made of letters, digits, `.`, `_` and `-`, starting
-  with a letter or digit. Booleans are not numbers anywhere.
+  with a letter or digit. `collections` maps roles to non-empty collection names and needs a
+  `stage`. Booleans are not numbers anywhere.
 - `settings` may hold any nested data made of `null`, booleans, numbers, strings, lists and
   mappings with string keys. Non-finite numbers, dates, binary data, sets and
   self-referencing YAML aliases are rejected, because they could not be recorded.
@@ -494,9 +513,10 @@ baseline for validating bounds and constraint limits).
   XML holds `5.1*mm`. `k4opt evaluate` writes `<value>*<unit>` for a fixed list of DD4hep
   units; whether more units, or a check against the unit of the original XML expression, are
   needed is open.
-- **Quantity notation in `settings` and `stages`.** The draft convention is a number with an explicit
+- **Quantity notation in `settings` and `stages`.** The convention is a number with an explicit
   `unit` (`energy` with `value: 10` and `unit: GeV`, or a shared `unit` for a group such as
-  `theta`/`phi`), never a quoted expression. The evaluator contract may still refine it.
+  `theta`/`phi`), never a quoted expression. An evaluator declares such a setting as a
+  `Quantity`; energies and lengths are supported, other dimensions are open.
 - **Constraint units.** `unit` on a constraint states the unit of `min`/`max`; whether
   the evaluator may convert or must match exactly is undecided.
 - **Release `channel` vocabulary** beyond `nightly` and `release`.

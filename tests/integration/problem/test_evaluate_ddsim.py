@@ -121,7 +121,9 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
         assert run["status"] == "valid"
         assert run["events"] == {"requested": EVENTS, "observed": EVENTS}
         (evaluator,) = run["evaluators"]
-        collection = evaluator["settings"]["collection"]
+        collection = evaluator["collections"]["hits"]
+        assert evaluator["settings"]["used"] == {"threshold": 70e-6}  # 70 keV, in GeV
+        assert run["warnings"] == []  # CLD has the ECAL barrel readout the evaluator reads
         counts = []
         for event in get_reader(run["paths"]["simulation.edm4hep"]).get("events"):
             (photon,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
@@ -150,7 +152,7 @@ def shared(problem: Path, tmp_path_factory: pytest.TempPathFactory) -> dict[str,
             "name": "test.cell_count",
             "version": "1",
             "stage": "simulation",
-            "settings": {"collection": COLLECTION},
+            "collections": {"hits": COLLECTION},
         }
     )
     both = problem.with_name("both.yaml")

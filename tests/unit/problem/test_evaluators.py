@@ -12,6 +12,7 @@ import pytest
 
 from k4opt.ddsim import run as ddsim_run
 from k4opt.evaluation import (
+    Collection,
     EvaluationContractError,
     EvaluationRequest,
     EvaluationResult,
@@ -23,7 +24,7 @@ from k4opt.problem import ProblemSpec, _evaluate, _stages, parse_problem
 from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate
 from tests.support import simulation
 from tests.support.evaluators import cell_count, hit_energy, parameter_echo
-from tests.support.simulation import COLLECTION, events_with
+from tests.support.simulation import COLLECTION, Event, Hits, Particle, Particles, events_with
 
 CELL = "constants.ECal_cell_size"
 GUN = {
@@ -34,9 +35,8 @@ GUN = {
 CELLS = ("simulation", "ecal_barrel.mean_hit_cells")  # test.cell_count
 ENERGY = ("simulation", "ecal_barrel.mean_hit_energy")  # test.hit_energy
 ECHO = ("analysis", "candidate.first_value")  # test.parameter_echo
-SETTINGS = {
-    name: {"collection": COLLECTION}
-    for name in ("test.cell_count", "test.hit_energy", "test.busiest")
+COLLECTIONS = {
+    name: {"hits": COLLECTION} for name in ("test.cell_count", "test.hit_energy", "test.busiest")
 }
 # the stage each evaluator of these tests reads; the others read none
 STAGES = {
@@ -45,6 +45,7 @@ STAGES = {
     "test.busiest": "simulation",
     "test.rival": "simulation",
     "test.sample_size": "generation",
+    "test.truth": "generation",
 }
 
 
@@ -62,7 +63,7 @@ def problem(
     doc["evaluators"] = [
         {"name": name, "version": "1"}
         | ({"stage": STAGES[name]} if name in STAGES else {})
-        | ({"settings": SETTINGS[name]} if name in SETTINGS else {})
+        | ({"collections": COLLECTIONS[name]} if name in COLLECTIONS else {})
         for name in names
     ]
     read = {STAGES[name] for name in names if name in STAGES}
@@ -107,6 +108,7 @@ class Spy:
         self.inner, self.log = inner, log
         self.name, self.version = inner.name, inner.version
         self.stage, self.metrics = inner.stage, inner.metrics
+        self.collections = inner.collections
         self.evaluated: list[EvaluationRequest] = []
 
     def check(self, request: EvaluationRequest) -> None:
@@ -242,7 +244,7 @@ def test_an_evaluator_is_given_the_same_request_alone_and_among_others(
     )
     evaluate(spec, others, tmp_path / "among", geometry)
     first, second = alone.evaluated[0], among.evaluated[0]
-    for field in ("candidate", "settings", "events", "seed"):
+    for field in ("candidate", "settings", "collections", "events", "seed"):
         assert getattr(first, field) == getattr(second, field)
     assert set(first.inputs) == set(second.inputs)
 
@@ -522,16 +524,16 @@ def test_the_stage_in_the_problem_must_be_the_one_the_evaluator_reads(
     assert log == [] and not (tmp_path / "run").exists()
 
 
-def test_invalid_settings_of_the_second_evaluator_are_refused_before_anything_runs(
+def test_invalid_collections_of_the_second_evaluator_are_refused_before_anything_runs(
     doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
 ) -> None:
     spec = problem(doc, "test.cell_count", "test.hit_energy")
     entries = (
         spec.evaluators[0],
-        dataclasses.replace(spec.evaluators[1], settings={"collection": 3}),
+        dataclasses.replace(spec.evaluators[1], collections={"hit": COLLECTION}),
     )
     spec = dataclasses.replace(spec, evaluators=entries)
-    with pytest.raises(EvaluationContractError, match=r"settings\.collection: expected str"):
+    with pytest.raises(EvaluationContractError, match=r"collections: .*unknown \['hit'\]"):
         evaluate(spec, [cell_count(), hit_energy()], tmp_path, geometry)
     assert log == [] and not (tmp_path / "run").exists()
 
@@ -639,14 +641,162 @@ def test_analysis_metrics_need_no_analysis_stage(
         name = "test.busiest"
         version = "1"
         stage = "simulation"
-        settings = {"collection": str}
+        collections = {"hits": Collection("SimCalorimeterHit")}
         metrics = {("analysis", "ecal.max_hits"): "1"}
 
         def evaluate(self, request: EvaluationRequest) -> Any:
-            hits = self.read(request, request.settings["collection"], "SimCalorimeterHit")
-            return {("analysis", "ecal.max_hits"): max(len(event) for event in hits)}
+            busiest = max(len(event.hits) for event in self.events(request))
+            return {("analysis", "ecal.max_hits"): busiest}
 
     spec = problem(doc, "test.busiest", objectives=(("analysis", "ecal.max_hits"),))
     candidate = evaluate(spec, [Busiest()], tmp_path, geometry)
     assert list(candidate.stages.provenance) == ["generation", "simulation"]
     assert candidate.value("analysis", "ecal.max_hits").value == 4
+
+
+# --- the collections an evaluator declares are checked in the file before it is called ---
+
+
+@pytest.mark.parametrize(
+    ("events", "message"),
+    [
+        (
+            [Event(Other=Hits([1]))],
+            f"collection {COLLECTION!r} (hits) is not in events.edm4hep.root, which holds: Other",
+        ),
+        (
+            [Event(**{COLLECTION: Hits([1], "edm4hep::SimTrackerHit")})],
+            f"collection {COLLECTION!r} (hits) holds 'edm4hep::SimTrackerHit', but the evaluator "
+            "reads 'edm4hep::SimCalorimeterHit'",
+        ),
+    ],
+)
+def test_a_collection_missing_from_the_output_fails_the_evaluator_before_it_is_called(
+    doc: dict[str, Any],
+    tmp_path: Path,
+    geometry: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    message: str,
+) -> None:
+    simulation.install(monkeypatch, events * 3)  # the 3 events the problem asks for
+    spec = problem(doc, "test.cell_count", "test.parameter_echo", objectives=(CELLS, ECHO))
+    cells = Spy(cell_count(), [])
+    candidate = evaluate(spec, [cells, parameter_echo()], tmp_path, geometry)
+    counted, echo = candidate.records
+    assert counted.result.status is Status.FAILED and counted.result.message == message
+    assert cells.evaluated == [] and counted.elapsed_seconds is None
+    # a scientific verdict is the evaluator's to give; the evaluator that needs no file still ran
+    assert echo.result.status is Status.VALID and candidate.status is Status.FAILED
+
+
+def test_the_collections_of_a_file_are_listed_once_for_all_its_readers(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    listed: list[Path] = []
+    real = _evaluate.available_collections
+
+    def counting(path: Path) -> tuple[str, ...]:
+        listed.append(path)
+        return real(path)
+
+    monkeypatch.setattr(_evaluate, "available_collections", counting)
+    spec = problem(doc, "test.cell_count", "test.hit_energy", objectives=(CELLS, ENERGY))
+    candidate = evaluate(spec, [cell_count(), hit_energy()], tmp_path, geometry)
+    assert candidate.status is Status.VALID
+    assert listed == [tmp_path / "run" / "simulation" / "events.edm4hep.root"]
+
+
+class Truth(Evaluator):
+    """Reads the generated particles from the generation stage's file."""
+
+    name = "test.truth"
+    version = "1"
+    stage = "generation"
+    collections = {"particles": Collection("MCParticle", default="MCParticles")}
+    metrics = {("analysis", "truth.particles"): "1"}
+
+    def evaluate(self, request: EvaluationRequest) -> Any:
+        return {("analysis", "truth.particles"): [len(e.particles) for e in self.events(request)]}
+
+
+TRUTH = ("analysis", "truth.particles")
+
+
+def test_collections_of_a_stage_that_makes_no_file_are_refused_before_anything_runs(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+) -> None:
+    # the gun is fired inside ddsim: there is no generation file to read, and the simulation
+    # another evaluator needs must not run first only for this one to fail
+    spec = problem(doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH))
+    with pytest.raises(
+        EvaluationContractError,
+        match=r"'test\.truth' reads collections from the 'generation' stage, but executor 'gun' "
+        r"runs inside stages\.simulation and writes no file of its own",
+    ):
+        evaluate(spec, [cell_count(), Truth()], tmp_path, geometry)
+    assert log == [] and not (tmp_path / "run").exists()
+
+
+def test_collections_of_an_edm4hep_generation_file_are_read(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ddsim also reads generator events written as EDM4hep, which podio reads too
+    (tmp_path / "zh.edm4hep.root").write_bytes(b"fake")
+    photon = Particle(momentum=(1.0, 0.0, 0.0))
+    events = [Event(**{COLLECTION: Hits([1]), "MCParticles": Particles([photon])})] * 3
+    simulation.install(monkeypatch, events)
+    spec = problem(
+        doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH), sample="zh.edm4hep.root"
+    )
+    candidate = evaluate(with_sample(spec, tmp_path), [cell_count(), Truth()], tmp_path, geometry)
+    assert candidate.status is Status.VALID and candidate.value(*TRUTH).value == 1
+
+
+@pytest.mark.parametrize("supplied", [False, True])
+def test_collections_of_a_file_podio_cannot_read_are_refused_before_anything_runs(
+    sample_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str], supplied: bool
+) -> None:
+    # a HepMC file is an input of ddsim, not a file an evaluator can read collections from: the
+    # simulation another evaluator needs must not run first only for this one to fail
+    spec = problem(
+        sample_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH), sample="zh.hepmc"
+    )
+    inputs = {"geometry": geometry}
+    if supplied:  # k4opt evaluate --input generation=zh.hepmc, with the gun in the problem
+        spec = problem(sample_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH))
+        inputs["generation"] = tmp_path / "zh.hepmc"
+    with pytest.raises(
+        EvaluationContractError,
+        match=r"'test\.truth' reads collections from the 'generation' stage, but its file "
+        r"zh\.hepmc is no EDM4hep file that podio reads \(\.root or \.sio\)",
+    ):
+        _evaluate_candidate(
+            with_sample(spec, tmp_path),
+            {CELL: 6},
+            [cell_count(), Truth()],
+            inputs=inputs,
+            workdir=tmp_path / "run",
+        )
+    assert log == [] and not (tmp_path / "run").exists()
+
+
+class Unpackable(Event):
+    """An event with a collection podio cannot unpack, which no evaluator reads."""
+
+    def get(self, name: str) -> Any:
+        if name == "Broken":
+            raise RuntimeError("no dictionary for the collection type")
+        return super().get(name)
+
+
+def test_a_collection_no_evaluator_reads_cannot_fail_the_ones_that_read_the_file(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(
+        monkeypatch, [Unpackable(Broken=Hits([1]), **{COLLECTION: Hits([1, 2])})] * 3
+    )
+    spec = problem(doc, "test.cell_count", objectives=(CELLS,))
+    candidate = evaluate(spec, [cell_count()], tmp_path, geometry)
+    assert candidate.status is Status.VALID and candidate.value(*CELLS).value == 2

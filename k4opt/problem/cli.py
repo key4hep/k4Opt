@@ -97,7 +97,12 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
 def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     evaluators = [load_evaluator(reference) for reference in args.evaluator]
     outcome = run_candidate(
-        args.problem, args.param, args.output, evaluators=evaluators, inputs=args.input
+        args.problem,
+        args.param,
+        args.output,
+        evaluators=evaluators,
+        inputs=args.input,
+        warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
     )
     _report(outcome, out)
     candidate = outcome.candidate

@@ -16,7 +16,7 @@ import json
 import math
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -34,7 +34,7 @@ from k4opt.problem._evaluate import (
 from k4opt.problem._stages import STAGE_TYPES, file_identity, plan_stages
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
-from k4opt.problem.models import Parameter, ProblemSpec
+from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
 
 SUMMARY_NAME = "summary.json"
 SUMMARY_SCHEMA = "k4opt.run/1"
@@ -223,18 +223,21 @@ def _source(evaluator: EvaluatorProtocol) -> dict[str, Json]:
 
 
 def _evaluator(
-    record: EvaluationRecord, reads: Sequence[str], stage: str | None, source: Json
+    record: EvaluationRecord, reads: Sequence[str], entry: EvaluatorSpec, source: Json
 ) -> dict[str, object]:
     """One evaluator's own part of the summary: nothing of the stages it shares."""
     result, request = record.result, record.request
     return {
         "name": record.evaluator_name,
         "version": record.evaluator_version,
-        "stage": stage,
+        "stage": entry.stage,
         "source": source,
         "status": result.status,
         "message": result.message,
-        "settings": thaw(request.settings),
+        # as the problem wrote them, and as the evaluator received them (defaults filled in,
+        # quantities in the declared unit)
+        "settings": {"declared": thaw(entry.settings), "used": thaw(request.settings)},
+        "collections": dict(request.collections),
         "stages": list(reads),
         "measurements": [
             {"stage": m.stage, "metric": m.metric} | _measurement(m) for m in result.measurements
@@ -279,6 +282,7 @@ def _summary(
         # False if a supplied stage file was not made from this candidate (--input)
         "represents_candidate": candidate.represents_candidate,
         "supplied": sorted(stages.supplied),
+        "warnings": list(candidate.warnings),
         # the objective and constraint metrics, each from the evaluator that owns it
         "metrics": [
             {"stage": stage, "metric": metric, "evaluator": owner}
@@ -289,7 +293,7 @@ def _summary(
             _evaluator(
                 record,
                 candidate.reads[record.evaluator_name],
-                entries[record.evaluator_name].stage,
+                entries[record.evaluator_name],
                 sources.get(record.evaluator_name),
             )
             for record in candidate.records
@@ -328,13 +332,16 @@ def run_candidate(
     *,
     evaluators: Sequence[EvaluatorProtocol],
     inputs: Sequence[str] = (),
+    warn: Callable[[str], None] | None = None,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
     ``evaluators`` implement the problem's ``evaluators``, in any order. ``inputs`` are
     ``STAGE=FILE`` strings: each file stands in for its stage, which then does not run, nor do
     the stages only it needs. A supplied stage that the parameters change was not made from the
-    candidate, and the outcome says so (``represents_candidate``). Raises a
+    candidate, and the outcome says so (``represents_candidate``). ``warn`` is called with each
+    warning of the preflight (a collection the simulation is not expected to write) before
+    anything is created; the warnings are also kept in the summary. Raises a
     :class:`~k4opt.errors.K4OptError` for an invalid problem, candidate, input, evaluator,
     settings or output location before anything is created. Execution problems are reported as
     ``failed`` or ``invalid`` results in the outcome.
@@ -347,6 +354,9 @@ def run_candidate(
     values, _ = _validate_candidate(spec, _parse_candidate(spec, assignments))
     supplied = _parse_inputs(inputs)
     plan = _preflight(spec, values, evaluators, provided=supplied)
+    if warn is not None:
+        for warning in plan.warnings:
+            warn(warning)
     for stage in supplied:  # read by an evaluator, given the other supplied stages
         if stage not in plan_stages(*plan.targets, provided=supplied.keys() - {stage}):
             raise RunError(f"--input {stage}: no evaluator of the problem reads that stage")

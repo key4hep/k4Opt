@@ -431,7 +431,9 @@ def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
     first: dict[str, int] = {}
     for index, item in enumerate(items):
         path = f"evaluators[{index}]"
-        m = _mapping(item, path, ("name", "version", "stage", "settings"), ("name", "version"))
+        m = _mapping(
+            item, path, ("name", "version", "stage", "collections", "settings"), ("name", "version")
+        )
         name = _text(m["name"], f"{path}.name")
         # the name also names the evaluator's directory in a run
         if not _EVALUATOR_NAME.fullmatch(name):
@@ -453,9 +455,13 @@ def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
             assert isinstance(frozen, Mapping)
             settings = frozen
         stage = _choice(m["stage"], f"{path}.stage", STAGE_TYPES) if "stage" in m else None
-        evaluators.append(
-            EvaluatorSpec(name, _text(m["version"], f"{path}.version"), settings, stage)
-        )
+        collections: dict[str, str] = {}
+        if "collections" in m:
+            where, raw = f"{path}.collections", m["collections"]
+            roles = _mapping(raw, where, tuple(raw) if isinstance(raw, Mapping) else ())
+            collections = {role: _text(name, f"{where}.{role}") for role, name in roles.items()}
+        version = _text(m["version"], f"{path}.version")
+        evaluators.append(EvaluatorSpec(name, version, settings, stage, collections))
     return tuple(evaluators)
 
 
@@ -471,6 +477,12 @@ def _check_pipeline(
     every stage is used, by an evaluator or by a stage that runs.
     """
     for index, evaluator in enumerate(evaluators):
+        if evaluator.collections and evaluator.stage is None:
+            raise _fail(
+                f"evaluators[{index}].collections",
+                "collections are read from the file of the stage the evaluator reads; add its "
+                "stage",
+            )
         if evaluator.stage is not None and evaluator.stage not in stages:
             raise _fail(
                 f"evaluators[{index}].stage",

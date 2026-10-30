@@ -10,22 +10,41 @@ written and tested without Key4hep and without a problem file.
 ## Writing an evaluator
 
 ```python
-from k4opt.evaluation import Evaluator
+from k4opt.evaluation import Collection, Evaluator, Quantity
 
 
 class CellCount(Evaluator):
     name = "demo.cell_count"  # counterpart of a name in the problem's evaluators
     version = "1"  # counterpart of that entry's version
     stage = "simulation"  # the pipeline stage it reads, as that entry says too (optional)
-    settings = {"collection": str, "min_hits": 1}  # that entry's settings (optional)
+    collections = {"hits": Collection("SimCalorimeterHit")}  # read from that stage (optional)
+    settings = {"threshold": Quantity("GeV"), "min_cells": 1}  # that entry's settings (optional)
     metrics = {"ecal.cells": "1"}  # metric -> unit; classified under `stage` (optional)
 
     def evaluate(self, request):
-        hits = self.read(request, request.settings["collection"], "SimCalorimeterHit")
-        cells = [len({hit.getCellID() for hit in event}) for event in hits]
-        if max(cells) < request.settings["min_hits"]:
-            self.invalid("too few hits")  # also: self.fail("...")
+        threshold = request.settings["threshold"]  # a float in GeV
+        cells = [
+            len({hit.getCellID() for hit in event.hits if hit.getEnergy() >= threshold})
+            for event in self.events(request)
+        ]
+        if max(cells) < request.settings["min_cells"]:
+            self.invalid("too few cells")  # also: self.fail("...")
         return {"ecal.cells": cells}  # a list: its mean with the standard error; a number: itself
+```
+
+Its entry in the problem:
+
+```yaml
+evaluators:
+  - name: demo.cell_count
+    version: "1"
+    stage: simulation
+    collections:
+      hits: ECalBarrelCollection
+    settings:
+      threshold:
+        value: 70
+        unit: keV
 ```
 
 Everything but `name`, `version` and `evaluate` is optional, and `Evaluator` is only a
@@ -46,15 +65,29 @@ What the optional parts do:
   [Stages](#stages)). The evaluator's entry in the problem states the same `stage`, so the
   problem file shows what each evaluator reads; a mismatch is an error before anything runs.
   Without `stage` the evaluator reads no stage and needs none: a cost model, say, works from the
-  candidate's parameters alone. `self.read(request, collection, type)` reads a collection of
-  that file (see [Reading EDM4hep files](#reading-edm4hep-files)).
+  candidate's parameters alone.
+- `collections`: the EDM4hep collections it reads from the file of its stage, by role, each a
+  `Collection` with the type of its elements (`"SimCalorimeterHit"`, the `edm4hep::` prefix is
+  implied). The problem's entry names the collection of each role (`hits: ECalBarrelCollection`);
+  a role with a `default` (`Collection("MCParticle", default="MCParticles")`) needs no name,
+  though the problem may give another. A role is a Python identifier. `self.events(request)`
+  yields each event of the file with its collections as attributes (`event.hits`), all read from
+  that same event, so they belong together (see [Reading EDM4hep files](#reading-edm4hep-files)).
+  An unknown or missing role is an `EvaluationContractError` before anything runs; how a missing
+  collection is reported is described under [Collections](#collections).
 - `settings`: a mapping of key to a type (`str`, `int`, `float`, `bool`, `list`, `dict`) for a
-  required setting, or to a default value for an optional one (`"min_hits": 1` is an optional
-  `int`). Unknown keys, missing required keys, wrong types and a blank required `str` are an
+  required setting, to a default value for an optional one (`"min_cells": 1` is an optional
+  `int`), or to a `Quantity(unit)` for a number with a unit. The problem writes a quantity as
+  `value` and `unit`, in any unit of the same dimension (energy: `eV`, `keV`, `MeV`, `GeV`, `TeV`;
+  length: `um`, `mm`, `cm`, `m`), and the evaluator receives a float in the declared unit,
+  converted exactly by a power of ten (`70` `keV` is the float `70e-6` in `GeV`). A bare number
+  is refused, so the unit is always written; `Quantity("GeV", default=70e-6)` is optional, its
+  default in the declared unit. Unknown keys, missing required keys, wrong types, a blank
+  required `str` and a quantity without a unit of its dimension are an
   `EvaluationContractError`, raised before anything is created or run (a `bool` is not an `int`,
-  an `int` is a `float`). The request an evaluator gets carries the defaults, so
-  `request.settings` (and the record) show the settings that were used; a `dict` arrives as a
-  read-only mapping and a `list` as a tuple. Override `check(request)` for rules beyond that and
+  an `int` is a `float`). The request an evaluator gets carries the defaults and the converted
+  quantities, so `request.settings` (and the record) show the settings that were used, next to
+  those the problem wrote; a `dict` arrives as a read-only mapping and a `list` as a tuple. Override `check(request)` for rules beyond that and
   call `super().check(request)`; plain evaluators can define `check` alone. `check` may run more
   than once for one candidate, so keep it cheap and free of side effects.
 - `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
@@ -68,7 +101,9 @@ What the optional parts do:
 - the return value: a mapping of metric to a number or to per-event numbers (a list, a numpy
   array, ...; `Measurement.from_samples`) becomes a `valid` result, with the unit from `metrics`.
   A metric is written `"name"` (classified under `stage`) or as a pair `(stage, name)`. Return an
-  `EvaluationResult` for artifacts, provenance or diagnostics.
+  `EvaluationResult` for artifacts, provenance or diagnostics. An empty list is an
+  `EvaluationContractError`, since it may be a bug: an evaluator that found nothing to measure
+  says so with `self.invalid("...")`, which is a scientific verdict.
 
 The long form needs no base class and no shorthand:
 
@@ -96,7 +131,8 @@ class CellCount:
 | Field | Meaning |
 | --- | --- |
 | `candidate` | parameter values for this evaluation, keyed by the canonical parameter identity (a geometry parameter: its canonical target such as `constants.ECal_cell_size`); booleans, integers, finite floats or strings. Not checked against bounds |
-| `settings` | the evaluator-defined `settings` of its entry in `evaluators`, nested data, copied and read-only |
+| `settings` | the evaluator-defined `settings` of its entry in `evaluators`, with the declared defaults and each quantity as a float in its declared unit; nested data, copied and read-only |
+| `collections` | role to the name of the collection it reads: the one the problem's entry names, or the declared default |
 | `inputs` | role name to local `Path` of an already prepared artifact: the main output of each stage it reads, by stage (`inputs["simulation"]`, an EDM4hep file), and the compact XML snapshot as `inputs["geometry"]`. The evaluator documents the roles it accepts |
 | `workdir` | where the evaluator may write. `k4opt evaluate` gives each evaluator its own, `<output>/evaluators/<name>`, created for the call; the request never creates or checks it |
 | `events`, `seed` | those of the stage the evaluator reads, where that stage has them (a ddsim simulation); `None` otherwise. `events` is positive |
@@ -146,16 +182,46 @@ measurements: build the result by hand to keep diagnostics.
 
 ### Reading EDM4hep files
 
-`self.read(request, collection, value_type)` is `read_collection` on the file of the stage in
-`stage`, and `request.read(stage, collection, value_type)` on the file of any stage.
-`read_collection(path, collection, value_type)` yields the collection of each event of an
-EDM4hep file; `count_events(path)` counts the events. `podio` comes from the Key4hep stack and
-is imported only when a file is opened, so `k4opt.evaluation` imports without it. A file that
-cannot be opened, a missing `events` category or collection, an element type other than
-`value_type` (`"SimCalorimeterHit"` means `"edm4hep::SimCalorimeterHit"`) and every exception of the C++ reader are an `EvaluationFailed`: a collection is
-never silently read as empty. An existing but empty collection is yielded like any other.
+`self.events(request)` is `read_events` on the file of the stage in `stage`, with the declared
+`collections` under the names the request gives them. `read_events(path, {role: (collection,
+value_type)})` yields an `Event` per event (podio frame) of an EDM4hep file, in file order, whose
+attributes are the roles: each the list of that collection's elements in this event. All the
+collections of an `Event` come from the same frame, so they belong to the same physics event.
+Nothing is matched up across files or samples: `request.read(stage, collection, value_type)`
+reads one collection of any stage's file, and two collections read that way are not known to
+be aligned event by event. `read_collection(path, collection, value_type)` is the one-collection
+form, `available_collections(path)` lists the collections of a file without reading any,
+`collection_types(path, names)` gives the element types of the named ones (podio unpacks a
+collection when it is read, so only those are), and `count_events(path)` counts the events.
+
+`podio` comes from the Key4hep stack and is imported only when a file is opened, so
+`k4opt.evaluation` imports without it. A file that cannot be opened, a missing `events` category
+or collection, an element type other than `value_type` (`"SimCalorimeterHit"` means
+`"edm4hep::SimCalorimeterHit"`) and every exception of the C++ reader are an `EvaluationFailed`:
+a collection is never silently read as empty. An existing but empty collection is yielded like
+any other.
 
 Violations raise `EvaluationContractError` (a `K4OptError`) when the object is built.
+
+### Collections
+
+What an evaluator declares in `collections` is checked in three ways, and only what is
+demonstrably wrong blocks a run:
+
+| Case | When | Outcome |
+| --- | --- | --- |
+| A declaration that cannot be read: a role that is no Python identifier, a type that is no type name, collections without a `stage`; a role the problem's entry names but the evaluator does not declare, or one without a name; collections from a stage without an EDM4hep file: a generation run by the gun, which ddsim fires, or given (or supplied) as a file podio cannot read, such as HepMC; podio reads `.root` and `.sio` | before anything runs; no Key4hep stack needed | `EvaluationContractError` |
+| A name ddsim is not expected to write | before anything runs | a warning with the closest expected name ("did you mean 'ECalBarrelCollection'?"); the run goes on |
+| A collection missing from the stage's actual file, or holding another type | after the stage, before the evaluator is called | that evaluator is `failed`, with the collections the file holds; it is not called. Only the collections it declares are read, so one it does not read (of a datamodel without a dictionary, say) cannot fail it |
+
+The expectation comes from the unmodified geometry: one collection per `<readout>` (and
+`<hits_collection>`) named in its XML, a `<readout>Contributions` collection next to each, and
+`MCParticles` and `EventHeader`. For CLD_o2_v09 it is exactly what ddsim writes. It is not a
+guarantee: the type of a sensitive detector is set in C++ detector code, and DDG4 actions may
+define collections of their own, so it only warns. The file is authoritative. `invalid` stays a
+scientific verdict that only the evaluator gives: an evaluator that treats an absent collection
+as a scientific outcome does not declare it, reads it with `request.read` and calls
+`self.invalid`.
 
 ## Stage classifies, it does not prescribe
 
@@ -287,18 +353,22 @@ In order, it:
    be given exactly once, with the declared `version` and reading the declared `stage`, and no
    other (`EvaluationContractError` otherwise). Each entry becomes one evaluator instance,
    identified by its name; records, run directories and metric owners use that identity;
-3. before anything runs, checks the stages the evaluators read, calls each evaluator's
-   `check()` and decides which evaluator owns each objective and constraint metric (see
-   [problem](problem.md#evaluators); `EvaluationContractError` otherwise);
+3. before anything runs, checks the stages the evaluators read, resolves each evaluator's
+   settings and collections, calls its `check()` and decides which evaluator owns each
+   objective and constraint metric (see [problem](problem.md#evaluators);
+   `EvaluationContractError` otherwise). A collection ddsim is not expected to write is a
+   warning, kept with the candidate;
 4. makes every stage the evaluators read available once, unless `inputs` supplies its file:
    it runs it on `inputs["geometry"]` in `workdir`, or takes the problem's `file`. The output of
    the `simulation` stage, run or supplied, must hold exactly its `events` events (at least one
    when the problem gives the file), otherwise the stage fails ("incomplete simulation"); the
    number found is recorded as `events_read`;
 5. calls each evaluator's `evaluate()` once, in problem order, with a request built from the
-   validated candidate, its own `settings`, the `events` and `seed` of the stage it reads and
-   the files of the stages it reads, in its own `workdir/evaluators/<name>`. An evaluator whose stage failed gets that stage's message as a
-   `failed` result instead. `EvaluationFailed` and `EvaluationInvalid` become a `failed` or
+   validated candidate, its own `settings` (defaults filled in, quantities converted) and
+   `collections`, the `events` and `seed` of the stage it reads and the files of the stages it
+   reads, in its own `workdir/evaluators/<name>`. An evaluator whose stage failed gets that
+   stage's message as a `failed` result instead, and so does one whose stage's file lacks a
+   collection it declares (see [Collections](#collections)). `EvaluationFailed` and `EvaluationInvalid` become a `failed` or
    `invalid` result; other exceptions of an evaluator propagate;
 6. checks each result; a violation is an `EvaluationContractError`, an inconsistent evaluator
    rather than a violated constraint. A result must not report a metric another evaluator

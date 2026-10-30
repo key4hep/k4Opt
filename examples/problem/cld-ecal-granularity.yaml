@@ -51,8 +51,13 @@ evaluators:
   - name: calo.photon
     version: "1"
     stage: simulation
+    collections:
+      hits: ECalBarrelCollection
     settings:
-      collection: ECalBarrelCollection
+      # a cell fires above half the most probable energy a MIP leaves in 0.5 mm of silicon
+      threshold:
+        value: 70
+        unit: keV
 
 objectives:
   - stage: simulation

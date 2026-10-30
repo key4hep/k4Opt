@@ -1,9 +1,10 @@
 """Evaluation component: the contract between k4opt and whatever measures a candidate.
 
 An evaluator (a subclass of :class:`Evaluator`, or anything with ``name``, ``version`` and
-``evaluate``) receives an :class:`EvaluationRequest` (candidate values, settings, prepared
-input files) and returns an :class:`EvaluationResult` (a status, zero or more
-:class:`Measurement` objects, named artifacts), or just ``{metric: value}``. The contract does
+``evaluate``) receives an :class:`EvaluationRequest` (candidate values, settings, the
+collections it reads, prepared input files) and returns an :class:`EvaluationResult` (a
+status, zero or more :class:`Measurement` objects, named artifacts), or just
+``{metric: value}``. The contract does
 not depend on a problem file, a geometry or the Key4hep stack, and does not prescribe stages.
 Running evaluators, looking them up by the name in ``problem.yaml`` and persisting results are
 not part of it;
@@ -24,8 +25,24 @@ Typical use::
             return {("analysis", "answer"): 42}
 """
 
-from k4opt.evaluation.base import Evaluator, metric_units, result_from, with_defaults
-from k4opt.evaluation.edm4hep import count_events, read_collection
+from k4opt.evaluation.base import (
+    Collection,
+    Evaluator,
+    Quantity,
+    collection_names,
+    declared_collections,
+    metric_units,
+    result_from,
+    with_defaults,
+)
+from k4opt.evaluation.edm4hep import (
+    Event,
+    available_collections,
+    collection_types,
+    count_events,
+    read_collection,
+    read_events,
+)
 from k4opt.evaluation.errors import (
     EvaluationContractError,
     EvaluationFailed,
@@ -46,6 +63,7 @@ from k4opt.evaluation.protocol import EvaluatorProtocol
 
 __all__ = [
     "CandidateKey",
+    "Collection",
     "EvaluationContractError",
     "EvaluationFailed",
     "EvaluationInvalid",
@@ -55,13 +73,20 @@ __all__ = [
     "Evaluator",
     "EvaluatorLoadError",
     "EvaluatorProtocol",
+    "Event",
     "Measurement",
+    "Quantity",
     "Scalar",
     "Status",
+    "available_collections",
+    "collection_names",
+    "collection_types",
     "count_events",
+    "declared_collections",
     "load_evaluator",
     "metric_units",
     "read_collection",
+    "read_events",
     "result_from",
     "with_defaults",
 ]

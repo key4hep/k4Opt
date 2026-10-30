@@ -14,6 +14,7 @@ records, run directories and metric owners use that identity.
 
 from __future__ import annotations
 
+import difflib
 import math
 import time
 from collections.abc import Collection, Mapping, Sequence
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+from k4opt.ddsim import output_collections
 from k4opt.evaluation import (
     CandidateKey,
     EvaluationContractError,
@@ -33,6 +35,10 @@ from k4opt.evaluation import (
     Measurement,
     Scalar,
     Status,
+    available_collections,
+    collection_names,
+    collection_types,
+    declared_collections,
     metric_units,
     result_from,
     with_defaults,
@@ -43,6 +49,7 @@ from k4opt.problem._stages import (
     StageRecords,
     changed_by_geometry,
     check_stages,
+    no_edm4hep_file,
     run_stages,
 )
 from k4opt.problem.errors import CandidateError
@@ -288,6 +295,82 @@ def _resolve(key: MetricKey, instances: Sequence[str]) -> str:
     return instances[0]
 
 
+def _unexpected_collections(
+    spec: ProblemSpec,
+    context: StageContext,
+    evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]],
+    provided: Collection[str],
+) -> tuple[str, ...]:
+    """A warning for each collection an evaluator reads from the simulation that ddsim is not
+    expected to write for the problem's geometry, with the closest expected name.
+
+    Only a warning: the prediction comes from the unmodified geometry's readouts, and custom
+    sensitive actions can name collections of their own. The simulation's output decides.
+    """
+    simulation = context.stages.get("simulation")
+    if spec._catalog is None or simulation is None or simulation.executor != "ddsim":
+        return ()
+    if "simulation" in provided:  # a supplied file is checked itself, before it is read
+        return ()
+    expected = sorted(output_collections(spec._catalog.readouts))
+    warnings = []
+    for entry, evaluator in evaluators:
+        if _stage(evaluator) != "simulation":
+            continue
+        for role, name in collection_names(evaluator, entry.collections).items():
+            if name in expected:
+                continue
+            close = difflib.get_close_matches(name, expected, n=1)
+            hint = f"; did you mean {close[0]!r}?" if close else "."
+            warnings.append(
+                f"evaluator {entry.name!r}: ddsim is not expected to write the collection "
+                f"{name!r} ({role}) for {spec.geometry.entry}{hint} The simulation's output "
+                "decides."
+            )
+    return tuple(warnings)
+
+
+def _collection_error(
+    evaluator: EvaluatorProtocol,
+    request: EvaluationRequest,
+    seen: dict[Path, tuple[str, ...] | str],
+) -> str | None:
+    """Why the file of the evaluator's stage lacks a collection it declares, or holds it with
+    another type; ``None`` if every one is there. Only the declared collections are read, so one
+    the evaluator does not read cannot fail it. ``seen`` keeps the collection names of each file
+    (or why they cannot be listed), so a file read by several evaluators is listed once."""
+    declared = declared_collections(evaluator)
+    stage = _stage(evaluator)
+    if not declared or stage is None or stage not in request.inputs:
+        return None
+    path = request.inputs[stage]
+    if path not in seen:
+        try:
+            seen[path] = available_collections(path)
+        except EvaluationFailed as exc:
+            seen[path] = str(exc)
+    available = seen[path]
+    if isinstance(available, str):
+        return available
+    names = {role: request.collections[role] for role in declared}
+    for role, name in names.items():
+        if name not in available:
+            listing = ", ".join(available) or "no collections"
+            return f"collection {name!r} ({role}) is not in {path.name}, which holds: {listing}"
+    try:
+        types = collection_types(path, names.values())
+    except EvaluationFailed as exc:
+        return str(exc)
+    for role, collection in declared.items():
+        name, held = names[role], types.get(names[role])
+        if held != collection.podio_type:
+            return (
+                f"collection {name!r} ({role}) holds {held!r}, but the evaluator reads "
+                f"{collection.podio_type!r}"
+            )
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class _Plan:
     """What the preflight established before anything runs."""
@@ -297,31 +380,44 @@ class _Plan:
     targets: tuple[str, ...]  # the pipeline stages the evaluators read
     owners: Mapping[MetricKey, str]  # objective or constraint metric -> evaluator
     declared: Mapping[MetricKey, str]  # any declared metric -> evaluator
+    warnings: tuple[str, ...] = ()  # collections the simulation is not expected to write
 
 
 def _preflight(
     spec: ProblemSpec,
     values: Mapping[str, Scalar],
     evaluators: Sequence[EvaluatorProtocol],
-    provided: Collection[str] = (),
+    provided: Mapping[str, Path] | None = None,
 ) -> _Plan:
     """Check everything that can be checked before a file is created or a stage runs.
 
     Binds ``evaluators`` to the problem, checks the stages they read (those in ``provided``, the
-    stages the caller supplies, are not run), calls each evaluator's ``check()`` with the request
-    it would get and decides which evaluator measures each objective and constraint metric.
-    Raises :class:`EvaluationContractError` (or what a ``check()`` raises).
+    files the caller supplies by stage, are not run), calls each evaluator's ``check()`` with the
+    request it would get (its settings and collections resolved) and decides which evaluator
+    measures each objective and constraint metric. An evaluator that declares collections of a
+    stage without an EDM4hep file (the gun's, or a HepMC file) is refused. Raises
+    :class:`EvaluationContractError` (or what a ``check()`` raises). Collections the simulation
+    is not expected to write are only warnings.
     """
+    provided = provided or {}
     context = StageContext.of(spec)
     bound = _bind(spec, evaluators)
     targets = tuple(stage for _, ev in bound if (stage := _stage(ev)) is not None)
     check_stages(context, *targets, provided=provided)
     for entry, evaluator in bound:
+        stage = _stage(evaluator)
+        reason = None if stage is None else no_edm4hep_file(context, stage, provided)
+        if reason is not None and declared_collections(evaluator):
+            raise EvaluationContractError(
+                f"evaluator {entry.name!r} reads collections from the {stage!r} stage, but {reason}"
+            )
+    for entry, evaluator in bound:
         check = getattr(evaluator, "check", None)
         if check is not None:
             check(_request(context, values, entry, evaluator))
     owners, declared = _owners(spec, bound)
-    return _Plan(context, tuple(bound), targets, owners, declared)
+    warnings = _unexpected_collections(spec, context, bound, provided)
+    return _Plan(context, tuple(bound), targets, owners, declared, warnings)
 
 
 def _check_result(spec: ProblemSpec, plan: _Plan, name: str, result: EvaluationResult) -> None:
@@ -366,12 +462,14 @@ def _request(
     """The request an evaluator receives, for ``check()`` and ``evaluate()`` alike.
 
     ``settings`` are those of its ``entry`` in the problem plus the defaults the evaluator
+    declares, each quantity in its declared unit; ``collections`` the collection of each role it
     declares; ``events`` and ``seed`` are those of the stage it reads.
     """
     events, seed = context.conditions(entry.stage)
     return EvaluationRequest(
         candidate=values,
         settings=with_defaults(evaluator, entry.settings),
+        collections=collection_names(evaluator, entry.collections),
         inputs=inputs or {},
         workdir=workdir,
         events=events,
@@ -389,18 +487,20 @@ def _measure(
     stages: StageRecords,
     inputs: Mapping[str, Path],
     workdir: Path | None,
+    seen: dict[Path, tuple[str, ...] | str],
 ) -> EvaluationRecord:
     """The record of one evaluator, called once on the files of the stages it reads.
 
-    An evaluator whose stage cannot be read gets that stage's error as a ``failed`` result and
-    is not called. Its own directory, ``workdir/evaluators/<name>``, is created just before the
+    An evaluator whose stage cannot be read, or whose stage's file lacks a collection it
+    declares (or holds it with another type), gets a ``failed`` result saying so and is not
+    called. Its own directory, ``workdir/evaluators/<name>``, is created just before the
     call; ``elapsed_seconds`` is the time of the call alone.
     """
     stage = _stage(evaluator)
     given = {**inputs, **stages.inputs(stage)}
-    error = stages.error(stage)
+    request = _request(plan.context, values, entry, evaluator, given)
+    error = stages.error(stage) or _collection_error(evaluator, request, seen)
     if error is not None:
-        request = _request(plan.context, values, entry, evaluator, given)
         return _record(spec, plan, entry, evaluator, key, request, EvaluationResult.failed(error))
     own = None if workdir is None else workdir / "evaluators" / entry.name
     request = _request(plan.context, values, entry, evaluator, given, own)
@@ -446,6 +546,7 @@ class CandidateRecord:
     ``represents_candidate`` is ``False`` when the caller supplied a stage that the parameters
     change (``k4opt evaluate --input simulation=FILE``): that file was not made from the
     candidate, so the record must never count as an evaluation of it, whatever its status.
+    ``warnings`` are the preflight's: collections the simulation was not expected to write.
     """
 
     candidate_key: CandidateKey
@@ -455,6 +556,7 @@ class CandidateRecord:
     reads: Mapping[str, tuple[str, ...]]
     elapsed_seconds: float
     represents_candidate: bool = True
+    warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "records", tuple(self.records))
@@ -538,8 +640,9 @@ def _evaluate_candidate(
     inputs = dict(inputs or {})
     plan = _preflight(spec, values, evaluators, inputs)
     stages = run_stages(plan.context, *plan.targets, inputs=inputs, workdir=workdir)
+    seen: dict[Path, tuple[str, ...] | str] = {}  # the collection names of each stage file
     records = tuple(
-        _measure(spec, plan, values, key, entry, evaluator, stages, inputs, workdir)
+        _measure(spec, plan, values, key, entry, evaluator, stages, inputs, workdir, seen)
         for entry, evaluator in plan.evaluators
     )
     reads = {
@@ -547,4 +650,6 @@ def _evaluate_candidate(
     }
     represents = not any(changed_by_geometry(name) for name in stages.supplied)
     elapsed = time.perf_counter() - started
-    return CandidateRecord(key, records, stages, plan.owners, reads, elapsed, represents)
+    return CandidateRecord(
+        key, records, stages, plan.owners, reads, elapsed, represents, plan.warnings
+    )

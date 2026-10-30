@@ -54,7 +54,8 @@ def test_loads_the_checked_in_example() -> None:
     assert [(e.name, e.version, e.stage) for e in problem.evaluators] == [
         ("calo.photon", "1", "simulation")
     ]
-    assert problem.evaluators[0].settings == {"collection": "ECalBarrelCollection"}
+    assert problem.evaluators[0].collections == {"hits": "ECalBarrelCollection"}
+    assert problem.evaluators[0].settings == {"threshold": {"value": 70, "unit": "keV"}}
     generation, simulation = problem.stages.values()
     assert (generation.type, generation.executor) == ("generation", "gun")
     generator: Any = generation.options
@@ -390,6 +391,40 @@ def test_unknown_keys_are_rejected_with_a_location(
         node = node[step]
     node["extra"] = 1
     reject(doc, message)
+
+
+def test_the_collections_of_an_evaluator_are_kept_by_role(doc: dict[str, Any]) -> None:
+    doc["evaluators"][0]["collections"] = {"hits": "ECalBarrelCollection", "particles": "Truth"}
+    problem = parse_problem(doc)
+    assert problem.evaluators[0].collections == {
+        "hits": "ECalBarrelCollection",
+        "particles": "Truth",
+    }
+    assert problem.to_dict()["evaluators"][0]["collections"] == {  # type: ignore[index]
+        "hits": "ECalBarrelCollection",
+        "particles": "Truth",
+    }
+    assert parse_problem(problem.to_dict()) == problem
+
+
+@pytest.mark.parametrize(
+    ("collections", "message"),
+    [
+        (["ECalBarrelCollection"], "evaluators[0].collections: must be a mapping, got list"),
+        ({"hits": ""}, "evaluators[0].collections.hits: must be a non-empty string"),
+        ({"hits": 3}, "evaluators[0].collections.hits: must be a non-empty string"),
+        ({1: "C"}, "evaluators[0].collections: keys must be strings"),
+    ],
+)
+def test_collection_errors(doc: dict[str, Any], collections: object, message: str) -> None:
+    doc["evaluators"][0]["collections"] = collections
+    reject(doc, message)
+
+
+def test_collections_need_the_stage_they_are_read_from(doc: dict[str, Any]) -> None:
+    del doc["stages"], doc["evaluators"][0]["stage"]
+    doc["evaluators"][0]["collections"] = {"hits": "ECalBarrelCollection"}
+    reject(doc, "evaluators[0].collections: collections are read from the file of the stage")
 
 
 def test_unknown_keys_inside_settings_are_allowed(doc: dict[str, Any]) -> None:
@@ -851,27 +886,27 @@ def test_unquoted_date_is_flagged(write: Write) -> None:
 
 
 def test_disallowed_scalars_in_settings_from_yaml(write: Write) -> None:
-    text = good_yaml().replace("      collection:", "      when: 2026-10-20\n      collection:")
+    text = good_yaml().replace("      threshold:", "      when: 2026-10-20\n      threshold:")
     with pytest.raises(ProblemConfigError, match=r"settings\.when: unsupported value of type date"):
         load_problem(write(text))
-    text = good_yaml().replace("      collection:", "      blob: !!binary aGk=\n      collection:")
+    text = good_yaml().replace("      threshold:", "      blob: !!binary aGk=\n      threshold:")
     with pytest.raises(
         ProblemConfigError, match=r"settings\.blob: unsupported value of type bytes"
     ):
         load_problem(write(text))
-    text = good_yaml().replace("      collection:", "      s: !!set {a, b}\n      collection:")
+    text = good_yaml().replace("      threshold:", "      s: !!set {a, b}\n      threshold:")
     with pytest.raises(ProblemConfigError, match=r"settings\.s: unsupported value of type set"):
         load_problem(write(text))
-    text = good_yaml().replace("      collection:", "      x: .nan\n      collection:")
+    text = good_yaml().replace("      threshold:", "      x: .nan\n      threshold:")
     with pytest.raises(ProblemConfigError, match="non-finite"):
         load_problem(write(text))
 
 
 def test_recursive_aliases_are_rejected(write: Write) -> None:
-    text = good_yaml().replace("      collection:", "      loop: &a [*a]\n      collection:")
+    text = good_yaml().replace("      threshold:", "      loop: &a [*a]\n      threshold:")
     with pytest.raises(ProblemConfigError, match="contains itself"):
         load_problem(write(text))
-    text = good_yaml().replace("      collection:", "      loop: &a {x: *a}\n      collection:")
+    text = good_yaml().replace("      threshold:", "      loop: &a {x: *a}\n      threshold:")
     with pytest.raises(ProblemConfigError, match="contains itself"):
         load_problem(write(text))
 
