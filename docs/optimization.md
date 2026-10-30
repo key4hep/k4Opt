@@ -250,7 +250,9 @@ study's trials, and so change the next session's seed, without being one of its 
 A trial that another client leaves RUNNING cannot be told from one of a killed k4opt process,
 and recovery closes it as FAIL.
 
-A `trial-*` directory that no trial of the study names makes the resume refuse. Recovered
+A study whose setup a killed process cut short, before its first trial, is set up anew or
+finished by the resume. A `trial-*` directory that no trial of the study names makes the resume
+refuse. Recovered
 trials do not count among the `--trials` of the resume, and interrupted trials are not retried
 automatically.
 

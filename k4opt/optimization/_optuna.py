@@ -721,29 +721,42 @@ def _check_resume(
 def _open_optuna(
     directory: Path, document: Mapping[str, Any], storage: BaseStorage, resume: bool
 ) -> optuna.Study:
-    """The Optuna study of ``document``: made for a new study; loaded for a resumed one, or made
-    again if its setup was cut short before its first trial."""
+    """The Optuna study of ``document``: made for a new study; loaded for a resumed one, and its
+    setup finished if a killed process cut it short before the first trial."""
     optimizer = document["optimizer"]
     name = optimizer["study"]
+    attributes = _study_attributes(document)
     if resume:
         try:
-            return optuna.load_study(study_name=name, storage=storage)
+            study = optuna.load_study(study_name=name, storage=storage)
         except KeyError:
             if trial_directories(directory):
                 raise OptimizationError(
                     f"the optimizer's storage holds no study {name!r}, though {directory} has "
                     "trials"
                 ) from None
-            # made before its first trial was asked for: set it up again
+        else:
+            if not study.trials:  # made, but perhaps not all its attributes written
+                for key, value in attributes.items():
+                    if key not in study.user_attrs:
+                        study.set_user_attr(key, value)
+            return study  # whatever it holds is checked by _check_optuna_study
     study = optuna.create_study(
         study_name=name, storage=storage, directions=list(optimizer["directions"])
     )
-    study.set_user_attr("k4opt.study", document["id"])
-    study.set_user_attr("k4opt.identity", document["identity"])
-    study.set_user_attr("k4opt.parameters", list(optimizer["parameters"]))
-    study.set_user_attr(
-        "k4opt.objectives",
-        [f"{o['stage']}/{o['metric']}" for o in document["problem"]["definition"]["objectives"]],
-    )
-    study.set_user_attr("k4opt.constraints", list(optimizer["constraints"]))
+    for key, value in attributes.items():
+        study.set_user_attr(key, value)
     return study
+
+
+def _study_attributes(document: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``k4opt.*`` attributes of the Optuna study ``document`` describes."""
+    optimizer = document["optimizer"]
+    objectives = document["problem"]["definition"]["objectives"]
+    return {
+        "k4opt.study": document["id"],
+        "k4opt.identity": document["identity"],
+        "k4opt.parameters": list(optimizer["parameters"]),
+        "k4opt.objectives": [f"{o['stage']}/{o['metric']}" for o in objectives],
+        "k4opt.constraints": list(optimizer["constraints"]),
+    }

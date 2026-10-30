@@ -376,6 +376,28 @@ def test_a_finished_trial_keeps_the_record_the_optimizer_was_told(
     assert tree_digest(output) == before
 
 
+def test_a_study_whose_setup_was_cut_short_resumes(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    set_user_attr, written = optuna.Study.set_user_attr, []
+
+    def killed_after_two(self: optuna.Study, key: str, value: Any) -> None:
+        if len(written) == 2:  # the study is made, two of its attributes are written
+            raise Crash
+        written.append(key)
+        set_user_attr(self, key, value)
+
+    monkeypatch.setattr(optuna.Study, "set_user_attr", killed_after_two)
+    with pytest.raises(Crash):
+        run(problem, output, 1, seed=1)
+    monkeypatch.setattr(optuna.Study, "set_user_attr", set_user_attr)
+    assert optuna_study(output).trials == []
+    report = run(problem, output, 1, resume=True)
+    assert [t.status for t in report.trials] == ["valid"]
+    assert set(optuna_study(output).user_attrs) >= {"k4opt.study", "k4opt.constraints"}
+
+
 def test_a_trial_another_client_added_to_the_storage_refuses_the_resume(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
