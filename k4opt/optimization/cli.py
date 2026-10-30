@@ -12,11 +12,12 @@ it, or it is interrupted.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 from typing import TextIO
 
 from k4opt.evaluation import load_evaluator
-from k4opt.optimization import StudyReport, TrialReport, optimize
+from k4opt.optimization import optimize
+from k4opt.optimization._render import Progress, render_study
+from k4opt.terminal import color, interactive
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -70,56 +71,25 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     parser.set_defaults(func=cmd_optimize)
 
 
-def _trial(trial: TrialReport) -> str:
-    head = f"trial {trial.number}:".ljust(11) + trial.status.ljust(9)
-    if trial.objectives is not None:
-        feasible = "feasible  " if trial.feasible else "infeasible"
-        values = "  ".join(f"{name}={value:.6g}" for name, value in trial.objectives.items())
-        candidate = "  ".join(f"{name}={value}" for name, value in trial.candidate.items())
-        return f"{head}{feasible}  {candidate}  {values}"
-    where = f"{trial.directory.name}/summary.json" if trial.record else trial.directory.name
-    return f"{head}{trial.message or ''}  {where}".rstrip()
-
-
-def _report(report: StudyReport, out: TextIO) -> None:
-    counts = Counter(trial.status for trial in report.trials)
-    feasible = sum(trial.feasible is True for trial in report.trials)
-    parts = [
-        f"{counts['valid']} valid ({feasible} feasible, {counts['valid'] - feasible} infeasible)"
-    ]
-    parts += [
-        f"{counts[status]} {status}"
-        for status in ("invalid", "failed", "interrupted", "error")
-        if counts[status]
-    ]
-    print(
-        f"study:    {report.name}, {len(report.objectives)} objective(s), "
-        f"{len(report.constraints)} limit(s), {report.study_path}",
-        file=out,
-    )
-    print(f"trials:   {len(report.trials)}: {', '.join(parts)}", file=out)
-    pareto = ", ".join(map(str, report.pareto)) if report.pareto else "none feasible yet"
-    print(f"pareto:   {pareto}", file=out)
-
-
 def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     evaluators = [load_evaluator(reference) for reference in args.evaluator]
     try:
-        report = optimize(
-            args.problem,
-            evaluators,
-            args.output,
-            trials=args.trials,
-            seed=args.seed,
-            resume=args.resume,
-            storage=args.storage,
-            warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
-            progress=lambda trial: print(_trial(trial), file=out, flush=True),
-        )
+        with Progress(args.trials, out, err, bar=interactive(out), color=color(out)) as progress:
+            report = optimize(
+                args.problem,
+                evaluators,
+                args.output,
+                trials=args.trials,
+                seed=args.seed,
+                resume=args.resume,
+                storage=args.storage,
+                warn=progress.warning,
+                progress=progress.trial,
+            )
     except KeyboardInterrupt:
         print(
             f"k4opt: interrupted; continue the study with --resume --output {args.output}", file=err
         )
         return 1
-    _report(report, out)
+    render_study(report, out, color=color(out))
     return 0

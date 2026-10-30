@@ -368,11 +368,12 @@ def _close_interrupted(run: _Study, trial: Trial, output: Path) -> None:
     _fail(run, trial)
 
 
-def _recover(run: _Study) -> None:
+def _recover(run: _Study, progress: Progress) -> None:
     """Finish the trials a session left running, before any new one: one without a record is
-    FAIL, its directory left as it is, and one with a record is told it. Before anything
-    changes, the resume refuses if a trial directory belongs to no trial, or if the record a
-    finished trial was told is gone or was changed (its SHA-256)."""
+    FAIL, its directory left as it is, and one with a record is told it; ``progress`` is called
+    with each as it is finished. Before anything changes, the resume refuses if a trial
+    directory belongs to no trial, or if the record a finished trial was told is gone or was
+    changed (its SHA-256)."""
     trials = run.study.get_trials(deepcopy=False)
     known = {trial.user_attrs.get("k4opt.dir", trial_directory(trial.number)) for trial in trials}
     stray = [name for name in trial_directories(run.directory) if name not in known]
@@ -388,10 +389,11 @@ def _recover(run: _Study) -> None:
             continue
         trial = Trial(run.study, frozen._trial_id)  # the one private access of Optuna
         if (run.directory / trial_directory(frozen.number) / SUMMARY_NAME).is_file():
-            _report(run, trial, frozen.constraints, recovered=True)
+            finished = _report(run, trial, frozen.constraints, recovered=True)
         else:
             trial.set_user_attr("k4opt.recovered", True)
-            run.study.tell(trial, state=TrialState.FAIL)
+            finished = run.study.tell(trial, state=TrialState.FAIL)
+        progress(_trial_report(run, finished))
 
 
 def _check_told_record(run: _Study, frozen: FrozenTrial) -> None:
@@ -552,7 +554,7 @@ def optimize(
             run = _Study(directory, document, spec, study, warn)
             if resume:
                 _check_optuna_study(study, document)
-                _recover(run)
+                _recover(run, progress)
             seed = document["optimizer"]["sampler"]["seed"]
             seed_now = session_seed(seed, len(study.trials))
             study.sampler = optuna.samplers.TPESampler(
