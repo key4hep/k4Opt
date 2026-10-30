@@ -127,8 +127,9 @@ is printed as it ends, so a broken environment shows at once.
 - a value cannot be held by a float;
 - writing fails, or Optuna fails.
 
-Before the first trial, each evaluator's settings are checked once, with a candidate made of
-the lower bounds and first choices, so that a mistake in the settings costs no trial.
+Each evaluator's settings and collections are checked once, when the study opens and before
+any file is created, so a mistake in them costs no trial. They need no candidate, so an
+evaluator's own `check()` is only ever asked about candidates the sampler proposes.
 
 **The optimizer is told what the record holds.** After each evaluation, `summary.json` is read
 back from disk and checked:
@@ -249,8 +250,9 @@ The default storage is `study.journal` in the study directory: Optuna's journal 
 JSON line per operation, appended and synced, with Optuna's own file lock. It needs no database
 and no SQLAlchemy, and it is replayed when it is read, which is fine for thousands of trials.
 `--storage URL` keeps the Optuna study in a database instead (SQLite on a local disk,
-PostgreSQL), while the trial directories stay in the study directory. The password is never
-recorded, and every resume needs the same URL.
+PostgreSQL), while the trial directories stay in the study directory. Its password and the
+values of its query parameters are never recorded or shown, also not in an error from the
+database, and every resume needs the same URL.
 
 ## Python API
 

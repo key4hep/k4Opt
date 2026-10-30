@@ -110,6 +110,24 @@ def test_a_lock_left_behind_is_never_taken_over(
     assert (output / ".lock").read_text() == content  # left for a person to remove
 
 
+@pytest.mark.parametrize("failure", [OSError("disk full"), KeyboardInterrupt()])
+def test_a_lock_whose_owner_cannot_be_written_is_not_left_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+) -> None:
+    from k4opt.optimization import _study
+
+    def failing(*args: Any, **kwargs: Any) -> None:
+        raise failure
+
+    monkeypatch.setattr(_study.json, "dump", failing)
+    expected = OptimizationError if isinstance(failure, OSError) else KeyboardInterrupt
+    with pytest.raises(
+        expected, match="cannot write .*disk full" if isinstance(failure, OSError) else None
+    ):
+        Lock(tmp_path).acquire()
+    assert not (tmp_path / ".lock").exists()
+
+
 def _optimize_command(problem: Path, output: Path, evaluator: str, *extra: str) -> list[str]:
     return [
         sys.executable,

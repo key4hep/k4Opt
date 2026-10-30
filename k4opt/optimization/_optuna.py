@@ -40,7 +40,7 @@ from optuna.storages.journal import JournalFileBackend, JournalFileOpenLock
 from optuna.trial import FrozenTrial, Trial, TrialState
 
 from k4opt.errors import K4OptError
-from k4opt.evaluation import EvaluatorProtocol, Scalar
+from k4opt.evaluation import EvaluatorProtocol
 from k4opt.optimization._study import (
     CONSTRAINT_VALUES,
     JOURNAL_NAME,
@@ -119,17 +119,6 @@ def search_space(spec: ProblemSpec) -> dict[str, BaseDistribution]:
     return space
 
 
-def probe(spec: ProblemSpec) -> dict[str, Scalar]:
-    """A candidate to check the evaluators' settings with before the first trial: each
-    parameter at its lower bound or first choice."""
-    probe: dict[str, Scalar] = {}
-    for parameter in spec.parameters:
-        values = parameter.bounds if parameter.choices is None else parameter.choices
-        assert values is not None
-        probe[parameter.geometry.canonical_target] = values[0]
-    return probe
-
-
 def objective_values(assessment: Assessment) -> list[float]:
     """The objective values of a valid candidate, in the problem's order, as the floats the
     optimizer is told; a value no float holds exactly (an integer beyond 2**53) is refused, as
@@ -185,13 +174,35 @@ def limit_names(spec: ProblemSpec) -> list[str]:
 
 
 def _redacted(url: str) -> str:
-    """``url`` without its password, as the study records it."""
+    """``url`` as the study records it and messages show it: its password and the value of
+    every query parameter (``?password=...``, ``sslkey=...``) are ``***``, and it has no
+    fragment."""
     parts = urllib.parse.urlsplit(url)
-    if parts.password is None:
-        return url
-    host = parts.hostname or ""
-    netloc = f"{parts.username}:***@{host}" + (f":{parts.port}" if parts.port else "")
-    return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
+    text = url.partition("#")[0]  # edited in place: rebuilding it would drop sqlite:///'s //
+    if parts.password is not None:
+        userinfo, _, host = parts.netloc.rpartition("@")
+        text = text.replace(parts.netloc, f"{userinfo.partition(':')[0]}:***@{host}", 1)
+    if parts.query:
+        keys = [key for key, _ in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)]
+        text = text.partition("?")[0] + "?" + "&".join(f"{key}=***" for key in keys)
+    return text
+
+
+def _scrubbed(text: str, url: str) -> str:
+    """``text`` (a database error, say) with ``url`` and every secret in it redacted."""
+    parts = urllib.parse.urlsplit(url)
+    secrets_ = [parts.password, parts.fragment]
+    secrets_ += [value for _, value in urllib.parse.parse_qsl(parts.query)]
+    text = text.replace(url, _redacted(url))
+    spellings = {
+        spelling
+        for secret in secrets_
+        if secret
+        for spelling in (secret, urllib.parse.unquote(secret), urllib.parse.quote(secret, safe=""))
+    }
+    for secret in sorted(spellings, key=len, reverse=True):
+        text = text.replace(secret, "***")
+    return text
 
 
 def _storage(directory: Path, url: str | None) -> BaseStorage:
@@ -206,7 +217,7 @@ def _storage(directory: Path, url: str | None) -> BaseStorage:
             "--storage to keep the study's storage in its directory"
         ) from None
     except Exception as exc:
-        raise OptimizationError(f"--storage {_redacted(url)}: {exc}") from None
+        raise OptimizationError(f"--storage {_redacted(url)}: {_scrubbed(str(exc), url)}") from None
 
 
 def _storage_record(url: str | None) -> dict[str, str]:
@@ -479,8 +490,7 @@ def optimize(
     # everything that can be checked before a file is created
     session = EvaluationSession.open(problem, evaluators)
     spec = session.spec
-    space = search_space(spec)
-    session.check(probe(spec))  # settings mistakes cost no trial
+    space = search_space(spec)  # the evaluators' settings were checked when the session opened
     identity: dict[str, Any] = session.identity()
     reasons = unhashed(identity)
     if reasons:

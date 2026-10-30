@@ -192,9 +192,8 @@ def test_check_and_evaluate_see_each_trials_own_candidate(
     checking = candidate_check()
     report = study(problem, tmp_path / "s", trials=4, evaluators=[checking])
     proposed = [dict(t.candidate) for t in report.trials]
-    probe, *checked = checking.checked  # type: ignore[attr-defined]
-    assert probe == {RADIUS: 100.0}  # the settings are checked once before the first trial
-    assert checked == proposed  # then each trial with its own values, never the probe's
+    # each trial with its own values, and nothing else: the settings need no candidate
+    assert checking.checked == proposed  # type: ignore[attr-defined]
     assert checking.evaluated == proposed  # type: ignore[attr-defined]
     assert len(set(map(str, proposed))) == 4
 
@@ -222,6 +221,18 @@ def test_a_check_that_refuses_a_candidate_stops_the_study_at_it(
     assert "cannot measure 250" in stopped.user_attrs["k4opt.error"]
     assert not (tmp_path / "s" / f"trial-{stopped.number:06d}").exists()  # nothing was created
     assert not (tmp_path / "s" / ".lock").exists()
+
+
+def test_a_check_is_only_ever_asked_about_proposed_candidates(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    # it refuses the lower bound, which a continuous sampler does not propose: the study runs
+    problem = write_problem(
+        evaluators=[{"name": "test.candidate_check", "version": "1", "settings": {"reject": 100}}],
+        objectives=[("analysis", "seen", "minimize")],
+    )
+    report = study(problem, tmp_path / "s", trials=4, evaluators=[candidate_check()])
+    assert [t.status for t in report.trials] == ["valid"] * 4
 
 
 BROKEN = {

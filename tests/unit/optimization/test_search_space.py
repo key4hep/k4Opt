@@ -24,11 +24,10 @@ from k4opt.optimization._optuna import (
     constraint_values,
     limit_names,
     objective_values,
-    probe,
     search_space,
 )
 from k4opt.problem import Assessment, Limit, parse_problem
-from tests.support.evaluators import candidate_check
+from tests.support.evaluators import candidate_check, trade_off
 from tests.unit.optimization.conftest import Log, problem_document, summary
 
 CHECK = [{"name": "test.candidate_check", "version": "1"}]
@@ -57,8 +56,6 @@ def test_each_parameter_is_searched_as_declared(
 ) -> None:
     spec = parse_problem(problem_document(parameter=declared))
     assert search_space(spec) == {"constants.InnerTracker_Barrel_radius_1": distribution}
-    first = declared["bounds"][0] if "bounds" in declared else declared["choices"][0]
-    assert probe(spec) == {"constants.InnerTracker_Barrel_radius_1": first}
 
 
 @pytest.mark.parametrize(
@@ -139,6 +136,31 @@ def test_objective_values_are_floats_in_the_problems_order() -> None:
     assert objective_values(assessment(objectives=(Measurement("analysis", "a", 2**53),))) == [
         2.0**53
     ]
+
+
+def test_a_storage_url_is_recorded_and_shown_without_its_secrets(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.optimization import _optuna
+
+    url = "postgresql://k4opt:s3cr%2Bt@db.cern.ch:6600/studies?sslmode=require&password=hush#x"
+    assert _optuna._redacted(url) == (
+        "postgresql://k4opt:***@db.cern.ch:6600/studies?sslmode=***&password=***"
+    )
+    for plain in ("sqlite:///studies.db", "sqlite:////abs/studies.db", "postgresql://h/db"):
+        assert _optuna._redacted(plain) == plain
+    assert _optuna._redacted("sqlite:///s.db?timeout=20") == "sqlite:///s.db?timeout=***"
+
+    def refusing(given: str) -> None:  # what a database driver may say
+        raise ValueError(f"could not connect to {given} (password 'hush', secret s3cr+t)")
+
+    monkeypatch.setattr(_optuna, "RDBStorage", refusing)
+    with pytest.raises(OptimizationError) as info:
+        optimize(write_problem(), [trade_off()], tmp_path / "s", trials=1, storage=url)
+    message = str(info.value)
+    assert "hush" not in message and "s3cr" not in message and "sslmode=require" not in message
+    assert "postgresql://k4opt:***@db.cern.ch:6600/studies" in message
+    assert not (tmp_path / "s").exists()
 
 
 def test_each_bound_of_a_constraint_is_a_limit_of_its_own() -> None:

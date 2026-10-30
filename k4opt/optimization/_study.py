@@ -85,10 +85,17 @@ class Lock:
             raise OptimizationError(_in_use(self.path)) from None
         except OSError as exc:
             raise OptimizationError(f"cannot create {self.path}: {exc}") from exc
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(owner, handle)
+                handle.write("\n")
+        except BaseException as exc:
+            # a lock without its owner would refuse every later start, as an unknown process's
+            self.path.unlink(missing_ok=True)
+            if isinstance(exc, OSError):
+                raise OptimizationError(f"cannot write {self.path}: {exc}") from exc
+            raise
         self._held = True
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(owner, handle)
-            handle.write("\n")
 
     def release(self) -> None:
         if self._held:
