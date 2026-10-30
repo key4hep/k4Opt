@@ -1370,6 +1370,37 @@ def test_the_code_that_ran_is_identified_before_it_runs(
     assert session.identity()["environment"]["KEY4HEP_STACK"] != "/another/stack"  # type: ignore[index]
 
 
+@pytest.mark.parametrize("name", ["KEY4HEP_STACK", "K4GEO"])
+def test_a_session_runs_its_candidates_in_the_environment_it_opened_in(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-10-20")
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    observed = outcome.summary["environment"]["observed"]  # type: ignore[index]
+    identity = session.identity()["environment"]
+    assert {k: observed[k] for k in ("KEY4HEP_STACK", "K4GEO")} == identity
+    monkeypatch.setenv(name, "/somewhere/else")
+    with pytest.raises(RunError, match=rf"{name} changed after the session opened"):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and len(fake.calls) == 1
+
+
+def test_a_session_does_not_open_once_k4opt_changed_on_disk(
+    problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt import revision
+
+    code_fingerprint()  # the process identified the code it runs
+    monkeypatch.setattr(revision, "source_digest", lambda directory: "edited since")
+    with pytest.raises(RunError, match="k4opt's code changed on disk after this process"):
+        EvaluationSession.open(problem_file, [cell_count()])
+
+
 def test_a_run_reference_is_recorded_as_given(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:

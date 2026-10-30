@@ -101,10 +101,22 @@ def code_fingerprint() -> str:
     """The :func:`source_digest` of the k4opt package, taken once per process.
 
     It identifies the files as they are when first asked for, which an evaluation session does
-    when it opens, before anything runs. A hash cannot prove which code Python executed: it
-    only narrows the gap to the files' state at that moment.
+    when it opens, before anything runs. Once per process, because Python runs the modules it
+    imported, which a later edit of their files does not change: hashing again would name the
+    edited files, not the code that runs. A hash cannot prove which code Python executed; it
+    only narrows the gap to the files' state at that moment, and :func:`code_unchanged` tells
+    when the files have moved on.
     """
     return source_digest(Path(__file__).parent)
+
+
+def code_unchanged() -> bool:
+    """Whether k4opt's files are still those :func:`code_fingerprint` identified.
+
+    If not, the process runs modules imported from files that are gone, while the modules it
+    imports from now on come from the new ones, so no single hash identifies its code.
+    """
+    return source_digest(Path(__file__).parent) == code_fingerprint()
 
 
 @functools.cache

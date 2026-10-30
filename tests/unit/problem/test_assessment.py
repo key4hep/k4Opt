@@ -374,6 +374,10 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
     ("change", "message"),
     [
         (_set("schema", "k4opt.run/0"), "schema is 'k4opt.run/0'"),
+        (_set("candidate", []), "candidate must be a mapping"),
+        (_set("candidate", {RADIUS: 700.0}), "its candidate is not one of the problem's"),
+        (_set("candidate", {RADIUS: 460.0}), "but its candidate is [['constants.Inner"),
+        (_set("candidate_key.0.3", "1e0"), "candidate_key is [['constants.InnerTracker"),
         (_set("status", "invalid"), "status is 'invalid', but its evaluators make it 'valid'"),
         (
             _set("evaluators.0.status", "failed"),

@@ -11,6 +11,7 @@ from k4opt.revision import (
     GitInfo,
     code_fingerprint,
     code_identity,
+    code_unchanged,
     source_digest,
     tracked_revision,
 )
@@ -44,6 +45,7 @@ def test_an_edit_a_new_file_or_a_rename_changes_the_digest(tmp_path: Path) -> No
 def test_the_running_code_is_identified_by_its_files() -> None:
     package = Path(k4opt.__file__).parent
     assert code_fingerprint() == source_digest(package)
+    assert code_unchanged()
     identity = code_identity()
     assert identity["sha256"] == code_fingerprint()
     checkout = identity["git"]  # None when k4opt is installed rather than checked out

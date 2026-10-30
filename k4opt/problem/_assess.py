@@ -16,16 +16,17 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
-from k4opt.evaluation import EvaluationContractError, Measurement, Status
+from k4opt.evaluation import EvaluationContractError, Measurement, Scalar, Status
 from k4opt.problem._evaluate import (
     CandidateRecord,
     MetricKey,
+    _validate_candidate,
     candidate_message,
     candidate_status,
 )
-from k4opt.problem.errors import RecordError
+from k4opt.problem.errors import CandidateError, RecordError
 from k4opt.problem.models import Constraint, ProblemSpec
 
 SUMMARY_SCHEMA = "k4opt.run/1"
@@ -114,7 +115,8 @@ class Assessment:
         The candidate's status and message are recomputed from its evaluators' (``failed`` before
         ``invalid`` before ``valid``), and each objective and constraint value is taken from the own
         measurements of the evaluator that ``metrics`` names as its owner, if that evaluator is
-        ``valid``. The rules a live evaluation enforces are checked again: an ``invalid`` or
+        ``valid``. The rules a live evaluation enforces are checked again: the candidate is in
+        the problem's domains and ``candidate_key`` is its key, an ``invalid`` or
         ``failed`` evaluator has a message, a measurement of a metric its evaluator declares carries
         the declared unit, each of several evaluators declares its metrics, no metric is declared
         twice or reported by an evaluator that does not declare it, the owner declares the metric it
@@ -127,6 +129,7 @@ class Assessment:
         if record.get("schema") != SUMMARY_SCHEMA:
             raise RecordError(f"schema is {record.get('schema')!r}, not {SUMMARY_SCHEMA!r}")
         _check_problem(spec, record)
+        _check_candidate(spec, record)
         evaluators = _evaluators(spec, record)
         status = candidate_status(entry.status for entry in evaluators.values())
         if record.get("status") != status:
@@ -272,6 +275,21 @@ class _Evaluator:
     message: str | None
     measured: Mapping[MetricKey, Measurement]  # its own measurements
     declared: Mapping[MetricKey, str] | None  # the metrics it declares, with their units
+
+
+def _check_candidate(spec: ProblemSpec, record: Mapping[str, object]) -> None:
+    """The record's candidate is one of the problem's, and its ``candidate_key`` is that
+    candidate's, as a live evaluation validates and keys it."""
+    candidate = _mapping(record.get("candidate"), "candidate")
+    try:  # the values are checked for their types and domains here
+        _, key = _validate_candidate(spec, cast(Mapping[str, Scalar], candidate))
+    except CandidateError as exc:
+        raise RecordError(f"its candidate is not one of the problem's: {exc}") from None
+    expected = [list(part) for part in key]
+    if record.get("candidate_key") != expected:
+        raise RecordError(
+            f"candidate_key is {record.get('candidate_key')!r}, but its candidate is {expected!r}"
+        )
 
 
 def _evaluators(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, _Evaluator]:

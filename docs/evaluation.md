@@ -449,11 +449,13 @@ for size in (5.0, 7.0, 10.0):
 | collect the warnings about collections ddsim is not expected to write (`session.warnings`) | check that every file the problem names is still the one it was when the session opened |
 | record the size and SHA-256 of every file the stages read (a stage `file`, a file a ddsim option names, a file supplied with `inputs`), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, assess, write the summary |
 
-No request outlives the candidate it was made for, so an evaluator's `check()` and
-`evaluate()` always see that candidate's values. `check(candidate)` creates and runs nothing:
-it raises for what `evaluate()` would refuse before creating anything. A file the stages read
-(named by the problem or supplied) that changes during a session (other bytes under the same path, or removed) stops the next
-candidate with a `RunError` before anything is created; `verify_inputs()` checks it on its own.
+No request outlives the candidate it was made for, so an evaluator's `check()` and `evaluate()`
+always see that candidate's values. `check(candidate)` creates and runs nothing: it raises for
+what `evaluate()` would refuse before creating anything. A file the stages read (named by the
+problem or supplied) that changes during a session (other bytes under the same path, or removed)
+stops the next candidate with a `RunError` before anything is created; `verify_inputs()` checks
+it on its own. So does a change of `KEY4HEP_STACK` or `K4GEO`: the candidates of a session run
+in the environment it opened in, which every summary of the session records.
 `evaluate(candidate, output, run=...)` records `run`, any JSON-compatible mapping, as the
 summary's `run` (a study and trial, say; `null` for `k4opt evaluate`). `identity()` returns what
 the session evaluates with: the problem's path and definition, the identities of the files the
@@ -462,8 +464,10 @@ source root and fingerprint of the unmodified geometry, `KEY4HEP_STACK` and `K4G
 version, code SHA-256 and checkout. The environment and k4opt's identity are taken when the
 session opens, before anything runs, and every summary of the session records the same k4opt
 identity, so an edit to the k4opt checkout during a long run is not recorded as the code that
-ran (a hash cannot prove which code Python executed, only narrow the gap). A session evaluates
-one candidate at a time and is not thread-safe.
+ran (a hash cannot prove which code Python executed, only narrow the gap). k4opt's code is
+hashed once per process, since Python runs the modules it imported; a session does not open once
+k4opt's files have changed since then, because no hash would then say which code runs. A session
+evaluates one candidate at a time and is not thread- safe.
 
 ### Assessment: objectives, limits and feasibility
 
@@ -490,14 +494,15 @@ objective values; it is only outside the limits.
 `Assessment.from_summary(spec, summary)` recomputes the assessment of a `summary.json` as read
 back: the candidate's status from its evaluators', each objective and constraint value from the
 own measurements of the evaluator that `metrics` names as its owner. It checks again what a live
-evaluation enforces: an `invalid` or `failed` evaluator gives a message, each measurement of a
-metric its evaluator declares carries the declared unit, each of several evaluators declares its
-metrics, no metric is declared by two of them or reported by one that does not declare it, an
-owner declares the metrics it owns, and a constraint that declares a unit is in the unit of its
-metric. It raises `RecordError` if the record is malformed or breaks one of those rules, was
-made for another problem (its definition differs, other than in `name`), or if its `status`,
-`message`, `metrics` or `assessment` disagree with that recomputation, so any reader can check a
-record before trusting it.
+evaluation enforces: the candidate is in the problem's domains and `candidate_key` is its key,
+an `invalid` or `failed` evaluator gives a message, each measurement of a metric its evaluator
+declares carries the declared unit, each of several evaluators declares its metrics, no metric
+is declared by two of them or reported by one that does not declare it, an owner declares the
+metrics it owns, and a constraint that declares a unit is in the unit of its metric. It raises
+`RecordError` if the record is malformed or breaks one of those rules, was made for another
+problem (its definition differs, other than in `name`), or if its `status`, `message`, `metrics`
+or `assessment` disagree with that recomputation, so any reader can check a record before
+trusting it.
 
 ## Deliberately deferred
 

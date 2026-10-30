@@ -50,7 +50,7 @@ from k4opt.problem._stages import STAGE_TYPES, file_identity, input_files, plan_
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
-from k4opt.revision import code_identity
+from k4opt.revision import code_identity, code_unchanged
 
 SUMMARY_NAME = "summary.json"
 
@@ -299,6 +299,8 @@ def _summary(
 ) -> dict[str, object]:
     stages = candidate.stages
     simulation = stages.provenance.get("simulation", {})
+    environment = thaw(process["environment"])
+    assert isinstance(environment, dict)
     argv = simulation.get("argv")
     simulate = spec.stages.get("simulation")
     entries = {entry.name: entry for entry in spec.evaluators}
@@ -362,8 +364,8 @@ def _summary(
                 "k4opt": __version__,
                 # what the version only labels: the content of its code, and its checkout
                 "k4opt_source": thaw(process["k4opt"]),
-                "KEY4HEP_STACK": os.environ.get("KEY4HEP_STACK"),
-                "K4GEO": os.environ.get("K4GEO"),
+                # the session's, which the process still had when this candidate started
+                **environment,
                 "ddsim": argv[0] if isinstance(argv, (list, tuple)) and argv else None,
             },
         },
@@ -428,7 +430,9 @@ class EvaluationSession:
         stage to a file that stands in for it (``k4opt evaluate --input``): that stage does not
         run, nor do the stages only it needs, and a supplied stage that the parameters change was
         not made from the candidate, which every outcome says (``represents_candidate``). Raises
-        a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator, stage or input.
+        a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator, stage or input, and
+        :class:`~k4opt.problem.RunError` if k4opt's own files changed since this process first
+        identified them (:func:`k4opt.revision.code_unchanged`).
         """
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         spec = load_problem(path)
@@ -453,6 +457,11 @@ class EvaluationSession:
         process = freeze(
             {"k4opt": code_identity(), "environment": environment}, "process", RunError
         )
+        if not code_unchanged():
+            raise RunError(
+                "k4opt's code changed on disk after this process first identified it, so its "
+                "records could not say which code ran; start a new process"
+            )
         assert isinstance(process, Mapping)
         return cls(
             path.absolute(),
@@ -534,6 +543,20 @@ class EvaluationSession:
                     f"{label}: {file} changed after the session opened ({_described(opened)} "
                     f"then, {_described(now)} now); evaluate the candidates of a problem with the "
                     "same files"
+                )
+
+    def _verify_environment(self) -> None:
+        """Raise :class:`~k4opt.problem.RunError` if ``KEY4HEP_STACK`` or ``K4GEO`` is not what
+        it was when the session opened: the stages would run in another environment than the
+        geometry was discovered in, and than the records say."""
+        opened = self._process["environment"]
+        assert isinstance(opened, Mapping)
+        for name, then in opened.items():
+            now = os.environ.get(name)
+            if now != then:
+                raise RunError(
+                    f"{name} changed after the session opened ({then!r} then, {now!r} now); the "
+                    "candidates of a session run in one environment"
                 )
 
     def check(self, candidate: Mapping[str, Scalar]) -> None:
@@ -629,6 +652,7 @@ class EvaluationSession:
     ) -> tuple[dict[str, Scalar], CandidateKey, _Plan, list[Override]]:
         """The checked candidate, its key, its plan (requests made for it) and its overrides."""
         values, key = _validate_candidate(self._spec, candidate)
+        self._verify_environment()
         self.verify_inputs()  # first: a file that is gone changed, more than it is missing
         plan = _preflight(self._spec, values, self._evaluators, provided=self._inputs)
         overrides = _overrides(self._spec, values)
