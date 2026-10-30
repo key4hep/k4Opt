@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 import yaml
 
+from k4opt import __version__
 from k4opt.cli import main
-from k4opt.ddsim import DdsimError
 from k4opt.errors import K4OptError
 from k4opt.evaluation import (
     EvaluationContractError,
@@ -24,7 +24,7 @@ from k4opt.evaluation import (
     result_from,
 )
 from k4opt.geometry import GeometrySource, Override
-from k4opt.problem import CandidateError, load_problem, parse_problem
+from k4opt.problem import CandidateError, ProblemConfigError, load_problem, parse_problem
 from k4opt.problem._run import SUMMARY_NAME, RunOutcome, _parse_candidate, _xml_value
 from k4opt.problem._run import run_candidate as _run_candidate
 from k4opt.problem.errors import RunError
@@ -64,21 +64,15 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["geometry"] = {"entry": MINI_COMPACT}
     doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
     doc["parameters"][0]["bounds"] = [100.0, 600.0]
-    evaluation = doc["evaluation"]
-    evaluation.update(events=3, seed=5)
-    evaluation["evaluators"] = [
-        {"name": "test.cell_count", "version": "1", "settings": {"collection": COLLECTION}}
+    doc["stages"]["simulation"].update(events=3, seed=5)
+    doc["evaluators"] = [
+        {
+            "name": "test.cell_count",
+            "version": "1",
+            "stage": "simulation",
+            "settings": {"collection": COLLECTION},
+        }
     ]
-    evaluation["generation"] = {
-        "particle": "gamma",
-        "energy": {"value": 10, "unit": "GeV"},
-        "direction": {
-            "distribution": "uniform",
-            "theta": [60, 120],
-            "phi": [0, 360],
-            "unit": "deg",
-        },
-    }
     doc["objectives"] = [
         {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells", "direction": "minimize"}
     ]
@@ -161,6 +155,8 @@ def test_summary_is_written_and_truthful(
 
     assert on_disk["schema"] == "k4opt.run/1"
     assert (on_disk["status"], on_disk["message"]) == ("valid", None)
+    # every stage was made from this candidate
+    assert (on_disk["represents_candidate"], on_disk["supplied"]) == (True, [])
     assert on_disk["candidate"] == {RADIUS: 450.0}
     (evaluator,) = on_disk["evaluators"]
     assert (evaluator["name"], evaluator["version"]) == ("test.cell_count", "1")
@@ -190,6 +186,11 @@ def test_summary_is_written_and_truthful(
     assert (simulated["returncode"], simulated["events_read"]) == (0, 3)
     assert "error" not in simulated
     assert evaluator["settings"] == {"collection": COLLECTION}
+    assert evaluator["stage"] == "simulation"
+    # the code of the evaluator, which its name and version only label
+    source = Path(evaluator["source"]["path"])
+    assert source.name == "cell_count.py"
+    assert evaluator["source"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert evaluator["provenance"] == {} and evaluator["artifacts"] == {}  # none of its own
     assert evaluator["stages"] == ["generation", "simulation"]
     assert evaluator["workdir"] == str(tmp_path / "a" / "evaluators" / "test.cell_count")
@@ -203,9 +204,10 @@ def test_summary_is_written_and_truthful(
     for role in ("stdout", "stderr", "command", "edm4hep"):
         assert Path(paths[f"simulation.{role}"]).is_file()
     assert {"stdout", "stderr", "edm4hep"}.isdisjoint(paths)  # no unprefixed leftovers
-    assert on_disk["generation"]["particle_gun"]["particle"] == "gamma"
+    assert on_disk["stages"]["generation"]["particle_gun"]["particle"] == "gamma"
     assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
     assert on_disk["environment"]["observed"]["ddsim"] == "/stack/bin/ddsim"
+    assert on_disk["environment"]["observed"]["k4opt"] == __version__
     assert on_disk["problem"]["path"] == str(problem_file.absolute())
     assert on_disk["candidate_key"] == [[RADIUS, "continuous", "num", "45e1"]]
 
@@ -251,26 +253,26 @@ def test_invalid_candidates_are_rejected_before_any_side_effect(
     assert fake.calls == []
 
 
-def test_a_conflicting_backend_argument_is_rejected_before_any_side_effect(
+def test_a_conflicting_ddsim_option_is_rejected_before_any_side_effect(
     tmp_path: Path,
     problem_file: Path,
     fake: simulation.FakeDdsim,
     guard: list[str],
 ) -> None:
     doc = yaml.safe_load(problem_file.read_text())
-    doc["evaluation"]["backend"]["ddsim"]["args"] += ["--numberOfEvents", "5"]
+    doc["stages"]["simulation"]["numberOfEvents"] = 5
     problem_file.write_text(yaml.safe_dump(doc))
-    with pytest.raises(DdsimError, match="manages"):
+    with pytest.raises(ProblemConfigError, match=r"numberOfEvents: .* set events instead"):
         run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
     assert not (tmp_path / "a").exists()
-    assert "materialize" not in guard
+    assert "discover" not in guard
 
 
 def test_another_evaluator_is_rejected_before_any_side_effect(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
 ) -> None:
     doc = yaml.safe_load(problem_file.read_text())
-    doc["evaluation"]["evaluators"][0]["name"] = "calo.single_particle_shower"
+    doc["evaluators"][0]["name"] = "calo.single_particle_shower"
     problem_file.write_text(yaml.safe_dump(doc))
     with pytest.raises(EvaluationContractError, match="calo\\.single_particle_shower"):
         run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
@@ -546,8 +548,12 @@ def test_text_values_are_read_by_the_parameter_kind(
 def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> None:
     problem = parse_problem(yaml.safe_load((EXAMPLES / "cld-ecal-granularity.yaml").read_text()))
     evaluator = calo_photon()
-    (entry,) = problem.evaluation.evaluators
-    assert (entry.name, entry.version) == (evaluator.name, evaluator.version)
+    (entry,) = problem.evaluators
+    assert (entry.name, entry.version, entry.stage) == (
+        evaluator.name,
+        evaluator.version,
+        evaluator.stage,
+    )
     assert [(o.stage, o.metric) for o in problem.objectives] == [
         ("simulation", "ecal_barrel.angular_residual"),
         ("simulation", "ecal_barrel.fired_cells"),
@@ -630,36 +636,116 @@ def test_command_requires_an_output_directory(problem_file: Path) -> None:
     assert info.value.code == 2
 
 
-def test_a_problem_with_a_sample_simulates_it_and_records_its_hash(
+def test_a_generation_file_is_simulated_and_its_hash_recorded(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     sample = tmp_path / "zh.hepmc"
     sample.write_bytes(b"HepMC::Version 3\n")
     doc = yaml.safe_load(problem_file.read_text(encoding="utf-8"))
-    doc["evaluation"]["generation"] = {"sample": "zh.hepmc"}  # next to the problem file
+    doc["stages"]["generation"] = {"file": "zh.hepmc"}  # next to the problem file
     problem_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
 
     outcome = run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "s")
 
     ((argv, _),) = fake.calls
     assert f"--inputFiles={sample}" in argv and not any(a.startswith("--gun") for a in argv)
-    generation = outcome.summary["generation"]
-    assert isinstance(generation, dict)
-    assert generation["sample"] == str(sample)
+    generation = outcome.summary["stages"]["generation"]  # type: ignore[index]
+    assert generation["file"] == str(sample)
     assert generation["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
-    assert outcome.candidate.status == "valid"
+    assert outcome.candidate.status == "valid" and outcome.candidate.represents_candidate
 
 
-def test_a_missing_sample_is_a_clean_error_before_any_side_effect(
+def test_a_missing_generation_file_is_a_clean_error_before_any_side_effect(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     doc = yaml.safe_load(problem_file.read_text(encoding="utf-8"))
-    doc["evaluation"]["generation"] = {"sample": "gone.hepmc"}
+    doc["stages"]["generation"] = {"file": "gone.hepmc"}
     problem_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
     output = tmp_path / "runs" / "s"
-    with pytest.raises(EvaluationContractError, match=r"generation\.sample"):
+    with pytest.raises(EvaluationContractError, match=r"stages\.generation\.file"):
         run_candidate(problem_file, [f"{RADIUS}=450.0"], output)
     assert not output.exists() and fake.calls == []
+
+
+# --- stage files supplied on the command line ----------------------------------------------
+
+
+def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    events_file = tmp_path / "earlier.edm4hep.root"
+    events_file.write_bytes(b"fake")
+    code, out, err = evaluate(
+        str(problem_file),
+        "--param",
+        f"{RADIUS}=450",
+        "--input",
+        f"simulation={events_file}",
+        "--output",
+        str(tmp_path / "a"),
+    )
+    assert code == 0, err
+    assert fake.calls == []  # nothing was simulated
+    assert f"supplied:    simulation from {events_file}" in out
+    assert "this is no evaluation of the candidate" in out
+    summary = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
+    assert (summary["represents_candidate"], summary["supplied"]) == (False, ["simulation"])
+    assert summary["stages"] == {
+        "simulation": {
+            "provided": str(events_file),
+            "bytes": 4,
+            "sha256": hashlib.sha256(b"fake").hexdigest(),
+            "events_read": 3,
+            "elapsed_seconds": summary["stages"]["simulation"]["elapsed_seconds"],
+        }
+    }
+    assert summary["metrics"][0]["value"] == 3.0
+
+
+@pytest.mark.parametrize(
+    ("given", "message"),
+    [
+        ("simulation", "expected STAGE=FILE"),
+        ("reconstruction={file}", "unknown stage; use generation, simulation"),
+        ("simulation={missing}", "is not a file"),
+        ("generation={file}", "no evaluator of the problem reads that stage"),
+    ],
+)
+def test_unusable_inputs_are_rejected_before_any_side_effect(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    guard: list[str],
+    given: str,
+    message: str,
+) -> None:
+    supplied = tmp_path / "mine.root"
+    supplied.write_bytes(b"fake")
+    argument = given.format(file=supplied, missing=tmp_path / "gone.root")
+    if message.startswith("no evaluator"):
+        # the evaluator reads the simulation, which the caller supplies too: generation is unused
+        argument = [argument, f"simulation={supplied}"]
+    output = tmp_path / "a"
+    with pytest.raises(RunError, match=message):
+        run_candidate(
+            problem_file,
+            [f"{RADIUS}=450"],
+            output,
+            inputs=argument if isinstance(argument, list) else [argument],
+        )
+    assert not output.exists() and fake.calls == [] and "materialize" not in guard
+
+
+def test_an_input_given_twice_is_rejected(tmp_path: Path, problem_file: Path) -> None:
+    supplied = tmp_path / "mine.root"
+    supplied.write_bytes(b"fake")
+    with pytest.raises(RunError, match="given more than once"):
+        run_candidate(
+            problem_file,
+            [f"{RADIUS}=450"],
+            tmp_path / "a",
+            inputs=[f"simulation={supplied}", f"simulation={supplied}"],
+        )
 
 
 def test_the_command_needs_an_evaluator(problem_file: Path, tmp_path: Path) -> None:
@@ -697,7 +783,7 @@ class Spy:
     def __init__(self) -> None:
         self.inner: Any = cell_count()
         self.name, self.version = self.inner.name, self.inner.version
-        self.requires, self.metrics = self.inner.requires, self.inner.metrics
+        self.stage, self.metrics = self.inner.stage, self.inner.metrics
         self.checked: list[Any] = []
         self.evaluated: list[Any] = []
 
@@ -727,7 +813,7 @@ def test_the_evaluator_provenance_is_saved_in_the_summary(
     assert on_disk["stages"]["simulation"]["returncode"] == 0  # the stage's record stays apart
 
 
-def test_the_preflight_request_has_the_generation_the_evaluation_gets(
+def test_the_preflight_request_has_the_conditions_the_evaluation_gets(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     spy = Spy()
@@ -736,8 +822,8 @@ def test_the_preflight_request_has_the_generation_the_evaluation_gets(
     # once before anything is created and once more when the candidate is evaluated
     assert len(spy.checked) == 2
     for checked in spy.checked:
-        assert checked.generation["particle"] == "gamma"
-        for field in ("generation", "settings", "events", "seed", "backend_args", "candidate"):
+        assert (checked.events, checked.seed) == (3, 5)  # those of the simulation it reads
+        for field in ("settings", "events", "seed", "candidate"):
             assert getattr(checked, field) == getattr(evaluated, field)
 
 
@@ -751,9 +837,9 @@ ECHO = ("analysis", "candidate.first_value")
 def declare(problem_file: Path, names: list[str], objectives: list[tuple[str, str]]) -> None:
     """Make the problem declare the test evaluators ``names`` and these objectives."""
     doc = yaml.safe_load(problem_file.read_text())
-    doc["evaluation"]["evaluators"] = [
-        {"name": name, "version": "1"}
-        | ({} if name == "test.parameter_echo" else {"settings": {"collection": COLLECTION}})
+    reads = {"stage": "simulation", "settings": {"collection": COLLECTION}}
+    doc["evaluators"] = [
+        {"name": name, "version": "1"} | ({} if name == "test.parameter_echo" else reads)
         for name in names
     ]
     doc["objectives"] = [{"stage": s, "metric": m, "direction": "minimize"} for s, m in objectives]

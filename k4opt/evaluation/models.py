@@ -84,15 +84,11 @@ class EvaluationRequest:
     ``candidate`` holds the parameter values, keyed by the problem's canonical parameter
     identity (for a geometry parameter the canonical target, ``constants.ECal_cell_size``);
     the request does not check them against any search domain. ``settings`` is the
-    evaluator-defined content of its entry in ``evaluation.evaluators``. ``inputs`` names already
-    prepared local files (a compact XML snapshot, an EDM4hep file); which names an evaluator
-    accepts is part of its documentation. ``workdir`` is where the evaluator may write; it
-    is neither created nor checked here. ``backend_args`` maps a tool name to its raw
-    arguments, kept exactly as given, including order and repetition, and never parsed.
-    ``events`` (positive) and ``seed`` are the optional controls of ``evaluation``.
-    ``generation`` is the problem's ``evaluation.generation``, a particle gun or
-    ``{"sample": path}`` exactly as written (a relative path is not resolved here); an
-    evaluator that runs its own workflow can read the conditions of the measurement from it.
+    evaluator-defined content of its entry in ``evaluators``. ``inputs`` names already prepared
+    local files (an EDM4hep file, by the stage that made it); which names an evaluator accepts
+    is part of its documentation. ``workdir`` is where the evaluator may write; it is neither
+    created nor checked here. ``events`` (positive) and ``seed`` are those of the stage the
+    evaluator reads, where that stage has them (a ddsim simulation).
 
     Every field is optional so that a toy evaluator needs little setup.
     """
@@ -103,8 +99,6 @@ class EvaluationRequest:
     workdir: Path | None = None
     events: int | None = None
     seed: int | None = None
-    backend_args: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: FrozenMap({}))
-    generation: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
 
     def read(self, stage: str, collection: str, value_type: str) -> Iterator[Any]:
         """The collection ``collection`` of each event of the file that ``stage`` produced.
@@ -129,7 +123,6 @@ class EvaluationRequest:
                 )
         object.__setattr__(self, "candidate", FrozenMap(self.candidate))
         object.__setattr__(self, "settings", _json_mapping(self.settings, "settings"))
-        object.__setattr__(self, "generation", _json_mapping(self.generation, "generation"))
         object.__setattr__(self, "inputs", _paths(self.inputs, "inputs"))
         if self.workdir is not None and not isinstance(self.workdir, Path):
             raise EvaluationContractError("workdir must be a pathlib.Path")
@@ -141,25 +134,6 @@ class EvaluationRequest:
             isinstance(self.seed, bool) or not isinstance(self.seed, int)
         ):
             raise EvaluationContractError(f"seed must be an integer, got {self.seed!r}")
-        if not isinstance(self.backend_args, Mapping):
-            raise EvaluationContractError("backend_args must be a mapping of tool to arguments")
-        backend: dict[str, tuple[str, ...]] = {}
-        for tool, args in self.backend_args.items():
-            _name(tool, "backend_args tool")
-            # only an ordered sequence keeps the arguments: a str would become characters, a
-            # dict its keys, a set an arbitrary order
-            if not isinstance(args, (list, tuple)):
-                raise EvaluationContractError(
-                    f"backend_args[{tool!r}] must be a list or tuple of strings"
-                )
-            args = tuple(args)
-            for index, arg in enumerate(args):
-                if not isinstance(arg, str):
-                    raise EvaluationContractError(
-                        f"backend_args[{tool!r}][{index}] must be a string, got {arg!r}"
-                    )
-            backend[tool] = args
-        object.__setattr__(self, "backend_args", FrozenMap(backend))
 
 
 @dataclass(frozen=True, slots=True)

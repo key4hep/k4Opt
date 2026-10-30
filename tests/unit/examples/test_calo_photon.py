@@ -62,7 +62,7 @@ def evaluate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *events: Event) ->
 
 
 def test_the_evaluator_asks_for_the_simulation_stage() -> None:
-    assert calo_photon().requires == "simulation"
+    assert calo_photon().stage == "simulation"
 
 
 def test_valid_run_reports_means_and_standard_errors(

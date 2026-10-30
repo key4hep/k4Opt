@@ -7,7 +7,7 @@ from k4opt.evaluation import Evaluator
 class CellCount(Evaluator):
     name = "test.cell_count"
     version = "1"
-    requires = "simulation"
+    stage = "simulation"
     settings = {"collection": str}
     metrics = {"ecal_barrel.mean_hit_cells": "1"}
 

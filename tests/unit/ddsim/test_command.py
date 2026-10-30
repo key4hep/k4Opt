@@ -1,15 +1,16 @@
-"""The ddsim command line: generator translation, managed options, argument order."""
+"""The ddsim command line: generator translation, managed options, option translation."""
 
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from k4opt.ddsim import DdsimError
-from k4opt.ddsim.command import ddsim_arguments, managed_conflict, particle_gun_args
+from k4opt.ddsim.command import ddsim_arguments, managed_conflict, option_args, particle_gun_args
 from k4opt.frozen import freeze
 
 GENERATOR: dict[str, Any] = {
@@ -183,20 +184,20 @@ def test_other_options_pass_through(arg: str) -> None:
     assert not managed_conflict(arg)
 
 
-def build(user_args: tuple[str, ...] = (), seed: int | None = 42) -> tuple[str, ...]:
+def build(options: Mapping[str, Any] | None = None, seed: int | None = 42) -> tuple[str, ...]:
     return ddsim_arguments(
         compact=Path("/run/geometry/c.xml"),
         output=Path("/run/simulation/out.root"),
         events=7,
         seed=seed,
         particle_gun=freeze(GENERATOR, "generator", DdsimError),
-        user_args=user_args,
+        options=options or {},
     )
 
 
-def test_user_arguments_follow_the_managed_ones_in_order_with_repeats() -> None:
-    user = ("--physics.list", "FTFP_BERT", "--part.keepAllParticles", "True", "-v", "3", "-v", "4")
-    built = build(user)
+def test_options_follow_the_managed_ones_in_order() -> None:
+    built = build({"physics.list": "FTFP_BERT", "part.keepAllParticles": True, "printLevel": 3})
+    user = ("--physics.list=FTFP_BERT", "--part.keepAllParticles=True", "--printLevel=3")
     assert built[-len(user) :] == user
     assert built[0] == "--compactFile=/run/geometry/c.xml"
     assert "--outputFile=/run/simulation/out.root" in built
@@ -208,10 +209,74 @@ def test_seed_is_optional() -> None:
     assert not any(a.startswith("--random") for a in build(seed=None))
 
 
-@pytest.mark.parametrize("conflict", ["--numberOfEvents=3", "-N", "--gun.energy=1*GeV", "-O"])
-def test_a_user_argument_competing_with_a_managed_option_is_rejected(conflict: str) -> None:
-    with pytest.raises(DdsimError, match="manages"):
-        build(("--physics.list", "FTFP_BERT", conflict))
+# ddsim's argparse (nightly 2026-10-20): flags take no value, a few options repeat or take
+# several values, every other option takes one
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({"physics.list": "FTFP_BERT"}, ("--physics.list=FTFP_BERT",)),
+        ({"physics.rangecut": 0.7}, ("--physics.rangecut=0.7",)),
+        ({"numberOfThreads": 4}, ("--numberOfThreads=4",)),
+        ({"part.minimalKineticEnergy": "1*MeV"}, ("--part.minimalKineticEnergy=1*MeV",)),
+        ({"part.keepAllParticles": False}, ("--part.keepAllParticles=False",)),
+        ({"enableDetailedShowerMode": True}, ("--enableDetailedShowerMode",)),
+        ({"geometry.enableDebugVolumes": True}, ("--geometry.enableDebugVolumes",)),
+        ({"outputConfig.forceEDM4HEP": True}, ("--outputConfig.forceEDM4HEP",)),
+        ({"action.run": ["A", "B"]}, ("--action.run=A", "--action.run=B")),
+        ({"action.event": "A"}, ("--action.event=A",)),
+        (
+            {"meta.eventParameters": ["a/F=1", "b/I=2"]},
+            ("--meta.eventParameters", "a/F=1", "b/I=2"),
+        ),
+        (
+            {"physics.list": "QGSP_BERT", "printLevel": 4},
+            ("--physics.list=QGSP_BERT", "--printLevel=4"),
+        ),
+    ],
+)
+def test_options_are_written_the_way_ddsim_reads_them(
+    options: dict[str, Any], expected: tuple[str, ...]
+) -> None:
+    assert option_args(options) == expected
+
+
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"enableDetailedShowerMode": False}, "cannot switch a flag off"),
+        ({"geometry.enableDebugVolumes": "yes"}, "is a flag: write true"),
+        ({"physics.list": ["FTFP_BERT"]}, "reads a single value"),
+        ({"physics": {"list": "FTFP_BERT"}}, "full ddsim name"),
+        ({"physics.list": None}, "must be a text, a number or a boolean"),
+        ({"physics.list": " "}, "must be a text, a number or a boolean"),
+        ({"physics.rangecut": float("nan")}, "finite"),
+        ({"action.run": []}, "must not be an empty list"),
+        ({"--physics.list": "x"}, "without the leading --"),
+        ({"physics.list.x": "x"}, "as `ddsim --help` names it"),
+        ({"enableDetailed": True}, "full option name"),
+        ({"steeringFile": "steer.py"}, "executes it as Python"),
+        ({"steering": "steer.py"}, "executes it as Python"),  # ddsim accepts the prefix
+        ({"skipNEvents": 3}, "changes which events are simulated"),
+        ({"dumpParameter": True}, "exits without simulating"),
+        ({"numberOfEvents": 3}, "set events instead"),
+        ({"numberOf": 3}, "set events instead"),
+        ({"random.seed": 3}, "set seed instead"),
+        ({"compactFile": "c.xml"}, "the geometry comes from the problem"),
+        ({"outputFile": "o.root"}, "chooses the output file"),
+        ({"outputConfig.forceLCIO": True}, "reads the output as EDM4hep"),
+        ({"outputConfig.forceDD4HEP": True}, "reads the output as EDM4hep"),
+        ({"runType": "vis"}, "batch mode"),
+        ({"gun.energy": "1*GeV"}, "primaries come from the generation stage"),
+        ({"inputFiles": "other.hepmc"}, "primaries come from the generation stage"),
+        ({"enableGun": True}, "primaries come from the generation stage"),
+    ],
+)
+def test_options_that_cannot_be_written_faithfully_are_rejected(
+    options: dict[str, Any], match: str
+) -> None:
+    with pytest.raises(DdsimError, match=match) as raised:
+        build(options)
+    assert str(raised.value).startswith(f"simulation.{next(iter(options))}: ")
 
 
 def test_plain_python_lists_are_accepted() -> None:
@@ -227,7 +292,7 @@ def test_invalid_event_counts_are_rejected(events: Any) -> None:
             events=events,
             seed=None,
             particle_gun=GENERATOR,
-            user_args=(),
+            options={},
         )
 
 
@@ -240,7 +305,7 @@ def test_invalid_seeds_are_rejected(seed: Any) -> None:
             events=1,
             seed=seed,
             particle_gun=GENERATOR,
-            user_args=(),
+            options={},
         )
 
 
@@ -251,11 +316,11 @@ def test_a_sample_replaces_the_particle_gun() -> None:
         events=7,
         seed=42,
         sample=Path("/data/zh.hepmc"),
-        user_args=("--physics.list", "FTFP_BERT"),
+        options={"physics.list": "FTFP_BERT"},
     )
     assert "--inputFiles=/data/zh.hepmc" in built
     assert not any(a.startswith(("--gun", "--enableGun")) for a in built)
-    assert built[-2:] == ("--physics.list", "FTFP_BERT")
+    assert built[-1] == "--physics.list=FTFP_BERT"
 
 
 @pytest.mark.parametrize("sample", [None, Path("/data/zh.hepmc")])
@@ -270,17 +335,5 @@ def test_exactly_one_of_particle_gun_and_sample_is_needed(sample: Path | None) -
             seed=None,
             particle_gun=gun,
             sample=sample,
-            user_args=(),
-        )
-
-
-def test_an_input_files_argument_is_still_managed() -> None:
-    with pytest.raises(DdsimError, match="manages"):
-        ddsim_arguments(
-            compact=Path("c.xml"),
-            output=Path("o.root"),
-            events=1,
-            seed=None,
-            sample=Path("/data/zh.hepmc"),
-            user_args=("--inputFiles=other.hepmc",),
+            options={},
         )

@@ -45,7 +45,7 @@ def stack() -> None:
 @pytest.fixture(scope="module")
 def problem(tmp_path_factory: pytest.TempPathFactory, stack: None) -> Path:
     doc = yaml.safe_load(EXAMPLE.read_text())
-    doc["evaluation"]["events"] = EVENTS
+    doc["stages"]["simulation"]["events"] = EVENTS
     path = tmp_path_factory.mktemp("problem") / "problem.yaml"
     path.write_text(yaml.safe_dump(doc))
     return path
@@ -145,8 +145,13 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
 def shared(problem: Path, tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """One candidate measured by the example evaluator and the test evaluator together."""
     doc = yaml.safe_load(problem.read_text())
-    doc["evaluation"]["evaluators"].append(
-        {"name": "test.cell_count", "version": "1", "settings": {"collection": COLLECTION}}
+    doc["evaluators"].append(
+        {
+            "name": "test.cell_count",
+            "version": "1",
+            "stage": "simulation",
+            "settings": {"collection": COLLECTION},
+        }
     )
     both = problem.with_name("both.yaml")
     both.write_text(yaml.safe_dump(doc))

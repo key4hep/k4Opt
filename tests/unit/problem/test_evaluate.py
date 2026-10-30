@@ -58,9 +58,11 @@ def evaluate_one(
 
 
 def make(doc: dict[str, Any], *parameters: dict[str, Any]) -> ProblemSpec:
+    """``doc`` with ``parameters``, measured by a toy that reads no stage, so it has none."""
     doc = copy.deepcopy(doc)
     if parameters:
         doc["parameters"] = list(parameters)
+    del doc["stages"], doc["evaluators"][0]["stage"]
     return parse_problem(doc)
 
 
@@ -81,9 +83,9 @@ def test_success_builds_request_and_record(spec: ProblemSpec, tmp_path: Path) ->
     request = toy.calls[0]
     assert record.request is request
     assert dict(request.candidate) == {CELL: 6}
-    assert request.events == 1000 and request.seed == 42
-    assert dict(request.settings) == dict(spec.evaluation.evaluators[0].settings)
-    assert dict(request.backend_args) == {"ddsim": ("--physics.list", "FTFP_BERT")}
+    # it reads no stage, so it has no events or seed of one
+    assert request.events is None and request.seed is None
+    assert dict(request.settings) == dict(spec.evaluators[0].settings)
     assert request.inputs["geometry"] is geometry
     # each evaluator writes in a directory of its own, created for the call
     assert request.workdir == tmp_path / "evaluators" / Toy.name and request.workdir.is_dir()
@@ -93,17 +95,6 @@ def test_success_builds_request_and_record(spec: ProblemSpec, tmp_path: Path) ->
     assert record.candidate_key == ((CELL, "continuous", "num", "6e0"),)
     with pytest.raises(FrozenInstanceError):
         record.elapsed_seconds = 1.0  # type: ignore[misc]
-
-
-def test_backend_args_order_and_repetition_exact(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["backend"] = {
-        "ddsim": {"args": ["-a", "b", "-a", "c"]},
-        "k4run": {"args": []},
-    }
-    toy = Toy()
-    evaluate_one(parse_problem(doc), {CELL: 5.0}, toy)
-    assert tuple(toy.calls[0].backend_args["ddsim"]) == ("-a", "b", "-a", "c")
-    assert list(toy.calls[0].backend_args) == ["ddsim", "k4run"]
 
 
 @pytest.mark.parametrize(
@@ -249,7 +240,7 @@ def test_valid_result_missing_metric_is_a_contract_error(spec: ProblemSpec) -> N
 
 def test_constraint_unit_must_match_when_declared(doc: dict[str, Any]) -> None:
     doc["constraints"] = [{"stage": "simulation", "metric": "a.cells", "max": 100, "unit": "1"}]
-    s = parse_problem(doc)
+    s = make(doc)
     for unit in ("mm", None):
         toy = Toy(
             EvaluationResult(

@@ -15,7 +15,8 @@ class ProblemConfigError(ConfigError):
 
 
 class RunError(K4OptError):
-    """The run directory of ``k4opt evaluate`` already exists."""
+    """``k4opt evaluate`` cannot start: its run directory exists, or a stage file given with
+    ``--input`` is unusable."""
 
 
 class CandidateError(K4OptError):

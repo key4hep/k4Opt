@@ -17,9 +17,9 @@ API, command group, documentation and tests.
 | Component | Purpose | Status |
 | --- | --- | --- |
 | [`k4opt.geometry`](docs/geometry.md) | Discover addressable parameters of a DD4hep XML geometry, override them, materialize modified geometries | available |
-| problem definition | Declare which parameters vary and within which bounds, and what is evaluated. A [draft specification](docs/problem.md) can be loaded, validated and its geometry targets resolved (`k4opt.problem.load_problem`, against the active `$K4GEO`); a single candidate can be evaluated by several evaluators that share its simulation (`k4opt evaluate`); a general evaluator registry and further metrics are **proposed, not yet implemented** | in progress |
+| problem definition | Declare which parameters vary and within which bounds, how the data is made (`stages`, each run by an executor or given as a file) and who measures it (`evaluators`). A [draft specification](docs/problem.md) can be loaded, validated and its geometry targets resolved (`k4opt.problem.load_problem`, against the active `$K4GEO`); a single candidate can be evaluated by several evaluators that share its simulation (`k4opt evaluate`); a general evaluator registry and further metrics are **proposed, not yet implemented** | in progress |
 | [`k4opt.evaluation`](docs/evaluation.md) | The contract an evaluator implements (request, result, measurements); evaluators only read the output of a pipeline stage that the framework runs. `load_evaluator` loads an evaluator from a file; a per-run `summary.json` exists; a general runner and result store are **not implemented** | in progress |
-| [`k4opt.ddsim`](docs/ddsim.md) | Run `ddsim` on a prepared geometry with a particle gun or an input sample: command from the problem's `generation` and `backend`, protected options, logs; run once per candidate as the `simulation` stage, whatever number of evaluators read it | first vertical slice |
+| [`k4opt.ddsim`](docs/ddsim.md) | Run `ddsim` on a prepared geometry with a particle gun or an event file: command from the problem's `stages` (the ddsim options written the way ddsim reads them), protected options, logs; run once per candidate as the `simulation` stage, whatever number of evaluators read it | first vertical slice |
 | [examples](docs/evaluators.md) | One problem and one evaluator to copy from, run with `k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] --param REF=VALUE --output DIR`. The problem asks how fine the CLD ECAL cells should be: finer cells measure a photon's direction better (`calo.photon` measures it) but fire more readout channels. k4opt ships no evaluators | example |
 | optimization | Drive the evaluation with existing optimization libraries | planned |
 
@@ -83,6 +83,28 @@ parameters:
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
+```
+
+say how the data is made and who measures it:
+
+```yaml
+stages:
+  generation:
+    executor: gun          # 10 GeV photons into the barrel (see the example for the keys)
+    particle: gamma
+    # ...
+  simulation:
+    executor: ddsim
+    events: 1000
+    seed: 42
+    physics.list: FTFP_BERT
+
+evaluators:
+  - name: calo.photon
+    version: "1"
+    stage: simulation
+    settings:
+      collection: ECalBarrelCollection
 ```
 
 and evaluate one candidate (about 5 minutes on one core):

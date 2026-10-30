@@ -1,5 +1,5 @@
 """``test.parameter_echo``: the value of the candidate's first parameter, reported as an
-``analysis`` metric. It requires no pipeline stage, so it needs no simulation; for the
+``analysis`` metric. It reads no pipeline stage, so it needs no simulation; for the
 framework's tests."""
 
 from k4opt.evaluation import Evaluator

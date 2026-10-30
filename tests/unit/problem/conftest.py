@@ -19,19 +19,33 @@ _BASE: dict[str, object] = {
             "unit": "mm",
         }
     ],
-    "evaluation": {
-        "events": 1000,
-        "seed": 42,
-        "generation": {"particle": "gamma", "energy": {"value": 10, "unit": "GeV"}},
-        "backend": {"ddsim": {"args": ["--physics.list", "FTFP_BERT"]}},
-        "evaluators": [
-            {
-                "name": "calo.single_particle_shower",
-                "version": "1",
-                "settings": {"collection": "ECalBarrelCollection"},
-            }
-        ],
+    "stages": {
+        "generation": {
+            "executor": "gun",
+            "particle": "gamma",
+            "energy": {"value": 10, "unit": "GeV"},
+            "direction": {
+                "distribution": "uniform",
+                "theta": [80, 100],
+                "phi": [0, 360],
+                "unit": "deg",
+            },
+        },
+        "simulation": {
+            "executor": "ddsim",
+            "events": 1000,
+            "seed": 42,
+            "physics.list": "FTFP_BERT",
+        },
     },
+    "evaluators": [
+        {
+            "name": "calo.single_particle_shower",
+            "version": "1",
+            "stage": "simulation",
+            "settings": {"collection": "ECalBarrelCollection"},
+        }
+    ],
     "objectives": [{"stage": "simulation", "metric": "a.rms", "direction": "minimize"}],
     "constraints": [{"stage": "simulation", "metric": "a.cells", "max": 100}],
 }

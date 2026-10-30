@@ -1,6 +1,6 @@
 """Immutable copies of JSON-compatible data, shared by the components that store it.
 
-``settings`` of a problem and of an evaluation request, backend arguments and result
+``settings`` of a problem and of an evaluation request, stage options and result
 provenance all hold caller-owned nested data. :func:`freeze` copies it into read-only
 containers, so that neither later changes by the caller nor by a reader reach the stored
 state, and :func:`thaw` hands out a plain mutable copy. Each component says which error

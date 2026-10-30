@@ -51,14 +51,17 @@ def test_loads_the_checked_in_example() -> None:
     assert parameter.geometry.constant == "ECal_cell_size"
     assert parameter.geometry.canonical_target == "constants.ECal_cell_size"
     assert (parameter.kind, parameter.bounds, parameter.unit) == ("continuous", (2.5, 20.0), "mm")
-    evaluation = problem.evaluation
-    assert [(e.name, e.version) for e in evaluation.evaluators] == [("calo.photon", "1")]
-    assert evaluation.evaluators[0].settings == {"collection": "ECalBarrelCollection"}
-    assert (evaluation.events, evaluation.seed) == (1000, 42)
-    assert evaluation.backend["ddsim"] == ("--physics.list", "FTFP_BERT")
-    generator: Any = evaluation.generation
+    assert [(e.name, e.version, e.stage) for e in problem.evaluators] == [
+        ("calo.photon", "1", "simulation")
+    ]
+    assert problem.evaluators[0].settings == {"collection": "ECalBarrelCollection"}
+    generation, simulation = problem.stages.values()
+    assert (generation.type, generation.executor) == ("generation", "gun")
+    generator: Any = generation.options
     assert generator["particle"] == "gamma"
     assert generator["direction"]["theta"] == (80, 100)
+    assert (simulation.executor, simulation.events, simulation.seed) == ("ddsim", 1000, 42)
+    assert simulation.options == {"physics.list": "FTFP_BERT"}
     assert [(o.stage, o.metric, o.direction) for o in problem.objectives] == [
         ("simulation", "ecal_barrel.angular_residual", "minimize"),
         ("simulation", "ecal_barrel.fired_cells", "minimize"),
@@ -84,16 +87,15 @@ def test_accepts_both_channels(doc: dict[str, Any], channel: str) -> None:
 
 
 def test_minimal_document(doc: dict[str, Any]) -> None:
-    for key in ("name", "constraints"):
+    # an evaluator that reads no stage needs no stages
+    for key in ("name", "constraints", "stages"):
         del doc[key]
-    del doc["evaluation"]["events"], doc["evaluation"]["seed"]
-    del doc["evaluation"]["evaluators"][0]["settings"], doc["evaluation"]["backend"]
-    del doc["evaluation"]["generation"]
+    del doc["evaluators"][0]["settings"], doc["evaluators"][0]["stage"]
     problem = parse_problem(doc)
-    assert problem.evaluation.events is None
-    assert not problem.evaluation.evaluators[0].settings and not problem.evaluation.backend
-    assert not problem.evaluation.generation
+    assert problem.stages == {}
+    assert not problem.evaluators[0].settings and problem.evaluators[0].stage is None
     assert problem.constraints == ()
+    assert "stages" not in problem.to_dict()
 
 
 def test_integer_and_categorical_parameters(doc: dict[str, Any]) -> None:
@@ -135,24 +137,54 @@ def test_several_objectives_keep_their_order(doc: dict[str, Any]) -> None:
     assert [o.metric for o in parse_problem(doc).objectives] == ["a.rms", "x"]
 
 
-# --- backend arguments -----------------------------------------------------------------
+# --- stages ----------------------------------------------------------------------------
 
 
-def test_backend_args_are_preserved_verbatim(doc: dict[str, Any]) -> None:
-    args = ["--a", "1", "--a", "2", "--flag=x y", "pos", "", "  spaced  ", "$HOME", "*.root", "a;b"]
-    doc["evaluation"]["backend"] = {"ddsim": {"args": args}, "k4run": {"args": ["--x=1"]}}
-    evaluation = parse_problem(doc).evaluation
-    assert evaluation.backend["ddsim"] == tuple(args)
-    assert list(evaluation.backend) == ["ddsim", "k4run"]
-    assert evaluation.to_dict()["backend"] == {
-        "ddsim": {"args": args},
-        "k4run": {"args": ["--x=1"]},
+def test_stages_are_kept_in_pipeline_order_and_round_trip(doc: dict[str, Any]) -> None:
+    doc["stages"] = dict(reversed(list(doc["stages"].items())))
+    problem = parse_problem(doc)
+    assert list(problem.stages) == ["generation", "simulation"]
+    generation = problem.stages["generation"]
+    assert (generation.events, generation.seed, generation.file) == (None, None, None)
+    assert problem.to_dict()["stages"]["simulation"] == {
+        "executor": "ddsim",
+        "events": 1000,
+        "seed": 42,
+        "physics.list": "FTFP_BERT",
     }
+    assert parse_problem(problem.to_dict()) == problem
 
 
-def test_backend_args_may_be_empty(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["backend"] = {"ddsim": {"args": []}}
-    assert parse_problem(doc).evaluation.backend["ddsim"] == ()
+def test_ddsim_options_keep_their_order_and_values(doc: dict[str, Any]) -> None:
+    options = {
+        "physics.list": "QGSP_BERT",
+        "part.keepAllParticles": True,
+        "action.run": ["A", "B"],
+        "printLevel": 3,
+    }
+    doc["stages"]["simulation"].update(options)
+    simulation = parse_problem(doc).stages["simulation"]
+    assert list(simulation.options) == list(options)
+    assert simulation.options["action.run"] == ("A", "B")
+
+
+def test_a_generation_file_replaces_the_gun(doc: dict[str, Any]) -> None:
+    doc["stages"]["generation"] = {"file": "samples/zh.hepmc"}
+    problem = parse_problem(doc)
+    generation = problem.stages["generation"]
+    assert (generation.executor, generation.file, generation.options) == (
+        None,
+        "samples/zh.hepmc",
+        {},
+    )
+    assert problem.to_dict()["stages"]["generation"] == {"file": "samples/zh.hepmc"}
+    assert parse_problem(problem.to_dict()) == problem
+
+
+def test_an_evaluator_may_read_only_the_generation(doc: dict[str, Any]) -> None:
+    del doc["stages"]["simulation"]
+    doc["evaluators"][0]["stage"] = "generation"
+    assert list(parse_problem(doc).stages) == ["generation"]
 
 
 def test_parsing_never_runs_a_subprocess(
@@ -163,26 +195,138 @@ def test_parsing_never_runs_a_subprocess(
 
     monkeypatch.setattr("subprocess.Popen", boom)
     monkeypatch.setattr("os.system", boom)
-    doc["evaluation"]["backend"]["ddsim"]["args"] = ["; rm -rf /", "$(whoami)"]
+    doc["stages"]["simulation"].update({"physics.list": "; rm -rf /", "printLevel": "$(whoami)"})
     parse_problem(doc)
 
 
 @pytest.mark.parametrize(
-    ("backend", "message"),
+    ("edit", "message"),
     [
-        ({"ddsim": {"args": ["--n", 5]}}, "evaluation.backend.ddsim.args[1]: must be a string"),
-        ({"ddsim": {"args": [None]}}, "args[0]: must be a string"),
-        ({"ddsim": {"args": "--a --b"}}, "evaluation.backend.ddsim.args: must be a list"),
-        ({"ddsim": {"args": {"--a": 1}}}, "must be a list"),
-        ({"ddsim": {}}, "missing required key(s) ['args']"),
-        ({"ddsim": {"args": [], "env": {}}}, "unknown key(s) ['env']"),
-        ({"ddsim": ["--a"]}, "evaluation.backend.ddsim: must be a mapping"),
-        ({"dsim": {"args": []}}, "unknown key(s) ['dsim']"),
-        (["ddsim"], "evaluation.backend: must be a mapping"),
+        (
+            lambda s: s.update(reconstruction={"executor": "k4run"}),
+            "stages: unknown key(s) ['reconstruction']; allowed: ['generation', 'simulation']",
+        ),
+        (lambda s: s.update(simulation="ddsim"), "stages.simulation: must be a mapping, got str"),
+        (
+            lambda s: s["simulation"].pop("executor"),
+            "stages.simulation: needs exactly one of 'executor' (k4opt runs it) and 'file'",
+        ),
+        (lambda s: s["generation"].update(file="zh.hepmc"), "stages.generation: needs exactly one"),
+        (
+            lambda s: s.update(generation={"file": "zh.hepmc", "particle": "e-"}),
+            "stages.generation: a stage given as a file is not run, so it takes no ['particle']",
+        ),
+        (
+            lambda s: s.update(generation={"file": ""}),
+            "stages.generation.file: must be a non-empty",
+        ),
+        (
+            lambda s: s["simulation"].update(executor="geant4"),
+            "stages.simulation.executor: must be one of ['ddsim'], got 'geant4'",
+        ),
+        (
+            lambda s: s["generation"].update(executor="ddsim"),
+            "stages.generation.executor: must be one of ['gun'], got 'ddsim'",
+        ),
+        (
+            lambda s: s["simulation"].pop("events"),
+            "stages.simulation: missing required key 'events': how many events ddsim runs",
+        ),
+        (lambda s: s["simulation"].update(events=0), "stages.simulation.events: must be >= 1"),
+        (lambda s: s["simulation"].update(events=True), "events: must be an integer, got bool"),
+        (lambda s: s["simulation"].update(events=1.5), "events: must be an integer, got float"),
+        (
+            lambda s: s["simulation"].update(seed=True),
+            "simulation.seed: must be an integer, got bool",
+        ),
+        (lambda s: s["simulation"].update(seed="42"), "seed: must be an integer, got str"),
+        (
+            lambda s: s["generation"].update(events=10),
+            "stages.generation.events: gun runs inside stages.simulation, which sets the events; "
+            "set stages.simulation.events instead",
+        ),
+        (
+            lambda s: s["generation"].update(seed=1),
+            "stages.generation.seed: gun runs inside stages.simulation, which sets the seed",
+        ),
+        (
+            lambda s: s["generation"].update(charge=-1),
+            "stages.generation: unknown key(s) ['charge']",
+        ),
+        (
+            lambda s: s["generation"].pop("particle"),
+            "stages.generation: missing required key(s) ['particle']",
+        ),
+        (
+            lambda s: s["generation"]["energy"].update(unit="keV"),
+            "stages.generation.energy.unit: unit must be one of",
+        ),
+        (
+            lambda s: s["simulation"].update({"random.seed": 1}),
+            "stages.simulation.random.seed: is an option that k4opt sets itself: set seed instead",
+        ),
+        (
+            lambda s: s["simulation"].update(steeringFile="steer.py"),
+            "stages.simulation.steeringFile: --steeringFile is not supported",
+        ),
+        (
+            lambda s: s["simulation"].update(physics={"list": "QGSP_BERT"}),
+            "stages.simulation.physics: write each option under its full ddsim name",
+        ),
+        (
+            lambda s: s["simulation"].update(enableDetailedShowerMode=False),
+            "stages.simulation.enableDetailedShowerMode: ddsim cannot switch a flag off",
+        ),
+        (
+            lambda s: s["simulation"].update({"physics.list": {1, 2}}),
+            "stages.simulation.physics.list: unsupported value",
+        ),
     ],
 )
-def test_backend_errors(doc: dict[str, Any], backend: object, message: str) -> None:
-    doc["evaluation"]["backend"] = backend
+def test_stage_errors(
+    doc: dict[str, Any], edit: Callable[[dict[str, Any]], object], message: str
+) -> None:
+    edit(doc["stages"])
+    reject(doc, message)
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (
+            lambda d: d["evaluators"][0].update(stage="reconstruction"),
+            "evaluators[0].stage: must be one of ['generation', 'simulation'], "
+            "got 'reconstruction'",
+        ),
+        (
+            lambda d: d["stages"].pop("simulation"),
+            "evaluators[0].stage: the problem defines no simulation stage; add stages.simulation",
+        ),
+        (
+            lambda d: d["stages"].pop("generation"),
+            "stages.simulation: simulation reads generation: add stages.generation with executor: "
+            "gun, or give its output as file:",
+        ),
+        (
+            lambda d: d["stages"].update(simulation={"file": "events.edm4hep.root"}),
+            "stages.simulation.file: the parameters vary the geometry, but this file was not made "
+            "with a candidate's geometry",
+        ),
+        (
+            lambda d: d["stages"].update(simulation={"file": "events.edm4hep.root"}),
+            "use k4opt evaluate --input simulation=FILE",
+        ),
+        (
+            lambda d: d["evaluators"][0].update(stage="generation"),
+            "stages.simulation: is not used: no evaluator reads it, and no stage that runs does",
+        ),
+        (lambda d: d["evaluators"][0].pop("stage"), "stages.generation: is not used"),
+    ],
+)
+def test_the_stages_fit_together_and_fit_the_evaluators(
+    doc: dict[str, Any], edit: Callable[[dict[str, Any]], object], message: str
+) -> None:
+    edit(doc)
     reject(doc, message)
 
 
@@ -215,7 +359,7 @@ def test_wrong_version_is_reported_before_unknown_keys(doc: dict[str, Any]) -> N
 
 
 @pytest.mark.parametrize(
-    "key", ["environment", "geometry", "parameters", "evaluation", "objectives"]
+    "key", ["environment", "geometry", "parameters", "evaluators", "objectives"]
 )
 def test_missing_top_level_sections(doc: dict[str, Any], key: str) -> None:
     del doc[key]
@@ -231,7 +375,9 @@ def test_missing_top_level_sections(doc: dict[str, Any], key: str) -> None:
         (("geometry",), "geometry: unknown key(s) ['extra']"),
         (("parameters", 0), "parameters[0]: unknown key(s) ['extra']"),
         (("parameters", 0, "geometry"), "parameters[0].geometry: unknown key(s) ['extra']"),
-        (("evaluation",), "evaluation: unknown key(s) ['extra']"),
+        (("stages",), "stages: unknown key(s) ['extra']"),
+        (("stages", "generation"), "stages.generation: unknown key(s) ['extra']"),
+        (("evaluators", 0), "evaluators[0]: unknown key(s) ['extra']"),
         (("objectives", 0), "objectives[0]: unknown key(s) ['extra']"),
         (("constraints", 0), "constraints[0]: unknown key(s) ['extra']"),
     ],
@@ -246,54 +392,17 @@ def test_unknown_keys_are_rejected_with_a_location(
     reject(doc, message)
 
 
-def test_generation_is_a_particle_gun_or_a_sample(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["generation"] = {"particle": "mu-", "energy": {"value": 5, "unit": "GeV"}}
-    evaluation = parse_problem(doc).evaluation
-    assert evaluation.generation["particle"] == "mu-"
-    assert evaluation.to_dict()["generation"] == {
-        "particle": "mu-",
-        "energy": {"value": 5, "unit": "GeV"},
-    }
-
-    doc["evaluation"]["generation"] = {"sample": "samples/zh.hepmc"}
-    evaluation = parse_problem(doc).evaluation
-    assert evaluation.generation == {"sample": "samples/zh.hepmc"}
-    assert parse_problem(parse_problem(doc).to_dict()) == parse_problem(doc)
-
-
-@pytest.mark.parametrize(
-    ("generation", "message"),
-    [
-        ({}, r"evaluation\.generation: set a particle gun .* or a sample"),
-        (
-            {"particle": "mu-", "sample": "zh.hepmc"},
-            r"generation: sample cannot be combined with particle gun keys \['particle'\]",
-        ),
-        ({"sample": ""}, r"evaluation\.generation\.sample: must be a non-empty string"),
-        ({"sample": 3}, r"evaluation\.generation\.sample: must be a non-empty string"),
-        ([1], r"evaluation\.generation: must be a mapping, got list"),
-        ("gamma", r"evaluation\.generation: must be a mapping, got str"),
-    ],
-)
-def test_generation_rejects_wrong_shapes(
-    doc: dict[str, Any], generation: Any, message: str
-) -> None:
-    doc["evaluation"]["generation"] = generation
-    with pytest.raises(ProblemConfigError, match=message):
-        parse_problem(doc)
-
-
 def test_unknown_keys_inside_settings_are_allowed(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["evaluators"][0]["settings"] = {"anything": {"goes": [1, "x", None, True]}}
-    assert parse_problem(doc).evaluation.evaluators[0].to_dict()["settings"] == {
+    doc["evaluators"][0]["settings"] = {"anything": {"goes": [1, "x", None, True]}}
+    assert parse_problem(doc).evaluators[0].to_dict()["settings"] == {
         "anything": {"goes": [1, "x", None, True]}
     }
 
 
 def test_several_evaluators_keep_their_order_and_own_settings(doc: dict[str, Any]) -> None:
-    doc["evaluation"]["evaluators"].append({"name": "detector.cost", "version": "2"})
+    doc["evaluators"].append({"name": "detector.cost", "version": "2"})
     problem = parse_problem(doc)
-    first, second = problem.evaluation.evaluators
+    first, second = problem.evaluators
     assert (first.name, first.version, second.name, second.version) == (
         "calo.single_particle_shower",
         "1",
@@ -304,33 +413,28 @@ def test_several_evaluators_keep_their_order_and_own_settings(doc: dict[str, Any
     assert parse_problem(problem.to_dict()) == problem
 
 
-def test_evaluation_needs_its_evaluators(doc: dict[str, Any]) -> None:
-    del doc["evaluation"]["evaluators"]
-    reject(doc, "evaluation: missing required key(s) ['evaluators']")
-
-
 @pytest.mark.parametrize(
     ("evaluators", "message"),
     [
-        ([], "evaluation.evaluators: must list at least one evaluator"),
-        ({"name": "x", "version": "1"}, "evaluation.evaluators: must be a list, got dict"),
-        (["calo.photon"], "evaluation.evaluators[0]: must be a mapping, got str"),
-        ([{"name": "x"}], "evaluation.evaluators[0]: missing required key(s) ['version']"),
+        ([], "evaluators: must list at least one evaluator"),
+        ({"name": "x", "version": "1"}, "evaluators: must be a list, got dict"),
+        (["calo.photon"], "evaluators[0]: must be a mapping, got str"),
+        ([{"name": "x"}], "evaluators[0]: missing required key(s) ['version']"),
         (
             [{"name": "x", "version": "1", "extra": 1}],
-            "evaluation.evaluators[0]: unknown key(s) ['extra']",
+            "evaluators[0]: unknown key(s) ['extra']",
         ),
-        ([{"name": "a/b", "version": "1"}], "evaluation.evaluators[0].name: 'a/b' must start"),
-        ([{"name": "..", "version": "1"}], "evaluation.evaluators[0].name: '..' must start"),
+        ([{"name": "a/b", "version": "1"}], "evaluators[0].name: 'a/b' must start"),
+        ([{"name": "..", "version": "1"}], "evaluators[0].name: '..' must start"),
         ([{"name": "-x", "version": "1"}], "must start with a letter or digit"),
         (
             [{"name": "x", "version": "1"}, {"name": "x", "version": "2"}],
-            "evaluation.evaluators[1]: duplicates evaluators[0] (name 'x')",
+            "evaluators[1]: duplicates evaluators[0] (name 'x')",
         ),
     ],
 )
 def test_evaluator_list_errors(doc: dict[str, Any], evaluators: object, message: str) -> None:
-    doc["evaluation"]["evaluators"] = evaluators
+    doc["evaluators"] = evaluators
     reject(doc, message)
 
 
@@ -343,7 +447,8 @@ def test_evaluator_list_errors(doc: dict[str, Any], evaluators: object, message:
         ("parameters", {}, "parameters: must be a list, got dict"),
         ("parameters", [], "parameters: must list at least one parameter"),
         ("parameters", ["x"], "parameters[0]: must be a mapping, got str"),
-        ("evaluation", "ddsim", "evaluation: must be a mapping"),
+        ("stages", "ddsim", "stages: must be a mapping"),
+        ("stages", ["generation"], "stages: must be a mapping"),
         ("objectives", "min", "objectives: must be a list"),
         ("objectives", [], "objectives: must list at least one objective"),
         ("constraints", {}, "constraints: must be a list"),
@@ -377,38 +482,31 @@ def test_document_must_be_a_mapping(data: object) -> None:
         (lambda d: d["geometry"].clear(), "missing required key(s) ['entry']"),
         (lambda d: d.update(name=""), "name: must be a non-empty string"),
         (
-            lambda d: d["evaluation"]["evaluators"][0].update(name=""),
-            "evaluation.evaluators[0].name: must be a non-empty",
+            lambda d: d["evaluators"][0].update(name=""),
+            "evaluators[0].name: must be a non-empty",
         ),
         (
-            lambda d: d["evaluation"]["evaluators"][0].update(version=1),
-            "evaluation.evaluators[0].version: must be a non-empty",
-        ),
-        (lambda d: d["evaluation"].update(events=0), "events: must be >= 1"),
-        (lambda d: d["evaluation"].update(events=True), "events: must be an integer, got bool"),
-        (lambda d: d["evaluation"].update(events=1.5), "events: must be an integer, got float"),
-        (lambda d: d["evaluation"].update(seed=True), "seed: must be an integer, got bool"),
-        (lambda d: d["evaluation"].update(seed="42"), "seed: must be an integer, got str"),
-        (
-            lambda d: d["evaluation"]["evaluators"][0].update(settings=[1]),
-            "evaluation.evaluators[0].settings: must be a mapping, got list",
+            lambda d: d["evaluators"][0].update(version=1),
+            "evaluators[0].version: must be a non-empty",
         ),
         (
-            lambda d: d["evaluation"]["evaluators"][0].update(settings={"a": {1, 2}}),
-            "evaluation.evaluators[0].settings.a: unsupported value",
+            lambda d: d["evaluators"][0].update(settings=[1]),
+            "evaluators[0].settings: must be a mapping, got list",
         ),
         (
-            lambda d: d["evaluation"]["evaluators"][0].update(settings={"a": float("nan")}),
+            lambda d: d["evaluators"][0].update(settings={"a": {1, 2}}),
+            "evaluators[0].settings.a: unsupported value",
+        ),
+        (
+            lambda d: d["evaluators"][0].update(settings={"a": float("nan")}),
             "non-finite",
         ),
         (
-            lambda d: d["evaluation"]["evaluators"][0].update(
-                settings={"a": datetime.date(2026, 1, 1)}
-            ),
+            lambda d: d["evaluators"][0].update(settings={"a": datetime.date(2026, 1, 1)}),
             "settings.a: unsupported",
         ),
         (
-            lambda d: d["evaluation"]["evaluators"][0].update(settings={1: "x"}),
+            lambda d: d["evaluators"][0].update(settings={1: "x"}),
             "settings: mapping keys must be strings",
         ),
         (lambda d: d["objectives"][0].update(stage=""), "objectives[0].stage: must be a non-empty"),
@@ -728,7 +826,7 @@ def test_duplicate_key_message_has_the_line(write: Write) -> None:
 
 
 def test_nested_duplicate_keys(write: Write) -> None:
-    text = good_yaml().replace("  seed: 42\n", "  seed: 42\n  seed: 43\n")
+    text = good_yaml().replace("    seed: 42\n", "    seed: 42\n    seed: 43\n")
     with pytest.raises(ProblemConfigError, match="duplicate key 'seed'"):
         load_problem(write(text))
 
@@ -753,35 +851,27 @@ def test_unquoted_date_is_flagged(write: Write) -> None:
 
 
 def test_disallowed_scalars_in_settings_from_yaml(write: Write) -> None:
-    text = good_yaml().replace(
-        "        collection:", "        when: 2026-10-20\n        collection:"
-    )
+    text = good_yaml().replace("      collection:", "      when: 2026-10-20\n      collection:")
     with pytest.raises(ProblemConfigError, match=r"settings\.when: unsupported value of type date"):
         load_problem(write(text))
-    text = good_yaml().replace(
-        "        collection:", "        blob: !!binary aGk=\n        collection:"
-    )
+    text = good_yaml().replace("      collection:", "      blob: !!binary aGk=\n      collection:")
     with pytest.raises(
         ProblemConfigError, match=r"settings\.blob: unsupported value of type bytes"
     ):
         load_problem(write(text))
-    text = good_yaml().replace(
-        "        collection:", "        s: !!set {a, b}\n        collection:"
-    )
+    text = good_yaml().replace("      collection:", "      s: !!set {a, b}\n      collection:")
     with pytest.raises(ProblemConfigError, match=r"settings\.s: unsupported value of type set"):
         load_problem(write(text))
-    text = good_yaml().replace("        collection:", "        x: .nan\n        collection:")
+    text = good_yaml().replace("      collection:", "      x: .nan\n      collection:")
     with pytest.raises(ProblemConfigError, match="non-finite"):
         load_problem(write(text))
 
 
 def test_recursive_aliases_are_rejected(write: Write) -> None:
-    text = good_yaml().replace("        collection:", "        loop: &a [*a]\n        collection:")
+    text = good_yaml().replace("      collection:", "      loop: &a [*a]\n      collection:")
     with pytest.raises(ProblemConfigError, match="contains itself"):
         load_problem(write(text))
-    text = good_yaml().replace(
-        "        collection:", "        loop: &a {x: *a}\n        collection:"
-    )
+    text = good_yaml().replace("      collection:", "      loop: &a {x: *a}\n      collection:")
     with pytest.raises(ProblemConfigError, match="contains itself"):
         load_problem(write(text))
 
@@ -805,7 +895,7 @@ environment: {key4hep: {channel: release, version: "2026-04-08"}}
 geometry: {entry: g.xml}
 parameters:
   - {geometry: {constant: X}, type: integer, bounds: [1, 3]}
-evaluation: {evaluators: [{name: e, version: "1"}]}
+evaluators: [{name: e, version: "1"}]
 objectives:
   - &base {stage: simulation, metric: a, direction: minimize}
   - <<: *base
@@ -823,7 +913,7 @@ objectives:
 def test_huge_integers_are_ordinary_numbers(doc: dict[str, Any], huge: int) -> None:
     doc["parameters"][0]["bounds"] = sorted([huge, 0])
     doc["constraints"] = [{"stage": "s", "metric": "m", "max": 10**400}]
-    doc["evaluation"]["seed"] = huge
+    doc["stages"]["simulation"]["seed"] = huge
     problem = parse_problem(doc)
     assert problem.constraints[0].max == 10**400
     assert parse_problem(problem.to_dict()) == problem
