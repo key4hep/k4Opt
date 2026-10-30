@@ -87,10 +87,14 @@ What the optional parts do:
   `EvaluationContractError`, raised before anything is created or run (a `bool` is not an `int`,
   an `int` is a `float`). The request an evaluator gets carries the defaults and the converted
   quantities, so `request.settings` (and the record) show the settings that were used, next to
-  those the problem wrote; a `dict` arrives as a read-only mapping and a `list` as a tuple. Override `check(request)` for rules beyond that and
-  call `super().check(request)`; plain evaluators can define `check` alone. Settings and
-  collection resolution always run, even without `check`. The check runs once per candidate,
-  before materialization, and the normalized request is reused during execution.
+  those the problem wrote; a `dict` arrives as a read-only mapping and a `list` as a tuple.
+  Override `check(request)` for rules beyond that and call `super().check(request)`; plain
+  evaluators can define `check` alone. Settings and collection resolution always run, even
+  without `check`. The check runs once per candidate, with a request made for that candidate,
+  before materialization, and that request is reused during its execution. `check` is for the
+  settings and the contract: what it raises stops the evaluation before anything is created,
+  as a misuse. A candidate the evaluator finds scientifically unusable is not refused there:
+  `evaluate()` says so with `self.invalid("...")`, and the candidate is recorded as `invalid`.
 - `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
   holds every returned measurement of those metrics to the declared unit, so one metric identity
   never carries two units. When a problem has several evaluators, every one must declare its
@@ -308,7 +312,10 @@ edited or removed. A
 class whose module was imported before `load_evaluator`, or reloaded since
 (`importlib.reload`), carries only its path: hashing
 the current file would not establish which code Python executed. Only the defining file is
-identified, not imported helpers.
+identified, not imported helpers. To label those, `revision` holds the commit and dirty flag of
+the git checkout that tracks the file, taken at the same time: an edited helper module of that
+checkout shows as `dirty: true`. It is `null` for a file that no checkout tracks (outside one,
+or new or ignored in it), and helpers outside a checkout are not tracked at all.
 
 ## Problem, evaluator, record
 
@@ -330,9 +337,10 @@ identified, not imported helpers.
 
 `result.provenance` is **evaluator-supplied**; the record's identity and elapsed time, and the
 record of the stages, are **framework-observed** (the executed `ddsim` command and exit code,
-the hashes of given files, the events found). `k4opt evaluate` also records the k4opt version,
-the active stack (`KEY4HEP_STACK`, `K4GEO`, the `ddsim` that ran) and each evaluator's source
-identity as described above. That identifies the evaluator's own code, not the modules it imports;
+the hashes of given files, the events found). `k4opt evaluate` also records the k4opt version
+with the SHA-256 of k4opt's own Python files and its git checkout, the active stack
+(`KEY4HEP_STACK`, `K4GEO`, the `ddsim` that ran) and each evaluator's source identity as
+described above. That identifies the evaluator's own code, not the modules it imports;
 `name` and `version` remain labels. The problem's `environment.key4hep` is a declared pin and is
 not compared with the stack that ran.
 
@@ -348,8 +356,8 @@ geometry fingerprint or a complete evaluation-cache key.
 
 `k4opt.problem._evaluate._evaluate_candidate(spec, candidate, evaluators, *, inputs=None,
 workdir=None)` connects a `ProblemSpec` to explicitly supplied evaluators and returns a
-`CandidateRecord`. It is private, meant for tests and a future runner; the user-facing entry
-point will take only the problem YAML.
+`CandidateRecord`. It is private and meant for tests; the public entry point is
+[`EvaluationSession`](#evaluating-candidates-evaluationsession), which takes the problem file.
 
 ```python
 candidate = _evaluate_candidate(spec, {"constants.ECal_cell_size": 6.0}, [CellCount()])
@@ -388,7 +396,8 @@ In order, it:
    declares; a `valid` result must report every metric its evaluator owns (extra metrics are
    fine) in the `unit` a constraint declares; and if the evaluator declares `metrics`, every
    measurement of one, whatever the status, must carry the declared unit. Whether a value
-   satisfies `min`/`max` is not judged.
+   satisfies `min`/`max` is not judged here but by the session's
+   [assessment](#assessment-objectives-limits-and-feasibility).
 
 The `CandidateRecord` holds one `EvaluationRecord` per evaluator in problem order, the stages
 (each recorded once), which evaluator owns each objective and constraint metric, and the time of
@@ -413,11 +422,93 @@ Every second is counted once: a stage's time (running it and checking its output
 with the stage, an `EvaluationRecord`'s `elapsed_seconds` is its own `evaluate()` call, and the
 `CandidateRecord`'s is the whole evaluation, stages, evaluators and checks.
 
+## Evaluating candidates: `EvaluationSession`
+
+`k4opt.problem.EvaluationSession` evaluates candidates of one problem file, one after another,
+each into a run directory of its own with a `summary.json`, exactly as `k4opt evaluate` does
+for one ([evaluators](evaluators.md#k4opt-evaluate)). It knows no optimizer: a scan by hand, a
+script and an optimization library call it the same way, with candidates given as values.
+
+```python
+from k4opt.evaluation import load_evaluator
+from k4opt.problem import EvaluationSession
+
+session = EvaluationSession.open(
+    "examples/problem/cld-ecal-granularity.yaml",
+    [load_evaluator("examples/evaluators/calo_photon.py:CaloPhoton")],
+)
+for size in (5.0, 7.0, 10.0):
+    outcome = session.evaluate({"constants.ECal_cell_size": size}, f"runs/scan/{size}mm")
+    print(size, outcome.candidate.status, outcome.assessment.feasible)
+```
+
+| Once, when the session opens | For every candidate, in `check()` and `evaluate()` |
+| --- | --- |
+| load the problem file (later edits to it do not reach the session) and discover the geometry | check the candidate against the parameter domains |
+| bind the evaluators, check the stages they read, decide who measures each metric | build each evaluator's request for this candidate and call its `check()` |
+| collect the warnings about collections ddsim is not expected to write (`session.warnings`) | check that every file the problem names is still the one it was when the session opened |
+| record the size and SHA-256 of every file the stages read (a stage `file`, a file a ddsim option names, a file supplied with `inputs`), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, assess, write the summary |
+
+No request outlives the candidate it was made for, so an evaluator's `check()` and `evaluate()`
+always see that candidate's values. `check(candidate)` creates and runs nothing: it raises for
+what `evaluate()` would refuse before creating anything. A file the stages read (named by the
+problem or supplied) that changes during a session (other bytes under the same path, or removed)
+stops the next candidate with a `RunError` before anything is created; `verify_inputs()` checks
+it on its own. So does a change of `KEY4HEP_STACK` or `K4GEO`: the candidates of a session run
+in the environment it opened in, which every summary of the session records.
+`evaluate(candidate, output, run=...)` records `run`, any JSON-compatible mapping, as the
+summary's `run` (a study and trial, say; `null` for `k4opt evaluate`). `identity()` returns what
+the session evaluates with: the problem's path and definition, the identities of the files the
+stages read, the evaluators' names, versions, sources and declared metrics, the compact file,
+source root and fingerprint of the unmodified geometry, `KEY4HEP_STACK` and `K4GEO`, and k4opt's
+version, code SHA-256 and checkout. The environment and k4opt's identity are taken when the
+session opens, before anything runs, and every summary of the session records the same k4opt
+identity, so an edit to the k4opt checkout during a long run is not recorded as the code that
+ran (a hash cannot prove which code Python executed, only narrow the gap). k4opt's code is
+hashed once per process, since Python runs the modules it imported; a session does not open once
+k4opt's files have changed since then, because no hash would then say which code runs. A session
+evaluates one candidate at a time and is not thread- safe.
+
+### Assessment: objectives, limits and feasibility
+
+Each outcome carries an `Assessment` of the candidate, also written to the summary under
+`assessment`:
+
+| Evaluation | `objectives` | `limits` | `feasible` |
+| --- | --- | --- | --- |
+| `valid`, no constraints | the measurement of each objective, in the problem's order | none | `true` |
+| `valid`, every limit satisfied | as above | each with `value`, `margin`, `satisfied` | `true` |
+| `valid`, a limit violated | as above | as above | `false` |
+| `invalid` or `failed` | `null`, never a partial vector | each listed, `value`, `margin` and `satisfied` `null` | `null`: not assessed |
+| a supplied stage not made from the candidate (`--input`) | as measured | as measured | `null` |
+
+A limit is one bound of a constraint (`simulation/ecal_barrel.angular_residual:max`), judged on
+the central value of the measurement: `max` is satisfied when the value is at most the limit,
+`min` when it is at least the limit, and equality satisfies both. The uncertainty is recorded
+next to the value but does not decide. `margin` is `value - max` or `min - value` in the
+metric's unit, zero or below when the limit is satisfied; it is computed exactly and rounded
+once, so its sign is always that of the comparison, and it is `null` if it does not fit in a
+float (the verdict stays exact). An infeasible candidate is a complete evaluation with real
+objective values; it is only outside the limits.
+
+`Assessment.from_summary(spec, summary)` recomputes the assessment of a `summary.json` as read
+back: the candidate's status from its evaluators', each objective and constraint value from the
+own measurements of the evaluator that `metrics` names as its owner. It checks again what a live
+evaluation enforces: the candidate is in the problem's domains and `candidate_key` is its key,
+an `invalid` or `failed` evaluator gives a message, each measurement of a metric its evaluator
+declares carries the declared unit, each of several evaluators declares its metrics, no metric
+is declared by two of them or reported by one that does not declare it, an owner declares the
+metrics it owns, and a constraint that declares a unit is in the unit of its metric. It raises
+`RecordError` if the record is malformed or breaks one of those rules, was made for another
+problem (its definition differs, other than in `name`), or if its `status`, `message`, `metrics`
+or `assessment` disagree with that recomputation, so any reader can check a record before
+trusting it.
+
 ## Deliberately deferred
 
 An evaluator registry or lookup by name (evaluators are named on the command line), several
 samples per problem and evaluators that read more than one, branches of the stages,
-validating metric names, `k4run`, a public execution API (`k4opt evaluate` is the one internal vertical slice),
-chaining artifacts between evaluators (callers do it by hand, as the tests show), execution
-cost, retries and scheduling, fingerprints and caching, persisting or serializing the `EvaluationRecord`,
-and aggregation, significance or constraint judgment.
+validating metric names, `k4run`, chaining artifacts between evaluators (callers do it by hand,
+as the tests show), execution cost, retries and scheduling, fingerprints and caching,
+persisting or serializing the `EvaluationRecord` apart from `summary.json`, and aggregation,
+significance or constraints judged with their uncertainty.

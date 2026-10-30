@@ -32,7 +32,8 @@ from k4opt.geometry.includes import ExternalInclude, IncludeEdge
 from k4opt.geometry.materialize import MANIFEST_NAME, ChangedFile, MaterializationResult
 from k4opt.geometry.overrides import Override, ResolvedOverride
 from k4opt.geometry.references import ParameterReference, Step, parse_reference
-from k4opt.geometry.source import K4GEO_ENV, GeometrySource, GitInfo, resolve_geometry
+from k4opt.geometry.source import K4GEO_ENV, GeometrySource, resolve_geometry
+from k4opt.revision import GitInfo
 
 __all__ = [
     "K4GEO_ENV",

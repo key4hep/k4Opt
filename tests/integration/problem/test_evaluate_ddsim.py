@@ -22,6 +22,7 @@ import pytest
 import yaml
 
 from k4opt.cli import main
+from k4opt.problem import Assessment, parse_problem
 from tests.support.evaluators import CALO_PHOTON, CELL_COUNT
 from tests.support.geometry import CLD_COMPACT
 
@@ -31,6 +32,12 @@ EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ec
 CELL = "constants.ECal_cell_size"
 COLLECTION = "ECalBarrelCollection"
 EVENTS = 4
+RESIDUAL_LIMIT = {
+    "stage": "simulation",
+    "metric": "ecal_barrel.angular_residual",
+    "max": 1.0,
+    "unit": "mrad",
+}
 
 
 @pytest.fixture(scope="module")
@@ -46,6 +53,7 @@ def stack() -> None:
 def problem(tmp_path_factory: pytest.TempPathFactory, stack: None) -> Path:
     doc = yaml.safe_load(EXAMPLE.read_text())
     doc["stages"]["simulation"]["events"] = EVENTS
+    doc["constraints"] = [RESIDUAL_LIMIT]  # the one of docs/problem.md
     path = tmp_path_factory.mktemp("problem") / "problem.yaml"
     path.write_text(yaml.safe_dump(doc))
     return path
@@ -179,3 +187,23 @@ def test_two_evaluators_read_one_simulation(shared: dict[str, Any]) -> None:
     assert measurement["value"] == pytest.approx(statistics.fmean(per_event))
     # the objectives are calo.photon's, each read from it
     assert {m["evaluator"] for m in shared["metrics"]} == {"calo.photon"}
+
+
+def test_the_records_hold_the_assessment_their_measurements_give(
+    runs: dict[str, dict[str, Any]], shared: dict[str, Any]
+) -> None:
+    for run in (*runs.values(), shared):
+        assessment = Assessment.from_summary(parse_problem(run["problem"]["definition"]), run)
+        assert assessment.objectives is not None
+        assert [m.metric for m in assessment.objectives] == [
+            "ecal_barrel.angular_residual",
+            "ecal_barrel.fired_cells",
+        ]
+        (limit,) = assessment.limits
+        residual = assessment.objectives[0].value
+        assert (limit.name, limit.value, limit.unit) == (
+            "simulation/ecal_barrel.angular_residual:max",
+            residual,
+            "mrad",
+        )
+        assert assessment.feasible is (residual <= 1.0)  # four photons: either can happen

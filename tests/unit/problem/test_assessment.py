@@ -1,0 +1,488 @@
+"""The assessment of a candidate: objectives, limits judged on the central value, feasibility;
+and a run record checked against its own measurements (``Assessment.from_summary``)."""
+
+from __future__ import annotations
+
+import copy
+import dataclasses
+import json
+import math
+import re
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+from k4opt.evaluation import EvaluationRequest, EvaluationResult, Measurement
+from k4opt.problem import Assessment, EvaluationSession, ProblemSpec, RecordError, parse_problem
+from k4opt.problem._assess import assess
+from k4opt.problem._evaluate import _evaluate_candidate
+from tests.support.geometry import MINI_COMPACT, MINI_GEO
+
+CELL = "constants.ECal_cell_size"
+
+
+def document(
+    constraints: list[dict[str, Any]],
+    objectives: list[tuple[str, str]],
+    evaluators: list[str],
+) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "schema_version": "k4opt.problem/v1alpha1",
+        "name": "judged",
+        "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
+        "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
+        "parameters": [
+            {
+                "geometry": {"constant": "ECal_cell_size"},
+                "type": "continuous",
+                "bounds": [1.0, 10.0],
+                "unit": "mm",
+            }
+        ],
+        "evaluators": [{"name": name, "version": "1"} for name in evaluators],
+        "objectives": [{"stage": s, "metric": m, "direction": "minimize"} for s, m in objectives],
+    }
+    if constraints:
+        data["constraints"] = [{"stage": "analysis", "unit": "mrad"} | c for c in constraints]
+    return data
+
+
+def problem(
+    *constraints: dict[str, Any],
+    objectives: tuple[tuple[str, str], ...] = (("analysis", "a"),),
+    evaluators: tuple[str, ...] = ("test.fixed",),
+) -> ProblemSpec:
+    """A problem measured by evaluators that read no stage, with these constraints on
+    ``analysis`` metrics (in ``mrad`` unless they say otherwise)."""
+    return parse_problem(document(list(constraints), list(objectives), list(evaluators)))
+
+
+class Fixed:
+    """Returns the result it was made with."""
+
+    name = "test.fixed"
+    version = "1"
+
+    def __init__(self, result: EvaluationResult) -> None:
+        self.result = result
+
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        return self.result
+
+
+def a(value: float, uncertainty: float | None = None) -> Measurement:
+    return Measurement("analysis", "a", value, "mrad", uncertainty)
+
+
+def judged(
+    spec: ProblemSpec, *measurements: Measurement, status: str = "valid", represents: bool = True
+) -> Assessment:
+    """The assessment of a candidate whose only evaluator returned these measurements."""
+    message = None if status == "valid" else f"the evaluator says {status}"
+    result = EvaluationResult(status, measurements, message=message)  # type: ignore[arg-type]
+    record = _evaluate_candidate(spec, {CELL: 5.0}, [Fixed(result)])
+    if not represents:  # as for a stage supplied with --input
+        record = dataclasses.replace(record, represents_candidate=False)
+    return assess(spec, record)
+
+
+# --- limits ----------------------------------------------------------------------------------
+
+
+def test_a_satisfied_maximum_has_a_margin_of_zero_or_below() -> None:
+    assessment = judged(problem({"metric": "a", "max": 1.0}), a(0.9))
+    (limit,) = assessment.limits
+    assert (limit.name, limit.bound, limit.limit, limit.unit) == (
+        "analysis/a:max",
+        "max",
+        1.0,
+        "mrad",
+    )
+    assert (limit.value, limit.margin, limit.satisfied) == (0.9, 0.9 - 1.0, True)
+    assert assessment.feasible is True
+
+
+def test_a_violated_minimum_makes_the_candidate_infeasible() -> None:
+    assessment = judged(problem({"metric": "a", "min": 7}), a(5))
+    (limit,) = assessment.limits
+    assert (limit.name, limit.margin, limit.satisfied) == ("analysis/a:min", 2.0, False)
+    assert assessment.feasible is False
+    assert assessment.objectives == (a(5),)  # an infeasible candidate keeps its objectives
+
+
+def test_both_bounds_of_a_constraint_are_two_limits_minimum_first() -> None:
+    assessment = judged(problem({"metric": "a", "min": 0, "max": 2}), a(3))
+    assert [(limit.name, limit.margin, limit.satisfied) for limit in assessment.limits] == [
+        ("analysis/a:min", -3.0, True),
+        ("analysis/a:max", 1.0, False),
+    ]
+    assert assessment.feasible is False
+
+
+@pytest.mark.parametrize("bound", ["min", "max"])
+def test_equality_satisfies_a_limit_with_margin_zero(bound: str) -> None:
+    (limit,) = judged(problem({"metric": "a", bound: 1.5}), a(1.5)).limits
+    assert (limit.margin, limit.satisfied) == (0.0, True)
+    assert limit.margin is not None and math.copysign(1.0, limit.margin) == 1.0  # not -0.0
+
+
+def test_the_margin_has_the_sign_of_the_exact_comparison() -> None:
+    big = 2**53  # float(big + 1) == float(big): a difference in floats would be 0, satisfied
+    (upper,) = judged(problem({"metric": "a", "max": big + 1}), a(float(big))).limits
+    assert (upper.margin, upper.satisfied) == (-1.0, True)
+    (lower,) = judged(problem({"metric": "a", "min": big + 1}), a(float(big))).limits
+    assert (lower.margin, lower.satisfied) == (1.0, False)
+    smallest = 5e-324  # the smallest positive float still counts as above a limit of 0
+    (limit,) = judged(problem({"metric": "a", "max": 0.0}), a(smallest)).limits
+    assert (limit.margin, limit.satisfied) == (smallest, False)
+
+
+@pytest.mark.parametrize(
+    ("constraint", "value"),
+    [({"max": 10**400}, 1.0), ({"min": -1.5e308}, 1.5e308)],
+)
+def test_a_margin_beyond_a_float_is_none_and_the_verdict_stays_exact(
+    constraint: dict[str, Any], value: float
+) -> None:
+    (limit,) = judged(problem({"metric": "a", **constraint}), a(value)).limits
+    assert (limit.margin, limit.satisfied) == (None, True)
+
+
+def test_the_uncertainty_is_recorded_but_does_not_decide() -> None:
+    (limit,) = judged(problem({"metric": "a", "max": 1.0}), a(1.01, uncertainty=0.5)).limits
+    assert (limit.value, limit.uncertainty, limit.satisfied) == (1.01, 0.5, False)
+
+
+# --- what is assessed ------------------------------------------------------------------------
+
+
+def test_without_constraints_a_valid_evaluation_is_feasible() -> None:
+    assessment = judged(problem(), a(2.0))
+    assert (assessment.objectives, assessment.limits, assessment.feasible) == ((a(2.0),), (), True)
+
+
+def test_the_objectives_are_in_the_order_of_the_problem() -> None:
+    spec = problem(objectives=(("analysis", "b"), ("analysis", "a")))
+    assessment = judged(spec, a(1.0), Measurement("analysis", "b", 2.0))
+    assert assessment.objectives is not None
+    assert [m.metric for m in assessment.objectives] == ["b", "a"]
+
+
+@pytest.mark.parametrize("status", ["invalid", "failed"])
+def test_an_evaluation_that_is_not_valid_is_not_assessed(status: str) -> None:
+    # the value of an invalid result is a diagnostic: never an objective, never judged
+    assessment = judged(problem({"metric": "a", "max": 1.0}), a(0.5), status=status)
+    assert (assessment.objectives, assessment.feasible) == (None, None)
+    (limit,) = assessment.limits  # still listed, with what the problem declares
+    assert (limit.name, limit.limit, limit.unit) == ("analysis/a:max", 1.0, "mrad")
+    assert (limit.value, limit.uncertainty, limit.margin, limit.satisfied) == (None,) * 4
+
+
+def test_a_record_that_does_not_represent_the_candidate_is_measured_but_not_judged() -> None:
+    assessment = judged(problem({"metric": "a", "max": 1.0}), a(1.5), represents=False)
+    assert assessment.objectives == (a(1.5),)
+    (limit,) = assessment.limits
+    assert (limit.margin, limit.satisfied) == (0.5, False)
+    assert assessment.feasible is None  # whatever its limits say
+
+
+def test_a_valid_owner_does_not_make_an_invalid_candidate_assessable() -> None:
+    class Owner(Fixed):
+        name = "test.owner"
+        metrics = {("analysis", "a"): "mrad"}
+
+    class Check(Fixed):
+        name = "test.check"
+        metrics = {("analysis", "check.ok"): "1"}
+
+    spec = problem({"metric": "a", "max": 1.0}, evaluators=("test.owner", "test.check"))
+    owner = Owner(EvaluationResult.valid([a(0.5)]))
+    check = Check(EvaluationResult.invalid("the candidate fails a validity check"))
+    record = _evaluate_candidate(spec, {CELL: 5.0}, [owner, check])
+    assert record.status == "invalid"
+    assessment = assess(spec, record)
+    assert (assessment.objectives, assessment.feasible) == (None, None)
+    assert assessment.limits[0].value is None
+
+
+def test_the_assessment_is_plain_json() -> None:
+    assessment = judged(problem({"metric": "a", "min": 0, "max": 2}), a(1.0, uncertainty=0.1))
+    data = assessment.to_dict()
+    assert json.loads(json.dumps(data, allow_nan=False)) == data
+    measured = {"value": 1.0, "unit": "mrad", "uncertainty": 0.1}
+    assert data == {
+        "feasible": True,
+        "objectives": [{"stage": "analysis", "metric": "a"} | measured],
+        "limits": [
+            {"stage": "analysis", "metric": "a", "bound": "min", "limit": 0}
+            | measured
+            | {"margin": -1.0, "satisfied": True},
+            {"stage": "analysis", "metric": "a", "bound": "max", "limit": 2}
+            | measured
+            | {"margin": -1.0, "satisfied": True},
+        ],
+    }
+    assert judged(problem(), a(1.0), status="failed").to_dict() == {
+        "feasible": None,
+        "objectives": None,
+        "limits": [],
+    }
+
+
+# --- records ---------------------------------------------------------------------------------
+
+RADIUS = "constants.InnerTracker_Barrel_radius_1"
+ECHO = ("analysis", "candidate.first_value")
+COST = ("analysis", "readout.cost")
+
+
+class Echo:
+    """The candidate's radius as a metric; ``invalid`` from 590 mm on."""
+
+    name = "test.echo"
+    version = "1"
+    metrics = {ECHO: "1"}
+
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        (value,) = request.candidate.values()
+        measured = [Measurement(*ECHO, value, "1")]
+        if value >= 590:
+            return EvaluationResult.invalid("too far out", measured)
+        return EvaluationResult.valid(measured)
+
+
+class Cost:
+    """A constant readout cost, a second evaluator that reads no stage."""
+
+    name = "test.cost"
+    version = "1"
+    metrics = {COST: "1"}
+
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        return EvaluationResult.valid([Measurement(*COST, 7.0, "1")])
+
+
+def open_session(tmp_path: Path, *evaluators: Any) -> EvaluationSession:
+    """A session on the mini geometry whose evaluators read no stage, so nothing simulates; the
+    first evaluator's metric is the first objective and is constrained."""
+    objectives = [next(iter(evaluator.metrics)) for evaluator in evaluators]
+    names = [evaluator.name for evaluator in evaluators]
+    data = document([{"metric": ECHO[1], "max": 500, "unit": "1"}], objectives, names)
+    data["geometry"] = MINI_COMPACT
+    data["parameters"][0] = {
+        "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+        "type": "continuous",
+        "bounds": [100.0, 600.0],
+        "unit": "mm",
+    }
+    path = tmp_path / "problem.yaml"
+    path.write_text(yaml.safe_dump(data))
+    return EvaluationSession.open(path, list(evaluators))
+
+
+@pytest.fixture(autouse=True)
+def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("K4GEO", str(MINI_GEO))
+
+
+@pytest.fixture
+def session(tmp_path: Path) -> EvaluationSession:
+    return open_session(tmp_path, Echo())
+
+
+def summary_of(session: EvaluationSession, value: float, output: Path) -> dict[str, Any]:
+    outcome = session.evaluate({RADIUS: value}, output)
+    data: dict[str, Any] = json.loads(outcome.summary_path.read_text())
+    assert Assessment.from_summary(session.spec, data) == outcome.assessment
+    return data
+
+
+@pytest.mark.parametrize(
+    ("value", "feasible", "assessed"),
+    [(450.0, True, True), (550.0, False, True), (595.0, None, False)],
+)
+def test_a_record_read_back_gives_the_assessment_it_holds(
+    session: EvaluationSession, tmp_path: Path, value: float, feasible: bool | None, assessed: bool
+) -> None:
+    data = summary_of(session, value, tmp_path / "run")
+    assessment = Assessment.from_summary(session.spec, data)
+    assert assessment.feasible is feasible
+    assert (assessment.objectives is not None) is assessed
+
+
+def test_a_record_of_a_problem_that_differs_only_in_its_name_is_accepted(
+    session: EvaluationSession, tmp_path: Path
+) -> None:
+    data = summary_of(session, 450.0, tmp_path / "run")
+    data["problem"]["definition"]["name"] = "renamed"  # a label, as the file name is
+    assert Assessment.from_summary(session.spec, data).feasible is True
+
+
+def _set(path: str, value: Any) -> Callable[[dict[str, Any]], None]:
+    """Set the item at a dotted ``path`` (list indices as numbers) of a summary."""
+
+    def change(data: dict[str, Any]) -> None:
+        *parents, last = path.split(".")
+        node: Any = data
+        for key in parents:
+            node = node[int(key)] if isinstance(node, list) else node[key]
+        if isinstance(node, list):
+            node[int(last)] = value
+        else:
+            node[last] = value
+
+    return change
+
+
+def _consistent_lie(data: dict[str, Any]) -> None:
+    """A measurement and its metric changed together: only the assessment still disagrees."""
+    data["evaluators"][0]["measurements"][0]["value"] = 400.0
+    data["metrics"][0]["value"] = 400.0
+
+
+def _other_unit(data: dict[str, Any]) -> None:
+    """The unit of a measurement changed everywhere the record judges it, but not where its
+    evaluator declares the metric."""
+    data["evaluators"][0]["measurements"][0]["unit"] = "mm"
+    data["metrics"][0]["unit"] = "mm"
+    data["assessment"]["objectives"][0]["unit"] = "mm"
+    data["assessment"]["limits"][0]["unit"] = "mm"
+
+
+def _other_declared_unit(data: dict[str, Any]) -> None:
+    """The unit changed everywhere the record holds it, so the record agrees with itself, but
+    not with the unit the constraint declares."""
+    _other_unit(data)
+    data["evaluators"][0]["metrics"][0]["unit"] = "mm"
+
+
+def _undeclared_unit(data: dict[str, Any]) -> None:
+    """As :func:`_other_declared_unit`, for an evaluator that declares no metrics."""
+    _other_unit(data)
+    data["evaluators"][0]["metrics"] = None
+
+
+def _failed_with_reason(data: dict[str, Any]) -> None:
+    data["evaluators"][0]["status"] = "failed"
+    data["evaluators"][0]["message"] = "ddsim crashed"
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (_set("schema", "k4opt.run/0"), "schema is 'k4opt.run/0'"),
+        (_set("candidate", []), "candidate must be a mapping"),
+        (_set("candidate", {RADIUS: 700.0}), "its candidate is not one of the problem's"),
+        (_set("candidate", {RADIUS: 460.0}), "but its candidate is [['constants.Inner"),
+        (_set("candidate_key.0.3", "1e0"), "candidate_key is [['constants.InnerTracker"),
+        (_set("status", "invalid"), "status is 'invalid', but its evaluators make it 'valid'"),
+        (
+            _set("evaluators.0.status", "failed"),
+            "a result that is failed needs a message saying why",
+        ),
+        (_failed_with_reason, "status is 'valid', but its evaluators make it 'failed'"),
+        (_set("evaluators.0.message", 3), "message must be a string, got 3"),
+        (_set("message", "test.echo valid: fine"), "message is 'test.echo valid: fine', but"),
+        (_set("evaluators.0.status", "great"), "status 'great' is none of"),
+        (_set("evaluators.0.name", "test.other"), "its evaluators are"),
+        (_set("evaluators", {}), "evaluators must be a list"),
+        (_set("evaluators.0.measurements", []), "is valid but did not measure"),
+        (_set("evaluators.0.measurements.0.value", "450"), "must be a number"),
+        (_set("evaluators.0.measurements.0.value", 400.0), "recorded"),
+        (_set("metrics.0.value", 1.0), "metric analysis/candidate.first_value: recorded"),
+        (_set("metrics.0.evaluator", "nobody"), "no evaluator 'nobody'"),
+        (_set("metrics", []), "its metrics are"),
+        (_consistent_lie, "its assessment is not the one its measurements give"),
+        (_other_unit, "analysis/candidate.first_value is in 'mm', but the evaluator declares '1'"),
+        (_other_declared_unit, "constraint declares '1', but its owner 'test.echo' declares 'mm'"),
+        (_undeclared_unit, "constraint declares '1', but it is measured in 'mm'"),
+        (_set("evaluators.0.metrics", []), "its owner 'test.echo' does not declare it"),
+        (_set("evaluators.0.metrics.0.unit", ""), "metrics[0].unit must be a nonblank string"),
+        (_set("assessment.feasible", False), "its assessment is not the one"),
+        (_set("assessment.limits.0.margin", -1.0), "its assessment is not the one"),
+        (_set("assessment", None), "its assessment is not the one"),
+        (_set("represents_candidate", "yes"), "represents_candidate must be true or false"),
+        (_set("problem.definition.parameters.0.bounds", [100.0, 700.0]), "parameters differ"),
+        (_set("problem.definition.constraints.0.max", 600), "another problem: its constraints"),
+    ],
+)
+def test_a_record_that_disagrees_with_itself_or_the_problem_is_refused(
+    session: EvaluationSession,
+    tmp_path: Path,
+    change: Callable[[dict[str, Any]], None],
+    message: str,
+) -> None:
+    data = summary_of(session, 450.0, tmp_path / "run")
+    changed = copy.deepcopy(data)
+    change(changed)
+    with pytest.raises(RecordError, match=re.escape(message)):
+        Assessment.from_summary(session.spec, changed)
+
+
+def test_a_record_is_checked_against_the_problem_it_is_read_for(
+    session: EvaluationSession, tmp_path: Path
+) -> None:
+    data = summary_of(session, 450.0, tmp_path / "run")
+    looser = parse_problem({**data["problem"]["definition"], "constraints": []})
+    with pytest.raises(RecordError, match="its constraints differ"):
+        Assessment.from_summary(looser, data)
+    with pytest.raises(RecordError, match="record must be a mapping"):
+        Assessment.from_summary(session.spec, [])  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (_set("evaluators.0.message", None), "a result that is invalid needs a message saying why"),
+        (_set("evaluators.0.message", "  "), "a result that is invalid needs a message saying why"),
+        (_set("message", "test.echo invalid: fine after all"), "but its evaluators make it"),
+        (_set("message", None), "message is None, but its evaluators make it"),
+    ],
+)
+def test_an_unusable_record_must_say_why(
+    session: EvaluationSession,
+    tmp_path: Path,
+    change: Callable[[dict[str, Any]], None],
+    message: str,
+) -> None:
+    data = summary_of(session, 595.0, tmp_path / "run")  # invalid: too far out
+    assert data["message"] == "test.echo invalid: too far out"
+    change(data)
+    with pytest.raises(RecordError, match=re.escape(message)):
+        Assessment.from_summary(session.spec, data)
+
+
+def _also_declared(data: dict[str, Any]) -> None:
+    """The second evaluator claims the first one's metric too."""
+    data["evaluators"][1]["metrics"].append({"stage": ECHO[0], "metric": ECHO[1], "unit": "1"})
+
+
+def _reported_by_another(data: dict[str, Any]) -> None:
+    """The second evaluator reports the first one's metric, which it does not declare."""
+    measured = {"stage": ECHO[0], "metric": ECHO[1], "value": 1.0, "unit": "1"}
+    data["evaluators"][1]["measurements"].append(measured | {"uncertainty": None})
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (_also_declared, "is declared by evaluators 'test.echo' and 'test.cost'; a metric has"),
+        (_reported_by_another, "'test.cost' reported analysis/candidate.first_value, a metric of"),
+        (_set("evaluators.1.metrics", None), "evaluator(s) 'test.cost' declare no metrics"),
+    ],
+)
+def test_the_evaluators_of_a_record_declare_their_metrics_as_live_ones_do(
+    tmp_path: Path, change: Callable[[dict[str, Any]], None], message: str
+) -> None:
+    pair = open_session(tmp_path, Echo(), Cost())
+    data = summary_of(pair, 450.0, tmp_path / "run")
+    assert [e["metrics"] for e in data["evaluators"]] == [
+        [{"stage": ECHO[0], "metric": ECHO[1], "unit": "1"}],
+        [{"stage": COST[0], "metric": COST[1], "unit": "1"}],
+    ]
+    change(data)
+    with pytest.raises(RecordError, match=re.escape(message)):
+        Assessment.from_summary(pair.spec, data)

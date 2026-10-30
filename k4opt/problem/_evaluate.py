@@ -17,7 +17,7 @@ from __future__ import annotations
 import difflib
 import math
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
@@ -373,6 +373,19 @@ def _collection_error(
 
 
 @dataclass(frozen=True, slots=True)
+class _Binding:
+    """What holds for every candidate: the evaluators bound to the problem, the stages they read
+    and who measures each metric."""
+
+    context: StageContext
+    evaluators: tuple[tuple[EvaluatorSpec, EvaluatorProtocol], ...]  # problem order
+    targets: tuple[str, ...]  # the pipeline stages the evaluators read
+    owners: Mapping[MetricKey, str]  # objective or constraint metric -> evaluator
+    declared: Mapping[MetricKey, str]  # any declared metric -> evaluator
+    warnings: tuple[str, ...] = ()  # collections the simulation is not expected to write
+
+
+@dataclass(frozen=True, slots=True)
 class _Plan:
     """What the preflight established before anything runs."""
 
@@ -385,21 +398,19 @@ class _Plan:
     warnings: tuple[str, ...] = ()  # collections the simulation is not expected to write
 
 
-def _preflight(
+def _bind_problem(
     spec: ProblemSpec,
-    values: Mapping[str, Scalar],
     evaluators: Sequence[EvaluatorProtocol],
     provided: Mapping[str, Path] | None = None,
-) -> _Plan:
-    """Check everything that can be checked before a file is created or a stage runs.
+) -> _Binding:
+    """Check what does not depend on a candidate, before a file is created or a stage runs.
 
     Binds ``evaluators`` to the problem, checks the stages they read (those in ``provided``, the
-    files the caller supplies by stage, are not run), calls each evaluator's ``check()`` with the
-    request it would get (its settings and collections resolved) and decides which evaluator
-    measures each objective and constraint metric. An evaluator that declares collections of a
-    stage without an EDM4hep file (the gun's, or a HepMC file) is refused. Raises
-    :class:`EvaluationContractError` (or what a ``check()`` raises). Collections the simulation
-    is not expected to write are only warnings.
+    files the caller supplies by stage, are not run) and decides which evaluator measures each
+    objective and constraint metric. An evaluator that declares collections of a stage without
+    an EDM4hep file (the gun's, or a HepMC file) is refused. Raises
+    :class:`EvaluationContractError`. Collections the simulation is not expected to write are
+    only warnings.
     """
     provided = provided or {}
     context = StageContext.of(spec)
@@ -413,16 +424,41 @@ def _preflight(
             raise EvaluationContractError(
                 f"evaluator {entry.name!r} reads collections from the {stage!r} stage, but {reason}"
             )
+    owners, declared = _owners(spec, bound)
+    warnings = _unexpected_collections(spec, context, bound, provided)
+    return _Binding(context, tuple(bound), targets, owners, declared, warnings)
+
+
+def _preflight(
+    spec: ProblemSpec,
+    values: Mapping[str, Scalar],
+    evaluators: Sequence[EvaluatorProtocol],
+    provided: Mapping[str, Path] | None = None,
+) -> _Plan:
+    """Check everything that can be checked before a file is created or a stage runs.
+
+    :func:`_bind_problem`, then each evaluator's ``check()`` with the request it would get for
+    this candidate (its settings and collections resolved). Raises
+    :class:`EvaluationContractError` (or what a ``check()`` raises). The plan holds requests
+    made for these ``values``, so it serves one candidate only.
+    """
+    binding = _bind_problem(spec, evaluators, provided)
     requests = {}
-    for entry, evaluator in bound:
-        request = _request(context, values, entry, evaluator)
+    for entry, evaluator in binding.evaluators:
+        request = _request(binding.context, values, entry, evaluator)
         requests[entry.name] = request
         check = getattr(evaluator, "check", None)
         if check is not None:
             check(request)
-    owners, declared = _owners(spec, bound)
-    warnings = _unexpected_collections(spec, context, bound, provided)
-    return _Plan(context, tuple(bound), targets, owners, declared, FrozenMap(requests), warnings)
+    return _Plan(
+        binding.context,
+        binding.evaluators,
+        binding.targets,
+        binding.owners,
+        binding.declared,
+        FrozenMap(requests),
+        binding.warnings,
+    )
 
 
 def _check_result(spec: ProblemSpec, plan: _Plan, name: str, result: EvaluationResult) -> None:
@@ -537,6 +573,24 @@ def _record(
     return EvaluationRecord(request, result, entry.name, entry.version, key, elapsed)
 
 
+def candidate_status(statuses: Iterable[Status]) -> Status:
+    """The status of a candidate from its evaluators': ``failed`` if any failed, otherwise
+    ``invalid`` if any is, otherwise ``valid``."""
+    seen = set(statuses)
+    return next((s for s in (Status.FAILED, Status.INVALID) if s in seen), Status.VALID)
+
+
+def candidate_message(results: Iterable[tuple[str, Status, str | None]]) -> str | None:
+    """The message of a candidate from its evaluators' ``(name, status, message)``, in problem
+    order: each that is not ``valid``, with its status and message."""
+    reasons = [
+        f"{name} {status}: {message}"
+        for name, status, message in results
+        if status is not Status.VALID
+    ]
+    return "; ".join(reasons) or None
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateRecord:
     """One candidate, measured by every evaluator of its problem.
@@ -576,21 +630,15 @@ class CandidateRecord:
 
         A candidate is thus only ever ``invalid`` after a complete evaluation.
         """
-        statuses = {record.result.status for record in self.records}
-        for status in (Status.FAILED, Status.INVALID):
-            if status in statuses:
-                return status
-        return Status.VALID
+        return candidate_status(record.result.status for record in self.records)
 
     @property
     def message(self) -> str | None:
         """Every evaluator that is not ``valid``, with its status and message, in problem order."""
-        reasons = [
-            f"{record.evaluator_name} {record.result.status}: {record.result.message}"
+        return candidate_message(
+            (record.evaluator_name, record.result.status, record.result.message)
             for record in self.records
-            if record.result.status is not Status.VALID
-        ]
-        return "; ".join(reasons) or None
+        )
 
     def record(self, name: str) -> EvaluationRecord:
         """The record of the evaluator called ``name``; :class:`KeyError` if there is none."""

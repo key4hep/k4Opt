@@ -14,7 +14,8 @@ from weakref import WeakKeyDictionary
 
 from k4opt.evaluation.errors import EvaluatorLoadError
 from k4opt.evaluation.protocol import EvaluatorProtocol
-from k4opt.frozen import FrozenMap, Json
+from k4opt.frozen import FrozenMap, Json, freeze, thaw
+from k4opt.revision import tracked_revision
 
 # by class, not module: importlib.reload() runs new code in the same module object, and the
 # classes it creates must not inherit the identity of the code they replace
@@ -27,13 +28,17 @@ def evaluator_source(evaluator: EvaluatorProtocol) -> dict[str, Json]:
     The identity is taken when :func:`load_evaluator` imports the file that defines the class
     and is shared by cached instances: for ``FILE.py:Class`` the exact bytes executed, for a
     module that call imported its file read right after the import (Python may have executed
-    a cached ``.pyc`` instead). For a class whose module was imported before, or reloaded
-    since, only the path is known: the current file cannot establish which bytes Python
-    executed.
+    a cached ``.pyc`` instead). ``revision`` is the commit and dirty flag of the git checkout
+    that tracks the file, taken at the same time, ``None`` if no checkout tracks it; it labels
+    the helper modules of the same checkout, which the hash does not cover. For a class whose
+    module was imported before, or reloaded since, only the path is known: the current file
+    cannot establish which bytes Python executed.
     """
     identity = _SOURCES.get(type(evaluator))
     if identity is not None:
-        return dict(identity)
+        copy = thaw(identity)  # a plain copy all through: the revision is a mapping too
+        assert isinstance(copy, dict)
+        return copy
     try:
         path = inspect.getsourcefile(type(evaluator))
     except TypeError:
@@ -44,7 +49,20 @@ def evaluator_source(evaluator: EvaluatorProtocol) -> dict[str, Json]:
 def _identity(path: str, data: bytes, *, executed: bool) -> FrozenMap[str, Json]:
     """``executed``: ``data`` are the bytes Python compiled, not the file read after the import."""
     digest = hashlib.sha256(data).hexdigest()
-    return FrozenMap({"path": path, "bytes": len(data), "sha256": digest, "executed": executed})
+    git = tracked_revision(Path(path))
+    identity = freeze(
+        {
+            "path": path,
+            "bytes": len(data),
+            "sha256": digest,
+            "executed": executed,
+            "revision": None if git is None else git.to_dict(),
+        },
+        "evaluator source",
+        EvaluatorLoadError,
+    )
+    assert isinstance(identity, FrozenMap)
+    return identity
 
 
 def _identify_import(cls: type) -> None:

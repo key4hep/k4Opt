@@ -37,6 +37,7 @@ from k4opt.problem._stages import (
     changed_by_geometry,
     check_stages,
     file_identity,
+    input_files,
     plan_stages,
     run_stage,
     run_stages,
@@ -493,6 +494,27 @@ def test_a_ddsim_option_file_that_changes_during_the_run_fails_the_stage(
     # the record keeps the content that was there when ddsim started
     recorded = outcome.provenance["files"]["physics.pdgfile"]  # type: ignore[index]
     assert recorded["sha256"] == hashlib.sha256(b"pdg table").hexdigest()
+
+
+def test_the_files_a_problem_names_are_those_its_stages_read(
+    spec: ProblemSpec, tmp_path: Path
+) -> None:
+    options = {"physics.pdgfile": "particles.tbl"}
+    sim = Stage("simulation", executor="ddsim", events=3, options=options)
+    sample = Stage("generation", file="zh.hepmc")
+    ctx = dataclasses.replace(
+        with_stages(spec, generation=sample, simulation=sim), directory=tmp_path
+    )
+    assert input_files(ctx, "simulation") == {
+        "stages.generation.file": tmp_path / "zh.hepmc",
+        "stages.simulation.physics.pdgfile": tmp_path / "particles.tbl",
+    }
+    assert input_files(ctx, "generation") == {"stages.generation.file": tmp_path / "zh.hepmc"}
+    # a supplied simulation reads neither: it does not run, and nothing else needs the sample
+    assert input_files(ctx, "simulation", provided={"simulation"}) == {}
+    assert input_files(ctx, "simulation", provided={"generation"}) == {
+        "stages.simulation.physics.pdgfile": tmp_path / "particles.tbl"
+    }
 
 
 def test_only_the_stages_made_from_the_geometry_depend_on_it() -> None:
