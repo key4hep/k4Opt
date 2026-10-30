@@ -52,35 +52,14 @@ listing and is omitted when no row is flagged.
 
 On a terminal, long values are shortened with `…` to fit the width (targets
 never are) and output is colored; when piped, nothing is shortened or colored.
-`NO_COLOR=1` turns color off.
+`NO_COLOR=1` turns color off. Use `--format json` for machine-readable output;
+it carries a `schema` field (`k4opt.geometry.inspect/1`).
 
-`k4opt geometry apply` writes a modified copy of the geometry, for example to look at it in a
-display or to run `ddsim` by hand (`k4opt evaluate` does this for each candidate of a problem).
-Each `--set` takes a target from `inspect` and the literal replacement text. Quote it, because
-the shell treats `*` and `[...]` as patterns:
+Exit codes: `0` success, `1` any expected k4opt error (message on stderr, prefixed
+`k4opt: error:`), `2` command-line usage error.
 
-```bash
-# preview the resolved changes; nothing is written
-k4opt geometry apply FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml \
-    --set 'constants.InnerTracker_Barrel_radius_1=405*mm' \
-    --set 'InnerTrackerBarrel.layer[id=1].rphi_layout.nphi=90' \
-    --output ./generated/cld-test --dry-run
-
-# the same without --dry-run creates the modified snapshot
-ddsim --compactFile ./generated/cld-test/FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml ...
-```
-
-A target defined in several files (flag `A`) is selected by putting its file in front:
-`--set 'FCCee/CLD/compact/CLD_o2_v09/HCalBarrel_o1_v01_01.xml:constants.HCal_cell_size=30*mm'`.
-Without `--set`, `apply` copies the geometry unchanged. The values above are technical
-examples, not validated detector variants, and a well-formed XML document is not a valid detector.
-
-`apply` lists each change as `old  ->  new` grouped by file, then prints the snapshot root, the
-generated compact file and the manifest path.
-
-Use `--format json` for machine-readable output; it carries a `schema` field
-(`k4opt.geometry.inspect/1`, `k4opt.geometry.apply/1`). Exit codes: `0` success, `1` any
-expected k4opt error (message on stderr, prefixed `k4opt: error:`), `2` command-line usage error.
+`inspect` only reads. `k4opt evaluate` writes the modified geometry of each candidate into
+its run directory; to write one yourself, use the [Python API](#python-api).
 
 ### Where the geometry comes from
 
@@ -167,9 +146,9 @@ construction.
 
 Flags shown by `inspect`:
 
-- **A** (`ambiguous`): the same reference exists in another reachable file. Select one
-  with `--set FILE:TARGET=VALUE` (`Override(..., file=FILE)` in Python), where `FILE` is the
-  root-relative path `inspect` shows; a problem cannot vary such a target yet. In CLD, `constants.HCal_cell_size`
+- **A** (`ambiguous`): the same reference exists in another reachable file. An
+  `Override` selects one with `file=<root-relative path>`; a problem cannot vary such a
+  target yet. In CLD, `constants.HCal_cell_size`
   is defined in both HCal files, and positional paths such as
   `lccdd.module_component[2].thickness` repeat across module files.
 - **O** (`order_sensitive`): the reference contains a positional `[index]` and
@@ -222,7 +201,7 @@ configuration: no entity expansion, no DTD loading, no network access.
 
 ## Materialization and manifest
 
-`apply` (or `GeometrySource.materialize`) performs these steps:
+`GeometrySource.materialize` performs these steps:
 
 1. Checks that the output directory does not exist and does not lie inside the source tree
    (also through symlinks).
