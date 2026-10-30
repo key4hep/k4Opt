@@ -269,9 +269,15 @@ file that holds it) and its SHA-256, or `null` for both when it names no file (a
 variable that is not set, a URL, a missing file). An external include is followed
 like a local one: it also lists the `files` it reaches (its includes and the
 resources they reference) by path relative to its directory, with their SHA-256,
-and their own external references are entries of their own. An evaluation session
-records this with the fingerprint and checks it around every candidate; a study
-compares it by content, not by path ([resuming](optimization.md#resuming-a-study)).
+and their own external references are entries of their own. An include among them
+that cannot be followed (a missing file) is listed under `unresolved` by
+`file:line`, and the others are still followed; `files` is `null` only when the
+external include itself cannot be parsed. A reference written alike in several
+files that names a different file in each (a relative `${VAR}`) has an entry for
+each: the first under the reference, the others under `reference (in file)`. An
+evaluation session records this with the fingerprint and checks it around every
+candidate; a study compares it by content, not by path
+([resuming](optimization.md#resuming-a-study)).
 
 ```python
 fingerprint = source.fingerprint(overrides, catalog)  # without writing anything

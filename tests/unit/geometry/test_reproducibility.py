@@ -133,7 +133,9 @@ def test_external_files_say_what_the_fingerprint_leaves_out(
             "component.xml": '<lccdd><include ref="parts/a.xml"/><shape ref="model.stl"/></lccdd>',
             "parts/a.xml": '<lccdd><include ref="${CAD}/b.xml"/></lccdd>',
             "model.stl": "solid support",
-            "broken.xml": '<lccdd><include ref="missing.xml"/></lccdd>',
+            "broken.xml": '<lccdd><include ref="valid.xml"/><include ref="missing.xml"/></lccdd>',
+            "valid.xml": "<lccdd/>",
+            "unparsable.xml": "<lccdd>",
         },
     )
     cad = write_tree(tmp_path / "cad", {"b.xml": "<lccdd/>"})
@@ -145,6 +147,7 @@ def test_external_files_say_what_the_fingerprint_leaves_out(
                 <lccdd>
                   <include ref="${{AUX}}/component.xml"/>
                   <include ref="${{AUX}}/broken.xml"/>
+                  <include ref="${{AUX}}/unparsable.xml"/>
                   <include ref="${{UNSET}}/x.xml"/>
                   <shape ref="{stl}"/>
                 </lccdd>
@@ -165,7 +168,14 @@ def test_external_files_say_what_the_fingerprint_leaves_out(
         "${AUX}/broken.xml": {
             "path": str(aux / "broken.xml"),
             "sha256": _sha256(aux / "broken.xml"),
-            "files": None,  # its include cannot be followed
+            # the include that cannot be followed is listed; the one that can is still read
+            "files": {"valid.xml": _sha256(aux / "valid.xml")},
+            "unresolved": {"broken.xml:1": "missing.xml"},
+        },
+        "${AUX}/unparsable.xml": {
+            "path": str(aux / "unparsable.xml"),
+            "sha256": _sha256(aux / "unparsable.xml"),
+            "files": None,  # it cannot be parsed itself
         },
         "${UNSET}/x.xml": {"path": None, "sha256": None},
         str(stl): {"path": str(stl), "sha256": _sha256(stl)},
@@ -180,3 +190,42 @@ def test_external_files_say_what_the_fingerprint_leaves_out(
     assert moved["files"] == found["${AUX}/component.xml"]["files"]
     (tmp_path / "moved" / "parts" / "a.xml").write_text("<lccdd/>")
     assert source.external_files()["${AUX}/component.xml"]["files"] != moved["files"]
+    # so does an edit of a file an include reaches beside one it cannot follow
+    broken = source.external_files()["${AUX}/broken.xml"]
+    (tmp_path / "moved" / "valid.xml").write_text("<lccdd><!-- other --></lccdd>")
+    assert source.external_files()["${AUX}/broken.xml"]["files"] != broken["files"]
+
+
+def test_a_reference_written_alike_has_an_entry_for_each_file_it_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aux = write_tree(
+        tmp_path / "aux", {"c.xml": '<lccdd><include ref="d.xml"/></lccdd>', "d.xml": "<lccdd/>"}
+    )
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a/x.xml"/><include ref="b/y.xml"/></lccdd>',
+            # a relative ${REL} names the file beside each of them
+            "a/x.xml": '<lccdd><shape ref="${REL}/m.stl"/><shape ref="${AUX}/c.xml"/></lccdd>',
+            "b/y.xml": '<lccdd><shape ref="${REL}/m.stl"/><include ref="${AUX}/c.xml"/></lccdd>',
+            "a/cad/m.stl": "solid a",
+            "b/cad/m.stl": "solid b",
+        },
+    )
+    monkeypatch.setenv("REL", "cad")
+    monkeypatch.setenv("AUX", str(aux))
+    found = GeometrySource("main.xml", root=geo).external_files()
+    assert found == {
+        "${REL}/m.stl": {"path": str(geo / "a/cad/m.stl"), "sha256": _sha256(geo / "a/cad/m.stl")},
+        "${AUX}/c.xml": {
+            "path": str(aux / "c.xml"),
+            "sha256": _sha256(aux / "c.xml"),
+            # named as a resource first, then included: what it includes is read as well
+            "files": {"d.xml": _sha256(aux / "d.xml")},
+        },
+        "${REL}/m.stl (in b/y.xml)": {
+            "path": str(geo / "b/cad/m.stl"),
+            "sha256": _sha256(geo / "b/cad/m.stl"),
+        },
+    }

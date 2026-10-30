@@ -3,6 +3,7 @@ session left behind."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from collections.abc import Callable
@@ -122,6 +123,35 @@ def test_a_study_resumes_only_with_the_files_its_geometry_reads_outside_its_root
     with pytest.raises(OptimizationError, match=message):
         run(problem, output, 1, resume=True)
     assert tree_digest(output) == before
+
+
+def test_a_file_only_candidates_name_reads_alike_in_every_trial_of_a_study(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "cad" / "b.stl"
+    model.parent.mkdir()
+    model.write_text("solid b")
+    monkeypatch.setenv("CAD", str(model.parent))
+    problem, output = write_problem(), tmp_path / "s"
+    support = {
+        "geometry": {"target": "InnerTrackerSupportCAD.shape.ref"},  # cad/support.stl
+        "type": "categorical",
+        "choices": ["${CAD}/b.stl"],
+    }
+    _edit(problem, lambda d: d["parameters"].append(support))
+    run(problem, output, 2, seed=1)
+    read = {"path": str(model), "sha256": hashlib.sha256(b"solid b").hexdigest()}
+    for number in (0, 1):
+        geometry = summary(output, number)["geometry"]
+        assert geometry["candidate_externals"] == {"${CAD}/b.stl": read}
+        assert "${CAD}/b.stl" not in geometry["externals"]  # not in the unmodified geometry
+    model.write_text("solid other")  # between two sessions, which the study identity cannot see
+    message = r"trial 2 stops the study.*\$\{CAD\}/b\.stl reads other files than for trial 0"
+    with pytest.raises(OptimizationError, match=message):
+        run(problem, output, 1, resume=True)
+    assert optuna_study(output).trials[2].state == TrialState.FAIL
+    model.write_text("solid b")  # the file the study read is back
+    assert len(run(problem, output, 1, resume=True).trials) == 4
 
 
 def _copy_evaluator(directory: Path, comment: str = "") -> Any:

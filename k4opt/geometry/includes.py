@@ -174,7 +174,13 @@ def find_resource(root: Path, root_real: Path, base_dir: Path, ref: str) -> tupl
     return to_root_relative(root, lexical), False
 
 
-def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None) -> IncludeGraph:
+def walk_includes(
+    root: Path,
+    compact: str,
+    *,
+    resources_at: Path | None = None,
+    unresolved: list[ExternalInclude] | None = None,
+) -> IncludeGraph:
     """Parse ``compact`` and every reachable local include below ``root``.
 
     ``root`` must be an absolute directory and ``compact`` a root-relative POSIX
@@ -185,6 +191,10 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
     Non-include references are looked up below ``resources_at`` (``root`` by default), at the
     same root-relative directory. A snapshot is walked with its source there: a reference that
     leaves the root names the file next to the source, not next to the copy.
+
+    With ``unresolved``, an include that cannot be followed (missing, unreadable, too deep) is
+    appended there, its error as the reason, and the walk goes on with the others; without it,
+    that raises :class:`IncludeError`. ``compact`` itself must always be readable.
     """
     root_real = Path(os.path.realpath(root))
     lookup = root if resources_at is None else resources_at
@@ -227,10 +237,10 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
             # another directory has its own includes even though the file is the same
             scan(canonical, lexical.parent, real, chain)
             return canonical
-        visited_real[real] = rel
         label = rel if not chain else f"{rel} (included via {' -> '.join(chain)})"
         data = read_xml_file(lexical, label=label)
         tree = parse_xml_bytes(data, label=label)
+        visited_real[real] = rel  # once parsed: a file that cannot be is never in ``trees``
         files.append(rel)
         trees[rel] = tree
         file_hashes[rel] = hashlib.sha256(data).hexdigest()
@@ -280,8 +290,14 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
                 continue
             here = f"{rel}:{line}"
             label = here if not chain else f"{here} (included via {' -> '.join(chain)})"
-            target = resolve_local_path(root, root_real, base_dir, ref, label=label)
-            target_rel = visit(target, (*chain, here))
+            try:
+                target = resolve_local_path(root, root_real, base_dir, ref, label=label)
+                target_rel = visit(target, (*chain, here))
+            except IncludeError as exc:
+                if unresolved is None:
+                    raise
+                unresolved.append(ExternalInclude(rel, line, ref, str(exc), locator, include=True))
+                continue
             edges.append(IncludeEdge(source=rel, line=line, ref=ref, target=target_rel))
 
     visit(entry, ())
@@ -313,34 +329,62 @@ def external_files(root: Path, externals: Iterable[ExternalInclude]) -> dict[str
     Each entry holds the ``path`` the reference resolves to (:func:`resolve_external`) and the
     ``sha256`` of that file, ``None`` where there is no file or it cannot be read. An include
     also holds the ``files`` it reaches in turn (its local includes and the resources they
-    reference) by path relative to its directory, each with its SHA-256, or ``None`` if they
-    cannot be followed; the external references of those files are entries of their own.
+    reference) by path relative to its directory, each with its SHA-256 (``None`` for one that
+    cannot be read), or ``None`` if the include itself cannot be parsed. The includes among them
+    that cannot be followed are listed as ``unresolved``, their reference by ``file:line``; the
+    others are still followed. The external references of those files are entries of their own.
+
+    A reference written alike in several places that names other files there (a relative
+    ``${VAR}`` in other directories) has an entry for each: the first by the reference, the
+    others by the reference and the file that holds it (``ref (in file)``).
     """
     found: dict[str, dict[str, Json]] = {}
-    pending = deque((root, external) for external in externals)
+    keys: dict[tuple[str, str | None], str] = {}  # (reference, file it names) -> its entry
+    pending = deque((root, external, external.file) for external in externals)
     while pending:
-        base, external = pending.popleft()
-        if external.ref in found or not external.ref.strip():
+        base, external, where = pending.popleft()
+        if not external.ref.strip():
             continue
         path = resolve_external(base, external)
-        try:
-            digest = None if path is None else sha256_file(path)
-        except OSError:
-            digest = None
-        entry: dict[str, Json] = {"path": None if path is None else str(path), "sha256": digest}
-        found[external.ref] = entry
-        if path is None or digest is None or not external.include:
+        named = (external.ref, None if path is None else str(path))
+        key = keys.get(named)
+        if key is None:
+            key = external.ref if external.ref not in found else f"{external.ref} (in {where})"
+            while key in found:  # pragma: no cover - one file holding one reference twice
+                key += "'"
+            keys[named] = key
+            try:
+                digest = None if path is None else sha256_file(path)
+            except OSError:
+                digest = None
+            found[key] = {"path": named[1], "sha256": digest}
+        entry = found[key]
+        # a file named as a resource before may be included here: what it includes is read too
+        if path is None or entry["sha256"] is None or not external.include or "files" in entry:
             continue
         top = Path(path.anchor)  # an external file may include from anywhere
+        missing: list[ExternalInclude] = []
         try:
-            graph = walk_includes(top, path.relative_to(top).as_posix())
-            reached = {rel: graph.file_hashes[rel] for rel in graph.files[1:]}
-            reached |= {rel: sha256_file(top / rel) for rel in graph.resources}
+            graph = walk_includes(top, path.relative_to(top).as_posix(), unresolved=missing)
         except (IncludeError, OSError):
             entry["files"] = None
             continue
+        reached: dict[str, str | None] = {rel: graph.file_hashes[rel] for rel in graph.files[1:]}
+        for rel in graph.resources:
+            try:
+                reached[rel] = sha256_file(top / rel)
+            except OSError:
+                reached[rel] = None
         entry["files"] = {
             os.path.relpath(top / rel, path.parent): sha for rel, sha in sorted(reached.items())
         }
-        pending.extend((top, nested) for nested in graph.externals)
+        if missing:
+            entry["unresolved"] = {
+                f"{os.path.relpath(top / m.file, path.parent)}:{m.line}": m.ref
+                for m in sorted(missing, key=lambda m: (m.file, m.line or 0))
+            }
+        pending.extend(
+            (top, nested, f"{os.path.relpath(top / nested.file, path.parent)} via {key}")
+            for nested in graph.externals
+        )
     return found

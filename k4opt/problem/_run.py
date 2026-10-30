@@ -35,7 +35,7 @@ from k4opt.evaluation import (
     metric_units,
 )
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
-from k4opt.geometry import Override
+from k4opt.geometry import GeometryError, GeometrySource, MaterializationResult, Override
 from k4opt.jsonio import write_json
 from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
 from k4opt.problem._evaluate import (
@@ -400,8 +400,10 @@ class EvaluationSession:
     references read. Each candidate is then checked afresh, by :meth:`check` and again by
     :meth:`evaluate`: its values against the parameter domains, each evaluator's ``check()`` with
     a request made for this candidate, and that none of those files, the environment or k4opt's
-    code changed, which :meth:`evaluate` checks again before it writes the record. One candidate
-    at a time; a session is not thread-safe.
+    code changed, which :meth:`evaluate` checks again before it writes the record. A candidate
+    whose values change a ``ref`` can name an external file of its own; what it reads is
+    recorded, and must not change while the candidate runs nor between the candidates that name
+    it. One candidate at a time; a session is not thread-safe.
     """
 
     __slots__ = (
@@ -411,6 +413,7 @@ class EvaluationSession:
         "_inputs",
         "_path",
         "_process",
+        "_read",
         "_spec",
         "_taken",
         "_timeout",
@@ -441,6 +444,8 @@ class EvaluationSession:
         self._warnings = warnings
         self._process = process
         self._timeout = timeout
+        # what the external references only candidates have read, by reference, without the path
+        self._read: dict[str, Json] = {}
 
     @classmethod
     def open(
@@ -592,6 +597,36 @@ class EvaluationSession:
                     f"(now {path}); the candidates of a session start from one geometry"
                 )
 
+    def _candidate_externals(self, snapshot: MaterializationResult) -> dict[str, dict[str, Json]]:
+        """What the external references of a candidate's geometry read that those of the
+        session's do not: a ``ref`` the candidate changes can name another file
+        (``${CAD}/other.stl``)."""
+        if not any(change.attribute == "ref" and change.changed for change in snapshot.changes):
+            return {}
+        assert self._spec._source is not None
+        try:
+            now = GeometrySource(
+                self._spec._source.compact, root=snapshot.output_root
+            ).external_files()
+        except GeometryError as exc:
+            raise RunError(f"geometry: {exc}") from exc
+        opened = thaw(self._externals)
+        assert isinstance(opened, dict)
+        return {
+            ref: entry for ref, entry in now.items() if _content(entry) != _content(opened.get(ref))
+        }
+
+    def _check_read(self, externals: Mapping[str, Mapping[str, Json]]) -> None:
+        """Raise :class:`~k4opt.problem.RunError` if a reference only candidates name reads other
+        files than it did for an earlier candidate of the session."""
+        for ref, entry in externals.items():
+            if ref in self._read and self._read[ref] != _content(entry):
+                raise RunError(
+                    f"geometry: {ref} does not read the files it read for an earlier candidate "
+                    f"(now {entry.get('path') or 'no file'}); the candidates of a session start "
+                    "from one geometry"
+                )
+
     def _verify(self) -> None:
         """Raise :class:`~k4opt.problem.RunError` if the environment, k4opt's code, a file the
         stages read or what the geometry's external references read changed since the session
@@ -668,6 +703,11 @@ class EvaluationSession:
             with contextlib.suppress(OSError):
                 run_dir.rmdir()  # created by the failed attempt; only removed while empty
             raise
+        try:
+            externals = self._candidate_externals(snapshot)
+            self._check_read(externals)
+        except RunError as exc:
+            raise RunError(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
 
         record = _execute_plan(
             spec,
@@ -680,10 +720,19 @@ class EvaluationSession:
         )
         try:
             self._verify()  # the record names what the stages and evaluators read
+            now = self._candidate_externals(snapshot)
+            if now != externals:
+                refs = dict.fromkeys([*externals, *now])
+                changed = [ref for ref in refs if now.get(ref) != externals.get(ref)]
+                raise RunError(
+                    f"geometry: {', '.join(changed)} does not read the files it read when the "
+                    "candidate started"
+                )
         except RunError as exc:
             raise RunError(
                 f"{exc} (while the candidate in {run_dir} ran, which has no {SUMMARY_NAME})"
             ) from None
+        self._read |= {ref: _content(entry) for ref, entry in externals.items()}
         assessment = assess(spec, record)
         geometry = {
             "fingerprint": snapshot.fingerprint,
@@ -695,6 +744,7 @@ class EvaluationSession:
                 for c in snapshot.changes
             ],
             "externals": thaw(self._externals),
+            "candidate_externals": externals,
         }
         summary = _summary(
             self._path,
@@ -723,6 +773,14 @@ class EvaluationSession:
         plan = _preflight(self._spec, values, self._evaluators, provided=self._inputs)
         overrides = _overrides(self._spec, values)
         return values, key, plan, overrides
+
+
+def _content(entry: object) -> Json:
+    """What an external reference reads (:func:`~k4opt.geometry.includes.external_files`),
+    without where the files are: the same files in another snapshot read alike."""
+    if not isinstance(entry, Mapping):
+        return None
+    return {key: value for key, value in entry.items() if key != "path"}
 
 
 def _described(identity: Mapping[str, Json] | None) -> str:

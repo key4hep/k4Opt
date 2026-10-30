@@ -162,6 +162,9 @@ back from disk and checked:
 - its candidate is the trial's, type and value;
 - its evaluators, Key4hep stack, k4opt code, input files and the files the geometry's external
   references read are the study's;
+- a file that only candidates name (a `ref` parameter choosing `${CAD}/other.stl`), which the
+  study cannot know beforehand, reads as it did for every earlier trial that named it, in this
+  session or an earlier one;
 - it was made from the candidate alone (no supplied stage);
 - its assessment holds up when recomputed from its raw measurements
   ([`Assessment.from_summary`](evaluation.md#assessment-objectives-limits-and-feasibility)).

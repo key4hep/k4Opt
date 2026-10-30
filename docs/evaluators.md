@@ -89,7 +89,9 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      options name, with their hashes; the events found, the error if there was one, and the time
      spent on it;
    - the geometry fingerprint and manifest, the path and SHA-256 of each file its external
-     references read (`externals`), requested and observed events, the time of the whole
+     references read (`externals`) and of each file only this candidate's values name
+     (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), requested and
+     observed events, the time of the whole
      evaluation, the files of the stages under `paths`, and the environment (`declared`: the
      problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git

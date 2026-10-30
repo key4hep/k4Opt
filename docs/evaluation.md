@@ -463,7 +463,10 @@ it on its own. So does a change of what the geometry's external references read,
 `KEY4HEP_STACK` or `K4GEO`, or of k4opt's files: the candidates of a session run in the
 environment it opened in, which every summary of the session records. A change while a candidate
 runs raises the `RunError` after its stages and evaluators ran, and its directory keeps their
-files but no `summary.json`: the record could not say which files or code it was made with.
+files but no `summary.json`: the record could not say which files or code it was made with. A
+candidate whose values change a `ref` can name an external file the unmodified geometry does not
+(`${CAD}/other.stl`): its summary records what that file reads (`candidate_externals`), which
+must stay the same while the candidate runs and for every later candidate that names it.
 `evaluate(candidate, output, run=...)` records `run`, any JSON-compatible mapping, as the
 summary's `run` (a study and trial, say; `null` for `k4opt evaluate`). `identity()` returns what
 the session evaluates with: the problem's path and definition, the identities of the files the

@@ -10,7 +10,9 @@ decided by one comparison (:func:`compared`) of what must be equal: the problem'
 (but not its name), the content of every file it names, each evaluator's name, version and
 source hash, the unmodified geometry's fingerprint and the content of the files its external
 references read, ``KEY4HEP_STACK`` and the hash of k4opt's code. Locations are recorded and
-never compared, so a study whose files moved resumes.
+never compared, so a study whose files moved resumes. A file that only candidates name (a
+``ref`` parameter) is not known before they do: each record must read it as every earlier
+record of the study did (:func:`check_candidate_files`).
 """
 
 from __future__ import annotations
@@ -390,6 +392,27 @@ def check_record(
         ):
             raise OptimizationError(f"{where} read another {label} than the study")
     return revision_warnings(study["evaluators"], evaluators)
+
+
+def check_candidate_files(
+    read: dict[str, tuple[int, object]], summary: object, number: int
+) -> None:
+    """Refuse the record of trial ``number`` if an external reference that only candidates name
+    (``geometry.candidate_externals``: a ``ref`` parameter choosing ``${CAD}/other.stl``) reads
+    other files than for an earlier trial of the study; then add what it read to ``read``, by
+    reference: the first trial that read it and the files' content."""
+    where = f"trial {number}: {trial_directory(number)}/summary.json"
+    contents = _contents(_get(summary, "geometry", "candidate_externals"))
+    if not isinstance(contents, dict):
+        raise OptimizationError(f"{where} does not say what its candidate's own references read")
+    for ref, content in contents.items():
+        if ref in read and read[ref][1] != content:
+            raise OptimizationError(
+                f"{where}: {ref} reads other files than for trial {read[ref][0]}, so the two "
+                "trials did not evaluate one geometry"
+            )
+    for ref, content in contents.items():
+        read.setdefault(ref, (number, content))
 
 
 # --- reports ---------------------------------------------------------------------------------

@@ -1489,6 +1489,58 @@ def test_what_changes_while_a_candidate_runs_leaves_it_without_a_record(
     assert not (tmp_path / "b").exists() and len(fake.calls) == 1
 
 
+SUPPORT = "InnerTrackerSupportCAD.shape.ref"  # cad/support.stl in the mini geometry
+
+
+@pytest.mark.parametrize("when", ["between candidates", "while it runs"])
+def test_a_candidate_records_and_checks_the_external_files_its_values_name(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+    when: str,
+) -> None:
+    cad = tmp_path / "cad"
+    cad.mkdir()
+    model = cad / "b.stl"
+    model.write_text("solid b")
+    monkeypatch.setenv("CAD", str(cad))
+    data = yaml.safe_load(problem_file.read_text())
+    choices = ["cad/support.stl", "${CAD}/b.stl"]
+    data["parameters"].append(
+        {"geometry": {"target": SUPPORT}, "type": "categorical", "choices": choices}
+    )
+    problem_file.write_text(yaml.safe_dump(data))
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    opened = session.identity()["geometry"]["externals"]  # type: ignore[index]
+    assert "${CAD}/b.stl" not in opened
+
+    outcome = session.evaluate({RADIUS: 450.0, SUPPORT: "${CAD}/b.stl"}, tmp_path / "a")
+    geometry = outcome.summary["geometry"]
+    read = {"path": str(model), "sha256": hashlib.sha256(b"solid b").hexdigest()}
+    assert geometry["candidate_externals"] == {"${CAD}/b.stl": read}  # type: ignore[index]
+    assert geometry["externals"] == opened  # type: ignore[index]
+    unchanged = session.evaluate({RADIUS: 450.0, SUPPORT: "cad/support.stl"}, tmp_path / "b")
+    assert unchanged.summary["geometry"]["candidate_externals"] == {}  # type: ignore[index]
+
+    if when == "between candidates":
+        model.write_text("solid other")
+        message = r"\$\{CAD\}/b\.stl does not read the files it read for an earlier candidate"
+    else:
+
+        def changing(argv: list[str], **kwargs: Any) -> Any:  # while ddsim reads the file
+            if Path(argv[0]).name == "ddsim":
+                model.write_text("solid other")
+            return fake(argv, **kwargs)
+
+        monkeypatch.setattr(ddsim_run.subprocess, "run", changing)
+        message = r"\$\{CAD\}/b\.stl does not read the files it read when the candidate started"
+    with pytest.raises(RunError, match=rf"geometry: {message}.*which has no {SUMMARY_NAME}"):
+        session.evaluate({RADIUS: 500.0, SUPPORT: "${CAD}/b.stl"}, tmp_path / "c")
+    assert not (tmp_path / "c" / SUMMARY_NAME).exists()
+    assert len(fake.calls) == (2 if when == "between candidates" else 3)
+
+
 def test_a_simulation_that_runs_out_of_time_fails_its_candidate(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
