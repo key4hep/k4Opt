@@ -321,12 +321,30 @@ def _consistent_lie(data: dict[str, Any]) -> None:
 
 
 def _other_unit(data: dict[str, Any]) -> None:
-    """The unit changed everywhere the record holds it, so it agrees with itself, but not with
-    the unit the constraint declares."""
+    """The unit of a measurement changed everywhere the record judges it, but not where its
+    evaluator declares the metric."""
     data["evaluators"][0]["measurements"][0]["unit"] = "mm"
     data["metrics"][0]["unit"] = "mm"
     data["assessment"]["objectives"][0]["unit"] = "mm"
     data["assessment"]["limits"][0]["unit"] = "mm"
+
+
+def _other_declared_unit(data: dict[str, Any]) -> None:
+    """The unit changed everywhere the record holds it, so the record agrees with itself, but
+    not with the unit the constraint declares."""
+    _other_unit(data)
+    data["evaluators"][0]["metrics"][0]["unit"] = "mm"
+
+
+def _undeclared_unit(data: dict[str, Any]) -> None:
+    """As :func:`_other_declared_unit`, for an evaluator that declares no metrics."""
+    _other_unit(data)
+    data["evaluators"][0]["metrics"] = None
+
+
+def _failed_with_reason(data: dict[str, Any]) -> None:
+    data["evaluators"][0]["status"] = "failed"
+    data["evaluators"][0]["message"] = "ddsim crashed"
 
 
 @pytest.mark.parametrize(
@@ -334,7 +352,13 @@ def _other_unit(data: dict[str, Any]) -> None:
     [
         (_set("schema", "k4opt.run/0"), "schema is 'k4opt.run/0'"),
         (_set("status", "invalid"), "status is 'invalid', but its evaluators make it 'valid'"),
-        (_set("evaluators.0.status", "failed"), "status is 'valid', but its evaluators make it"),
+        (
+            _set("evaluators.0.status", "failed"),
+            "a result that is failed needs a message saying why",
+        ),
+        (_failed_with_reason, "status is 'valid', but its evaluators make it 'failed'"),
+        (_set("evaluators.0.message", 3), "message must be a string, got 3"),
+        (_set("message", "test.echo valid: fine"), "message is 'test.echo valid: fine', but"),
         (_set("evaluators.0.status", "great"), "status 'great' is none of"),
         (_set("evaluators.0.name", "test.other"), "its evaluators are"),
         (_set("evaluators", {}), "evaluators must be a list"),
@@ -345,7 +369,11 @@ def _other_unit(data: dict[str, Any]) -> None:
         (_set("metrics.0.evaluator", "nobody"), "no evaluator 'nobody'"),
         (_set("metrics", []), "its metrics are"),
         (_consistent_lie, "its assessment is not the one its measurements give"),
-        (_other_unit, "analysis/candidate.first_value is measured in 'mm', but its constraint"),
+        (_other_unit, "analysis/candidate.first_value is in 'mm', but the evaluator declares '1'"),
+        (_other_declared_unit, "constraint declares '1', but its owner 'test.echo' declares 'mm'"),
+        (_undeclared_unit, "constraint declares '1', but it is measured in 'mm'"),
+        (_set("evaluators.0.metrics", []), "its owner 'test.echo' does not declare it"),
+        (_set("evaluators.0.metrics.0.unit", ""), "metrics[0].unit must be a nonblank string"),
         (_set("assessment.feasible", False), "its assessment is not the one"),
         (_set("assessment.limits.0.margin", -1.0), "its assessment is not the one"),
         (_set("assessment", None), "its assessment is not the one"),
@@ -376,3 +404,25 @@ def test_a_record_is_checked_against_the_problem_it_is_read_for(
         Assessment.from_summary(looser, data)
     with pytest.raises(RecordError, match="record must be a mapping"):
         Assessment.from_summary(session.spec, [])  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (_set("evaluators.0.message", None), "a result that is invalid needs a message saying why"),
+        (_set("evaluators.0.message", "  "), "a result that is invalid needs a message saying why"),
+        (_set("message", "test.echo invalid: fine after all"), "but its evaluators make it"),
+        (_set("message", None), "message is None, but its evaluators make it"),
+    ],
+)
+def test_an_unusable_record_must_say_why(
+    session: EvaluationSession,
+    tmp_path: Path,
+    change: Callable[[dict[str, Any]], None],
+    message: str,
+) -> None:
+    data = summary_of(session, 595.0, tmp_path / "run")  # invalid: too far out
+    assert data["message"] == "test.echo invalid: too far out"
+    change(data)
+    with pytest.raises(RecordError, match=re.escape(message)):
+        Assessment.from_summary(session.spec, data)

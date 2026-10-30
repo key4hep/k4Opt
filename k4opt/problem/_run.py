@@ -32,6 +32,7 @@ from k4opt.evaluation import (
     Measurement,
     Scalar,
     evaluator_source,
+    metric_units,
 )
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
@@ -246,16 +247,27 @@ def _run_reference(run: Mapping[str, Json] | None) -> object:
     return thaw(freeze(run, "run", RunError))
 
 
+def _declared(evaluator: EvaluatorProtocol) -> list[dict[str, str]] | None:
+    """The metrics ``evaluator`` declares, each with its unit; ``None`` if it declares none."""
+    units = metric_units(evaluator)
+    if units is None:
+        return None
+    return [{"stage": s, "metric": m, "unit": unit} for (s, m), unit in units.items()]
+
+
 def _evaluator(
-    record: EvaluationRecord, reads: Sequence[str], entry: EvaluatorSpec, source: object
+    record: EvaluationRecord, reads: Sequence[str], entry: EvaluatorSpec, taken: Mapping[str, Json]
 ) -> dict[str, object]:
-    """One evaluator's own part of the summary: nothing of the stages it shares."""
+    """One evaluator's own part of the summary: nothing of the stages it shares. ``taken`` is
+    what the session recorded of the evaluator when it opened: its source and its metrics."""
     result, request = record.result, record.request
     return {
         "name": record.evaluator_name,
         "version": record.evaluator_version,
         "stage": entry.stage,
-        "source": source,
+        "source": thaw(taken["source"]),
+        # each with the unit every measurement of it carries, whatever the status
+        "metrics": thaw(taken["metrics"]),
         "status": result.status,
         "message": result.message,
         # as the problem wrote them, and as the evaluator received them (defaults filled in,
@@ -281,7 +293,7 @@ def _summary(
     assessment: Assessment,
     run_dir: Path,
     geometry: object,
-    sources: Mapping[str, Json],
+    taken: Mapping[str, Mapping[str, Json]],
     run: object,
     code: Mapping[str, Json],
 ) -> dict[str, object]:
@@ -325,7 +337,7 @@ def _summary(
                 record,
                 candidate.reads[record.evaluator_name],
                 entries[record.evaluator_name],
-                thaw(sources[record.evaluator_name]),
+                taken[record.evaluator_name],
             )
             for record in candidate.records
         ],
@@ -363,8 +375,8 @@ class EvaluationSession:
 
     :meth:`open` loads the problem file once, so later edits to it do not reach the session,
     binds the evaluators to it and checks what does not depend on a candidate. It also records
-    the identity (size and SHA-256) of every file the problem names that the stages read: a
-    stage given as a ``file`` and a file a ddsim option names. Each candidate is then checked
+    the identity (size and SHA-256) of every file the stages read: a stage given as a ``file``, a
+    file a ddsim option names, and a file the caller supplies. Each candidate is then checked
     afresh, by :meth:`check` and again by :meth:`evaluate`: its values against the parameter
     domains, each evaluator's ``check()`` with a request made for this candidate, and that none
     of those files changed. One candidate at a time; a session is not thread-safe.
@@ -376,8 +388,8 @@ class EvaluationSession:
         "_files",
         "_inputs",
         "_path",
-        "_sources",
         "_spec",
+        "_taken",
         "_warnings",
     )
 
@@ -388,7 +400,7 @@ class EvaluationSession:
         evaluators: tuple[EvaluatorProtocol, ...],
         inputs: Mapping[str, Path],
         files: Mapping[str, tuple[Path, Mapping[str, Json] | None]],
-        sources: Mapping[str, Json],
+        taken: Mapping[str, Mapping[str, Json]],
         warnings: tuple[str, ...],
         code: Mapping[str, Json],
     ) -> None:
@@ -398,7 +410,7 @@ class EvaluationSession:
         self._evaluators = evaluators
         self._inputs = FrozenMap(inputs)
         self._files = FrozenMap(files)
-        self._sources = FrozenMap(sources)
+        self._taken = FrozenMap(taken)
         self._warnings = warnings
         self._code = code
 
@@ -426,11 +438,15 @@ class EvaluationSession:
             if stage not in plan_stages(*binding.targets, provided=supplied.keys() - {stage}):
                 raise RunError(f"input {stage}: no evaluator of the problem reads that stage")
         named = input_files(binding.context, *binding.targets, provided=supplied)
+        named |= {f"supplied.{stage}": file for stage, file in supplied.items()}
+        # an unreadable file has no identity: its stage reports it, and a record still names it
         files = {label: (file, _readable_identity(file)) for label, file in named.items()}
-        sources = {
-            evaluator.name: freeze(evaluator_source(evaluator), "evaluator source", RunError)
-            for evaluator in evaluators
-        }
+        taken = {}
+        for evaluator in evaluators:
+            data = {"source": evaluator_source(evaluator), "metrics": _declared(evaluator)}
+            frozen = freeze(data, f"evaluator {evaluator.name}", RunError)
+            assert isinstance(frozen, Mapping)
+            taken[evaluator.name] = frozen
         # before anything runs, so that an edit to the checkout during a long run is not
         # recorded as the code that ran
         code = freeze(code_identity(), "k4opt source", RunError)
@@ -441,7 +457,7 @@ class EvaluationSession:
             tuple(evaluators),
             supplied,
             files,
-            sources,
+            taken,
             binding.warnings,
             code,
         )
@@ -467,9 +483,10 @@ class EvaluationSession:
         """What this session evaluates with, as plain JSON-compatible data.
 
         ``problem``: the path and normalized definition; ``inputs``: the path, size and SHA-256
-        of each file the problem names, by where it is named (``stages.generation.file``; a file
-        that could not be read has only its path); ``evaluators``: the name, version and source
-        identity of each, in problem order; ``geometry``: the compact file, the source root and
+        of each file the stages read, by where it is named (``stages.generation.file``) or
+        supplied (``supplied.simulation``), a file that could not be read with its path only;
+        ``evaluators``: the name, version, source identity and declared metrics of each, in
+        problem order; ``geometry``: the compact file, the source root and
         the fingerprint of the unmodified geometry; ``environment``: ``KEY4HEP_STACK`` and
         ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its git checkout, taken
         when the session opened, as every summary records them. A fresh copy on every call.
@@ -486,11 +503,8 @@ class EvaluationSession:
                 for label, (file, identity) in self._files.items()
             },
             "evaluators": [
-                {
-                    "name": entry.name,
-                    "version": entry.version,
-                    "source": thaw(self._sources[entry.name]),
-                }
+                {"name": entry.name, "version": entry.version}
+                | {key: thaw(value) for key, value in self._taken[entry.name].items()}
                 for entry in self._spec.evaluators
             ],
             "geometry": {
@@ -503,8 +517,9 @@ class EvaluationSession:
         }
 
     def verify_inputs(self) -> None:
-        """Raise :class:`~k4opt.problem.RunError` if a file the problem names is not the file it
-        was when the session was opened: other bytes, or now readable or unreadable.
+        """Raise :class:`~k4opt.problem.RunError` if a file the stages read (named by the problem
+        or supplied) is not the file it was when the session opened: other bytes, or now readable
+        or unreadable.
 
         A file is hashed again only when its size, times or inode changed.
         """
@@ -512,7 +527,7 @@ class EvaluationSession:
             now = _readable_identity(file)
             if now != opened:
                 raise RunError(
-                    f"{label}: {file} changed after the problem was loaded ({_described(opened)} "
+                    f"{label}: {file} changed after the session opened ({_described(opened)} "
                     f"then, {_described(now)} now); evaluate the candidates of a problem with the "
                     "same files"
                 )
@@ -523,7 +538,7 @@ class EvaluationSession:
         ``candidate`` maps each canonical parameter reference to its value. Raises
         :class:`~k4opt.problem.CandidateError` for a value outside its domain, what an
         evaluator's ``check()`` raises for the request this candidate gives it, and
-        :class:`~k4opt.problem.RunError` for a file the problem names that changed.
+        :class:`~k4opt.problem.RunError` for a file the stages read that changed.
         """
         self._prepare(candidate)
 
@@ -595,7 +610,7 @@ class EvaluationSession:
             assessment,
             run_dir,
             geometry,
-            self._sources,
+            self._taken,
             reference,
             self._code,
         )

@@ -17,7 +17,7 @@ from __future__ import annotations
 import difflib
 import math
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
@@ -573,6 +573,24 @@ def _record(
     return EvaluationRecord(request, result, entry.name, entry.version, key, elapsed)
 
 
+def candidate_status(statuses: Iterable[Status]) -> Status:
+    """The status of a candidate from its evaluators': ``failed`` if any failed, otherwise
+    ``invalid`` if any is, otherwise ``valid``."""
+    seen = set(statuses)
+    return next((s for s in (Status.FAILED, Status.INVALID) if s in seen), Status.VALID)
+
+
+def candidate_message(results: Iterable[tuple[str, Status, str | None]]) -> str | None:
+    """The message of a candidate from its evaluators' ``(name, status, message)``, in problem
+    order: each that is not ``valid``, with its status and message."""
+    reasons = [
+        f"{name} {status}: {message}"
+        for name, status, message in results
+        if status is not Status.VALID
+    ]
+    return "; ".join(reasons) or None
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateRecord:
     """One candidate, measured by every evaluator of its problem.
@@ -612,21 +630,15 @@ class CandidateRecord:
 
         A candidate is thus only ever ``invalid`` after a complete evaluation.
         """
-        statuses = {record.result.status for record in self.records}
-        for status in (Status.FAILED, Status.INVALID):
-            if status in statuses:
-                return status
-        return Status.VALID
+        return candidate_status(record.result.status for record in self.records)
 
     @property
     def message(self) -> str | None:
         """Every evaluator that is not ``valid``, with its status and message, in problem order."""
-        reasons = [
-            f"{record.evaluator_name} {record.result.status}: {record.result.message}"
+        return candidate_message(
+            (record.evaluator_name, record.result.status, record.result.message)
             for record in self.records
-            if record.result.status is not Status.VALID
-        ]
-        return "; ".join(reasons) or None
+        )
 
     def record(self, name: str) -> EvaluationRecord:
         """The record of the evaluator called ``name``; :class:`KeyError` if there is none."""

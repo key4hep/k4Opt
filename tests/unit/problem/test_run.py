@@ -249,6 +249,10 @@ def test_summary_is_written_and_truthful(
     }
     assert Assessment.from_summary(load_problem(problem_file), on_disk) == outcome.assessment
     assert "revision" in evaluator["source"]  # of the checkout that tracks it, if one does
+    # what it declares: every measurement of a metric it declares carries the declared unit
+    assert evaluator["metrics"] == [
+        {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells", "unit": "1"}
+    ]
 
 
 def test_two_candidates_give_distinct_geometries(
@@ -1338,7 +1342,7 @@ def test_a_file_that_changes_stops_the_session_before_its_next_candidate(
     else:
         sample.unlink()
         now = "unreadable now"
-    message = rf"stages\.generation\.file: {sample} changed after the problem was loaded .*{now}"
+    message = rf"stages\.generation\.file: {sample} changed after the session opened .*{now}"
     with pytest.raises(RunError, match=message):
         session.verify_inputs()
     with pytest.raises(RunError, match=message):
@@ -1436,3 +1440,24 @@ def test_command_reports_limits_it_could_not_judge(
     assert code == 1
     assert "limit:       simulation/ecal_barrel.mean_hit_cells <= 2: not assessed" in out
     assert "feasible:    not assessed" in out
+
+
+def test_a_supplied_file_that_changes_stops_the_session_before_its_next_candidate(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    events_file = tmp_path / "earlier.edm4hep.root"
+    events_file.write_bytes(b"fake")
+    supplied = {"simulation": events_file}
+    session = EvaluationSession.open(problem_file, [cell_count()], inputs=supplied)
+    assert session.identity()["inputs"] == {
+        "supplied.simulation": {
+            "path": str(events_file),
+            "bytes": 4,
+            "sha256": hashlib.sha256(b"fake").hexdigest(),
+        }
+    }
+    session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    events_file.write_bytes(b"other events")  # the same path, other events
+    with pytest.raises(RunError, match=r"supplied\.simulation: .* changed after the session"):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and fake.calls == []

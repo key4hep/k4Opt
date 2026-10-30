@@ -13,13 +13,18 @@ that represents its candidate is called feasible or not.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any, Literal
 
 from k4opt.evaluation import EvaluationContractError, Measurement, Status
-from k4opt.problem._evaluate import CandidateRecord, MetricKey
+from k4opt.problem._evaluate import (
+    CandidateRecord,
+    MetricKey,
+    candidate_message,
+    candidate_status,
+)
 from k4opt.problem.errors import RecordError
 from k4opt.problem.models import Constraint, ProblemSpec
 
@@ -106,42 +111,51 @@ class Assessment:
         """Recompute the assessment of a run record (``summary.json`` as read back) and check
         the record against it.
 
-        The candidate's status is recomputed from its evaluators' (``failed`` before ``invalid``
-        before ``valid``), and each objective and constraint value is taken from the own
-        measurements of the evaluator that ``metrics`` names as its owner, if that evaluator is
-        ``valid``. Raises :class:`~k4opt.problem.RecordError` if the record is malformed, was made
-        for another problem (its definition differs other than in ``name``), or if its
-        ``status``, ``metrics`` or ``assessment`` disagree with that recomputation.
+        The candidate's status and message are recomputed from its evaluators' (``failed``
+        before ``invalid`` before ``valid``), and each objective and constraint value is taken
+        from the own measurements of the evaluator that ``metrics`` names as its owner, if that
+        evaluator is ``valid``. The rules a live evaluation enforces are checked again: an
+        ``invalid`` or ``failed`` evaluator has a message, a measurement of a metric its
+        evaluator declares carries the declared unit, the owner declares the metric it owns, and
+        a constraint's unit is that of its metric. Raises :class:`~k4opt.problem.RecordError` if
+        the record is malformed or breaks one of those rules, was made for another problem (its
+        definition differs other than in ``name``), or if its ``status``, ``message``,
+        ``metrics`` or ``assessment`` disagree with the recomputation.
         """
         record = _mapping(summary, "record")
         if record.get("schema") != SUMMARY_SCHEMA:
             raise RecordError(f"schema is {record.get('schema')!r}, not {SUMMARY_SCHEMA!r}")
         _check_problem(spec, record)
-        statuses, measured = _evaluators(spec, record)
-        status = _status(statuses.values())
+        evaluators = _evaluators(spec, record)
+        status = candidate_status(entry.status for entry in evaluators.values())
         if record.get("status") != status:
             raise RecordError(
                 f"status is {record.get('status')!r}, but its evaluators make it {status.value!r}"
             )
+        message = candidate_message((n, e.status, e.message) for n, e in evaluators.items())
+        if record.get("message") != message:
+            raise RecordError(
+                f"message is {record.get('message')!r}, but its evaluators make it {message!r}"
+            )
         represents = record.get("represents_candidate")
         if not isinstance(represents, bool):
             raise RecordError(f"represents_candidate must be true or false, got {represents!r}")
-        owners = _owners(spec, record, statuses)
+        owners = _owners(spec, record, evaluators)
 
         def value(stage: str, metric: str) -> Measurement | None:
-            owner = owners[(stage, metric)]
-            if statuses[owner] is not Status.VALID:
+            owner = evaluators[owners[(stage, metric)]]
+            if owner.status is not Status.VALID:
                 return None
-            found = measured[owner].get((stage, metric))
+            found = owner.measured.get((stage, metric))
             if found is None:
                 raise RecordError(
-                    f"evaluator {owner!r} is valid but did not measure {stage}/{metric}, "
-                    "which it owns"
+                    f"evaluator {owners[(stage, metric)]!r} is valid but did not measure "
+                    f"{stage}/{metric}, which it owns"
                 )
             return found
 
         _check_metrics(record, owners, value)
-        _check_units(spec, value)
+        _check_units(spec, owners, evaluators, value)
         assessment = _judge(spec, status, represents, value)
         if record.get("assessment") != _plain(assessment.to_dict()):
             raise RecordError(
@@ -216,13 +230,6 @@ def _measurement(m: Measurement | None) -> dict[str, object]:
     }
 
 
-def _status(statuses: Iterable[Status]) -> Status:
-    """``failed`` if any evaluator failed, otherwise ``invalid`` if any is, otherwise ``valid``;
-    the rule of :attr:`CandidateRecord.status`."""
-    seen = set(statuses)
-    return next((s for s in (Status.FAILED, Status.INVALID) if s in seen), Status.VALID)
-
-
 # --- reading a record ------------------------------------------------------------------------
 
 
@@ -256,37 +263,78 @@ def _check_problem(spec: ProblemSpec, record: Mapping[str, object]) -> None:
         raise RecordError(f"it was made for another problem: its {', '.join(differ)} differ")
 
 
-def _evaluators(
-    spec: ProblemSpec, record: Mapping[str, object]
-) -> tuple[dict[str, Status], dict[str, dict[MetricKey, Measurement]]]:
-    """The status of each evaluator of the record, and its own measurements, by name."""
+@dataclass(frozen=True, slots=True)
+class _Evaluator:
+    """One evaluator of a record, as far as the assessment reads it."""
+
+    status: Status
+    message: str | None
+    measured: Mapping[MetricKey, Measurement]  # its own measurements
+    declared: Mapping[MetricKey, str] | None  # the metrics it declares, with their units
+
+
+def _evaluators(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, _Evaluator]:
+    """Each evaluator of the record by name, in problem order, checked as a live result is."""
     entries = [
         _mapping(entry, f"evaluators[{i}]")
         for i, entry in enumerate(_list(record.get("evaluators"), "evaluators"))
     ]
     found = [(entry.get("name"), entry.get("version")) for entry in entries]
-    declared = [(entry.name, entry.version) for entry in spec.evaluators]
-    if found != declared:
-        raise RecordError(f"its evaluators are {found}, but the problem declares {declared}")
-    statuses: dict[str, Status] = {}
-    measured: dict[str, dict[MetricKey, Measurement]] = {}
-    for (name, _), entry in zip(declared, entries, strict=True):
+    expected = [(entry.name, entry.version) for entry in spec.evaluators]
+    if found != expected:
+        raise RecordError(f"its evaluators are {found}, but the problem declares {expected}")
+    evaluators: dict[str, _Evaluator] = {}
+    for (name, _), entry in zip(expected, entries, strict=True):
+        where = f"evaluator {name!r}"
         status = entry.get("status")
         if not isinstance(status, str) or status not in set(Status):
-            raise RecordError(
-                f"evaluator {name!r}: status {status!r} is none of {', '.join(Status)}"
-            )
-        statuses[name] = Status(status)
+            raise RecordError(f"{where}: status {status!r} is none of {', '.join(Status)}")
+        message = entry.get("message")
+        if message is not None and not isinstance(message, str):
+            raise RecordError(f"{where}: message must be a string, got {message!r}")
+        if status != Status.VALID and not (message and message.strip()):
+            raise RecordError(f"{where}: a result that is {status} needs a message saying why")
+        declared = _declared(entry.get("metrics"), where)
         own: dict[MetricKey, Measurement] = {}
-        for index, item in enumerate(_list(entry.get("measurements"), f"{name}: measurements")):
-            where = f"evaluator {name!r}: measurements[{index}]"
-            measurement = _measured(_mapping(item, where), where)
+        for index, item in enumerate(_list(entry.get("measurements"), f"{where}: measurements")):
+            at = f"{where}: measurements[{index}]"
+            measurement = _measured(_mapping(item, at), at)
             key = (measurement.stage, measurement.metric)
             if key in own:
-                raise RecordError(f"{where}: {key[0]}/{key[1]} is measured twice")
+                raise RecordError(f"{at}: {key[0]}/{key[1]} is measured twice")
+            if declared is not None and key in declared and measurement.unit != declared[key]:
+                # whatever the status, as live: one metric identity never carries two units
+                raise RecordError(
+                    f"{at}: {key[0]}/{key[1]} is in {measurement.unit!r}, but the evaluator "
+                    f"declares {declared[key]!r}"
+                )
             own[key] = measurement
-        measured[name] = own
-    return statuses, measured
+        evaluators[name] = _Evaluator(Status(status), message, own, declared)
+    return evaluators
+
+
+def _text(value: object, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RecordError(f"{where} must be a nonblank string, got {value!r}")
+    return value
+
+
+_DECLARED = ("stage", "metric", "unit")
+
+
+def _declared(value: object, where: str) -> dict[MetricKey, str] | None:
+    """The ``metrics`` an evaluator of a record declares, ``None`` if it declares none."""
+    if value is None:
+        return None
+    declared: dict[MetricKey, str] = {}
+    for index, item in enumerate(_list(value, f"{where}: metrics")):
+        at = f"{where}: metrics[{index}]"
+        entry = _mapping(item, at)
+        stage, metric, unit = (_text(entry.get(key), f"{at}.{key}") for key in _DECLARED)
+        if (stage, metric) in declared:
+            raise RecordError(f"{where}: {stage}/{metric} is declared twice")
+        declared[(stage, metric)] = unit
+    return declared
 
 
 def _measured(item: Mapping[str, object], where: str) -> Measurement:
@@ -306,9 +354,10 @@ def _wanted(spec: ProblemSpec) -> list[MetricKey]:
 
 
 def _owners(
-    spec: ProblemSpec, record: Mapping[str, object], statuses: Mapping[str, Status]
+    spec: ProblemSpec, record: Mapping[str, object], evaluators: Mapping[str, _Evaluator]
 ) -> dict[MetricKey, str]:
-    """The evaluator the record names as the owner of each objective and constraint metric."""
+    """The evaluator the record names as the owner of each objective and constraint metric; one
+    that declares metrics must declare the ones it owns."""
     entries = [
         _mapping(entry, f"metrics[{i}]")
         for i, entry in enumerate(_list(record.get("metrics"), "metrics"))
@@ -320,23 +369,35 @@ def _owners(
     owners: dict[MetricKey, str] = {}
     for key, entry in zip(wanted, entries, strict=True):
         owner = entry.get("evaluator")
-        if not isinstance(owner, str) or owner not in statuses:
+        if not isinstance(owner, str) or owner not in evaluators:
             raise RecordError(f"metric {key[0]}/{key[1]}: no evaluator {owner!r} in the record")
+        declared = evaluators[owner].declared
+        if declared is not None and key not in declared:
+            raise RecordError(f"metric {key[0]}/{key[1]}: its owner {owner!r} does not declare it")
         owners[key] = owner
     return owners
 
 
-def _check_units(spec: ProblemSpec, value: _Lookup) -> None:
-    """A constraint that declares a unit is measured in it, as a live evaluation enforces: a
-    record consistent in another unit would compare its value with a limit in the wrong one."""
+def _check_units(
+    spec: ProblemSpec,
+    owners: Mapping[MetricKey, str],
+    evaluators: Mapping[str, _Evaluator],
+    value: _Lookup,
+) -> None:
+    """A constraint that declares a unit is in the unit its owner declares for the metric, and
+    so is a valid measurement of it, as a live evaluation enforces: a record consistent in
+    another unit would compare its value with a limit in the wrong one."""
     for constraint in spec.constraints:
-        measurement = value(constraint.stage, constraint.metric)
-        if constraint.unit is None or measurement is None or measurement.unit == constraint.unit:
+        if constraint.unit is None:
             continue
-        raise RecordError(
-            f"{constraint.stage}/{constraint.metric} is measured in {measurement.unit!r}, but its "
-            f"constraint declares {constraint.unit!r}"
-        )
+        key = (constraint.stage, constraint.metric)
+        where = f"{key[0]}/{key[1]}: its constraint declares {constraint.unit!r}"
+        declared = evaluators[owners[key]].declared
+        if declared is not None and declared[key] != constraint.unit:
+            raise RecordError(f"{where}, but its owner {owners[key]!r} declares {declared[key]!r}")
+        measurement = value(*key)  # None unless the owner is valid, as live
+        if measurement is not None and measurement.unit != constraint.unit:
+            raise RecordError(f"{where}, but it is measured in {measurement.unit!r}")
 
 
 def _check_metrics(

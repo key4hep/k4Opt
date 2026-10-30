@@ -16,7 +16,7 @@ class ProblemConfigError(ConfigError):
 
 class RunError(K4OptError):
     """A candidate cannot be evaluated: its run directory exists, a stage file supplied for it
-    is unusable, or a file the problem names changed after the problem was loaded."""
+    is unusable, or a file the stages read changed during an evaluation session."""
 
 
 class RecordError(K4OptError):

@@ -71,7 +71,8 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    - `evaluators`, in problem order: name, version, the stage it reads, its source identity
      (`source`: path, size and SHA-256 of the file defining its class, taken at import,
      whether they are the bytes `executed`, and the `revision` of the git checkout that tracks
-     it; [details](evaluation.md#loading-an-evaluator)), status, message,
+     it; [details](evaluation.md#loading-an-evaluator)), the metrics it declares with their
+     units (`metrics`, `null` if it declares none), status, message,
      settings (`declared` as the problem wrote them, `used` as the evaluator received them, with
      defaults and quantities in the declared unit), the collection of each role, the stages it
      read, its measurements with uncertainty, the artifacts and
