@@ -236,6 +236,7 @@ def test_the_assessment_is_plain_json() -> None:
 
 RADIUS = "constants.InnerTracker_Barrel_radius_1"
 ECHO = ("analysis", "candidate.first_value")
+COST = ("analysis", "readout.cost")
 
 
 class Echo:
@@ -253,11 +254,23 @@ class Echo:
         return EvaluationResult.valid(measured)
 
 
-@pytest.fixture
-def session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> EvaluationSession:
-    """A session on the mini geometry whose evaluator reads no stage, so nothing simulates."""
-    monkeypatch.setenv("K4GEO", str(MINI_GEO))
-    data = document([{"metric": ECHO[1], "max": 500, "unit": "1"}], [ECHO], ["test.echo"])
+class Cost:
+    """A constant readout cost, a second evaluator that reads no stage."""
+
+    name = "test.cost"
+    version = "1"
+    metrics = {COST: "1"}
+
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        return EvaluationResult.valid([Measurement(*COST, 7.0, "1")])
+
+
+def open_session(tmp_path: Path, *evaluators: Any) -> EvaluationSession:
+    """A session on the mini geometry whose evaluators read no stage, so nothing simulates; the
+    first evaluator's metric is the first objective and is constrained."""
+    objectives = [next(iter(evaluator.metrics)) for evaluator in evaluators]
+    names = [evaluator.name for evaluator in evaluators]
+    data = document([{"metric": ECHO[1], "max": 500, "unit": "1"}], objectives, names)
     data["geometry"] = MINI_COMPACT
     data["parameters"][0] = {
         "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
@@ -267,7 +280,17 @@ def session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> EvaluationSessio
     }
     path = tmp_path / "problem.yaml"
     path.write_text(yaml.safe_dump(data))
-    return EvaluationSession.open(path, [Echo()])
+    return EvaluationSession.open(path, list(evaluators))
+
+
+@pytest.fixture(autouse=True)
+def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("K4GEO", str(MINI_GEO))
+
+
+@pytest.fixture
+def session(tmp_path: Path) -> EvaluationSession:
+    return open_session(tmp_path, Echo())
 
 
 def summary_of(session: EvaluationSession, value: float, output: Path) -> dict[str, Any]:
@@ -426,3 +449,36 @@ def test_an_unusable_record_must_say_why(
     change(data)
     with pytest.raises(RecordError, match=re.escape(message)):
         Assessment.from_summary(session.spec, data)
+
+
+def _also_declared(data: dict[str, Any]) -> None:
+    """The second evaluator claims the first one's metric too."""
+    data["evaluators"][1]["metrics"].append({"stage": ECHO[0], "metric": ECHO[1], "unit": "1"})
+
+
+def _reported_by_another(data: dict[str, Any]) -> None:
+    """The second evaluator reports the first one's metric, which it does not declare."""
+    measured = {"stage": ECHO[0], "metric": ECHO[1], "value": 1.0, "unit": "1"}
+    data["evaluators"][1]["measurements"].append(measured | {"uncertainty": None})
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (_also_declared, "is declared by evaluators 'test.echo' and 'test.cost'; a metric has"),
+        (_reported_by_another, "'test.cost' reported analysis/candidate.first_value, a metric of"),
+        (_set("evaluators.1.metrics", None), "evaluator(s) 'test.cost' declare no metrics"),
+    ],
+)
+def test_the_evaluators_of_a_record_declare_their_metrics_as_live_ones_do(
+    tmp_path: Path, change: Callable[[dict[str, Any]], None], message: str
+) -> None:
+    pair = open_session(tmp_path, Echo(), Cost())
+    data = summary_of(pair, 450.0, tmp_path / "run")
+    assert [e["metrics"] for e in data["evaluators"]] == [
+        [{"stage": ECHO[0], "metric": ECHO[1], "unit": "1"}],
+        [{"stage": COST[0], "metric": COST[1], "unit": "1"}],
+    ]
+    change(data)
+    with pytest.raises(RecordError, match=re.escape(message)):
+        Assessment.from_summary(pair.spec, data)

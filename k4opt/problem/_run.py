@@ -295,7 +295,7 @@ def _summary(
     geometry: object,
     taken: Mapping[str, Mapping[str, Json]],
     run: object,
-    code: Mapping[str, Json],
+    process: Mapping[str, Json],
 ) -> dict[str, object]:
     stages = candidate.stages
     simulation = stages.provenance.get("simulation", {})
@@ -361,7 +361,7 @@ def _summary(
             "observed": {
                 "k4opt": __version__,
                 # what the version only labels: the content of its code, and its checkout
-                "k4opt_source": thaw(code),
+                "k4opt_source": thaw(process["k4opt"]),
                 "KEY4HEP_STACK": os.environ.get("KEY4HEP_STACK"),
                 "K4GEO": os.environ.get("K4GEO"),
                 "ddsim": argv[0] if isinstance(argv, (list, tuple)) and argv else None,
@@ -383,11 +383,11 @@ class EvaluationSession:
     """
 
     __slots__ = (
-        "_code",
         "_evaluators",
         "_files",
         "_inputs",
         "_path",
+        "_process",
         "_spec",
         "_taken",
         "_warnings",
@@ -402,7 +402,7 @@ class EvaluationSession:
         files: Mapping[str, tuple[Path, Mapping[str, Json] | None]],
         taken: Mapping[str, Mapping[str, Json]],
         warnings: tuple[str, ...],
-        code: Mapping[str, Json],
+        process: Mapping[str, Json],
     ) -> None:
         """Use :meth:`open`."""
         self._path = path
@@ -412,7 +412,7 @@ class EvaluationSession:
         self._files = FrozenMap(files)
         self._taken = FrozenMap(taken)
         self._warnings = warnings
-        self._code = code
+        self._process = process
 
     @classmethod
     def open(
@@ -448,9 +448,12 @@ class EvaluationSession:
             assert isinstance(frozen, Mapping)
             taken[evaluator.name] = frozen
         # before anything runs, so that an edit to the checkout during a long run is not
-        # recorded as the code that ran
-        code = freeze(code_identity(), "k4opt source", RunError)
-        assert isinstance(code, Mapping)
+        # recorded as the code that ran, nor a later change of the environment as the session's
+        environment = {name: os.environ.get(name) for name in ("KEY4HEP_STACK", "K4GEO")}
+        process = freeze(
+            {"k4opt": code_identity(), "environment": environment}, "process", RunError
+        )
+        assert isinstance(process, Mapping)
         return cls(
             path.absolute(),
             spec,
@@ -459,7 +462,7 @@ class EvaluationSession:
             files,
             taken,
             binding.warnings,
-            code,
+            process,
         )
 
     @property
@@ -488,14 +491,15 @@ class EvaluationSession:
         ``evaluators``: the name, version, source identity and declared metrics of each, in
         problem order; ``geometry``: the compact file, the source root and
         the fingerprint of the unmodified geometry; ``environment``: ``KEY4HEP_STACK`` and
-        ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its git checkout, taken
-        when the session opened, as every summary records them. A fresh copy on every call.
+        ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its git checkout, as every
+        summary records them. The environment and k4opt are taken when the session opened. A
+        fresh copy on every call.
         """
         source, catalog = self._spec._source, self._spec._catalog
         assert source is not None
         assert catalog is not None
-        code = thaw(self._code)
-        assert isinstance(code, dict)
+        process = thaw(self._process)
+        assert isinstance(process, dict)
         return {
             "problem": {"path": str(self._path), "definition": self._spec.to_dict()},
             "inputs": {
@@ -512,8 +516,8 @@ class EvaluationSession:
                 "source_root": str(source.root),
                 "fingerprint": source.fingerprint([], catalog=catalog),
             },
-            "environment": {name: os.environ.get(name) for name in ("KEY4HEP_STACK", "K4GEO")},
-            "k4opt": {"version": __version__, **code},
+            "environment": process["environment"],
+            "k4opt": {"version": __version__, **process["k4opt"]},
         }
 
     def verify_inputs(self) -> None:
@@ -612,7 +616,7 @@ class EvaluationSession:
             geometry,
             self._taken,
             reference,
-            self._code,
+            self._process,
         )
         try:
             write_json(run_dir / SUMMARY_NAME, summary)

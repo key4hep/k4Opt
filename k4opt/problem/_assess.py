@@ -111,16 +111,17 @@ class Assessment:
         """Recompute the assessment of a run record (``summary.json`` as read back) and check
         the record against it.
 
-        The candidate's status and message are recomputed from its evaluators' (``failed``
-        before ``invalid`` before ``valid``), and each objective and constraint value is taken
-        from the own measurements of the evaluator that ``metrics`` names as its owner, if that
-        evaluator is ``valid``. The rules a live evaluation enforces are checked again: an
-        ``invalid`` or ``failed`` evaluator has a message, a measurement of a metric its
-        evaluator declares carries the declared unit, the owner declares the metric it owns, and
-        a constraint's unit is that of its metric. Raises :class:`~k4opt.problem.RecordError` if
-        the record is malformed or breaks one of those rules, was made for another problem (its
-        definition differs other than in ``name``), or if its ``status``, ``message``,
-        ``metrics`` or ``assessment`` disagree with the recomputation.
+        The candidate's status and message are recomputed from its evaluators' (``failed`` before
+        ``invalid`` before ``valid``), and each objective and constraint value is taken from the own
+        measurements of the evaluator that ``metrics`` names as its owner, if that evaluator is
+        ``valid``. The rules a live evaluation enforces are checked again: an ``invalid`` or
+        ``failed`` evaluator has a message, a measurement of a metric its evaluator declares carries
+        the declared unit, each of several evaluators declares its metrics, no metric is declared
+        twice or reported by an evaluator that does not declare it, the owner declares the metric it
+        owns, and a constraint's unit is that of its metric. Raises
+        :class:`~k4opt.problem.RecordError` if the record is malformed or breaks one of those rules,
+        was made for another problem (its definition differs other than in ``name``), or if its
+        ``status``, ``message``, ``metrics`` or ``assessment`` disagree with the recomputation.
         """
         record = _mapping(summary, "record")
         if record.get("schema") != SUMMARY_SCHEMA:
@@ -310,7 +311,35 @@ def _evaluators(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, _E
                 )
             own[key] = measurement
         evaluators[name] = _Evaluator(Status(status), message, own, declared)
+    _check_declarations(evaluators)
     return evaluators
+
+
+def _check_declarations(evaluators: Mapping[str, _Evaluator]) -> None:
+    """The metric declarations of several evaluators, as a live evaluation binds them: each
+    declares its metrics, no metric has two of them, and none reports another's metric."""
+    silent = [name for name, evaluator in evaluators.items() if evaluator.declared is None]
+    if len(evaluators) > 1 and silent:
+        raise RecordError(
+            f"evaluator(s) {', '.join(map(repr, silent))} declare no metrics, but each of several "
+            "evaluators declares the metrics it measures"
+        )
+    declarer: dict[MetricKey, str] = {}
+    for name, evaluator in evaluators.items():
+        for key in evaluator.declared or {}:
+            if key in declarer:
+                raise RecordError(
+                    f"metric {key[0]}/{key[1]} is declared by evaluators {declarer[key]!r} and "
+                    f"{name!r}; a metric has one owner"
+                )
+            declarer[key] = name
+    for name, evaluator in evaluators.items():
+        for key in evaluator.measured:
+            if declarer.get(key, name) != name:
+                raise RecordError(
+                    f"evaluator {name!r} reported {key[0]}/{key[1]}, a metric of evaluator "
+                    f"{declarer[key]!r}"
+                )
 
 
 def _text(value: object, where: str) -> str:

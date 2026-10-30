@@ -1366,6 +1366,8 @@ def test_the_code_that_ran_is_identified_before_it_runs(
         observed = outcome.summary["environment"]["observed"]  # type: ignore[index]
         assert observed["k4opt_source"] == {"sha256": "opened", "git": None}
     assert session.identity()["k4opt"]["sha256"] == "opened"  # type: ignore[index]
+    monkeypatch.setenv("KEY4HEP_STACK", "/another/stack")  # the process changes, the session not
+    assert session.identity()["environment"]["KEY4HEP_STACK"] != "/another/stack"  # type: ignore[index]
 
 
 def test_a_run_reference_is_recorded_as_given(

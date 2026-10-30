@@ -457,12 +457,13 @@ candidate with a `RunError` before anything is created; `verify_inputs()` checks
 `evaluate(candidate, output, run=...)` records `run`, any JSON-compatible mapping, as the
 summary's `run` (a study and trial, say; `null` for `k4opt evaluate`). `identity()` returns what
 the session evaluates with: the problem's path and definition, the identities of the files the
-stages read, the evaluators' names, versions, sources and declared metrics, the compact file, source root and
-fingerprint of the unmodified geometry, `KEY4HEP_STACK` and `K4GEO`, and k4opt's version, code
-SHA-256 and checkout. Those last are taken when the session opens, before anything runs, and
-every summary of the session records them, so an edit to the k4opt checkout during a long run is
-not recorded as the code that ran (a hash cannot prove which code Python executed, only narrow
-the gap). A session evaluates one candidate at a time and is not thread-safe.
+stages read, the evaluators' names, versions, sources and declared metrics, the compact file,
+source root and fingerprint of the unmodified geometry, `KEY4HEP_STACK` and `K4GEO`, and k4opt's
+version, code SHA-256 and checkout. The environment and k4opt's identity are taken when the
+session opens, before anything runs, and every summary of the session records the same k4opt
+identity, so an edit to the k4opt checkout during a long run is not recorded as the code that
+ran (a hash cannot prove which code Python executed, only narrow the gap). A session evaluates
+one candidate at a time and is not thread-safe.
 
 ### Assessment: objectives, limits and feasibility
 
@@ -490,12 +491,13 @@ objective values; it is only outside the limits.
 back: the candidate's status from its evaluators', each objective and constraint value from the
 own measurements of the evaluator that `metrics` names as its owner. It checks again what a live
 evaluation enforces: an `invalid` or `failed` evaluator gives a message, each measurement of a
-metric its evaluator declares carries the declared unit, an owner declares the metrics it owns,
-and a constraint that declares a unit is in the unit of its metric. It raises `RecordError` if
-the record is malformed or breaks one of those rules, was made for another problem (its
-definition differs, other than in `name`), or if its `status`, `message`, `metrics` or
-`assessment` disagree with that recomputation, so any reader can check a record before trusting
-it.
+metric its evaluator declares carries the declared unit, each of several evaluators declares its
+metrics, no metric is declared by two of them or reported by one that does not declare it, an
+owner declares the metrics it owns, and a constraint that declares a unit is in the unit of its
+metric. It raises `RecordError` if the record is malformed or breaks one of those rules, was
+made for another problem (its definition differs, other than in `name`), or if its `status`,
+`message`, `metrics` or `assessment` disagree with that recomputation, so any reader can check a
+record before trusting it.
 
 ## Deliberately deferred
 
