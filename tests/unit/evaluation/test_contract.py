@@ -343,6 +343,18 @@ def test_candidate_values_are_scalars() -> None:
         EvaluationRequest(candidate={"": 1})
 
 
+def test_collections_are_copied_and_must_name_collections() -> None:
+    roles = {"hits": "ECalBarrelCollection"}
+    request = EvaluationRequest(collections=roles)
+    roles["hits"] = "Other"
+    assert request.collections == {"hits": "ECalBarrelCollection"}
+    with pytest.raises(TypeError):
+        request.collections["hits"] = "Other"  # type: ignore[index]
+    for bad in ({"hits": ""}, {"": "C"}, {"hits": 3}):
+        with pytest.raises(EvaluationContractError, match="collections"):
+            EvaluationRequest(collections=bad)  # type: ignore[arg-type]
+
+
 def test_path_inputs_are_preserved(tmp_path: Path) -> None:
     rel = Path("../data/x.root")
     request = EvaluationRequest(inputs={"edm4hep": rel}, workdir=Path("w"))
@@ -390,7 +402,7 @@ def test_package_does_not_pull_in_problem_or_geometry() -> None:
     )
 
 
-@pytest.mark.parametrize("field", ["candidate", "settings", "inputs"])
+@pytest.mark.parametrize("field", ["candidate", "settings", "collections", "inputs"])
 def test_request_mappings_must_be_mappings(field: str) -> None:
     with pytest.raises(EvaluationContractError, match=field):
         EvaluationRequest(**{field: [("a", 1)]})  # type: ignore[arg-type]

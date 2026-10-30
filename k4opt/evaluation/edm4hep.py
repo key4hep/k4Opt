@@ -9,7 +9,7 @@ reader) is an :class:`EvaluationFailed`, which ``k4opt`` reports as a ``failed``
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -67,37 +67,93 @@ def count_events(path: Path) -> int:
         return len(_frames(path))
 
 
-def read_collection(path: Path, collection: str, value_type: str) -> Iterator[Any]:
-    """The collection ``collection`` of each event of ``path`` as a list, in file order.
+def _full_type(value_type: str) -> str:
+    """``SimCalorimeterHit`` as podio names it, ``edm4hep::SimCalorimeterHit``."""
+    return value_type if "::" in value_type else f"edm4hep::{value_type}"
 
-    ``value_type`` is the podio type of its elements, ``"SimCalorimeterHit"`` or
-    ``"edm4hep::SimCalorimeterHit"`` (the ``edm4hep::`` prefix is implied). An existing but
-    empty collection is yielded like any other. A collection that is missing in an event, or
-    holds another type, raises :class:`EvaluationFailed` when that event is reached, never an
-    empty result. Each list keeps its event in memory, so lists can be kept and used after the
-    next event is read. A file that ends before the number of events it records raises once the
-    last event was read.
+
+class Event:
+    """One event of an EDM4hep file. Each collection read from it is an attribute named after
+    its role (``event.hits``): the list of its elements in this event."""
+
+    __slots__ = ("_collections",)
+
+    def __init__(self, collections: Mapping[str, list[Any]]) -> None:
+        self._collections = dict(collections)
+
+    def __getattr__(self, role: str) -> list[Any]:
+        if role.startswith("_"):  # not a role; also keeps copying and pickling from recursing
+            raise AttributeError(role)
+        try:
+            return self._collections[role]
+        except KeyError:
+            roles = ", ".join(self._collections)
+            raise AttributeError(f"the event has no collection {role!r}; it has {roles}") from None
+
+    def __repr__(self) -> str:
+        sizes = ", ".join(f"{role}={len(elements)}" for role, elements in self._collections.items())
+        return f"Event({sizes})"
+
+
+def read_events(path: Path, collections: Mapping[str, tuple[str, str]]) -> Iterator[Event]:
+    """Each event of ``path``, in file order, with the collections ``collections`` names.
+
+    ``collections`` maps a role to ``(collection, value_type)``; ``value_type`` is the podio type
+    of the elements, ``"SimCalorimeterHit"`` or ``"edm4hep::SimCalorimeterHit"`` (the
+    ``edm4hep::`` prefix is implied). All collections of an :class:`Event` come from the same
+    event (podio frame), so they belong to the same physics event; nothing is matched up across
+    files. An existing but empty collection is read like any other. A collection that is missing
+    in an event, or holds another type, raises :class:`EvaluationFailed` when that event is
+    reached, never an empty result. Each list keeps its event in memory, so lists can be kept
+    and used after the next event is read. A file that ends before the number of events it
+    records raises once the last event was read.
     """
-    if "::" not in value_type:
-        value_type = f"edm4hep::{value_type}"
+    wanted = {
+        role: (name, _full_type(value_type)) for role, (name, value_type) in collections.items()
+    }
     with _unreadable(path):
         frames = _frames(path)
         entries, read = len(frames), 0
         for index, event in enumerate(frames):
             read = index + 1
-            if collection not in event.getAvailableCollections():
-                raise EvaluationFailed(
-                    f"collection {collection!r} is missing in event {index} of {path.name}"
-                )
-            elements = event.get(collection)
-            found = _type_name(elements.getValueTypeName())
-            if found != value_type:
-                raise EvaluationFailed(
-                    f"collection {collection!r} holds {found!r}, expected {value_type!r}"
-                )
-            # read here, where a failing reader is reported, not where the caller uses them
-            yield _Elements(elements, event)
+            available = event.getAvailableCollections()
+            found: dict[str, list[Any]] = {}
+            for role, (name, value_type) in wanted.items():
+                if name not in available:
+                    raise EvaluationFailed(
+                        f"collection {name!r} is missing in event {index} of {path.name}"
+                    )
+                elements = event.get(name)
+                held = _type_name(elements.getValueTypeName())
+                if held != value_type:
+                    raise EvaluationFailed(
+                        f"collection {name!r} holds {held!r}, expected {value_type!r}"
+                    )
+                # read here, where a failing reader is reported, not where the caller uses them
+                found[role] = _Elements(elements, event)
+            yield Event(found)
         # the event count checked by k4opt is the number of entries the file records; a damaged
         # file can stop earlier without raising
         if read != entries:
             raise EvaluationFailed(f"{path.name} records {entries} events, but {read} were read")
+
+
+def read_collection(path: Path, collection: str, value_type: str) -> Iterator[Any]:
+    """The collection ``collection`` of each event of ``path`` as a list, in file order.
+
+    The one-collection form of :func:`read_events`, with the same rules.
+    """
+    for event in read_events(path, {"elements": (collection, value_type)}):
+        yield event.elements
+
+
+def collection_types(path: Path) -> dict[str, str]:
+    """The collections of the first event of ``path``, with the type of their elements
+    (``edm4hep::SimCalorimeterHit``); empty for a file without events."""
+    with _unreadable(path):
+        for event in _frames(path):
+            return {
+                str(name): _type_name(event.get(name).getValueTypeName())
+                for name in event.getAvailableCollections()
+            }
+    return {}

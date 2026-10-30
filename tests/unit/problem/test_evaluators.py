@@ -12,6 +12,7 @@ import pytest
 
 from k4opt.ddsim import run as ddsim_run
 from k4opt.evaluation import (
+    Collection,
     EvaluationContractError,
     EvaluationRequest,
     EvaluationResult,
@@ -23,7 +24,7 @@ from k4opt.problem import ProblemSpec, _evaluate, _stages, parse_problem
 from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate
 from tests.support import simulation
 from tests.support.evaluators import cell_count, hit_energy, parameter_echo
-from tests.support.simulation import COLLECTION, events_with
+from tests.support.simulation import COLLECTION, Event, Hits, events_with
 
 CELL = "constants.ECal_cell_size"
 GUN = {
@@ -34,9 +35,8 @@ GUN = {
 CELLS = ("simulation", "ecal_barrel.mean_hit_cells")  # test.cell_count
 ENERGY = ("simulation", "ecal_barrel.mean_hit_energy")  # test.hit_energy
 ECHO = ("analysis", "candidate.first_value")  # test.parameter_echo
-SETTINGS = {
-    name: {"collection": COLLECTION}
-    for name in ("test.cell_count", "test.hit_energy", "test.busiest")
+COLLECTIONS = {
+    name: {"hits": COLLECTION} for name in ("test.cell_count", "test.hit_energy", "test.busiest")
 }
 # the stage each evaluator of these tests reads; the others read none
 STAGES = {
@@ -62,7 +62,7 @@ def problem(
     doc["evaluators"] = [
         {"name": name, "version": "1"}
         | ({"stage": STAGES[name]} if name in STAGES else {})
-        | ({"settings": SETTINGS[name]} if name in SETTINGS else {})
+        | ({"collections": COLLECTIONS[name]} if name in COLLECTIONS else {})
         for name in names
     ]
     read = {STAGES[name] for name in names if name in STAGES}
@@ -107,6 +107,7 @@ class Spy:
         self.inner, self.log = inner, log
         self.name, self.version = inner.name, inner.version
         self.stage, self.metrics = inner.stage, inner.metrics
+        self.collections = inner.collections
         self.evaluated: list[EvaluationRequest] = []
 
     def check(self, request: EvaluationRequest) -> None:
@@ -242,7 +243,7 @@ def test_an_evaluator_is_given_the_same_request_alone_and_among_others(
     )
     evaluate(spec, others, tmp_path / "among", geometry)
     first, second = alone.evaluated[0], among.evaluated[0]
-    for field in ("candidate", "settings", "events", "seed"):
+    for field in ("candidate", "settings", "collections", "events", "seed"):
         assert getattr(first, field) == getattr(second, field)
     assert set(first.inputs) == set(second.inputs)
 
@@ -522,16 +523,16 @@ def test_the_stage_in_the_problem_must_be_the_one_the_evaluator_reads(
     assert log == [] and not (tmp_path / "run").exists()
 
 
-def test_invalid_settings_of_the_second_evaluator_are_refused_before_anything_runs(
+def test_invalid_collections_of_the_second_evaluator_are_refused_before_anything_runs(
     doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
 ) -> None:
     spec = problem(doc, "test.cell_count", "test.hit_energy")
     entries = (
         spec.evaluators[0],
-        dataclasses.replace(spec.evaluators[1], settings={"collection": 3}),
+        dataclasses.replace(spec.evaluators[1], collections={"hit": COLLECTION}),
     )
     spec = dataclasses.replace(spec, evaluators=entries)
-    with pytest.raises(EvaluationContractError, match=r"settings\.collection: expected str"):
+    with pytest.raises(EvaluationContractError, match=r"collections: .*unknown \['hit'\]"):
         evaluate(spec, [cell_count(), hit_energy()], tmp_path, geometry)
     assert log == [] and not (tmp_path / "run").exists()
 
@@ -639,14 +640,69 @@ def test_analysis_metrics_need_no_analysis_stage(
         name = "test.busiest"
         version = "1"
         stage = "simulation"
-        settings = {"collection": str}
+        collections = {"hits": Collection("SimCalorimeterHit")}
         metrics = {("analysis", "ecal.max_hits"): "1"}
 
         def evaluate(self, request: EvaluationRequest) -> Any:
-            hits = self.read(request, request.settings["collection"], "SimCalorimeterHit")
-            return {("analysis", "ecal.max_hits"): max(len(event) for event in hits)}
+            busiest = max(len(event.hits) for event in self.events(request))
+            return {("analysis", "ecal.max_hits"): busiest}
 
     spec = problem(doc, "test.busiest", objectives=(("analysis", "ecal.max_hits"),))
     candidate = evaluate(spec, [Busiest()], tmp_path, geometry)
     assert list(candidate.stages.provenance) == ["generation", "simulation"]
     assert candidate.value("analysis", "ecal.max_hits").value == 4
+
+
+# --- the collections an evaluator declares are checked in the file before it is called ---
+
+
+@pytest.mark.parametrize(
+    ("events", "message"),
+    [
+        (
+            [Event(Other=Hits([1]))],
+            f"collection {COLLECTION!r} (hits) is not in events.edm4hep.root, which holds: "
+            "Other (SimCalorimeterHit)",
+        ),
+        (
+            [Event(**{COLLECTION: Hits([1], "edm4hep::SimTrackerHit")})],
+            f"collection {COLLECTION!r} (hits) holds 'edm4hep::SimTrackerHit', but the evaluator "
+            "reads 'edm4hep::SimCalorimeterHit'",
+        ),
+    ],
+)
+def test_a_collection_missing_from_the_output_fails_the_evaluator_before_it_is_called(
+    doc: dict[str, Any],
+    tmp_path: Path,
+    geometry: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    message: str,
+) -> None:
+    simulation.install(monkeypatch, events * 3)  # the 3 events the problem asks for
+    spec = problem(doc, "test.cell_count", "test.parameter_echo", objectives=(CELLS, ECHO))
+    cells = Spy(cell_count(), [])
+    candidate = evaluate(spec, [cells, parameter_echo()], tmp_path, geometry)
+    counted, echo = candidate.records
+    assert counted.result.status is Status.FAILED and counted.result.message == message
+    assert cells.evaluated == [] and counted.elapsed_seconds is None
+    # a scientific verdict is the evaluator's to give; the evaluator that needs no file still ran
+    assert echo.result.status is Status.VALID and candidate.status is Status.FAILED
+
+
+def test_the_collections_of_a_file_are_listed_once_for_all_its_readers(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    listed: list[Path] = []
+    real = _evaluate.collection_types
+
+    def counting(path: Path) -> dict[str, str]:
+        listed.append(path)
+        return real(path)
+
+    monkeypatch.setattr(_evaluate, "collection_types", counting)
+    spec = problem(doc, "test.cell_count", "test.hit_energy", objectives=(CELLS, ENERGY))
+    candidate = evaluate(spec, [cell_count(), hit_energy()], tmp_path, geometry)
+    assert candidate.status is Status.VALID
+    assert listed == [tmp_path / "run" / "simulation" / "events.edm4hep.root"]

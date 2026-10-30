@@ -9,9 +9,25 @@ from typing import Any
 
 import pytest
 
-from k4opt.evaluation import EvaluationFailed, count_events, edm4hep, read_collection
+from k4opt.evaluation import (
+    EvaluationFailed,
+    collection_types,
+    count_events,
+    edm4hep,
+    read_collection,
+    read_events,
+)
 from tests.support import simulation
-from tests.support.simulation import COLLECTION, HIT_TYPE, Event, Hits, events_with
+from tests.support.simulation import (
+    COLLECTION,
+    HIT_TYPE,
+    PARTICLE_TYPE,
+    Event,
+    Hits,
+    Particle,
+    Particles,
+    events_with,
+)
 
 PATH = Path("events.edm4hep.root")
 
@@ -170,3 +186,34 @@ def test_without_podio_reading_fails_with_a_hint(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setitem(__import__("sys").modules, "podio", None)
     with pytest.raises(EvaluationFailed, match="podio is not available"):
         count_events(PATH)
+
+
+def test_the_collections_of_an_event_come_from_that_one_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    photon = Particle(momentum=(1.0, 0.0, 0.0))
+    frames = [
+        Event(**{COLLECTION: Hits([1, 2]), "MCParticles": Particles([photon])}),
+        Event(**{COLLECTION: Hits([]), "MCParticles": Particles([photon, photon])}),
+    ]
+    simulation.install_events(monkeypatch, frames)
+    wanted = {
+        "hits": (COLLECTION, "SimCalorimeterHit"),
+        "particles": ("MCParticles", PARTICLE_TYPE),
+    }
+    events = list(read_events(PATH, wanted))
+    assert [(len(e.hits), len(e.particles)) for e in events] == [(2, 1), (0, 2)]
+    assert events[0].hits.event is frames[0] and events[0].particles.event is frames[0]
+    assert repr(events[1]) == "Event(hits=0, particles=2)"
+
+
+def test_the_collections_of_a_file_are_listed_with_their_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    photon = Particle(momentum=(1.0, 0.0, 0.0))
+    simulation.install_events(
+        monkeypatch, [Event(**{COLLECTION: Hits([1]), "MCParticles": Particles([photon])})]
+    )
+    assert collection_types(PATH) == {COLLECTION: HIT_TYPE, "MCParticles": PARTICLE_TYPE}
+    simulation.install_events(monkeypatch, [])
+    assert collection_types(PATH) == {}

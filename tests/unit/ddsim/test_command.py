@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from k4opt.ddsim import DdsimError
+from k4opt.ddsim import DdsimError, output_collections
 from k4opt.ddsim.command import ddsim_arguments, managed_conflict, option_args, particle_gun_args
 from k4opt.frozen import freeze
 
@@ -337,3 +337,16 @@ def test_exactly_one_of_particle_gun_and_sample_is_needed(sample: Path | None) -
             sample=sample,
             options={},
         )
+
+
+def test_the_expected_output_names_a_collection_after_each_readout() -> None:
+    # as ddsim wrote them for CLD_o2_v09: a hit collection per readout, contributions next to
+    # the calorimeter ones, and the particles and the event header
+    assert output_collections(["ECalBarrelCollection", "VertexBarrelCollection"]) == {
+        "ECalBarrelCollection",
+        "ECalBarrelCollectionContributions",
+        "VertexBarrelCollection",
+        "VertexBarrelCollectionContributions",
+        "MCParticles",
+        "EventHeader",
+    }

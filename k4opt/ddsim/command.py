@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 from k4opt.ddsim.errors import DdsimError
@@ -81,6 +81,20 @@ _NESTED = (
     "write each option under its full ddsim name (physics.list: FTFP_BERT), not as a nested mapping"
 )
 _OPTION_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)?")
+
+
+def output_collections(readouts: Iterable[str]) -> frozenset[str]:
+    """The collections ddsim is expected to write for a geometry with these ``readouts``: one per
+    readout, a ``<readout>Contributions`` next to each (written for calorimeters),
+    ``MCParticles`` and ``EventHeader``.
+
+    An expectation, checked on CLD_o2_v09, not a guarantee: the type of a sensitive detector is
+    set in its C++ code, and DDG4 actions may define collections of their own.
+    """
+    names = set(readouts)
+    return frozenset(
+        names | {f"{name}Contributions" for name in names} | {"MCParticles", "EventHeader"}
+    )
 
 
 def _fail(path: str, message: str) -> DdsimError:

@@ -131,25 +131,30 @@ class EvaluatorSpec:
     """One evaluator of a problem: the label of its measurement contract and its settings.
 
     ``name`` and ``version`` must equal those of the evaluator that measures, and so must
-    ``stage``, the pipeline stage it reads (``None``: it reads none); ``settings`` is owned by
-    that evaluator's contract.
+    ``stage``, the pipeline stage it reads (``None``: it reads none). ``collections`` names the
+    collection of that stage's file for each role the evaluator declares; ``settings`` is owned
+    by that evaluator's contract.
     """
 
     name: str
     version: str
     settings: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
     stage: str | None = None
+    collections: Mapping[str, str] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
         # Direct construction gets the same defensive copy as parsing does.
         settings = freeze(self.settings, "settings")
         assert isinstance(settings, Mapping)
         object.__setattr__(self, "settings", settings)
+        object.__setattr__(self, "collections", FrozenMap(self.collections))
 
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {"name": self.name, "version": self.version}
         if self.stage is not None:
             data["stage"] = self.stage
+        if self.collections:
+            data["collections"] = dict(self.collections)
         if self.settings:
             data["settings"] = thaw(self.settings)
         return data

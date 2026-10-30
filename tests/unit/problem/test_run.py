@@ -20,8 +20,11 @@ from k4opt.errors import K4OptError
 from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRequest,
+    Quantity,
+    collection_names,
     metric_units,
     result_from,
+    with_defaults,
 )
 from k4opt.geometry import GeometrySource, Override
 from k4opt.problem import CandidateError, ProblemConfigError, load_problem, parse_problem
@@ -43,6 +46,12 @@ from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.simulation import COLLECTION, events_with
 
 RADIUS = "constants.InnerTracker_Barrel_radius_1"
+# the mini geometry has no calorimeter, so ddsim is not expected to write the collection the test
+# evaluator reads; the fake ddsim writes it anyway, and the output decides
+UNEXPECTED = (
+    f"evaluator 'test.cell_count': ddsim is not expected to write the collection {COLLECTION!r} "
+    f"(hits) for {MINI_COMPACT}"
+)
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
 
 
@@ -70,7 +79,7 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
             "name": "test.cell_count",
             "version": "1",
             "stage": "simulation",
-            "settings": {"collection": COLLECTION},
+            "collections": {"hits": COLLECTION},
         }
     ]
     doc["objectives"] = [
@@ -185,7 +194,10 @@ def test_summary_is_written_and_truthful(
     assert simulated["argv"][0] == "/stack/bin/ddsim"
     assert (simulated["returncode"], simulated["events_read"]) == (0, 3)
     assert "error" not in simulated
-    assert evaluator["settings"] == {"collection": COLLECTION}
+    assert evaluator["settings"] == {"declared": {}, "used": {}}
+    assert evaluator["collections"] == {"hits": COLLECTION}
+    (warning,) = on_disk["warnings"]
+    assert warning.startswith(UNEXPECTED) and warning.endswith("The simulation's output decides.")
     assert evaluator["stage"] == "simulation"
     # the code of the evaluator, which its name and version only label
     source = Path(evaluator["source"]["path"])
@@ -327,7 +339,7 @@ def test_an_unusable_output_location_is_a_clean_error(
         str(problem_file), "--param", f"{RADIUS}=450", "--output", str(blocker / "run")
     )
     assert (code, out) == (1, "")
-    assert err.startswith("k4opt: error: ")
+    assert errors(err).startswith("k4opt: error: ")
     assert "materialization failed" in err
     assert blocker.read_text() == "data"
     assert fake.calls == []
@@ -562,10 +574,22 @@ def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> Non
         ("simulation", "ecal_barrel.angular_residual"): "mrad",
         ("simulation", "ecal_barrel.fired_cells"): "1",
     }
-    evaluator.check(EvaluationRequest(settings=entry.settings))
+    # the request the framework builds: the threshold in GeV, the hits and the default particles
+    request = EvaluationRequest(
+        settings=with_defaults(evaluator, entry.settings),
+        collections=collection_names(evaluator, entry.collections),
+    )
+    evaluator.check(request)
+    assert request.settings == {"threshold": 70e-6}
+    assert request.collections == {"hits": "ECalBarrelCollection", "particles": "MCParticles"}
 
 
 # --- the command ---------------------------------------------------------------------------
+
+
+def errors(err: str) -> str:
+    """``err`` without the warnings printed before the run."""
+    return "".join(line for line in err.splitlines(True) if not line.startswith("k4opt: warning:"))
 
 
 def evaluate(*argv: str) -> tuple[int, str, str]:
@@ -588,7 +612,7 @@ def test_command_prints_the_result_and_exits_zero(
     assert "fingerprint: " in out
     assert f"summary:     {tmp_path / 'a' / SUMMARY_NAME}" in out
     assert "ddsim.stderr.log" in out
-    assert err == ""
+    assert err.startswith(f"k4opt: warning: {UNEXPECTED}")  # printed before anything ran
 
 
 def test_command_exits_nonzero_for_a_failed_run(
@@ -784,6 +808,7 @@ class Spy:
         self.inner: Any = cell_count()
         self.name, self.version = self.inner.name, self.inner.version
         self.stage, self.metrics = self.inner.stage, self.inner.metrics
+        self.collections = self.inner.collections
         self.checked: list[Any] = []
         self.evaluated: list[Any] = []
 
@@ -837,7 +862,7 @@ ECHO = ("analysis", "candidate.first_value")
 def declare(problem_file: Path, names: list[str], objectives: list[tuple[str, str]]) -> None:
     """Make the problem declare the test evaluators ``names`` and these objectives."""
     doc = yaml.safe_load(problem_file.read_text())
-    reads = {"stage": "simulation", "settings": {"collection": COLLECTION}}
+    reads = {"stage": "simulation", "collections": {"hits": COLLECTION}}
     doc["evaluators"] = [
         {"name": name, "version": "1"} | ({} if name == "test.parameter_echo" else reads)
         for name in names
@@ -908,7 +933,7 @@ def test_a_failed_simulation_keeps_the_result_of_an_evaluator_that_needs_none(
         str(output),
     )
     assert code == 1
-    assert err.startswith("k4opt: evaluation failed: test.cell_count failed: ddsim exited")
+    assert errors(err).startswith("k4opt: evaluation failed: test.cell_count failed: ddsim exited")
     assert "evaluator:   test.parameter_echo 1: valid" in out
     summary = json.loads((output / SUMMARY_NAME).read_text())
     assert summary["status"] == "failed"
@@ -984,3 +1009,45 @@ def test_the_summary_is_the_same_for_the_same_candidate(
         return json.dumps(untimed(data))  # key order included
 
     assert normalized(first) == normalized(second)
+
+
+def test_a_misspelled_collection_warns_before_the_run_and_fails_after_it(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["evaluators"][0]["collections"] = {"hits": "InnerTrackerBarelCollection"}
+    problem_file.write_text(yaml.safe_dump(doc))
+    code, _, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
+    )
+    # the geometry suggests the readout meant, but only the simulation's output decides
+    assert err.startswith(
+        "k4opt: warning: evaluator 'test.cell_count': ddsim is not expected to write the "
+        "collection 'InnerTrackerBarelCollection' (hits) for "
+        f"{MINI_COMPACT}; did you mean 'InnerTrackerBarrelCollection'?"
+    )
+    assert code == 1 and len(fake.calls) == 1
+    summary = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
+    (evaluator,) = summary["evaluators"]
+    assert (evaluator["status"], evaluator["elapsed_seconds"]) == ("failed", None)
+    assert evaluator["message"] == (
+        "collection 'InnerTrackerBarelCollection' (hits) is not in events.edm4hep.root, which "
+        f"holds: {COLLECTION} (SimCalorimeterHit)"
+    )
+    assert len(summary["warnings"]) == 1
+
+
+def test_a_setting_with_a_unit_is_recorded_as_written_and_as_received(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["evaluators"][0]["settings"] = {"threshold": {"value": 70, "unit": "keV"}}
+    problem_file.write_text(yaml.safe_dump(doc))
+    gated = type("Gated", (type(cell_count()),), {"settings": {"threshold": Quantity("GeV")}})()
+    outcome = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[gated])
+    on_disk = json.loads(outcome.summary_path.read_text())
+    (evaluator,) = on_disk["evaluators"]
+    assert evaluator["settings"] == {
+        "declared": {"threshold": {"value": 70, "unit": "keV"}},
+        "used": {"threshold": 70e-6},
+    }

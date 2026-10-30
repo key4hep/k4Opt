@@ -16,11 +16,14 @@ two measurements, ``simulation`` / ``ecal_barrel.angular_residual`` and
 
 import numpy as np
 
-from k4opt.evaluation import Evaluator
+from k4opt.evaluation import Collection, Evaluator, Quantity
 
-# a cell fires above half the most probable energy a MIP leaves in 0.5 mm of silicon
-THRESHOLD = 70e-6  # GeV, the energy unit of EDM4hep
 PHOTON = 22  # PDG code
+
+
+def xyz(vector):
+    """An EDM4hep vector (a position, a momentum) as a numpy array."""
+    return np.array((vector.x, vector.y, vector.z))
 
 
 class CaloPhoton(Evaluator):
@@ -31,19 +34,25 @@ class CaloPhoton(Evaluator):
     # the stage it reads: k4opt runs the gun and ddsim first and checks the event count; the
     # problem's entry says the same, stage: simulation
     stage = "simulation"
-    # the settings of that entry: the calorimeter hits to read (required)
-    settings = {"collection": str}
+    # the collections it reads from that stage's file, by role, with the type of their elements:
+    # the problem names the calorimeter hits; the generated particles have a default name
+    collections = {
+        "hits": Collection("SimCalorimeterHit"),
+        "particles": Collection("MCParticle", default="MCParticles"),
+    }
+    # the settings of that entry: the threshold above which a cell fires (required). The problem
+    # writes it with any energy unit; the evaluator gets it in GeV, the energy unit of EDM4hep
+    settings = {"threshold": Quantity("GeV")}
     # metric -> unit; the metrics are classified under `stage`
     metrics = {"ecal_barrel.angular_residual": "mrad", "ecal_barrel.fired_cells": "1"}
 
     def evaluate(self, request):
+        threshold = request.settings["threshold"]
         residuals, fired_cells = [], []
-        # per event: the calorimeter hits and the generated particles
-        hits = self.read(request, request.settings["collection"], "SimCalorimeterHit")
-        particles = self.read(request, "MCParticles", "MCParticle")
-        for event_hits, event_particles in zip(hits, particles, strict=True):
+        # one event at a time, its hits and particles read from that same event
+        for event in self.events(request):
             # the particle of the gun, one per event
-            primaries = [p for p in event_particles if p.getGeneratorStatus() == 1]
+            primaries = [p for p in event.particles if p.getGeneratorStatus() == 1]
             if len(primaries) != 1:
                 self.fail(f"expected one generated particle per event, found {len(primaries)}")
             photon = primaries[0]
@@ -54,17 +63,18 @@ class CaloPhoton(Evaluator):
             # a photon that converted in the tracker arrives as an electron and a positron
             if photon.isDecayedInTracker():
                 continue
-            fired = [hit for hit in event_hits if hit.getEnergy() >= THRESHOLD]
+            fired = [hit for hit in event.hits if hit.getEnergy() >= threshold]
             fired_cells.append(len(fired))
             if not fired:  # nothing to take a direction from
                 continue
             # measured direction: from the vertex to the energy-weighted center of the fired
             # cells (a hit sits at the center of its cell)
-            energy = [hit.getEnergy() for hit in fired]
-            centers = [(h.getPosition().x, h.getPosition().y, h.getPosition().z) for h in fired]
-            vertex, momentum = photon.getVertex(), photon.getMomentum()
-            measured = np.average(centers, axis=0, weights=energy) - (vertex.x, vertex.y, vertex.z)
-            true = np.array((momentum.x, momentum.y, momentum.z))
+            center = np.average(
+                [xyz(hit.getPosition()) for hit in fired],
+                axis=0,
+                weights=[hit.getEnergy() for hit in fired],
+            )
+            measured, true = center - xyz(photon.getVertex()), xyz(photon.getMomentum())
             cosine = measured @ true / (np.linalg.norm(measured) * np.linalg.norm(true))
             residuals.append(1e3 * np.arccos(np.clip(cosine, -1.0, 1.0)))  # mrad
         # the evaluation ran, but there is nothing to measure
