@@ -29,6 +29,12 @@ parameters change (the simulation, when they vary the geometry) was not made wit
 candidate's geometry: the command says so, and `summary.json` records
 `represents_candidate: false`, so such a run never counts as an evaluation of the candidate.
 
+`--timeout SECONDS` kills `ddsim` if it runs longer than that, for a geometry on which Geant4
+stalls: the simulation stage fails with the tail of ddsim's standard error, its logs stay in
+`simulation/`, and the candidate is `failed`. The limit is recorded with the stage
+(`stages.simulation.timeout`, `null` without one). It is not part of the problem: how long a
+simulation takes depends on the machine as much as on the candidate.
+
 One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`); from
 Python, an [`EvaluationSession`](evaluation.md#evaluating-candidates-evaluationsession)
 evaluates many candidates of a problem the same way.
@@ -82,7 +88,10 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      given or supplied file; the exact `ddsim` command, directory and exit code, the files its
      options name, with their hashes; the events found, the error if there was one, and the time
      spent on it;
-   - the geometry fingerprint and manifest, requested and observed events, the time of the whole
+   - the geometry fingerprint and manifest, the path and SHA-256 of each file its external
+     references read (`externals`) and of each file only this candidate's values name
+     (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), requested and
+     observed events, the time of the whole
      evaluation, the files of the stages under `paths`, and the environment (`declared`: the
      problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git

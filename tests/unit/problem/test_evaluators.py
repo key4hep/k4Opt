@@ -90,14 +90,13 @@ def log(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """What happened, in order: ``check``/``evaluate`` of a :class:`Spy` and each ddsim run."""
     events: list[str] = []
     simulation.install(monkeypatch, events_with([1, 1, 2, 3], [4, 5], [6, 7, 8, 9]))
-    fake = ddsim_run.subprocess.run
+    fake = ddsim_run._execute
 
     def logged(argv: list[str], **kwargs: Any) -> Any:
-        if Path(argv[0]).name == "ddsim":
-            events.append("ddsim")
+        events.append("ddsim")
         return fake(argv, **kwargs)
 
-    monkeypatch.setattr(ddsim_run.subprocess, "run", logged)
+    monkeypatch.setattr(ddsim_run, "_execute", logged)
     return events
 
 
@@ -637,13 +636,13 @@ def test_every_second_is_counted_once(
     monkeypatch.setattr(_stages, "time", clock)
     monkeypatch.setattr(_evaluate, "time", clock)
     simulation.install(monkeypatch)
-    fake = ddsim_run.subprocess.run
+    fake = ddsim_run._execute
 
     def slow_ddsim(argv: list[str], **kwargs: Any) -> Any:
-        clock.now += 10.0 if Path(argv[0]).name == "ddsim" else 0.0
+        clock.now += 10.0
         return fake(argv, **kwargs)
 
-    monkeypatch.setattr(ddsim_run.subprocess, "run", slow_ddsim)
+    monkeypatch.setattr(ddsim_run, "_execute", slow_ddsim)
 
     class Slow(Spy):
         def check(self, request: EvaluationRequest) -> None:

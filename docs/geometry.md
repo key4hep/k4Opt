@@ -169,8 +169,8 @@ cycles and repeated includes are safe. Relative references resolve against the
 including file's directory. `ref` attributes on other elements that point at an
 existing local file (e.g. a CAD `.stl` model) are recorded as *resources*. Such an
 attribute that is an absolute path, URL or `$` reference to a file (e.g.
-`/external/support.stl`) is left untouched and listed as external, like an
-unresolved include; the file itself is not part of the fingerprint.
+`/external/support.stl`, or `${CAD_MODEL}` alone) is left untouched and listed as
+external, like an unresolved include; the file itself is not part of the fingerprint.
 
 References are **left intact and reported as external**, and their targets are
 not part of the catalog, when they contain `$` (e.g.
@@ -262,10 +262,31 @@ software stack, so two evaluations with equal fingerprints may still differ. It
 is not sufficient as an evaluation cache key on its own; a cache key must also
 include the software environment and any external dependencies that matter.
 
+`source.external_files(catalog)` says what the fingerprint leaves out. For each
+external reference, as written, it gives the file the reference names now
+(environment variables expanded, a relative path taken from the directory of the
+file that holds it) and its SHA-256, or `null` for both when it names no file (a
+variable that is not set, a URL, a missing file). An external include is followed
+like a local one: it also lists the `files` it reaches (its includes and the
+resources they reference) by path relative to its directory, with their SHA-256,
+and their own external references are entries of their own. An include among them
+that cannot be followed (a missing file) is listed under `unresolved` by
+`file:line`, and the others are still followed; `files` is `null` only when the
+external include itself cannot be parsed; an include cycle is followed once. A
+reference written alike in several files has an entry for each file that holds it,
+under the name it was read as (a symlink in another directory counts as a file of its
+own, since a relative path resolves beside it): the first under the reference, the
+others under `reference (in file)`. A relative `${VAR}` names another file in each,
+and the entries do not depend on what the references resolve to now. An
+evaluation session records this with the fingerprint and checks it around every
+candidate; a study compares it by content, not by path
+([resuming](optimization.md#resuming-a-study)).
+
 ```python
 fingerprint = source.fingerprint(overrides, catalog)  # without writing anything
 result = source.materialize(overrides, output, catalog)
 assert result.fingerprint == fingerprint
+externals = source.external_files(catalog)  # what the fingerprint leaves out
 ```
 
 ### Parallel and batch use

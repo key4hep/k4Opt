@@ -5,10 +5,10 @@ include element is classified as either a *local* include (a relative path that
 stays inside the geometry root) or an *external* reference (environment
 variables such as ``${DD4hepINSTALL}``, URLs, absolute paths). Local includes
 are parsed recursively in document order; external references are reported and
-left untouched. ``ref`` attributes on other elements that point at an existing
-local file (e.g. a CAD ``.stl`` model) are recorded as *resources* so a snapshot
-can carry them along. This is an XML include walker, not an interpreter of
-DD4hep's preprocessing or of C++ detector constructors.
+left untouched, and :func:`external_files` says what they read. ``ref`` attributes on
+other elements that point at an existing local file (e.g. a CAD ``.stl`` model) are
+recorded as *resources* so a snapshot can carry them along. This is an XML include
+walker, not an interpreter of DD4hep's preprocessing or of C++ detector constructors.
 """
 
 from __future__ import annotations
@@ -16,11 +16,14 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from lxml import etree
 
+from k4opt.frozen import Json
 from k4opt.geometry.errors import IncludeError
 from k4opt.geometry.xmlio import (
     element_locator,
@@ -28,6 +31,7 @@ from k4opt.geometry.xmlio import (
     line_of,
     parse_xml_bytes,
     read_xml_file,
+    sha256_file,
 )
 
 #: Element tags whose ``ref`` attribute DD4hep treats as an XML file to include.
@@ -53,6 +57,11 @@ class ExternalInclude:
     reason: str
     locator: str = ""
     """Structural XPath of the referencing element within its file."""
+    include: bool = False
+    """Whether it is the ``ref`` of an include element (an XML file), not of a resource."""
+    alias: str = ""
+    """The other root-relative name of ``file`` (a symlink) it was read under, from whose
+    directory a relative reference resolves; empty when it was read under ``file`` itself."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +177,13 @@ def find_resource(root: Path, root_real: Path, base_dir: Path, ref: str) -> tupl
     return to_root_relative(root, lexical), False
 
 
-def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None) -> IncludeGraph:
+def walk_includes(
+    root: Path,
+    compact: str,
+    *,
+    resources_at: Path | None = None,
+    unresolved: list[ExternalInclude] | None = None,
+) -> IncludeGraph:
     """Parse ``compact`` and every reachable local include below ``root``.
 
     ``root`` must be an absolute directory and ``compact`` a root-relative POSIX
@@ -179,6 +194,10 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
     Non-include references are looked up below ``resources_at`` (``root`` by default), at the
     same root-relative directory. A snapshot is walked with its source there: a reference that
     leaves the root names the file next to the source, not next to the copy.
+
+    With ``unresolved``, an include that cannot be followed (missing, unreadable, too deep) is
+    appended there, its error as the reason, and the walk goes on with the others; without it,
+    that raises :class:`IncludeError`. ``compact`` itself must always be readable.
     """
     root_real = Path(os.path.realpath(root))
     lookup = root if resources_at is None else resources_at
@@ -196,17 +215,20 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
     scanned: set[tuple[str, Path]] = set()
     active: set[tuple[str, str]] = set()
 
-    def note_resource(rel: str, line: int | None, locator: str, base_dir: Path, ref: str) -> None:
+    def note_resource(
+        rel: str, alias: str, line: int | None, locator: str, base_dir: Path, ref: str
+    ) -> None:
         reason = classify_ref(ref)
         if reason is not None:
-            # left untouched and outside the fingerprint, but visible in the manifest
-            if ref.strip() and looks_like_file(ref):
-                externals.append(ExternalInclude(rel, line, ref, reason, locator))
+            # left untouched and outside the fingerprint, but visible in the manifest; a
+            # ``${VAR}`` alone may name a file as well
+            if ref.strip() and ("$" in ref or looks_like_file(ref)):
+                externals.append(ExternalInclude(rel, line, ref, reason, locator, alias=alias))
             return
         where = lookup / base_dir.relative_to(root)
         found, escapes = find_resource(lookup, lookup_real, where, ref)
         if escapes:
-            externals.append(ExternalInclude(rel, line, ref, OUTSIDE_ROOT, locator))
+            externals.append(ExternalInclude(rel, line, ref, OUTSIDE_ROOT, locator, alias=alias))
         elif found is not None:
             resources.setdefault(found)
 
@@ -219,20 +241,20 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
                 file_aliases.setdefault(rel, canonical)
             # relative references resolve against the lexical directory, so an alias in
             # another directory has its own includes even though the file is the same
-            scan(canonical, lexical.parent, real, chain)
+            scan(canonical, rel, lexical.parent, real, chain)
             return canonical
-        visited_real[real] = rel
         label = rel if not chain else f"{rel} (included via {' -> '.join(chain)})"
         data = read_xml_file(lexical, label=label)
         tree = parse_xml_bytes(data, label=label)
+        visited_real[real] = rel  # once parsed: a file that cannot be is never in ``trees``
         files.append(rel)
         trees[rel] = tree
         file_hashes[rel] = hashlib.sha256(data).hexdigest()
-        scan(rel, lexical.parent, real, chain)
+        scan(rel, rel, lexical.parent, real, chain)
         return rel
 
-    def scan(rel: str, base_dir: Path, real: str, chain: tuple[str, ...]) -> None:
-        """Follow the references of the parsed file ``rel`` as seen from ``base_dir``."""
+    def scan(rel: str, name: str, base_dir: Path, real: str, chain: tuple[str, ...]) -> None:
+        """Follow the references of the parsed file ``rel``, read as ``name`` in ``base_dir``."""
         if (real, base_dir) in scanned:
             return
         scanned.add((real, base_dir))
@@ -248,11 +270,11 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
             )
         active.add(physical)
         try:
-            follow(rel, base_dir, chain)
+            follow(rel, "" if name == rel else name, base_dir, chain)
         finally:
             active.discard(physical)
 
-    def follow(rel: str, base_dir: Path, chain: tuple[str, ...]) -> None:
+    def follow(rel: str, alias: str, base_dir: Path, chain: tuple[str, ...]) -> None:
         tree = trees[rel]
         for element in iter_elements(tree):
             ref = element.get("ref")
@@ -262,18 +284,26 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
             line = line_of(element)
             locator = element_locator(tree, element)
             if tag not in INCLUDE_TAGS:
-                note_resource(rel, line, locator, base_dir, ref)
+                note_resource(rel, alias, line, locator, base_dir, ref)
                 continue
             reason = classify_ref(ref)
             if reason is not None:
                 externals.append(
-                    ExternalInclude(file=rel, line=line, ref=ref, reason=reason, locator=locator)
+                    ExternalInclude(rel, line, ref, reason, locator, include=True, alias=alias)
                 )
                 continue
             here = f"{rel}:{line}"
             label = here if not chain else f"{here} (included via {' -> '.join(chain)})"
-            target = resolve_local_path(root, root_real, base_dir, ref, label=label)
-            target_rel = visit(target, (*chain, here))
+            try:
+                target = resolve_local_path(root, root_real, base_dir, ref, label=label)
+                target_rel = visit(target, (*chain, here))
+            except IncludeError as exc:
+                if unresolved is None:
+                    raise
+                unresolved.append(
+                    ExternalInclude(rel, line, ref, str(exc), locator, include=True, alias=alias)
+                )
+                continue
             edges.append(IncludeEdge(source=rel, line=line, ref=ref, target=target_rel))
 
     visit(entry, ())
@@ -286,3 +316,104 @@ def walk_includes(root: Path, compact: str, *, resources_at: Path | None = None)
         file_aliases={a: f for a, f in file_aliases.items() if a not in trees},
         file_hashes=file_hashes,
     )
+
+
+def resolve_external(root: Path, external: ExternalInclude) -> Path | None:
+    """The file ``external`` names now: its environment variables expanded, a relative result
+    taken from the directory of the file that holds it (below ``root``, under the name it was
+    read as: ``alias``). ``None`` if it names no existing file: a variable that is not set, a
+    URL, a file that is not there, a symbolic name."""
+    ref = os.path.expandvars(external.ref)
+    if "$" in ref or not ref.strip() or (_URL_RE.match(ref) and not os.path.isabs(ref)):
+        return None
+    path = Path(os.path.normpath((root / (external.alias or external.file)).parent / ref))
+    return path if path.is_file() else None
+
+
+type _Reached = tuple[dict[str, str | None] | None, dict[str, str], tuple[ExternalInclude, ...]]
+
+
+def _walk_external(path: Path) -> _Reached:
+    """What the external include ``path`` reaches: its files and the resources they reference,
+    by path relative to its directory, with their SHA-256 (``None`` if it cannot be parsed); the
+    includes it cannot follow, by ``file:line``; and the external references of all of them."""
+    top = Path(path.anchor)  # an external file may include from anywhere
+    missing: list[ExternalInclude] = []
+    try:
+        graph = walk_includes(top, path.relative_to(top).as_posix(), unresolved=missing)
+    except (IncludeError, OSError):
+        return None, {}, ()
+    reached: dict[str, str | None] = {rel: graph.file_hashes[rel] for rel in graph.files[1:]}
+    for rel in graph.resources:
+        try:
+            reached[rel] = sha256_file(top / rel)
+        except OSError:
+            reached[rel] = None
+    files = {os.path.relpath(top / rel, path.parent): sha for rel, sha in sorted(reached.items())}
+    unresolved = {
+        f"{os.path.relpath(top / (m.alias or m.file), path.parent)}:{m.line}": m.ref
+        for m in sorted(missing, key=lambda m: (m.alias or m.file, m.line or 0))
+    }
+    return files, unresolved, graph.externals
+
+
+def external_files(root: Path, externals: Iterable[ExternalInclude]) -> dict[str, dict[str, Json]]:
+    """What the ``externals`` of the files below ``root`` read now, by reference as written.
+
+    Each entry holds the ``path`` the reference resolves to (:func:`resolve_external`) and the
+    ``sha256`` of that file, ``None`` where there is no file or it cannot be read. An include
+    also holds the ``files`` it reaches in turn (its local includes and the resources they
+    reference) by path relative to its directory, each with its SHA-256 (``None`` for one that
+    cannot be read), or ``None`` if the include itself cannot be parsed. The includes among them
+    that cannot be followed are listed as ``unresolved``, their reference by ``file:line``; the
+    others are still followed. The external references of those files are entries of their own;
+    one an include cycle leads back to is not followed again.
+
+    A reference written alike in several files has an entry for each file that holds it, under
+    the name it was read as (a symlink in another directory is another file here): the first by
+    the reference, the others by the reference and that file (``ref (in file)``). A relative
+    ``${VAR}`` names another file in each, and which entries there are does not depend on what
+    the references resolve to now, so the same files read the same entries.
+    """
+    found: dict[str, dict[str, Json]] = {}
+    keys: dict[tuple[str, str], str] = {}  # (reference, the file holding it, as read) -> entry
+    walks: dict[str, _Reached] = {}  # by external include, each walked once
+    pending = deque((root, external, external.alias or external.file) for external in externals)
+    while pending:
+        base, external, where = pending.popleft()
+        if not external.ref.strip():
+            continue
+        held = (external.ref, os.path.normpath(base / (external.alias or external.file)))
+        key = keys.get(held)
+        if key is None:
+            key = external.ref if external.ref not in found else f"{external.ref} (in {where})"
+            while key in found:  # pragma: no cover - a reference spelled like "ref (in file)"
+                key += "'"
+            keys[held] = key
+            path = resolve_external(base, external)
+            try:
+                digest = None if path is None else sha256_file(path)
+            except OSError:
+                digest = None
+            found[key] = {"path": None if path is None else str(path), "sha256": digest}
+        entry = found[key]
+        named = entry["path"]
+        # a file named as a resource before may be included here: what it includes is read too
+        if not isinstance(named, str) or entry["sha256"] is None or not external.include:
+            continue
+        if "files" in entry:
+            continue  # this reference, held by this file, was followed already
+        path = Path(named)
+        if named not in walks:
+            walks[named] = _walk_external(path)
+        files, unresolved, nested = walks[named]
+        entry["files"] = None if files is None else dict(files)
+        if unresolved:
+            entry["unresolved"] = dict(unresolved)
+        top = Path(path.anchor)
+        # each held once: an include cycle comes back to a reference it already holds
+        pending.extend(
+            (top, n, f"{os.path.relpath(top / (n.alias or n.file), path.parent)} via {key}")
+            for n in nested
+        )
+    return found

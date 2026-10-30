@@ -50,6 +50,18 @@ def test_the_command_prints_each_trial_and_the_study(
     assert code == 0 and out.splitlines()[0].startswith("trial 3:")
 
 
+def test_the_command_refuses_a_timeout_that_is_no_time_limit(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    pytest.importorskip("optuna")
+    output = tmp_path / "s"
+    code, _, err = optimize(
+        str(write_problem()), "--trials", "1", "--timeout", "-1", "--output", str(output)
+    )
+    assert code == 1 and "timeout must be a positive number of seconds, got -1.0" in err
+    assert not output.exists()
+
+
 def test_failed_candidates_are_reported_and_the_command_succeeds(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:

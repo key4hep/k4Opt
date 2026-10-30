@@ -283,11 +283,13 @@ so one rewritten within a few milliseconds of being hashed is not, and files are
 while a campaign runs.
 
 The stages are recorded once per candidate, apart from the evaluators' results: what ran (the
-command and exit code), what was given or supplied, the files a ddsim option names (with their
+command, exit code and time limit), what was given or supplied, the files a ddsim option names (with their
 hashes), the events found, the error if any, the stage's files and the time spent on it. An
 evaluator's result holds only what it returned, so its artifact and provenance names cannot
 clash with the stages'. The stages take their conditions from the problem's `stages`, never from
-an evaluator. Stages are internal for now (`k4opt.problem._stages`).
+an evaluator, except a time limit, which is the caller's: a stage that runs a program (ddsim)
+longer than the `timeout` of the session kills it and fails. Stages are internal for now
+(`k4opt.problem._stages`).
 
 ## Loading an evaluator
 
@@ -438,6 +440,7 @@ from k4opt.problem import EvaluationSession
 session = EvaluationSession.open(
     "examples/problem/cld-ecal-granularity.yaml",
     [load_evaluator("examples/evaluators/calo_photon.py:CaloPhoton")],
+    timeout=3600,  # seconds ddsim may take per candidate; no limit without it
 )
 for size in (5.0, 7.0, 10.0):
     outcome = session.evaluate({"constants.ECal_cell_size": size}, f"runs/scan/{size}mm")
@@ -448,28 +451,35 @@ for size in (5.0, 7.0, 10.0):
 | --- | --- |
 | load the problem file (later edits to it do not reach the session) and discover the geometry | check the candidate against the parameter domains |
 | bind the evaluators, check the stages they read and their settings and collections, decide who measures each metric | build each evaluator's request for this candidate and call its `check()` |
-| collect the warnings about collections ddsim is not expected to write (`session.warnings`) | check that every file the problem names is still the one it was when the session opened |
-| record the size and SHA-256 of every file the stages read (a stage `file`, a file a ddsim option names, a file supplied with `inputs`), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, assess, write the summary |
+| collect the warnings about collections ddsim is not expected to write (`session.warnings`) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened |
+| record the size and SHA-256 of every file the stages read (a stage `file`, a file a ddsim option names, a file supplied with `inputs`), what the geometry's external references read ([`external_files`](geometry.md#fingerprint)), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, check again what the previous row checks, assess, write the summary |
 
 No request outlives the candidate it was made for, so an evaluator's `check()` and `evaluate()`
 always see that candidate's values. `check(candidate)` creates and runs nothing: it raises for
 what `evaluate()` would refuse before creating anything. A file the stages read (named by the
 problem or supplied) that changes during a session (other bytes under the same path, or removed)
 stops the next candidate with a `RunError` before anything is created; `verify_inputs()` checks
-it on its own. So does a change of `KEY4HEP_STACK` or `K4GEO`: the candidates of a session run
-in the environment it opened in, which every summary of the session records.
+it on its own. So does a change of what the geometry's external references read, of
+`KEY4HEP_STACK` or `K4GEO`, or of k4opt's files: the candidates of a session run in the
+environment it opened in, which every summary of the session records. A change while a candidate
+runs raises the `RunError` after its stages and evaluators ran, and its directory keeps their
+files but no `summary.json`: the record could not say which files or code it was made with. A
+candidate whose values change a `ref` can name an external file the unmodified geometry does not
+(`${CAD}/other.stl`): its summary records what that file reads (`candidate_externals`), which
+must stay the same while the candidate runs and for every later candidate that names it.
 `evaluate(candidate, output, run=...)` records `run`, any JSON-compatible mapping, as the
 summary's `run` (a study and trial, say; `null` for `k4opt evaluate`). `identity()` returns what
 the session evaluates with: the problem's path and definition, the identities of the files the
 stages read, the evaluators' names, versions, sources and declared metrics, the compact file,
-source root and fingerprint of the unmodified geometry, `KEY4HEP_STACK` and `K4GEO`, and k4opt's
-version, code SHA-256 and checkout. The environment and k4opt's identity are taken when the
-session opens, before anything runs, and every summary of the session records the same k4opt
-identity, so an edit to the k4opt checkout during a long run is not recorded as the code that
-ran (a hash cannot prove which code Python executed, only narrow the gap). k4opt's code is
-hashed once per process, since Python runs the modules it imported; a session does not open once
-k4opt's files have changed since then, because no hash would then say which code runs. A session
-evaluates one candidate at a time and is not thread- safe.
+source root and fingerprint of the unmodified geometry and what its external references read,
+`KEY4HEP_STACK` and `K4GEO`, and k4opt's version, code SHA-256 and checkout. The environment
+and k4opt's identity are taken when the session opens, before anything runs, and every summary
+of the session records the same k4opt identity, so an edit to the k4opt checkout during a long
+run is not recorded as the code that ran (a hash cannot prove which code Python executed, only
+narrow the gap). k4opt's code is hashed once per process, since Python runs the modules it
+imported; a session does not open, and does not evaluate or record a candidate, once k4opt's
+files have changed since then, because no hash would then say which code runs. A session
+evaluates one candidate at a time and is not thread-safe.
 
 ### Assessment: objectives, limits and feasibility
 

@@ -708,14 +708,17 @@ def _execute_plan(
     inputs: Mapping[str, Path],
     workdir: Path | None,
     checked_seconds: float,
+    timeout: float | None = None,
 ) -> CandidateRecord:
     """Execute an already validated plan; evaluator checks and defaults are not repeated.
 
     ``checked_seconds``, the time the candidate's validation and preflight took, counts towards
     ``elapsed_seconds``, which thus covers k4opt's checks too (not what the caller does between).
+    ``timeout`` limits each stage that runs a program (:attr:`StageContext.timeout`).
     """
     started = time.perf_counter() - checked_seconds
-    stages = run_stages(plan.context, *plan.targets, inputs=inputs, workdir=workdir)
+    context = replace(plan.context, timeout=timeout)
+    stages = run_stages(context, *plan.targets, inputs=inputs, workdir=workdir)
     seen: dict[Path, tuple[str, ...] | str] = {}  # the collection names of each stage file
     records = tuple(
         _measure(spec, plan, key, entry, evaluator, stages, inputs, workdir, seen)

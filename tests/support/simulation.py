@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,7 +16,6 @@ COLLECTION = "ECalBarrelCollection"
 HIT_TYPE = "edm4hep::SimCalorimeterHit"
 PARTICLE_TYPE = "edm4hep::MCParticle"
 DDSIM = "/stack/bin/ddsim"
-_run = subprocess.run
 
 type Triple = tuple[float, float, float]
 
@@ -109,22 +107,21 @@ def events_with(*cells_per_event: Sequence[int]) -> list[Event]:
 
 @dataclass
 class FakeDdsim:
-    """Replaces ``subprocess.run``; records the call and writes the files ddsim would."""
+    """Replaces the ddsim process (``k4opt.ddsim.run._execute``); records the call and writes
+    the files ddsim would."""
 
     returncode: int = 0
     write_output: bool = True
     stderr: str = ""
     calls: list[tuple[list[str], dict[str, Any]]] = field(default_factory=list)
 
-    def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        if Path(argv[0]).name != "ddsim":  # subprocess is shared: the geometry component runs git
-            return _run(argv, **kwargs)
+    def __call__(self, argv: list[str], **kwargs: Any) -> int | None:
         self.calls.append((argv, kwargs))
         kwargs["stderr"].write(self.stderr.encode())
         if self.write_output:
             output = next(a for a in argv if a.startswith("--outputFile="))
             Path(output.partition("=")[2]).write_bytes(b"fake")
-        return subprocess.CompletedProcess(argv, self.returncode)
+        return self.returncode
 
 
 def install_events(monkeypatch: pytest.MonkeyPatch, events: Sequence[Any] | None = None) -> None:
@@ -140,7 +137,7 @@ def install(
     Without ``events`` the file holds as many one-hit events as the last run requested.
     """
     fake = FakeDdsim(**ddsim)
-    monkeypatch.setattr(ddsim_run.subprocess, "run", fake)
+    monkeypatch.setattr(ddsim_run, "_execute", fake)
     monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: DDSIM)
 
     def read(path: Path) -> list[Any]:

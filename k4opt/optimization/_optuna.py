@@ -23,7 +23,7 @@ import threading
 import urllib.parse
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
 from typing import Any
@@ -50,6 +50,7 @@ from k4opt.optimization._study import (
     Lock,
     StudyReport,
     TrialReport,
+    check_candidate_files,
     check_record,
     differences,
     digest,
@@ -264,6 +265,8 @@ class _Study:
     spec: ProblemSpec
     study: optuna.Study
     warn: Warn
+    # what each reference only candidates name read, and the first trial that read it
+    read: dict[str, tuple[int, object]] = field(default_factory=dict)
 
 
 def _sha256(data: bytes) -> str:
@@ -276,7 +279,8 @@ def _report(
     """Tell the optimizer the result of ``trial`` as its ``summary.json`` holds it.
 
     The one way a trial is told, live or when a resume recovers it: the record is read back from
-    disk, checked against the study (:func:`~k4opt.optimization._study.check_record`) and its
+    disk, checked against the study (:func:`~k4opt.optimization._study.check_record`) and the
+    earlier trials (:func:`~k4opt.optimization._study.check_candidate_files`), and its
     assessment recomputed from its measurements. ``existing`` are the constraint values the
     trial already has, which must equal the recomputed ones. Raises
     :class:`OptimizationError`, before anything is told, for a record that does not hold up.
@@ -289,6 +293,7 @@ def _report(
     except (OSError, ValueError) as exc:
         raise OptimizationError(f"trial {number}: cannot read {path}: {exc}") from exc
     warnings = check_record(run.document, summary, number, trial.params)
+    check_candidate_files(run.read, summary, number)
     try:
         assessment = Assessment.from_summary(run.spec, summary)
     except RecordError as exc:
@@ -421,15 +426,17 @@ def _check_told_record(run: _Study, frozen: FrozenTrial) -> None:
         return
     path = run.directory / str(told.get("path"))
     try:
-        found = _sha256(path.read_bytes())
+        data: bytes | None = path.read_bytes()
     except OSError:
-        found = None
-    if found != told.get("sha256"):
-        state = "is gone" if found is None else "is not the record the optimizer was told"
+        data = None
+    if data is None or _sha256(data) != told.get("sha256"):
+        state = "is gone" if data is None else "is not the record the optimizer was told"
         raise OptimizationError(
             f"trial {frozen.number}: {path} {state}, so nothing shows what its values rest on; "
             "put the record back to resume the study"
         )
+    # the trials still to come must read what its candidate's own references read
+    check_candidate_files(run.read, json.loads(data), frozen.number)
 
 
 def _trial_report(run: _Study, frozen: FrozenTrial) -> TrialReport:
@@ -495,6 +502,7 @@ def optimize(
     seed: int | None,
     resume: bool,
     storage: str | None,
+    timeout: float | None,
     warn: Warn,
     progress: Progress,
 ) -> StudyReport:
@@ -509,7 +517,7 @@ def optimize(
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
     # everything that can be checked before a file is created
-    session = EvaluationSession.open(problem, evaluators)
+    session = EvaluationSession.open(problem, evaluators, timeout=timeout)
     spec = session.spec
     space = search_space(spec)  # the evaluators' settings were checked when the session opened
     identity: dict[str, Any] = session.identity()

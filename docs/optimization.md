@@ -52,6 +52,7 @@ color off.
 | `--seed S` | the sampler's seed, in [0, 2**32); one is drawn and recorded without it. It is not the simulation's seed, which stays `stages.simulation.seed` |
 | `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)) |
 | `--storage URL` | an Optuna database URL (SQLite on a local disk, PostgreSQL) in place of the journal file in `DIR`; it needs SQLAlchemy, and the same URL on every resume |
+| `--timeout SECONDS` | kill `ddsim` if a trial's simulation runs longer than that: the candidate is `failed`, the trial FAIL, and the study goes on. No limit without it. It is recorded in each trial's record and is not part of the study, so a resume may give another one |
 
 The exit status is 0 once every trial asked for has ended, even if candidates were `invalid` or
 `failed`. It is 1 if the study cannot start or resume, a trial stops it, or it is interrupted,
@@ -131,14 +132,17 @@ The Optuna study carries `k4opt.study` (the id of `study.json`), `k4opt.identity
 `k4opt.parameters`, `k4opt.objectives` and `k4opt.constraints`.
 
 **The study goes on** after an `invalid` or `failed` candidate, also after many in a row: a
-failure can be a legitimate finding (ddsim refusing an overlapping geometry, say). Each trial
+failure can be a legitimate finding (ddsim refusing an overlapping geometry, say). So does a
+simulation killed at `--timeout`; without one, a candidate on which Geant4 stalls holds up an
+unattended study until it is stopped. Each trial
 is printed as it ends, so a broken environment shows at once.
 
 **The trial is FAIL with `k4opt.error`, and the study stops,** when:
 
 - an evaluator's `check()` refuses the candidate, or anything else is wrong before its
   evaluation starts;
-- a file the problem names changed since the study's session opened;
+- a file the problem names, a file the geometry's external references read, the environment or
+  k4opt's code changed since the study's session opened, also while the trial ran;
 - a result breaks the evaluation contract (a `valid` result without a metric it owns, a wrong
   unit), or an evaluator raises anything but `EvaluationFailed` or `EvaluationInvalid`;
 - the record does not hold up when it is read back (below);
@@ -156,7 +160,11 @@ back from disk and checked:
 
 - it was made for this study and trial;
 - its candidate is the trial's, type and value;
-- its evaluators, Key4hep stack, k4opt code and input files are the study's;
+- its evaluators, Key4hep stack, k4opt code, input files and the files the geometry's external
+  references read are the study's;
+- a file that only candidates name (a `ref` parameter choosing `${CAD}/other.stl`), which the
+  study cannot know beforehand, reads as it did for every earlier trial that named it, in this
+  session or an earlier one;
 - it was made from the candidate alone (no supplied stage);
 - its assessment holds up when recomputed from its raw measurements
   ([`Assessment.from_summary`](evaluation.md#assessment-objectives-limits-and-feasibility)).
@@ -187,7 +195,9 @@ keeps its geometry and its EDM4hep file.
 - the path, size and SHA-256 of every file the problem names (`stages.*.file`, the files ddsim
   options name);
 - each evaluator's name, version, source identity and declared metrics;
-- the compact file, source root and fingerprint of the unmodified geometry;
+- the compact file, source root and fingerprint of the unmodified geometry, and the path and
+  SHA-256 of each file its external references read (`${DD4hepINSTALL}/...`, `${K4GEO}/...`,
+  absolute paths);
 - `KEY4HEP_STACK` and `K4GEO`;
 - k4opt's version, the SHA-256 of its code and its git checkout;
 - the `identity` digest;
@@ -207,7 +217,7 @@ directory itself is fine.
 | problem | its definition, but not its `name` | the path of the file |
 | files the problem names | size and SHA-256 of each | their paths |
 | evaluators | name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units (an instance may declare others) | path, whether the bytes were `executed`, the git revision (a change warns) |
-| geometry | the fingerprint of the unmodified geometry, which covers every reachable file | compact path, source root, `K4GEO` |
+| geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
 | k4opt | the SHA-256 of its code | version, git commit |
 | Optuna | its exact version; the study's directions, id, identity digest and limit names; the storage | |
@@ -223,8 +233,11 @@ A resume only warns when an evaluator's git checkout is at another commit or has
 uncommitted changes: the evaluator's own file is unchanged, but helper modules beside it may
 not be. Helper modules outside a git checkout are not tracked at all.
 
-Within a session, the files the problem names are checked before each candidate, the geometry
-files by its materialization, and `KEY4HEP_STACK` and `K4GEO` before each candidate.
+Within a session, the files the problem names, the files the geometry's external references
+read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are checked before each candidate and again
+after it ran, before its record is written; the geometry's own files are checked by its
+materialization. A change while a candidate runs leaves its directory without a
+`summary.json`, and the trial stops the study.
 
 **Seeds.** Each session samples with a seed derived from the study's seed and the number of
 trials already in the study. Otherwise a resumed session would replay the first session's
@@ -242,7 +255,8 @@ the same proposals again.
 
 **Ctrl-C and SIGTERM** (`systemctl --user stop`, a batch system ending a job) stop the study
 cleanly. The running trial is FAIL, or is told its record if one was published just before;
-ddsim is killed; the lock is removed; the command exits 1 and says how to resume.
+ddsim is killed, with any process it started; the lock is removed; the command exits 1 and says
+how to resume.
 
 **The lock.** `.lock` is created exclusively when a process starts working on a study, and
 removed when it ends, so two processes never work on one study. A lock that a killed process

@@ -1,7 +1,7 @@
 """Command-line interface of the problem component: ``k4opt evaluate``.
 
     k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] [--param REFERENCE=VALUE ...]
-        [--input STAGE=FILE ...] --output DIR
+        [--input STAGE=FILE ...] [--timeout SECONDS] --output DIR
 
 A thin wrapper over :func:`k4opt.problem._run.run_candidate`; :func:`register` plugs it into
 the top-level ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate,
@@ -62,6 +62,12 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         ),
     )
     evaluate.add_argument(
+        "--timeout",
+        type=float,
+        metavar="SECONDS",
+        help="kill ddsim if it runs longer than this; the candidate fails (no limit without it)",
+    )
+    evaluate.add_argument(
         "--output", required=True, help="new directory for the geometry, simulation and summary"
     )
     evaluate.set_defaults(func=cmd_evaluate)
@@ -119,6 +125,7 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         args.output,
         evaluators=evaluators,
         inputs=args.input,
+        timeout=args.timeout,
         warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
     )
     _report(outcome, out)

@@ -35,7 +35,7 @@ from k4opt.evaluation import (
     metric_units,
 )
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
-from k4opt.geometry import Override
+from k4opt.geometry import GeometryError, GeometrySource, MaterializationResult, Override
 from k4opt.jsonio import write_json
 from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
 from k4opt.problem._evaluate import (
@@ -238,6 +238,24 @@ def _readable_identity(path: Path) -> dict[str, Json] | None:
         return None
 
 
+def _timeout(value: float | None) -> float | None:
+    """``value`` as a time limit in seconds; :class:`RunError` unless it is positive and finite."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < math.inf:
+        raise RunError(f"timeout must be a positive number of seconds, got {value!r}")
+    return float(value)
+
+
+def _check_code() -> None:
+    """Raise :class:`RunError` if k4opt's files are no longer those this process identified."""
+    if not code_unchanged():
+        raise RunError(
+            "k4opt's code changed on disk after this process first identified it, so its "
+            "records could not say which code ran; start a new process"
+        )
+
+
 def _run_reference(run: Mapping[str, Json] | None) -> object:
     """``run`` as the summary records it: a plain copy of JSON-compatible data, or ``None``."""
     if run is None:
@@ -378,20 +396,27 @@ class EvaluationSession:
     :meth:`open` loads the problem file once, so later edits to it do not reach the session,
     binds the evaluators to it and checks what does not depend on a candidate. It also records
     the identity (size and SHA-256) of every file the stages read: a stage given as a ``file``, a
-    file a ddsim option names, and a file the caller supplies. Each candidate is then checked
-    afresh, by :meth:`check` and again by :meth:`evaluate`: its values against the parameter
-    domains, each evaluator's ``check()`` with a request made for this candidate, and that none
-    of those files changed. One candidate at a time; a session is not thread-safe.
+    file a ddsim option names, a file the caller supplies, and what the geometry's external
+    references read. Each candidate is then checked afresh, by :meth:`check` and again by
+    :meth:`evaluate`: its values against the parameter domains, each evaluator's ``check()`` with
+    a request made for this candidate, and that none of those files, the environment or k4opt's
+    code changed, which :meth:`evaluate` checks again before it writes the record. A candidate
+    whose values change a ``ref`` can name an external file of its own; what it reads is
+    recorded, and must not change while the candidate runs nor between the candidates that name
+    it. One candidate at a time; a session is not thread-safe.
     """
 
     __slots__ = (
         "_evaluators",
+        "_externals",
         "_files",
         "_inputs",
         "_path",
         "_process",
+        "_read",
         "_spec",
         "_taken",
+        "_timeout",
         "_warnings",
     )
 
@@ -402,9 +427,11 @@ class EvaluationSession:
         evaluators: tuple[EvaluatorProtocol, ...],
         inputs: Mapping[str, Path],
         files: Mapping[str, tuple[Path, Mapping[str, Json] | None]],
+        externals: Mapping[str, Json],
         taken: Mapping[str, Mapping[str, Json]],
         warnings: tuple[str, ...],
         process: Mapping[str, Json],
+        timeout: float | None,
     ) -> None:
         """Use :meth:`open`."""
         self._path = path
@@ -412,9 +439,13 @@ class EvaluationSession:
         self._evaluators = evaluators
         self._inputs = FrozenMap(inputs)
         self._files = FrozenMap(files)
+        self._externals = externals
         self._taken = FrozenMap(taken)
         self._warnings = warnings
         self._process = process
+        self._timeout = timeout
+        # what the external references only candidates have read, by reference, without the path
+        self._read: dict[str, Json] = {}
 
     @classmethod
     def open(
@@ -423,18 +454,22 @@ class EvaluationSession:
         evaluators: Sequence[EvaluatorProtocol],
         *,
         inputs: Mapping[str, str | os.PathLike[str]] | None = None,
+        timeout: float | None = None,
     ) -> EvaluationSession:
         """Load the problem file ``problem_path`` to evaluate its candidates with ``evaluators``.
 
         ``evaluators`` implement the problem's ``evaluators``, in any order. ``inputs`` maps a
         stage to a file that stands in for it (``k4opt evaluate --input``): that stage does not
         run, nor do the stages only it needs, and a supplied stage that the parameters change was
-        not made from the candidate, which every outcome says (``represents_candidate``). Raises
+        not made from the candidate, which every outcome says (``represents_candidate``).
+        ``timeout`` is how many seconds a stage that runs a program (ddsim) may take: one that
+        runs longer is killed, and its candidate fails with the logs kept. Raises
         a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator, stage or input, and
         :class:`~k4opt.problem.RunError` if k4opt's own files changed since this process first
         identified them (:func:`k4opt.revision.code_unchanged`).
         """
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
+        limit = _timeout(timeout)
         spec = load_problem(path)
         supplied = _supplied(inputs or {})
         binding = _bind_problem(spec, evaluators, supplied)
@@ -445,6 +480,9 @@ class EvaluationSession:
         named |= {f"supplied.{stage}": file for stage, file in supplied.items()}
         # an unreadable file has no identity: its stage reports it, and a record still names it
         files = {label: (file, _readable_identity(file)) for label, file in named.items()}
+        assert spec._source is not None
+        externals = freeze(spec._source.external_files(spec._catalog), "geometry", RunError)
+        assert isinstance(externals, Mapping)
         taken = {}
         for evaluator in evaluators:
             data = {"source": evaluator_source(evaluator), "metrics": _declared(evaluator)}
@@ -457,11 +495,7 @@ class EvaluationSession:
         process = freeze(
             {"k4opt": code_identity(), "environment": environment}, "process", RunError
         )
-        if not code_unchanged():
-            raise RunError(
-                "k4opt's code changed on disk after this process first identified it, so its "
-                "records could not say which code ran; start a new process"
-            )
+        _check_code()
         assert isinstance(process, Mapping)
         return cls(
             path.absolute(),
@@ -469,9 +503,11 @@ class EvaluationSession:
             tuple(evaluators),
             supplied,
             files,
+            externals,
             taken,
             binding.warnings,
             process,
+            limit,
         )
 
     @property
@@ -498,11 +534,12 @@ class EvaluationSession:
         of each file the stages read, by where it is named (``stages.generation.file``) or
         supplied (``supplied.simulation``), a file that could not be read with its path only;
         ``evaluators``: the name, version, source identity and declared metrics of each, in
-        problem order; ``geometry``: the compact file, the source root and
-        the fingerprint of the unmodified geometry; ``environment``: ``KEY4HEP_STACK`` and
-        ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its git checkout, as every
-        summary records them. The environment and k4opt are taken when the session opened. A
-        fresh copy on every call.
+        problem order; ``geometry``: the compact file, the source root, the fingerprint of the
+        unmodified geometry and what its external references read
+        (:meth:`~k4opt.geometry.GeometrySource.external_files`); ``environment``:
+        ``KEY4HEP_STACK`` and ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its
+        git checkout, as every summary records them. The environment, k4opt and the external
+        files are taken when the session opened. A fresh copy on every call.
         """
         source, catalog = self._spec._source, self._spec._catalog
         assert source is not None
@@ -524,6 +561,7 @@ class EvaluationSession:
                 "compact": source.compact,
                 "source_root": str(source.root),
                 "fingerprint": source.fingerprint([], catalog=catalog),
+                "externals": thaw(self._externals),
             },
             "environment": process["environment"],
             "k4opt": {"version": __version__, **process["k4opt"]},
@@ -545,6 +583,59 @@ class EvaluationSession:
                     "same files"
                 )
 
+    def _verify_externals(self) -> None:
+        """Raise :class:`~k4opt.problem.RunError` if an external reference of the geometry
+        (``${DD4hepINSTALL}/...``) does not read the files it read when the session opened."""
+        source = self._spec._source
+        assert source is not None
+        now = source.external_files(self._spec._catalog)
+        for ref, opened in self._externals.items():
+            if now.get(ref) != thaw(opened):
+                path = (now.get(ref) or {}).get("path") or "no file"
+                raise RunError(
+                    f"geometry: {ref} does not read the files it read when the session opened "
+                    f"(now {path}); the candidates of a session start from one geometry"
+                )
+
+    def _candidate_externals(self, snapshot: MaterializationResult) -> dict[str, dict[str, Json]]:
+        """What the external references of a candidate's geometry read that those of the
+        session's do not: a ``ref`` the candidate changes can name another file
+        (``${CAD}/other.stl``)."""
+        if not any(change.attribute == "ref" and change.changed for change in snapshot.changes):
+            return {}
+        assert self._spec._source is not None
+        try:
+            now = GeometrySource(
+                self._spec._source.compact, root=snapshot.output_root
+            ).external_files()
+        except GeometryError as exc:
+            raise RunError(f"geometry: {exc}") from exc
+        opened = thaw(self._externals)
+        assert isinstance(opened, dict)
+        return {
+            ref: entry for ref, entry in now.items() if _content(entry) != _content(opened.get(ref))
+        }
+
+    def _check_read(self, externals: Mapping[str, Mapping[str, Json]]) -> None:
+        """Raise :class:`~k4opt.problem.RunError` if a reference only candidates name reads other
+        files than it did for an earlier candidate of the session."""
+        for ref, entry in externals.items():
+            if ref in self._read and self._read[ref] != _content(entry):
+                raise RunError(
+                    f"geometry: {ref} does not read the files it read for an earlier candidate "
+                    f"(now {entry.get('path') or 'no file'}); the candidates of a session start "
+                    "from one geometry"
+                )
+
+    def _verify(self) -> None:
+        """Raise :class:`~k4opt.problem.RunError` if the environment, k4opt's code, a file the
+        stages read or what the geometry's external references read changed since the session
+        opened."""
+        self._verify_environment()
+        _check_code()
+        self.verify_inputs()
+        self._verify_externals()
+
     def _verify_environment(self) -> None:
         """Raise :class:`~k4opt.problem.RunError` if ``KEY4HEP_STACK`` or ``K4GEO`` is not what
         it was when the session opened: the stages would run in another environment than the
@@ -565,7 +656,8 @@ class EvaluationSession:
         ``candidate`` maps each canonical parameter reference to its value. Raises
         :class:`~k4opt.problem.CandidateError` for a value outside its domain, what an
         evaluator's ``check()`` raises for the request this candidate gives it, and
-        :class:`~k4opt.problem.RunError` for a file the stages read that changed.
+        :class:`~k4opt.problem.RunError` for a file the stages or the geometry read, the
+        environment or k4opt's code that changed since the session opened.
         """
         self._prepare(candidate)
 
@@ -585,7 +677,9 @@ class EvaluationSession:
         location. Execution problems are ``failed`` or ``invalid`` results in the outcome; a
         result that breaks the evaluation contract raises an
         :class:`~k4opt.evaluation.EvaluationContractError` after the stages ran, and no summary
-        is written.
+        is written. Nor is one written if what :meth:`check` verifies changed while the
+        candidate ran: that raises a :class:`~k4opt.problem.RunError`, since the record could not
+        say which files or code the candidate was evaluated with.
         """
         spec = self._spec
         assert spec._source is not None
@@ -609,6 +703,11 @@ class EvaluationSession:
             with contextlib.suppress(OSError):
                 run_dir.rmdir()  # created by the failed attempt; only removed while empty
             raise
+        try:
+            externals = self._candidate_externals(snapshot)
+            self._check_read(externals)
+        except RunError as exc:
+            raise RunError(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
 
         record = _execute_plan(
             spec,
@@ -617,7 +716,23 @@ class EvaluationSession:
             inputs={"geometry": snapshot.compact_path, **self._inputs},
             workdir=run_dir,
             checked_seconds=checked,
+            timeout=self._timeout,
         )
+        try:
+            self._verify()  # the record names what the stages and evaluators read
+            now = self._candidate_externals(snapshot)
+            if now != externals:
+                refs = dict.fromkeys([*externals, *now])
+                changed = [ref for ref in refs if now.get(ref) != externals.get(ref)]
+                raise RunError(
+                    f"geometry: {', '.join(changed)} does not read the files it read when the "
+                    "candidate started"
+                )
+        except RunError as exc:
+            raise RunError(
+                f"{exc} (while the candidate in {run_dir} ran, which has no {SUMMARY_NAME})"
+            ) from None
+        self._read |= {ref: _content(entry) for ref, entry in externals.items()}
         assessment = assess(spec, record)
         geometry = {
             "fingerprint": snapshot.fingerprint,
@@ -628,6 +743,8 @@ class EvaluationSession:
                 {"target": c.target, "old_value": c.old_value, "new_value": c.new_value}
                 for c in snapshot.changes
             ],
+            "externals": thaw(self._externals),
+            "candidate_externals": externals,
         }
         summary = _summary(
             self._path,
@@ -652,11 +769,18 @@ class EvaluationSession:
     ) -> tuple[dict[str, Scalar], CandidateKey, _Plan, list[Override]]:
         """The checked candidate, its key, its plan (requests made for it) and its overrides."""
         values, key = _validate_candidate(self._spec, candidate)
-        self._verify_environment()
-        self.verify_inputs()  # first: a file that is gone changed, more than it is missing
+        self._verify()  # first: a file that is gone changed, more than it is missing
         plan = _preflight(self._spec, values, self._evaluators, provided=self._inputs)
         overrides = _overrides(self._spec, values)
         return values, key, plan, overrides
+
+
+def _content(entry: object) -> Json:
+    """What an external reference reads (:func:`~k4opt.geometry.includes.external_files`),
+    without where the files are: the same files in another snapshot read alike."""
+    if not isinstance(entry, Mapping):
+        return None
+    return {key: value for key, value in entry.items() if key != "path"}
 
 
 def _described(identity: Mapping[str, Json] | None) -> str:
@@ -672,15 +796,19 @@ def run_candidate(
     *,
     evaluators: Sequence[EvaluatorProtocol],
     inputs: Sequence[str] = (),
+    timeout: float | None = None,
     warn: Callable[[str], None] | None = None,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
     :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are ``STAGE=FILE``
-    strings. ``warn`` is called with each of the session's warnings once the candidate is known
-    to be valid, before anything is created; the warnings are also kept in the summary.
+    strings, ``timeout`` that of :meth:`EvaluationSession.open`. ``warn`` is called with each of
+    the session's warnings once the candidate is known to be valid, before anything is created;
+    the warnings are also kept in the summary.
     """
-    session = EvaluationSession.open(problem_path, evaluators, inputs=_parse_inputs(inputs))
+    session = EvaluationSession.open(
+        problem_path, evaluators, inputs=_parse_inputs(inputs), timeout=timeout
+    )
     values = _parse_candidate(session.spec, assignments)
     _validate_candidate(session.spec, values)  # a wrong candidate is reported before the warnings
     if warn is not None:

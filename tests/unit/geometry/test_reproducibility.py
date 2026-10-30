@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pickle
+import shutil
+import signal
 from pathlib import Path
 
 import pytest
@@ -16,6 +19,7 @@ from k4opt.geometry import (
     TargetError,
     UnknownTargetError,
 )
+from tests.support.common import write_tree
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
 RADIUS = "constants.InnerTracker_Barrel_radius_1"
@@ -87,8 +91,6 @@ def test_fingerprint_tracks_effective_edits_only(mini_source: GeometrySource) ->
 
 
 def test_fingerprint_depends_on_source_content(tmp_path: Path) -> None:
-    import shutil
-
     geo = tmp_path / "geo"
     shutil.copytree(MINI_GEO, geo)
     source = GeometrySource(MINI_COMPACT, root=geo)
@@ -117,3 +119,223 @@ def test_manifest_records_the_software_stack(
     bare = mini_source.materialize([], tmp_path / "without-stack")
     assert bare.manifest["environment"] == {}
     assert bare.fingerprint == result.fingerprint, "the stack does not alter the geometry identity"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_external_files_say_what_the_fingerprint_leaves_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aux = write_tree(
+        tmp_path / "aux",
+        {
+            "component.xml": '<lccdd><include ref="parts/a.xml"/><shape ref="model.stl"/></lccdd>',
+            "parts/a.xml": '<lccdd><include ref="${CAD}/b.xml"/></lccdd>',
+            "model.stl": "solid support",
+            "broken.xml": '<lccdd><include ref="valid.xml"/><include ref="missing.xml"/></lccdd>',
+            "valid.xml": "<lccdd/>",
+            "unparsable.xml": "<lccdd>",
+        },
+    )
+    cad = write_tree(tmp_path / "cad", {"b.xml": "<lccdd/>"})
+    stl = aux / "model.stl"
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": f"""\
+                <lccdd>
+                  <include ref="${{AUX}}/component.xml"/>
+                  <include ref="${{AUX}}/broken.xml"/>
+                  <include ref="${{AUX}}/unparsable.xml"/>
+                  <include ref="${{UNSET}}/x.xml"/>
+                  <shape ref="{stl}"/>
+                </lccdd>
+            """,
+        },
+    )
+    monkeypatch.setenv("AUX", str(aux))
+    monkeypatch.setenv("CAD", str(cad))
+    monkeypatch.delenv("UNSET", raising=False)
+    source = GeometrySource("main.xml", root=geo)
+    found = source.external_files()
+    assert found == {
+        "${AUX}/component.xml": {
+            "path": str(aux / "component.xml"),
+            "sha256": _sha256(aux / "component.xml"),
+            "files": {"parts/a.xml": _sha256(aux / "parts/a.xml"), "model.stl": _sha256(stl)},
+        },
+        "${AUX}/broken.xml": {
+            "path": str(aux / "broken.xml"),
+            "sha256": _sha256(aux / "broken.xml"),
+            # the include that cannot be followed is listed; the one that can is still read
+            "files": {"valid.xml": _sha256(aux / "valid.xml")},
+            "unresolved": {"broken.xml:1": "missing.xml"},
+        },
+        "${AUX}/unparsable.xml": {
+            "path": str(aux / "unparsable.xml"),
+            "sha256": _sha256(aux / "unparsable.xml"),
+            "files": None,  # it cannot be parsed itself
+        },
+        "${UNSET}/x.xml": {"path": None, "sha256": None},
+        str(stl): {"path": str(stl), "sha256": _sha256(stl)},
+        # reached through an external include, an entry of its own
+        "${CAD}/b.xml": {"path": str(cad / "b.xml"), "sha256": _sha256(cad / "b.xml"), "files": {}},
+    }
+
+    # the same files elsewhere read the same content, which an edit then changes
+    monkeypatch.setenv("AUX", str(shutil.copytree(aux, tmp_path / "moved")))
+    moved = source.external_files()["${AUX}/component.xml"]
+    assert moved["path"] != found["${AUX}/component.xml"]["path"]
+    assert moved["files"] == found["${AUX}/component.xml"]["files"]
+    (tmp_path / "moved" / "parts" / "a.xml").write_text("<lccdd/>")
+    assert source.external_files()["${AUX}/component.xml"]["files"] != moved["files"]
+    # so does an edit of a file an include reaches beside one it cannot follow
+    broken = source.external_files()["${AUX}/broken.xml"]
+    (tmp_path / "moved" / "valid.xml").write_text("<lccdd><!-- other --></lccdd>")
+    assert source.external_files()["${AUX}/broken.xml"]["files"] != broken["files"]
+
+
+def test_a_reference_written_alike_has_an_entry_for_each_file_that_holds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aux = write_tree(
+        tmp_path / "aux", {"c.xml": '<lccdd><include ref="d.xml"/></lccdd>', "d.xml": "<lccdd/>"}
+    )
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a/x.xml"/><include ref="b/y.xml"/></lccdd>',
+            # a relative ${REL} names the file beside each of them
+            "a/x.xml": """\
+                <lccdd>
+                  <shape ref="${REL}/m.stl"/>
+                  <shape ref="${AUX}/c.xml"/>
+                  <include ref="${AUX}/c.xml"/>
+                </lccdd>
+            """,
+            "b/y.xml": '<lccdd><shape ref="${REL}/m.stl"/></lccdd>',
+            "a/cad/m.stl": "solid a",
+            "b/cad/m.stl": "solid b",
+        },
+    )
+    monkeypatch.setenv("REL", "cad")
+    monkeypatch.setenv("AUX", str(aux))
+    found = GeometrySource("main.xml", root=geo).external_files()
+    assert found == {
+        "${REL}/m.stl": {"path": str(geo / "a/cad/m.stl"), "sha256": _sha256(geo / "a/cad/m.stl")},
+        "${AUX}/c.xml": {
+            "path": str(aux / "c.xml"),
+            "sha256": _sha256(aux / "c.xml"),
+            # named as a resource first, then included: what it includes is read as well
+            "files": {"d.xml": _sha256(aux / "d.xml")},
+        },
+        "${REL}/m.stl (in b/y.xml)": {
+            "path": str(geo / "b/cad/m.stl"),
+            "sha256": _sha256(geo / "b/cad/m.stl"),
+        },
+    }
+
+
+def test_references_that_come_to_name_one_file_keep_their_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a/x.xml"/><include ref="b/y.xml"/></lccdd>',
+            "a/x.xml": '<lccdd><shape ref="${REL}/m.stl"/></lccdd>',
+            "b/y.xml": '<lccdd><shape ref="${REL}/m.stl"/></lccdd>',
+            "a/cad/m.stl": "solid",
+            "b/cad/m.stl": "solid",
+        },
+    )
+    shared = write_tree(tmp_path / "shared", {"m.stl": "solid"})
+    source = GeometrySource("main.xml", root=geo)
+    monkeypatch.setenv("REL", "cad")
+    before = source.external_files()
+    monkeypatch.setenv("REL", str(shared))  # both name one file now, which holds the same bytes
+    after = source.external_files()
+    assert list(after) == list(before) == ["${REL}/m.stl", "${REL}/m.stl (in b/y.xml)"]
+    assert {entry["path"] for entry in after.values()} == {str(shared / "m.stl")}
+    assert [entry["sha256"] for entry in after.values()] == [
+        entry["sha256"] for entry in before.values()
+    ]
+
+
+@pytest.mark.parametrize("cycle", ["direct", "indirect"])
+def test_an_external_include_cycle_is_followed_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cycle: str
+) -> None:
+    back = "a" if cycle == "direct" else "b"
+    ext = write_tree(
+        tmp_path / "ext",
+        {
+            "a.xml": f'<lccdd><include ref="${{EXT}}/{back}.xml"/></lccdd>',
+            "b.xml": '<lccdd><include ref="${EXT}/a.xml"/></lccdd>',
+        },
+    )
+    geo = write_tree(tmp_path / "geo", {"main.xml": '<lccdd><include ref="${EXT}/a.xml"/></lccdd>'})
+    monkeypatch.setenv("EXT", str(ext))
+
+    def hung(signum: int, frame: object) -> None:
+        raise TimeoutError("external_files went round the cycle")
+
+    previous = signal.signal(signal.SIGALRM, hung)
+    signal.alarm(10)
+    try:
+        found = GeometrySource("main.xml", root=geo).external_files()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    a = {"path": str(ext / "a.xml"), "sha256": _sha256(ext / "a.xml"), "files": {}}
+    b = {"path": str(ext / "b.xml"), "sha256": _sha256(ext / "b.xml"), "files": {}}
+    if cycle == "direct":
+        assert found == {"${EXT}/a.xml": a, "${EXT}/a.xml (in a.xml via ${EXT}/a.xml)": a}
+    else:
+        assert found == {
+            "${EXT}/a.xml": a,
+            "${EXT}/b.xml": b,
+            "${EXT}/a.xml (in b.xml via ${EXT}/b.xml)": a,
+        }
+
+
+def test_a_reference_in_a_file_read_through_a_symlink_resolves_beside_the_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a/shared.xml"/><include ref="b/shared.xml"/></lccdd>',
+            "a/shared.xml": '<lccdd><shape ref="${REL}/model.stl"/></lccdd>',
+            "a/cad/model.stl": "solid a",
+            "b/cad/model.stl": "solid b",
+        },
+    )
+    (geo / "b" / "shared.xml").symlink_to("../a/shared.xml")
+    monkeypatch.setenv("REL", "cad")
+    source = GeometrySource("main.xml", root=geo)
+    found = source.external_files()
+    a, b = geo / "a" / "cad" / "model.stl", geo / "b" / "cad" / "model.stl"
+    assert found == {
+        "${REL}/model.stl": {"path": str(a), "sha256": _sha256(a)},
+        "${REL}/model.stl (in b/shared.xml)": {"path": str(b), "sha256": _sha256(b)},
+    }
+    b.write_text("solid other")
+    assert source.external_files() != found
+
+
+def test_a_variable_that_alone_names_a_resource_is_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = write_tree(tmp_path / "cad", {"model.stl": "solid"}) / "model.stl"
+    main = '<lccdd><shape ref="${CAD_MODEL}"/><m ref="${MAT}"/></lccdd>'
+    geo = write_tree(tmp_path / "geo", {"main.xml": main})
+    monkeypatch.setenv("CAD_MODEL", str(model))
+    monkeypatch.setenv("MAT", "Silicon")  # a symbolic name: no file
+    found = GeometrySource("main.xml", root=geo).external_files()
+    assert found == {
+        "${CAD_MODEL}": {"path": str(model), "sha256": _sha256(model)},
+        "${MAT}": {"path": None, "sha256": None},
+    }
