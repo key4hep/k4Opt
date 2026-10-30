@@ -26,6 +26,22 @@ trials:   30: 28 valid (28 feasible, 0 infeasible), 1 invalid, 1 failed
 pareto:   0, 4, 7, 12, 19
 ```
 
+A parameter value is shown to 6 significant digits; the trial's record holds all of them. On a
+terminal the lines are colored, and a progress bar stays under them while the study runs:
+
+```text
+⠹ ━━━━━━━━━━━━━━━━━━╸─────────────────────   46%  14/30 trials  1:07:12 elapsed  ~1:16:48 left  4:48/trial  10 feasible  2 infeasible  2 failed
+```
+
+It shows the trials asked for that have ended, the time since the study began, the time left,
+the time a trial takes and how the trials ended; on a narrow terminal the last of these go first.
+A trial takes the mean time from the end of one trial to the end of the next, without the first
+trial of the session, whose time also holds the study's setup. The time left is that of the
+trials still to run, less the time the running one has had, so it counts down between the ends of
+trials. When the study ends, the bar is left in place and marked `✔`, or `✘` when it was stopped.
+Piped or written to a file, the output is the plain lines above, as in a log; `NO_COLOR=1` turns
+color off.
+
 | Option | Meaning |
 | --- | --- |
 | `--evaluator FILE.py:Class` | an evaluator of the problem, as for `k4opt evaluate` (repeatable) |

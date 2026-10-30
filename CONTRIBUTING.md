@@ -12,6 +12,7 @@ and `optimization`.
       yamlio.py        strict YAML loading, shared by components that read YAML files
       jsonio.py        atomic publication of complete JSON records without overwriting
       revision.py      git revisions and the identity of k4opt's own code, for provenance
+      terminal.py      colors and widths of terminal output, shared by the command lines
       cli.py           the `k4opt` command; each component adds a command group
       <component>/     public API in __init__.py; errors.py, cli.py (register()), ...
     tests/
@@ -25,8 +26,8 @@ and `optimization`.
 Rules of thumb:
 
 - Components share only the top-level modules (`k4opt.errors`, `k4opt.frozen`,
-  `k4opt.yamlio`, `k4opt.jsonio`, `k4opt.revision`), never each other's internals; a component talks to another through
-  its public API (`k4opt.<component>`).
+  `k4opt.yamlio`, `k4opt.jsonio`, `k4opt.revision`, `k4opt.terminal`), never each other's
+  internals; a component talks to another through its public API (`k4opt.<component>`).
 - Users import from the component (`from k4opt.geometry import GeometrySource`),
   never from its private modules.
 - The CLI is a thin wrapper over the library; it holds no logic.

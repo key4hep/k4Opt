@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shutil
 from typing import TextIO
 
 from k4opt.geometry.render import render_parameters
 from k4opt.geometry.source import GeometrySource
+from k4opt.terminal import color, width
 
 INSPECT_SCHEMA = "k4opt.geometry.inspect/1"
 
@@ -49,22 +48,6 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 # ---------------------------------------------------------------------------
 
 
-def _is_tty(stream: TextIO) -> bool:
-    try:
-        return bool(stream.isatty())
-    except (AttributeError, ValueError):
-        return False
-
-
-def _width(stream: TextIO) -> int | None:
-    """Terminal width for an interactive stream; ``None`` (no shortening) when piped."""
-    return shutil.get_terminal_size((100, 24)).columns if _is_tty(stream) else None
-
-
-def _color(stream: TextIO) -> bool:
-    return _is_tty(stream) and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
-
-
 def cmd_inspect(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     catalog = GeometrySource(args.geometry, root=args.root).discover()
     parameters = catalog.filter(args.filter) if args.filter else tuple(catalog)
@@ -90,7 +73,7 @@ def cmd_inspect(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         catalog,
         out,
         filter_text=args.filter,
-        width=_width(out),
-        color=_color(out),
+        width=width(out),
+        color=color(out),
     )
     return 0

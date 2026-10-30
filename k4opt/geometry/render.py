@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from k4opt.geometry.discovery import Catalog, Parameter
+from k4opt.terminal import Style
 
 ELLIPSIS = "…"
 INDENT = 2
@@ -23,28 +24,6 @@ LEGEND = {
     "A": "ambiguous: also defined in another file; the target alone does not select one",
     "O": "order-sensitive: positional [index] in the target, breaks if siblings are reordered",
 }
-
-
-class Style:
-    """Tiny ANSI helper; every method returns the text unchanged when disabled."""
-
-    def __init__(self, enabled: bool) -> None:
-        self.enabled = enabled
-
-    def _wrap(self, code: str, text: str) -> str:
-        return f"\x1b[{code}m{text}\x1b[0m" if self.enabled and text else text
-
-    def bold(self, text: str) -> str:
-        return self._wrap("1", text)
-
-    def dim(self, text: str) -> str:
-        return self._wrap("2", text)
-
-    def yellow(self, text: str) -> str:
-        return self._wrap("33", text)
-
-    def cyan(self, text: str) -> str:
-        return self._wrap("36", text)
 
 
 def fit(text: str, width: int | None) -> str:
