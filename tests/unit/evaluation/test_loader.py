@@ -13,6 +13,7 @@ import pytest
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import EvaluatorLoadError, evaluator_source, load_evaluator
+from tests.support.common import git_checkout, requires_git
 
 GOOD = """
 from k4opt.evaluation import EvaluationResult, Measurement
@@ -78,6 +79,7 @@ def test_cached_evaluator_keeps_the_identity_of_the_executed_bytes(evaluator_fil
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
             "executed": True,
+            "revision": None,  # no git checkout tracks it
         }
     )
     evaluator_file.unlink()
@@ -98,6 +100,7 @@ def test_a_module_imported_by_the_loader_is_identified_right_after_the_import(
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
             "executed": False,
+            "revision": None,
         }
     finally:
         sys.modules.pop("my_evaluator", None)
@@ -159,6 +162,22 @@ def test_a_stale_bytecode_cache_cannot_disagree_with_the_source_hash(evaluator_f
     evaluator = load_evaluator(f"{evaluator_file}:Good")
     assert evaluator.evaluate(None).measurements[0].value == 99  # type: ignore[arg-type]
     assert evaluator_source(evaluator)["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+@requires_git
+def test_the_revision_of_the_checkout_is_taken_when_the_file_is_loaded(tmp_path: Path) -> None:
+    files = {"tracked_good.py": GOOD, "later_good.py": GOOD, "helper.py": ""}
+    commit = git_checkout(tmp_path / "study", files)
+    clean = load_evaluator(f"{tmp_path / 'study' / 'tracked_good.py'}:Good")
+    assert evaluator_source(clean)["revision"] == {"commit": commit, "dirty": False}
+    # a helper module of the checkout changes, which the evaluator's own hash cannot see
+    (tmp_path / "study" / "helper.py").write_text("changed = True\n")
+    later = load_evaluator(f"{tmp_path / 'study' / 'later_good.py'}:Good")
+    assert evaluator_source(later)["revision"] == {"commit": commit, "dirty": True}
+    assert evaluator_source(clean)["revision"] == {"commit": commit, "dirty": False}  # as loaded
+    untracked = tmp_path / "study" / "untracked_good.py"
+    untracked.write_text(GOOD)  # in the checkout's directory, but in none of its commits
+    assert evaluator_source(load_evaluator(f"{untracked}:Good"))["revision"] is None
 
 
 def test_an_importable_module_name_works(

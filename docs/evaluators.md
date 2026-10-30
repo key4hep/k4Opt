@@ -29,7 +29,9 @@ parameters change (the simulation, when they vary the geometry) was not made wit
 candidate's geometry: the command says so, and `summary.json` records
 `represents_candidate: false`, so such a run never counts as an evaluation of the candidate.
 
-One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`).
+One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`); from
+Python, an [`EvaluationSession`](evaluation.md#evaluating-candidates-evaluationsession)
+evaluates many candidates of a problem the same way.
 `--param REFERENCE=VALUE` uses the canonical reference of the problem file and is repeated for
 each declared parameter. `--output` must not exist. Before anything is created, the candidate
 (keys, types, bounds), the supplied inputs, the evaluators (each declared one given once, with
@@ -50,7 +52,11 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    output lacks events, the evaluators that read it are `failed` and not called; the others
    still are. So is an evaluator whose stage's file lacks a collection it declares, or holds it
    with another type: the message lists what the file holds;
-3. `<output>/summary.json` (`k4opt.run/1`) is written:
+3. the candidate is [assessed](evaluation.md#assessment-objectives-limits-and-feasibility)
+   against the objectives and constraints, and `<output>/summary.json` (`k4opt.run/1`) is
+   written:
+   - `id`, the record's own identity (a UUID), and `run`, what it was made for: `null` for
+     `k4opt evaluate`, a study and trial when an optimizer asks for it;
    - `problem`: the original path and name plus `definition`, the normalized problem loaded
      for this run, including parameter domains, objective directions and constraint limits;
    - `status` and `message` of the candidate ([how they follow from the evaluators'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
@@ -58,10 +64,14 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      `supplied` with `--input`, and the `warnings` printed before the run;
    - `metrics`: every objective and constraint metric, the evaluator that owns it, and its
      value, unit and uncertainty, which are `null` unless that evaluator's result is `valid`;
+   - `assessment`: the objective values in the problem's order, each bound of each constraint
+     (`limits`, with the value, its margin to the limit and whether it is `satisfied`), and
+     whether the candidate is `feasible` (`true`, `false`, or `null` when it is not assessed:
+     not `valid`, or not made from the candidate);
    - `evaluators`, in problem order: name, version, the stage it reads, its source identity
-     (`source`: path, size and SHA-256 of the file defining its class, taken at import, and
-     whether they are the bytes `executed`; [details](evaluation.md#loading-an-evaluator)),
-     status, message,
+     (`source`: path, size and SHA-256 of the file defining its class, taken at import,
+     whether they are the bytes `executed`, and the `revision` of the git checkout that tracks
+     it; [details](evaluation.md#loading-an-evaluator)), status, message,
      settings (`declared` as the problem wrote them, `used` as the evaluator received them, with
      defaults and quantities in the declared unit), the collection of each role, the stages it
      read, its measurements with uncertainty, the artifacts and
@@ -73,13 +83,29 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      spent on it;
    - the geometry fingerprint and manifest, requested and observed events, the time of the whole
      evaluation, the files of the stages under `paths`, and the environment (`declared`: the
-     problem's pin; `observed`: the k4opt version, `KEY4HEP_STACK`, `K4GEO` and the `ddsim` that
-     was started; the pin and the stack are not compared).
+     problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
+     own Python files and the commit and dirty flag of its git checkout (`null` when it is
+     installed rather than checked out), `KEY4HEP_STACK`, `K4GEO` and the `ddsim` that was
+     started; the pin and the stack are not compared).
 
 The command prints the candidate's status, each evaluator's status and metrics with their
-uncertainty, the events, the fingerprint and the paths. The exit status is 0 only for a `valid`
-candidate; otherwise the message (each evaluator that is not `valid`, with its status and
-reason) goes to stderr and the exit status is 1.
+uncertainty, each limit with its verdict and margin, whether the candidate is feasible, the
+events, the fingerprint and the paths. For the 10 mm candidate of the
+[example study](#the-example-study), with the
+[1 mrad constraint](problem.md#constraints) added to the problem (abridged, values rounded):
+
+```text
+status:      valid
+evaluator:   calo.photon 1: valid
+metric:      simulation/ecal_barrel.angular_residual = 0.946 +- 0.034 [mrad]
+limit:       simulation/ecal_barrel.angular_residual <= 1.0: satisfied, margin -0.054 [mrad]
+feasible:    yes
+events:      1000 of 1000
+```
+
+The exit status is 0 for a `valid` candidate, feasible or not; otherwise the message (each
+evaluator that is not `valid`, with its status and reason) goes to stderr and the exit status
+is 1.
 
 The summary is published only after it has been completely serialized and closed. A failed
 write leaves no partial `summary.json`, and an existing file is never overwritten. Filesystem

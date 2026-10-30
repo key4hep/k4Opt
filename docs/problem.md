@@ -6,9 +6,12 @@
 > stages (a particle gun or an event file, then `ddsim`) once and measures it with each evaluator
 > you name, for example the one in `examples/evaluators` (see [evaluators](evaluators.md));
 > before it simulates, it checks that every declared objective and constraint is a metric of
-> exactly one of them. Everything else is **proposed, not implemented**: no evaluator registry,
-> no `k4run` invocation, no optimizer. Parsing a file alone does not check that its evaluators,
-> metrics or geometry targets exist. Everything here may change.
+> exactly one of them, and afterwards it judges the candidate against the constraints. From
+> Python, an `EvaluationSession` evaluates many candidates of a problem the same way
+> ([evaluation](evaluation.md#evaluating-candidates-evaluationsession)). Everything else is
+> **proposed, not implemented**: no evaluator registry, no `k4run` invocation, no optimizer.
+> Parsing a file alone does not check that its evaluators, metrics or geometry targets exist.
+> Everything here may change.
 
 k4opt aims to standardize **optimization problems, measurement definitions and evaluation
 records**. It does not replace the Key4hep tools that do the work (`ddsim`, `k4run`, ...).
@@ -328,12 +331,16 @@ combined (priorities, weights, scalarization) is deferred.
 Optional hard limits on measured quantities. Each item has `stage` and `metric` as above,
 plus `min` and/or `max` (inclusive) and `unit` where the metric has one.
 
-A constraint is evaluated on the measurement. An unavailable metric never counts as
-satisfied and is never replaced by an invented number. Metrics come with
-uncertainties, so how a constraint is judged against them is an
-[unresolved choice](#unresolved-choices). k4Opt adds no scientifically
-motivated constraints of its own: whether a candidate is physically sensible is the
-researcher's responsibility. For instance, a requirement on the photon direction:
+A constraint is judged on the central value of the measurement: `max` is satisfied when the
+value is at most the limit, `min` when it is at least the limit, and equality satisfies both.
+The uncertainty is recorded next to the value but does not decide (whether it should is an
+[unresolved choice](#unresolved-choices)), so a candidate close to a limit is judged by its
+central value. Only a `valid` evaluation is judged; an unavailable metric never counts as
+satisfied and is never replaced by an invented number. Each run records the verdict and the
+margin of every bound, and whether the candidate is feasible
+([assessment](evaluation.md#assessment-objectives-limits-and-feasibility)). k4Opt adds no
+scientifically motivated constraints of its own: whether a candidate is physically sensible
+is the researcher's responsibility. For instance, a requirement on the photon direction:
 
 ```yaml
 constraints:
@@ -362,9 +369,9 @@ all to tell nearby showers apart in particle flow, which needs reconstruction.
 They are named so the YAML sections have a clear home. The evaluator contract (`Evaluator`,
 `EvaluationRequest`, `EvaluationResult`, `Measurement`, `EvaluationRecord`) is implemented in
 `k4opt.evaluation`, see [evaluation.md](evaluation.md), and `k4opt evaluate` evaluates one
-candidate with the evaluators named on the command line. A registry, a `Run` over many
-candidates and a store of records do not exist yet, and `load_problem()` neither resolves nor
-runs an evaluator.
+candidate with the evaluators named on the command line; from Python, an `EvaluationSession`
+evaluates many, one after another. A registry, a `Run` that records a campaign and a store of
+records do not exist yet, and `load_problem()` neither resolves nor runs an evaluator.
 
 | Concept | Role |
 | --- | --- |
@@ -418,7 +425,8 @@ Provenance recorded per evaluation: `k4opt evaluate` writes the geometry snapsho
 settings and the import-time SHA-256 of the file defining its class, the executed `ddsim`
 command (which holds the options in
 order), the size and SHA-256 of every given or supplied file and of the files options name, the
-k4opt version and the active stack to `summary.json` ([evaluators](evaluators.md#k4opt-evaluate)).
+k4opt version with the SHA-256 of its code, and the active stack to `summary.json`
+([evaluators](evaluators.md#k4opt-evaluate)).
 The normalized problem definition is kept in the summary, so later edits to the YAML cannot
 change the parameter domains, objectives or constraints recorded for an earlier run.
 The resolved versions of the individual Key4hep packages are not recorded yet.
@@ -497,8 +505,9 @@ There is no fingerprint of a problem yet.
 
 ## Deferred
 
-Out of scope until later increments: evaluating many candidates in one run (`k4opt evaluate`
-takes one); the evaluator registry (the evaluator is named on the command line) and metric
+Out of scope until later increments: evaluating many candidates from the command line
+(`k4opt evaluate` takes one; an `EvaluationSession` takes many from Python); the evaluator
+registry (the evaluator is named on the command line) and metric
 metadata beyond units; reconstruction and analysis stages and running `k4run`; steering and
 configuration files (refused for ddsim until they can be captured); a problem fingerprint;
 optimizer integration; multi-objective strategy; non-geometry parameter sources (stage options
@@ -524,6 +533,7 @@ baseline for validating bounds and constraint limits).
   the evaluator may convert or must match exactly is undecided.
 - **Release `channel` vocabulary** beyond `nightly` and `release`.
 - **Constraints and uncertainty.** A constraint such as `angular_residual <= 1 mrad` is judged
-  on a measurement with an uncertainty. Whether the central value is compared, or
-  satisfaction is required at some confidence, is undecided and belongs in the evaluator
-  contract so results stay comparable across optimizers.
+  on a measurement with an uncertainty. k4opt compares the central value and records the
+  uncertainty next to it, the same for every optimizer. Whether satisfaction should instead be
+  required at some confidence is undecided: such a rule would depend on the number of events,
+  and it belongs in the problem so that results stay comparable across optimizers.

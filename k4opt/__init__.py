@@ -6,13 +6,14 @@ own public API, errors and command group:
 * :mod:`k4opt.geometry` - discover and override parameters in DD4hep XML detector
   descriptions and materialize modified geometries.
 * :mod:`k4opt.problem` - load and validate the declarative definition of an optimization
-  problem.
+  problem, and evaluate its candidates (:class:`k4opt.problem.EvaluationSession`).
 * :mod:`k4opt.evaluation` - the contract an evaluator implements: request, result,
   measurements.
 * :mod:`k4opt.ddsim` - run Key4hep's ``ddsim`` on a prepared geometry.
 
-Shared pieces live at the top level: :mod:`k4opt.errors`, the helpers :mod:`k4opt.frozen` and
-:mod:`k4opt.yamlio`, and the ``k4opt`` command (:mod:`k4opt.cli`).
+Shared pieces live at the top level: :mod:`k4opt.errors`, the helpers :mod:`k4opt.frozen`,
+:mod:`k4opt.yamlio`, :mod:`k4opt.jsonio` and :mod:`k4opt.revision`, and the ``k4opt`` command
+(:mod:`k4opt.cli`).
 """
 
 from importlib.metadata import PackageNotFoundError, version

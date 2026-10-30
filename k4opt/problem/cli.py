@@ -4,7 +4,8 @@
         [--input STAGE=FILE ...] --output DIR
 
 A thin wrapper over :func:`k4opt.problem._run.run_candidate`; :func:`register` plugs it into
-the top-level ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate.
+the top-level ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate,
+feasible or not.
 """
 
 from __future__ import annotations
@@ -13,7 +14,10 @@ import argparse
 from typing import TextIO
 
 from k4opt.evaluation import Status, load_evaluator
+from k4opt.problem._assess import Limit
 from k4opt.problem._run import RunOutcome, run_candidate
+
+_FEASIBLE = {True: "yes", False: "no", None: "not assessed"}
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -63,6 +67,16 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     evaluate.set_defaults(func=cmd_evaluate)
 
 
+def _limit(limit: Limit) -> str:
+    """``simulation/x.rms <= 1.0: violated, margin 0.25 [mrad]``."""
+    unit = f" [{limit.unit}]" if limit.unit else ""
+    text = f"{limit.stage}/{limit.metric} {'<=' if limit.bound == 'max' else '>='} {limit.limit}"
+    if limit.satisfied is None:
+        return f"{text}: not assessed{unit}"
+    margin = "" if limit.margin is None else f", margin {limit.margin:.6g}"
+    return f"{text}: {'satisfied' if limit.satisfied else 'violated'}{margin}{unit}"
+
+
 def _report(outcome: RunOutcome, out: TextIO) -> None:
     candidate = outcome.candidate
     print(f"status:      {candidate.status}", file=out)
@@ -74,6 +88,9 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
             error = "" if m.uncertainty is None else f" +- {m.uncertainty:.6g}"
             unit = f" [{m.unit}]" if m.unit else ""
             print(f"metric:      {m.stage}/{m.metric} = {m.value:.6g}{error}{unit}", file=out)
+    for limit in outcome.assessment.limits:
+        print(f"limit:       {_limit(limit)}", file=out)
+    print(f"feasible:    {_FEASIBLE[outcome.assessment.feasible]}", file=out)
     if outcome.events_read is not None:  # None: no simulation output was inspected
         print(f"events:      {outcome.events_read} of {outcome.events_requested}", file=out)
     for stage in sorted(candidate.stages.supplied):

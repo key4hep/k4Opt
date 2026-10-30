@@ -11,6 +11,7 @@ CLI command group, docs page and tests: `geometry`, `problem`, `evaluation` and
       frozen.py        immutable copies of JSON-like data, shared by components that store it
       yamlio.py        strict YAML loading, shared by components that read YAML files
       jsonio.py        atomic publication of complete JSON records without overwriting
+      revision.py      git revisions and the identity of k4opt's own code, for provenance
       cli.py           the `k4opt` command; each component adds a command group
       <component>/     public API in __init__.py; errors.py, cli.py (register()), ...
     tests/
@@ -24,7 +25,7 @@ CLI command group, docs page and tests: `geometry`, `problem`, `evaluation` and
 Rules of thumb:
 
 - Components share only the top-level modules (`k4opt.errors`, `k4opt.frozen`,
-  `k4opt.yamlio`, `k4opt.jsonio`), never each other's internals; a component talks to another through
+  `k4opt.yamlio`, `k4opt.jsonio`, `k4opt.revision`), never each other's internals; a component talks to another through
   its public API (`k4opt.<component>`).
 - Users import from the component (`from k4opt.geometry import GeometrySource`),
   never from its private modules.

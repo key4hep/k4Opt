@@ -404,6 +404,27 @@ def check_stages(context: StageContext, *targets: str, provided: Collection[str]
     return plan
 
 
+def input_files(
+    context: StageContext, *targets: str, provided: Collection[str] = ()
+) -> dict[str, Path]:
+    """Every file the problem names that the stages of ``targets`` read, by where it is named.
+
+    ``stages.<stage>.file`` for a stage given as a file, ``stages.<stage>.<option>`` for a file an
+    executor option names (``stages.simulation.physics.pdgfile``). The stages in ``provided``, and
+    those only they need, read none: the caller supplies their files.
+    """
+    files = {name: path for name, path in context.files().items() if name not in provided}
+    named: dict[str, Path] = {}
+    for name, _ in _graph(targets, {*provided, *files}):
+        stage = context.stages.get(name)  # each one is defined once check_stages() passed
+        if name in files:
+            named[f"stages.{name}.file"] = files[name]
+        elif name not in provided and stage is not None:
+            options = _option_files(context, stage.options)
+            named |= {f"stages.{name}.{key}": path for key, path in options.items()}
+    return named
+
+
 def check_run_inputs(plan: Collection[str], inputs: Collection[str], workdir: Path | None) -> None:
     """Raise if a stage of ``plan`` lacks the geometry or workdir it needs; others need none."""
     for name in plan:

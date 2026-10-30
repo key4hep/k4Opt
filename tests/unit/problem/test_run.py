@@ -8,6 +8,7 @@ import io
 import json
 import shutil
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +28,20 @@ from k4opt.evaluation import (
     with_defaults,
 )
 from k4opt.geometry import GeometrySource, Override
-from k4opt.problem import CandidateError, ProblemConfigError, load_problem, parse_problem
-from k4opt.problem._run import SUMMARY_NAME, RunOutcome, _parse_candidate, _xml_value
+from k4opt.problem import (
+    SUMMARY_NAME,
+    Assessment,
+    CandidateError,
+    EvaluationSession,
+    ProblemConfigError,
+    RunError,
+    RunOutcome,
+    load_problem,
+    parse_problem,
+)
+from k4opt.problem._run import _parse_candidate, _xml_value
 from k4opt.problem._run import run_candidate as _run_candidate
-from k4opt.problem.errors import RunError
+from k4opt.revision import code_fingerprint, code_identity
 from tests.support import simulation
 from tests.support.common import tree_digest
 from tests.support.evaluators import (
@@ -221,8 +232,23 @@ def test_summary_is_written_and_truthful(
     assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
     assert on_disk["environment"]["observed"]["ddsim"] == "/stack/bin/ddsim"
     assert on_disk["environment"]["observed"]["k4opt"] == __version__
+    # what the version only labels: the content of the code that ran
+    assert on_disk["environment"]["observed"]["k4opt_source"] == code_identity()
     assert on_disk["problem"]["path"] == str(problem_file.absolute())
     assert on_disk["candidate_key"] == [[RADIUS, "continuous", "num", "45e1"]]
+    # the record's own identity, made for no study, and the candidate judged
+    assert str(uuid.UUID(on_disk["id"])) == on_disk["id"]
+    assert on_disk["run"] is None
+    assert on_disk["assessment"] == {
+        "feasible": True,  # no constraints
+        "objectives": [
+            {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells"}
+            | {k: measurement[k] for k in ("value", "unit", "uncertainty")}
+        ],
+        "limits": [],
+    }
+    assert Assessment.from_summary(load_problem(problem_file), on_disk) == outcome.assessment
+    assert "revision" in evaluator["source"]  # of the checkout that tracks it, if one does
 
 
 def test_two_candidates_give_distinct_geometries(
@@ -609,6 +635,7 @@ def test_command_prints_the_result_and_exits_zero(
     assert "status:      valid" in out
     assert "evaluator:   test.cell_count 1: valid" in out
     assert "simulation/ecal_barrel.mean_hit_cells = 3 +- 0.57735 [1]" in out
+    assert "feasible:    yes" in out and "limit:" not in out  # the problem has no constraints
     assert "events:      3 of 3" in out
     assert "fingerprint: " in out
     assert f"summary:     {tmp_path / 'a' / SUMMARY_NAME}" in out
@@ -625,6 +652,7 @@ def test_command_exits_nonzero_for_a_failed_run(
     )
     assert code == 1
     assert "status:      failed" in out
+    assert "feasible:    not assessed" in out
     assert "events:" not in out  # ddsim wrote no file, so no events were counted
     assert "k4opt: evaluation failed: test.cell_count failed: ddsim exited with status 1" in err
 
@@ -713,6 +741,7 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
     assert fake.calls == []  # nothing was simulated
     assert f"supplied:    simulation from {events_file}" in out
     assert "this is no evaluation of the candidate" in out
+    assert "feasible:    not assessed" in out  # whatever it measured
     summary = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
     assert (summary["represents_candidate"], summary["supplied"]) == (False, ["simulation"])
     assert summary["stages"] == {
@@ -1121,8 +1150,9 @@ def test_the_summary_is_the_same_for_the_same_candidate(
     )
 
     def normalized(outcome: RunOutcome) -> str:
-        """The summary as written, without its directory and its times."""
+        """The summary as written, without its directory, its times and its own id."""
         data = json.loads(outcome.summary_path.read_text().replace(str(outcome.run_dir), "<run>"))
+        del data["id"]
 
         def untimed(node: Any) -> Any:
             if isinstance(node, dict):
@@ -1132,6 +1162,7 @@ def test_the_summary_is_the_same_for_the_same_candidate(
         return json.dumps(untimed(data))  # key order included
 
     assert normalized(first) == normalized(second)
+    assert first.summary["id"] != second.summary["id"]  # two records, each its own identity
 
 
 def test_a_misspelled_collection_warns_before_the_run_and_fails_after_it(
@@ -1174,3 +1205,218 @@ def test_a_setting_with_a_unit_is_recorded_as_written_and_as_received(
         "declared": {"threshold": {"value": 70, "unit": "keV"}},
         "used": {"threshold": 70e-6},
     }
+
+
+# --- one session, many candidates ----------------------------------------------------------
+
+
+def candidates(requests: list[Any]) -> list[object]:
+    """The radius each request was made for."""
+    return [request.candidate[RADIUS] for request in requests]
+
+
+def test_a_session_checks_and_measures_each_candidate_with_a_request_of_its_own(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
+) -> None:
+    spy = Spy()
+    session = EvaluationSession.open(problem_file, [spy])
+    session.check({RADIUS: 300.0})  # checks, and creates and runs nothing
+    first = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    second = session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert candidates(spy.checked) == [300.0, 450.0, 500.0]  # never the request of another
+    assert candidates(spy.evaluated) == [450.0, 500.0]
+    assert guard == ["discover", "materialize", "materialize"]  # the geometry discovered once
+    assert len(fake.calls) == 2 and sorted(p.name for p in tmp_path.iterdir()) == [
+        "a",
+        "b",
+        "problem.yaml",
+    ]
+    assert first.summary["candidate"] == {RADIUS: 450.0}
+    assert second.summary["candidate"] == {RADIUS: 500.0}
+    assert first.fingerprint != second.fingerprint
+    assert first.summary["id"] != second.summary["id"]
+
+
+def test_a_check_that_refuses_one_candidate_refuses_only_that_one(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
+) -> None:
+    class Picky(Spy):
+        def check(self, request: Any) -> None:
+            super().check(request)
+            if request.candidate[RADIUS] == 500.0:
+                raise EvaluationContractError("this evaluator cannot measure a radius of 500 mm")
+
+    session = EvaluationSession.open(problem_file, [Picky()])
+    with pytest.raises(EvaluationContractError, match="500 mm"):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "a")
+    assert not (tmp_path / "a").exists() and fake.calls == [] and "materialize" not in guard
+    assert session.evaluate({RADIUS: 450.0}, tmp_path / "b").candidate.status == "valid"
+
+
+def test_a_session_keeps_the_problem_it_loaded(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    definition = session.spec.to_dict()
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["parameters"][0]["bounds"] = [100.0, 200.0]  # an edit during a campaign
+    problem_file.write_text(yaml.safe_dump(doc))
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert outcome.summary["problem"]["definition"] == definition  # type: ignore[index]
+    assert session.problem_path == problem_file.absolute()
+
+
+@pytest.fixture
+def named_files(tmp_path: Path, problem_file: Path) -> tuple[Path, Path]:
+    """The problem reads a generation file and a file a ddsim option names."""
+    sample, table = tmp_path / "zh.hepmc", tmp_path / "particle.tbl"
+    sample.write_bytes(b"HepMC::Version 3\n")
+    table.write_bytes(b"22 gamma\n")
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["stages"]["generation"] = {"file": sample.name}  # next to the problem file
+    doc["stages"]["simulation"]["physics.pdgfile"] = table.name
+    problem_file.write_text(yaml.safe_dump(doc))
+    return sample, table
+
+
+def test_the_identity_of_a_session_is_what_it_evaluates_with(
+    problem_file: Path, named_files: tuple[Path, Path]
+) -> None:
+    sample, table = named_files
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    identity = session.identity()
+    assert identity["problem"] == {
+        "path": str(problem_file.absolute()),
+        "definition": session.spec.to_dict(),
+    }
+    assert identity["inputs"] == {
+        "stages.generation.file": {
+            "path": str(sample),
+            "bytes": sample.stat().st_size,
+            "sha256": hashlib.sha256(sample.read_bytes()).hexdigest(),
+        },
+        "stages.simulation.physics.pdgfile": {
+            "path": str(table),
+            "bytes": table.stat().st_size,
+            "sha256": hashlib.sha256(table.read_bytes()).hexdigest(),
+        },
+    }
+    (evaluator,) = identity["evaluators"]  # type: ignore[misc]
+    assert (evaluator["name"], evaluator["version"]) == ("test.cell_count", "1")
+    assert (
+        evaluator["source"]["sha256"]
+        == hashlib.sha256(Path(CELL_COUNT.split(":")[0]).read_bytes()).hexdigest()
+    )
+    baseline = GeometrySource(MINI_COMPACT).fingerprint([])
+    assert identity["geometry"] == {
+        "compact": MINI_COMPACT,
+        "source_root": str(MINI_GEO.resolve()),
+        "fingerprint": baseline,
+    }
+    assert identity["environment"]["K4GEO"] == str(MINI_GEO)  # type: ignore[index]
+    assert identity["k4opt"]["sha256"] == code_fingerprint()  # type: ignore[index]
+    assert identity["k4opt"]["version"] == __version__  # type: ignore[index]
+    identity["inputs"].clear()  # type: ignore[attr-defined]
+    assert session.identity()["inputs"]  # a fresh copy on every call
+    assert json.loads(json.dumps(session.identity())) == session.identity()
+
+
+@pytest.mark.parametrize("change", ["edit", "remove"])
+def test_a_file_that_changes_stops_the_session_before_its_next_candidate(
+    tmp_path: Path,
+    problem_file: Path,
+    named_files: tuple[Path, Path],
+    fake: simulation.FakeDdsim,
+    change: str,
+) -> None:
+    sample, _ = named_files
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    if change == "edit":
+        sample.write_bytes(b"HepMC::Version 3\nE 0\n")  # the same path, other events
+        now = "17 bytes"
+    else:
+        sample.unlink()
+        now = "unreadable now"
+    message = rf"stages\.generation\.file: {sample} changed after the problem was loaded .*{now}"
+    with pytest.raises(RunError, match=message):
+        session.verify_inputs()
+    with pytest.raises(RunError, match=message):
+        session.check({RADIUS: 500.0})
+    with pytest.raises(RunError, match=message):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and len(fake.calls) == 1
+
+
+def test_a_run_reference_is_recorded_as_given(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    reference = {"study": "5b0d…", "trial": 7}
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a", run=reference)
+    reference["trial"] = 8  # the record keeps its own copy
+    assert json.loads(outcome.summary_path.read_text())["run"] == {"study": "5b0d…", "trial": 7}
+    for bad, message in (({"when": float("nan")}, "non-finite"), ([1, 2], "must be a mapping")):
+        with pytest.raises(RunError, match=message):
+            session.evaluate({RADIUS: 450.0}, tmp_path / "b", run=bad)  # type: ignore[arg-type]
+        assert not (tmp_path / "b").exists()
+
+
+@pytest.mark.parametrize(
+    ("inputs", "message"),
+    [
+        ({"reconstruction": "{file}"}, "input 'reconstruction': unknown stage"),
+        ({"simulation": "{missing}"}, "is not a file"),
+        ({"generation": "{file}", "simulation": "{file}"}, "input generation: no evaluator"),
+    ],
+)
+def test_unusable_inputs_of_a_session_are_refused_when_it_opens(
+    tmp_path: Path, problem_file: Path, inputs: dict[str, str], message: str
+) -> None:
+    supplied = tmp_path / "mine.root"
+    supplied.write_bytes(b"fake")
+    given = {
+        stage: text.format(file=supplied, missing=tmp_path / "gone.root")
+        for stage, text in inputs.items()
+    }
+    with pytest.raises(RunError, match=message):
+        EvaluationSession.open(problem_file, [cell_count()], inputs=given)
+
+
+def constrain(problem_file: Path, **limits: float) -> None:
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["constraints"] = [{"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells", **limits}]
+    problem_file.write_text(yaml.safe_dump(doc))
+
+
+def test_command_prints_each_limit_and_whether_the_candidate_is_feasible(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    constrain(problem_file, min=1, max=2)  # the candidate fires 3 cells per event
+    code, out, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
+    )
+    assert code == 0, err  # a valid evaluation, whatever the limits say
+    assert (
+        "limit:       simulation/ecal_barrel.mean_hit_cells >= 1: satisfied, margin -2 [1]" in out
+    )
+    assert "limit:       simulation/ecal_barrel.mean_hit_cells <= 2: violated, margin 1 [1]" in out
+    assert "feasible:    no" in out
+    summary = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
+    assert [(limit["bound"], limit["satisfied"]) for limit in summary["assessment"]["limits"]] == [
+        ("min", True),
+        ("max", False),
+    ]
+
+
+def test_command_reports_limits_it_could_not_judge(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, returncode=1, stderr="boom")
+    constrain(problem_file, max=2)
+    code, out, _ = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
+    )
+    assert code == 1
+    assert "limit:       simulation/ecal_barrel.mean_hit_cells <= 2: not assessed" in out
+    assert "feasible:    not assessed" in out

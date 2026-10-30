@@ -11,70 +11,20 @@ explicitly for trees that are neither ``$K4GEO`` nor a git checkout.
 from __future__ import annotations
 
 import os
-import subprocess
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from k4opt.geometry.discovery import Catalog, discover
 from k4opt.geometry.errors import SourceError
 from k4opt.geometry.overrides import Override, ResolvedOverride, resolve_overrides
+from k4opt.revision import GitInfo, detect_git, git_toplevel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from k4opt.geometry.materialize import MaterializationResult
 
 #: Environment variable naming the installed k4geo tree (set by the Key4hep stack).
 K4GEO_ENV = "K4GEO"
-
-
-class GitInfo:
-    """Git revision of the checkout containing the geometry root."""
-
-    __slots__ = ("commit", "dirty")
-
-    def __init__(self, commit: str, dirty: bool) -> None:
-        self.commit = commit
-        self.dirty = dirty
-        """True when tracked files have uncommitted modifications (untracked files are ignored)."""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"commit": self.commit, "dirty": self.dirty}
-
-    def __repr__(self) -> str:
-        return f"GitInfo(commit={self.commit!r}, dirty={self.dirty!r})"
-
-
-def _git(args: list[str], cwd: Path, timeout: int = 30) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(cwd), *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout if result.returncode == 0 else None
-
-
-def detect_git(root: Path) -> GitInfo | None:
-    """Return the git revision of ``root`` or ``None`` when unavailable."""
-    head = _git(["rev-parse", "HEAD"], root)
-    if head is None:
-        return None
-    status = _git(["status", "--porcelain", "--untracked-files=no"], root, timeout=60)
-    if status is None:
-        return None
-    return GitInfo(commit=head.strip(), dirty=bool(status.strip()))
-
-
-def git_toplevel(path: Path) -> Path | None:
-    """Return the real path of the git work tree containing ``path``, if any."""
-    top = _git(["rev-parse", "--show-toplevel"], path)
-    if not top or not top.strip():
-        return None
-    return Path(os.path.realpath(top.strip()))
 
 
 def _is_within(root: Path, path: Path) -> bool:
@@ -205,6 +155,7 @@ class GeometrySource:
         return discover(self._root, self._compact)
 
     def git_info(self) -> GitInfo | None:
+        """The git revision of the checkout containing the root, ``None`` when unavailable."""
         return detect_git(self._root)
 
     def resolve(
