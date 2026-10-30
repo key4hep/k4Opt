@@ -132,7 +132,7 @@ def resolve_geometry(
         if not k4geo:
             raise SourceError(
                 f"geometry {compact_text!r} is relative but ${K4GEO_ENV} is not set; "
-                "source the Key4hep stack (setup.sh), give an absolute path, or set 'root'"
+                "source the Key4hep stack (setup.sh), give an absolute path, or give a root"
             )
         if not Path(k4geo).is_dir():
             raise SourceError(f"${K4GEO_ENV}={k4geo!r} is not an existing directory")

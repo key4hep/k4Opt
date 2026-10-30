@@ -5,9 +5,8 @@ from __future__ import annotations
 import io
 import re
 
-from k4opt.geometry import Catalog, GeometrySource, Override
-from k4opt.geometry.render import ELLIPSIS, display_value, fit, render_changes, render_parameters
-from tests.support.geometry import MINI_COMPACT, MINI_GEO
+from k4opt.geometry import Catalog
+from k4opt.geometry.render import ELLIPSIS, display_value, fit, render_parameters
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -61,28 +60,6 @@ def test_tip_only_for_long_unfiltered_listings(mini_catalog: Catalog) -> None:
     assert "Tip: narrow the list with --filter" in everything
     filtered = _render(mini_catalog, mini_catalog.filter("nphi"), filter_text="nphi")
     assert "Tip:" not in filtered
-
-
-def test_render_changes_groups_by_file_and_marks_unchanged() -> None:
-    source = GeometrySource(MINI_COMPACT, root=MINI_GEO)
-    changes = source.resolve(
-        [
-            Override("constants.SolenoidField", "2*tesla"),
-            Override("constants.InnerTracker_Barrel_radius_1", "405*mm"),
-            Override("constants.world_side", "6200*mm"),
-        ]
-    )
-    out = io.StringIO()
-    render_changes(changes, out)
-    text = out.getvalue()
-    assert text.count("compact/det_v1/det_v1.xml\n") == 1, "one header per file"
-    assert text.index("constants.SolenoidField") < text.index("constants.world_side")
-    assert "2*tesla  ->  2*tesla  (unchanged)" in text
-    assert "400*mm  ->  405*mm" in text
-
-    empty = io.StringIO()
-    render_changes((), empty)
-    assert "nothing to change" in empty.getvalue()
 
 
 def test_legend_is_on_top_lists_only_present_flags_and_is_yellow(mini_catalog: Catalog) -> None:

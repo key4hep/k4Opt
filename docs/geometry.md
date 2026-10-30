@@ -19,30 +19,14 @@ validate that the result is a sensible detector.
 
 ## Usage
 
-A configuration file names the geometry and, optionally, the overrides
-(see [`examples/geometry/cld.yaml`](../examples/geometry/cld.yaml)):
-
-```yaml
-geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml   # relative to $K4GEO, like k4Bench
-
-overrides:                                              # optional for `inspect`
-  - target: constants.InnerTracker_Barrel_radius_1
-    value: "405*mm"
-  - target: InnerTrackerBarrel.layer[id=1].rphi_layout.nphi
-    value: "90"
-```
+`k4opt geometry inspect` lists the parameters of a geometry, so you can copy a target into the
+`parameters` of a [problem](problem.md#parameters). The geometry is named as in a problem's
+`geometry.entry`, relative to `$K4GEO`:
 
 ```bash
-# list addressable parameters (target, raw value, flags, file)
-k4opt geometry inspect examples/geometry/cld.yaml
-k4opt geometry inspect examples/geometry/cld.yaml --filter InnerTracker --format json
-
-# preview the resolved changes; nothing is written
-k4opt geometry apply examples/geometry/cld.yaml --output ./generated/cld-test --dry-run
-
-# create the modified snapshot
-k4opt geometry apply examples/geometry/cld.yaml --output ./generated/cld-test
-ddsim --compactFile ./generated/cld-test/FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml ...
+k4opt geometry inspect FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml --filter ECal_cell_size
+k4opt geometry inspect FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml --filter InnerTracker --format json
+k4opt geometry inspect FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml --root ../k4geo   # your checkout
 ```
 
 `inspect` groups parameters by file, with a header (geometry, root, how many are
@@ -69,28 +53,26 @@ listing and is omitted when no row is flagged.
 On a terminal, long values are shortened with `…` to fit the width (targets
 never are) and output is colored; when piped, nothing is shortened or colored.
 `NO_COLOR=1` turns color off. Use `--format json` for machine-readable output;
-it carries a `schema` field (`k4opt.geometry.inspect/1`, `k4opt.geometry.apply/1`).
+it carries a `schema` field (`k4opt.geometry.inspect/1`).
 
-`apply` lists each change as `old  ->  new` grouped by file, then prints the
-snapshot root, the generated compact file and the manifest path. Exit codes: `0`
-success, `1` any expected k4opt error (message on stderr, prefixed
+Exit codes: `0` success, `1` any expected k4opt error (message on stderr, prefixed
 `k4opt: error:`), `2` command-line usage error.
 
-The example values are technical examples only; they are not validated detector
-variants, and a well-formed XML document is not a valid detector.
+`inspect` only reads. `k4opt evaluate` writes the modified geometry of each candidate into
+its run directory; to write one yourself, use the [Python API](#python-api).
 
 ### Where the geometry comes from
 
-`geometry` is resolved like k4Bench's `xml:` key:
+A geometry is resolved like k4Bench's `xml:` key:
 
-| `geometry` | root used for includes and `file:` paths |
+| geometry | root used for includes and `file:` paths |
 | --- | --- |
 | `FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml` (relative) | `$K4GEO` from the Key4hep stack |
 | `$K4GEO/FCCee/...` or another `$VAR/...` | variables are expanded first, then as below |
 | `/abs/path/k4geo/FCCee/.../CLD_o2_v09.xml` | `$K4GEO` if the file lies inside it, else the enclosing git checkout, else the file's directory |
 
-To work on your own k4geo checkout add `root: ../k4geo` (relative to the YAML
-file); `geometry` is then relative to `root`. Includes may use `../` as long as
+To work on your own k4geo checkout give its root (`--root ../k4geo`, or `root=` in
+Python); the geometry is then relative to it. Includes may use `../` as long as
 they stay inside the root.
 
 ### Python API
@@ -121,8 +103,7 @@ print(result.compact_path, result.manifest_path, [f.path for f in result.files])
 
 Errors derive from `k4opt.geometry.GeometryError` (itself a `k4opt.K4OptError`):
 `SourceError`, `IncludeError`, `TargetError` (with `InvalidTargetError`, `UnknownTargetError`,
-`AmbiguousTargetError`, `DuplicateTargetError`) and `MaterializationError`; a
-malformed YAML file raises `k4opt.ConfigError`. When
+`AmbiguousTargetError`, `DuplicateTargetError`) and `MaterializationError`. When
 several overrides fail at once a plain `TargetError` is raised whose `errors`
 attribute lists each failure.
 
@@ -165,8 +146,9 @@ construction.
 
 Flags shown by `inspect`:
 
-- **A** (`ambiguous`): the same reference exists in another reachable file. Add
-  `file: <root-relative path>` to the override. In CLD, `constants.HCal_cell_size`
+- **A** (`ambiguous`): the same reference exists in another reachable file. An
+  `Override` selects one with `file=<root-relative path>`; a problem cannot vary such a
+  target yet. In CLD, `constants.HCal_cell_size`
   is defined in both HCal files, and positional paths such as
   `lccdd.module_component[2].thickness` repeat across module files.
 - **O** (`order_sensitive`): the reference contains a positional `[index]` and
@@ -205,9 +187,9 @@ configuration: no entity expansion, no DTD loading, no network access.
 
 ## Override semantics
 
-- `value` is the literal replacement string for the attribute. Quote it in YAML
-  (`"405*mm"`, `"2*tesla"`, `"90"`); numbers and booleans are rejected so the
-  text is exactly what you wrote. Nothing is evaluated, converted or inferred.
+- `value` is the literal replacement string for the attribute (`"405*mm"`,
+  `"2*tesla"`, `"90"`); anything but a string is rejected, so the text is exactly
+  what you wrote. Nothing is evaluated, converted or inferred.
 - Changing a constant propagates wherever DD4hep evaluates that constant.
   Changing an attribute changes only that attribute. k4opt never rewrites
   dependent attributes.
@@ -219,9 +201,9 @@ configuration: no entity expansion, no DTD loading, no network access.
 
 ## Materialization and manifest
 
-`apply` (or `GeometrySource.materialize`) performs these steps:
+`GeometrySource.materialize` performs these steps:
 
-1. Checks that `--output` does not exist and does not lie inside the source tree
+1. Checks that the output directory does not exist and does not lie inside the source tree
    (also through symlinks).
 2. Copies the reachable files, and only those (the geometry file, every local
    XML it includes, and local resource files they reference), into a temporary
@@ -237,7 +219,7 @@ configuration: no entity expansion, no DTD loading, no network access.
    result and verifies that nothing but the intended attributes changed.
 4. Re-walks the include graph of the edited snapshot so every local include still
    resolves.
-5. Writes `k4opt-manifest.json` and atomically renames the copy to `--output`.
+5. Writes `k4opt-manifest.json` and atomically renames the copy to the output directory.
    On any failure the temporary copy is deleted; source and destination are
    untouched.
 

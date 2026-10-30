@@ -63,7 +63,7 @@ def test_unknown_target(mini_source: GeometrySource) -> None:
 def test_ambiguous_target_and_file_discriminator(
     mini_source: GeometrySource, mini_catalog: Catalog
 ) -> None:
-    with pytest.raises(AmbiguousTargetError, match="add 'file:"):
+    with pytest.raises(AmbiguousTargetError, match="give the override a file"):
         mini_source.resolve([Override("constants.Tracker_cooling_gap", "6*mm")], mini_catalog)
     (resolved,) = mini_source.resolve(
         [

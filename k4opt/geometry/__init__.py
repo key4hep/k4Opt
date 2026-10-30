@@ -16,8 +16,6 @@ Typical use (inside a Key4hep environment, where ``$K4GEO`` is set)::
     )
 """
 
-from k4opt.errors import ConfigError
-from k4opt.geometry.config import GeometryConfig, load_config
 from k4opt.geometry.discovery import Catalog, Parameter, Unaddressable
 from k4opt.geometry.errors import (
     AmbiguousTargetError,
@@ -42,10 +40,8 @@ __all__ = [
     "AmbiguousTargetError",
     "Catalog",
     "ChangedFile",
-    "ConfigError",
     "DuplicateTargetError",
     "ExternalInclude",
-    "GeometryConfig",
     "GeometryError",
     "GeometrySource",
     "GitInfo",
@@ -63,7 +59,6 @@ __all__ = [
     "TargetError",
     "Unaddressable",
     "UnknownTargetError",
-    "load_config",
     "parse_reference",
     "resolve_geometry",
 ]
