@@ -238,7 +238,9 @@ left running:
 
 Before that, every finished trial must still have the record the optimizer was told: the same
 bytes as the SHA-256 in its `k4opt.record`. A record that is gone or was changed makes the
-resume refuse, since nothing would show what the trial's values rest on.
+resume refuse, since nothing would show what the trial's values rest on. So does a trial
+without any record, other than an interrupted one or one that stopped the study: another
+client of the storage added it, and its values rest on no evaluation.
 
 A `trial-*` directory that no trial of the study names makes the resume refuse. Recovered
 trials do not count among the `--trials` of the resume, and interrupted trials are not retried

@@ -394,9 +394,19 @@ def _recover(run: _Study) -> None:
 
 
 def _check_told_record(run: _Study, frozen: FrozenTrial) -> None:
-    """A trial the optimizer was told a record of still has that record, byte for byte."""
+    """A trial the optimizer was told a record of still has that record, byte for byte, and
+    every trial but an interrupted one, or one that stopped the study, has such a record: a
+    trial without one was not made by k4opt (another client of the storage added it)."""
     told = frozen.user_attrs.get("k4opt.record")
-    if frozen.state == TrialState.RUNNING or not isinstance(told, Mapping):
+    if frozen.state == TrialState.RUNNING:
+        return  # recovery decides about it
+    if not isinstance(told, Mapping):
+        if frozen.state != TrialState.FAIL or "k4opt.status" in frozen.user_attrs:
+            raise OptimizationError(
+                f"trial {frozen.number} is {frozen.state.name} without the record k4opt tells a "
+                "trial with, so it was not made by k4opt optimize and nothing shows what its "
+                "values rest on; resume needs every trial to be one of the study's own"
+            )
         return
     path = run.directory / str(told.get("path"))
     try:
@@ -520,22 +530,31 @@ def optimize(
         except OSError as exc:
             raise OptimizationError(f"cannot create {directory}: {exc}") from exc
 
-    with _quiet(), _terminate_as_interrupt(), Lock(directory):
-        if resume:
-            _check_resume(document, identity, storage, warn)
-        else:
-            _refuse_used(directory, LOCK_NAME)  # again, now that no one else can start here
-            write_study(directory, document)
-        study = _open_optuna(directory, document, storage, resume)
-        run = _Study(directory, document, spec, study, warn)
-        if resume:
-            _check_optuna_study(study, document)
-            _recover(run)
-        seed_now = session_seed(document["optimizer"]["sampler"]["seed"], len(study.trials))
-        study.sampler = optuna.samplers.TPESampler(seed=seed_now, n_startup_trials=_STARTUP_TRIALS)
-        for _ in range(trials):
-            progress(_trial_report(run, _evaluate(run, session, space, seed_now)))
-        return _study_report(run)
+    try:
+        with _quiet(), _terminate_as_interrupt(), Lock(directory):
+            if resume:
+                _check_resume(document, identity, storage, warn)
+            else:
+                _refuse_used(directory, LOCK_NAME)  # again, now that no one else can start here
+                write_study(directory, document)
+            study = _open_optuna(directory, document, storage, resume)
+            run = _Study(directory, document, spec, study, warn)
+            if resume:
+                _check_optuna_study(study, document)
+                _recover(run)
+            seed = document["optimizer"]["sampler"]["seed"]
+            seed_now = session_seed(seed, len(study.trials))
+            study.sampler = optuna.samplers.TPESampler(
+                seed=seed_now, n_startup_trials=_STARTUP_TRIALS
+            )
+            for _ in range(trials):
+                progress(_trial_report(run, _evaluate(run, session, space, seed_now)))
+            return _study_report(run)
+    except Exception as exc:
+        # a database may name its URL in any error, raised by Optuna as by k4opt
+        if storage is None or _scrubbed(str(exc), storage) == str(exc):
+            raise
+        raise OptimizationError(_scrubbed(str(exc), storage)) from None
 
 
 def _refuse_used(directory: Path, *ours: str) -> None:

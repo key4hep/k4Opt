@@ -26,6 +26,7 @@ from tests.support.common import git, git_checkout, requires_git, tree_digest
 from tests.support.evaluators import TRADE_OFF, trade_off
 from tests.support.geometry import MINI_GEO
 from tests.unit.optimization.conftest import (
+    RADIUS,
     Log,
     evaluator_from,
     optuna_study,
@@ -358,6 +359,22 @@ def test_a_finished_trial_keeps_the_record_the_optimizer_was_told(
         record.write_text(record.read_text() + " ")  # the same content to JSON, other bytes
     before = tree_digest(output)
     with pytest.raises(OptimizationError, match=rf"trial 1: .*summary\.json {state}"):
+        run(problem, output, 1, resume=True)
+    assert tree_digest(output) == before
+
+
+def test_a_trial_another_client_added_to_the_storage_refuses_the_resume(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 2, seed=1)
+    study = optuna_study(output)  # values without any evaluation behind them
+    trial = optuna.trial.create_trial(
+        params={RADIUS: 300.0}, distributions=search_space(load_problem(problem)), values=[1, 2]
+    )
+    study.add_trial(trial)
+    before = tree_digest(output)
+    with pytest.raises(OptimizationError, match="trial 2 is COMPLETE without the record k4opt"):
         run(problem, output, 1, resume=True)
     assert tree_digest(output) == before
 

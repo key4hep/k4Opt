@@ -162,6 +162,20 @@ def test_a_storage_url_is_recorded_and_shown_without_its_secrets(
     assert "postgresql://k4opt:***@db.cern.ch:6600/studies" in message
     assert not (tmp_path / "s").exists()
 
+    # an error of the database later on, once the storage was made
+    import optuna
+
+    def failing(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError(f"lost the connection {url} (password=hush)")
+
+    monkeypatch.setattr(_optuna, "RDBStorage", lambda given: optuna.storages.InMemoryStorage())
+    monkeypatch.setattr(optuna, "create_study", failing)
+    with pytest.raises(OptimizationError) as info:
+        optimize(write_problem(), [trade_off()], tmp_path / "t", trials=1, storage=url)
+    message = str(info.value)
+    assert "hush" not in message and "s3cr" not in message and "lost the connection" in message
+    assert info.value.__cause__ is None and info.value.__suppress_context__  # nor in a traceback
+
 
 def test_each_bound_of_a_constraint_is_a_limit_of_its_own() -> None:
     constraints = [
