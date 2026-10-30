@@ -920,6 +920,41 @@ def test_summary_write_failure_is_a_controlled_error(
     assert not (tmp_path / "a" / SUMMARY_NAME).exists()
 
 
+def test_the_candidate_time_counts_the_checks_but_not_the_materialization(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from k4opt.problem import _evaluate, _run, _stages
+
+    class Clock:
+        now = 0.0
+
+        def perf_counter(self) -> float:
+            return self.now
+
+    clock = Clock()
+    for module in (_evaluate, _run, _stages):
+        monkeypatch.setattr(module, "time", clock)
+    materialize = GeometrySource.materialize
+
+    def slow_materialize(self: GeometrySource, *args: Any, **kwargs: Any) -> Any:
+        clock.now += 100.0
+        return materialize(self, *args, **kwargs)
+
+    class Checking(Spy):
+        def check(self, request: Any) -> None:
+            clock.now += 0.5
+            super().check(request)
+
+    monkeypatch.setattr(GeometrySource, "materialize", slow_materialize)
+    outcome = run_candidate(
+        problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[Checking()]
+    )
+    assert outcome.summary["elapsed_seconds"] == 0.5
+
+
 def test_an_unwritable_evaluator_directory_is_a_recorded_failure(
     tmp_path: Path,
     problem_file: Path,

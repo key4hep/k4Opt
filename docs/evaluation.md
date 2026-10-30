@@ -305,7 +305,8 @@ bytes compiled. For `package.module:Class` the file is read right after the impo
 (`executed: false`); Python may have run a cached `.pyc` of it, which only an edit that keeps
 size and timestamp leaves stale. Cached instances keep that identity if the file is later
 edited or removed. A
-class whose module was already imported before `load_evaluator` carries only its path: hashing
+class whose module was imported before `load_evaluator`, or reloaded since
+(`importlib.reload`), carries only its path: hashing
 the current file would not establish which code Python executed. Only the defining file is
 identified, not imported helpers.
 

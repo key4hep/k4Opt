@@ -14,6 +14,7 @@ import contextlib
 import math
 import os
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -339,9 +340,11 @@ def run_candidate(
     assert spec._source is not None
     assert spec._catalog is not None
 
+    started = time.perf_counter()
     values, key = _validate_candidate(spec, _parse_candidate(spec, assignments))
     supplied = _parse_inputs(inputs)
     plan = _preflight(spec, values, evaluators, provided=supplied)
+    checked = time.perf_counter() - started  # part of the candidate's time; materializing is not
     if warn is not None:
         for warning in plan.warnings:
             warn(warning)
@@ -369,6 +372,7 @@ def run_candidate(
         key,
         inputs={"geometry": snapshot.compact_path, **supplied},
         workdir=run_dir,
+        checked_seconds=checked,
     )
     geometry = {
         "fingerprint": snapshot.fingerprint,

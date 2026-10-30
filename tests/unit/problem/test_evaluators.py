@@ -646,6 +646,10 @@ def test_every_second_is_counted_once(
     monkeypatch.setattr(ddsim_run.subprocess, "run", slow_ddsim)
 
     class Slow(Spy):
+        def check(self, request: EvaluationRequest) -> None:
+            clock.now += 0.5
+            super().check(request)
+
         def evaluate(self, request: EvaluationRequest) -> Any:
             clock.now += 1.0
             return super().evaluate(request)
@@ -656,7 +660,7 @@ def test_every_second_is_counted_once(
     )
     assert candidate.stages.seconds == {"generation": 0.0, "simulation": 10.0}
     assert [record.elapsed_seconds for record in candidate.records] == [1.0, 1.0]
-    assert candidate.elapsed_seconds == 12.0
+    assert candidate.elapsed_seconds == 13.0  # with the two checks before anything ran
 
 
 # --- pipeline stages and metric labels are different things ---

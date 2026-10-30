@@ -103,6 +103,23 @@ def test_a_module_imported_by_the_loader_is_identified_right_after_the_import(
         sys.modules.pop("my_evaluator", None)
 
 
+def test_a_reloaded_module_does_not_keep_the_identity_of_the_code_it_replaced(
+    evaluator_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(str(evaluator_file.parent))
+    try:
+        first = load_evaluator("my_evaluator:Good")
+        evaluator_file.write_text(GOOD.replace('"answer", 42', '"answer", 12345'))
+        importlib.reload(sys.modules["my_evaluator"])
+        second = load_evaluator("my_evaluator:Good")
+        assert second.evaluate(None).measurements[0].value == 12345  # type: ignore[arg-type]
+        assert evaluator_source(second) == {"path": str(evaluator_file)}
+        # the instance created before the reload still runs, and names, the original code
+        assert evaluator_source(first)["sha256"] == hashlib.sha256(GOOD.encode()).hexdigest()
+    finally:
+        sys.modules.pop("my_evaluator", None)
+
+
 def test_a_class_re_exported_by_a_package_is_identified_by_its_own_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -640,10 +640,12 @@ def _evaluate_candidate(
     :class:`EvaluationInvalid` gets that result; any other exception propagates, and so does an
     :class:`EvaluationContractError` for a result that breaks the contract.
     """
+    started = time.perf_counter()
     values, key = _validate_candidate(spec, candidate)
     inputs = dict(inputs or {})
     plan = _preflight(spec, values, evaluators, inputs)
-    return _execute_plan(spec, plan, key, inputs=inputs, workdir=workdir)
+    checked = time.perf_counter() - started
+    return _execute_plan(spec, plan, key, inputs=inputs, workdir=workdir, checked_seconds=checked)
 
 
 def _execute_plan(
@@ -653,9 +655,14 @@ def _execute_plan(
     *,
     inputs: Mapping[str, Path],
     workdir: Path | None,
+    checked_seconds: float,
 ) -> CandidateRecord:
-    """Execute an already validated plan; evaluator checks and defaults are not repeated."""
-    started = time.perf_counter()
+    """Execute an already validated plan; evaluator checks and defaults are not repeated.
+
+    ``checked_seconds``, the time the candidate's validation and preflight took, counts towards
+    ``elapsed_seconds``, which thus covers k4opt's checks too (not what the caller does between).
+    """
+    started = time.perf_counter() - checked_seconds
     stages = run_stages(plan.context, *plan.targets, inputs=inputs, workdir=workdir)
     seen: dict[Path, tuple[str, ...] | str] = {}  # the collection names of each stage file
     records = tuple(
