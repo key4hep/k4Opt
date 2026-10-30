@@ -100,8 +100,9 @@ def source_digest(directory: Path) -> str:
 def code_fingerprint() -> str:
     """The :func:`source_digest` of the k4opt package, taken once per process.
 
-    It identifies the files as they are when first asked for, which a run does before it
-    evaluates anything.
+    It identifies the files as they are when first asked for, which an evaluation session does
+    when it opens, before anything runs. A hash cannot prove which code Python executed: it
+    only narrows the gap to the files' state at that moment.
     """
     return source_digest(Path(__file__).parent)
 

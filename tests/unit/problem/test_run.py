@@ -1348,6 +1348,22 @@ def test_a_file_that_changes_stops_the_session_before_its_next_candidate(
     assert not (tmp_path / "b").exists() and len(fake.calls) == 1
 
 
+def test_the_code_that_ran_is_identified_before_it_runs(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.problem import _run
+
+    identities = iter(({"sha256": "opened", "git": None}, {"sha256": "edited", "git": None}))
+    monkeypatch.setattr(_run, "code_identity", lambda: next(identities))
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    next(identities)  # the checkout is edited while the session runs
+    for name in ("a", "b"):
+        outcome = session.evaluate({RADIUS: 450.0}, tmp_path / name)
+        observed = outcome.summary["environment"]["observed"]  # type: ignore[index]
+        assert observed["k4opt_source"] == {"sha256": "opened", "git": None}
+    assert session.identity()["k4opt"]["sha256"] == "opened"  # type: ignore[index]
+
+
 def test_a_run_reference_is_recorded_as_given(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:

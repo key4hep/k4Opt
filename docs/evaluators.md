@@ -84,9 +84,9 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    - the geometry fingerprint and manifest, requested and observed events, the time of the whole
      evaluation, the files of the stages under `paths`, and the environment (`declared`: the
      problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
-     own Python files and the commit and dirty flag of its git checkout (`null` when it is
-     installed rather than checked out), `KEY4HEP_STACK`, `K4GEO` and the `ddsim` that was
-     started; the pin and the stack are not compared).
+     own Python files, taken before anything runs, and the commit and dirty flag of its git
+     checkout (`null` when it is installed rather than checked out), `KEY4HEP_STACK`, `K4GEO`
+     and the `ddsim` that was started; the pin and the stack are not compared).
 
 The command prints the candidate's status, each evaluator's status and metrics with their
 uncertainty, each limit with its verdict and margin, whether the candidate is feasible, the

@@ -320,6 +320,15 @@ def _consistent_lie(data: dict[str, Any]) -> None:
     data["metrics"][0]["value"] = 400.0
 
 
+def _other_unit(data: dict[str, Any]) -> None:
+    """The unit changed everywhere the record holds it, so it agrees with itself, but not with
+    the unit the constraint declares."""
+    data["evaluators"][0]["measurements"][0]["unit"] = "mm"
+    data["metrics"][0]["unit"] = "mm"
+    data["assessment"]["objectives"][0]["unit"] = "mm"
+    data["assessment"]["limits"][0]["unit"] = "mm"
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -336,6 +345,7 @@ def _consistent_lie(data: dict[str, Any]) -> None:
         (_set("metrics.0.evaluator", "nobody"), "no evaluator 'nobody'"),
         (_set("metrics", []), "its metrics are"),
         (_consistent_lie, "its assessment is not the one its measurements give"),
+        (_other_unit, "analysis/candidate.first_value is measured in 'mm', but its constraint"),
         (_set("assessment.feasible", False), "its assessment is not the one"),
         (_set("assessment.limits.0.margin", -1.0), "its assessment is not the one"),
         (_set("assessment", None), "its assessment is not the one"),

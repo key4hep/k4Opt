@@ -141,6 +141,7 @@ class Assessment:
             return found
 
         _check_metrics(record, owners, value)
+        _check_units(spec, value)
         assessment = _judge(spec, status, represents, value)
         if record.get("assessment") != _plain(assessment.to_dict()):
             raise RecordError(
@@ -323,6 +324,19 @@ def _owners(
             raise RecordError(f"metric {key[0]}/{key[1]}: no evaluator {owner!r} in the record")
         owners[key] = owner
     return owners
+
+
+def _check_units(spec: ProblemSpec, value: _Lookup) -> None:
+    """A constraint that declares a unit is measured in it, as a live evaluation enforces: a
+    record consistent in another unit would compare its value with a limit in the wrong one."""
+    for constraint in spec.constraints:
+        measurement = value(constraint.stage, constraint.metric)
+        if constraint.unit is None or measurement is None or measurement.unit == constraint.unit:
+            continue
+        raise RecordError(
+            f"{constraint.stage}/{constraint.metric} is measured in {measurement.unit!r}, but its "
+            f"constraint declares {constraint.unit!r}"
+        )
 
 
 def _check_metrics(

@@ -283,6 +283,7 @@ def _summary(
     geometry: object,
     sources: Mapping[str, Json],
     run: object,
+    code: Mapping[str, Json],
 ) -> dict[str, object]:
     stages = candidate.stages
     simulation = stages.provenance.get("simulation", {})
@@ -348,7 +349,7 @@ def _summary(
             "observed": {
                 "k4opt": __version__,
                 # what the version only labels: the content of its code, and its checkout
-                "k4opt_source": code_identity(),
+                "k4opt_source": thaw(code),
                 "KEY4HEP_STACK": os.environ.get("KEY4HEP_STACK"),
                 "K4GEO": os.environ.get("K4GEO"),
                 "ddsim": argv[0] if isinstance(argv, (list, tuple)) and argv else None,
@@ -369,7 +370,16 @@ class EvaluationSession:
     of those files changed. One candidate at a time; a session is not thread-safe.
     """
 
-    __slots__ = ("_evaluators", "_files", "_inputs", "_path", "_sources", "_spec", "_warnings")
+    __slots__ = (
+        "_code",
+        "_evaluators",
+        "_files",
+        "_inputs",
+        "_path",
+        "_sources",
+        "_spec",
+        "_warnings",
+    )
 
     def __init__(
         self,
@@ -380,6 +390,7 @@ class EvaluationSession:
         files: Mapping[str, tuple[Path, Mapping[str, Json] | None]],
         sources: Mapping[str, Json],
         warnings: tuple[str, ...],
+        code: Mapping[str, Json],
     ) -> None:
         """Use :meth:`open`."""
         self._path = path
@@ -389,6 +400,7 @@ class EvaluationSession:
         self._files = FrozenMap(files)
         self._sources = FrozenMap(sources)
         self._warnings = warnings
+        self._code = code
 
     @classmethod
     def open(
@@ -419,8 +431,19 @@ class EvaluationSession:
             evaluator.name: freeze(evaluator_source(evaluator), "evaluator source", RunError)
             for evaluator in evaluators
         }
+        # before anything runs, so that an edit to the checkout during a long run is not
+        # recorded as the code that ran
+        code = freeze(code_identity(), "k4opt source", RunError)
+        assert isinstance(code, Mapping)
         return cls(
-            path.absolute(), spec, tuple(evaluators), supplied, files, sources, binding.warnings
+            path.absolute(),
+            spec,
+            tuple(evaluators),
+            supplied,
+            files,
+            sources,
+            binding.warnings,
+            code,
         )
 
     @property
@@ -448,12 +471,14 @@ class EvaluationSession:
         that could not be read has only its path); ``evaluators``: the name, version and source
         identity of each, in problem order; ``geometry``: the compact file, the source root and
         the fingerprint of the unmodified geometry; ``environment``: ``KEY4HEP_STACK`` and
-        ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its git checkout. A fresh
-        copy on every call.
+        ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its git checkout, taken
+        when the session opened, as every summary records them. A fresh copy on every call.
         """
         source, catalog = self._spec._source, self._spec._catalog
         assert source is not None
         assert catalog is not None
+        code = thaw(self._code)
+        assert isinstance(code, dict)
         return {
             "problem": {"path": str(self._path), "definition": self._spec.to_dict()},
             "inputs": {
@@ -474,7 +499,7 @@ class EvaluationSession:
                 "fingerprint": source.fingerprint([], catalog=catalog),
             },
             "environment": {name: os.environ.get(name) for name in ("KEY4HEP_STACK", "K4GEO")},
-            "k4opt": {"version": __version__, **code_identity()},
+            "k4opt": {"version": __version__, **code},
         }
 
     def verify_inputs(self) -> None:
@@ -572,6 +597,7 @@ class EvaluationSession:
             geometry,
             self._sources,
             reference,
+            self._code,
         )
         try:
             write_json(run_dir / SUMMARY_NAME, summary)
