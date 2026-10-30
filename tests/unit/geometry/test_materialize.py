@@ -527,6 +527,27 @@ def test_relocation_rejects_reachable_resources_outside_the_root(
     ).read_bytes()
 
 
+@pytest.mark.parametrize("override", [False, True])
+def test_a_relative_path_out_of_the_root_is_rejected_even_without_a_file(
+    tmp_path: Path, override: bool
+) -> None:
+    # after relocation ../missing.stl could name whatever file lies next to the snapshot
+    ref = "a.stl" if override else "../missing.stl"
+    geo = write_tree(
+        tmp_path / "geo",
+        {"main.xml": f'<lccdd><shape name="S" ref="{ref}"/></lccdd>', "a.stl": "a"},
+    )
+    source = GeometrySource("main.xml", root=geo)
+    if not override:
+        assert [(e.ref, e.reason) for e in source.discover().externals] == [
+            ("../missing.stl", "file outside the geometry root")
+        ]
+    edits = [Override("S.ref", "../missing.stl")] if override else []
+    with pytest.raises(MaterializationError, match=r"'\.\./missing\.stl' lies outside"):
+        source.materialize(edits, tmp_path / "runs" / "out")
+    assert not (tmp_path / "runs" / "out").exists()
+
+
 def test_a_replaced_outside_reference_in_a_redirected_include_is_accepted(tmp_path: Path) -> None:
     geo = write_tree(
         tmp_path / "geo",

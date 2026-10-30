@@ -221,7 +221,7 @@ configuration: no entity expansion, no DTD loading, no network access.
    result and verifies that nothing but the intended attributes changed.
 4. Re-walks the include graph of the edited snapshot so every local include still
    resolves and every resource it references was copied. A reachable relative resource
-   outside the source root is rejected: moving the
+   outside the source root is rejected, whether or not a file is there: moving the
    XML would change which file it refers to. Keep the file below the root (or choose a
    broader `root`), or refer to it by an absolute or `$VAR` path. Absolute paths and
    environment-variable references retain their spelling and are recorded as external.

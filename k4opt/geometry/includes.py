@@ -152,16 +152,18 @@ def find_resource(root: Path, root_real: Path, base_dir: Path, ref: str) -> tupl
     """Locate the local file a non-include ``ref`` points at.
 
     Returns ``(root-relative path, False)`` for an existing file inside the root,
-    ``(None, True)`` for an existing file outside it, and ``(None, False)`` when
-    ``ref`` is not a local path to an existing file (e.g. a material name).
+    ``(None, True)`` for a path outside it, and ``(None, False)`` when ``ref`` is not a local
+    path to an existing file (e.g. a material name). A path that climbs out of the root is
+    outside it even if no file is there: moving the geometry could make it name one.
     """
     if not is_local_path(ref):
         return None, False
     lexical = Path(os.path.normpath(base_dir / ref))
+    if not _is_within(root, lexical):
+        return None, True
     if not lexical.is_file():
         return None, False
-    real = Path(os.path.realpath(lexical))
-    if not _is_within(root, lexical) or not _is_within(root_real, real):
+    if not _is_within(root_real, Path(os.path.realpath(lexical))):  # through a symlink
         return None, True
     return to_root_relative(root, lexical), False
 
