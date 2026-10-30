@@ -204,6 +204,40 @@ def with_defaults(evaluator: object, settings: Mapping[str, Json]) -> Mapping[st
     return merged
 
 
+def check_settings(evaluator: object, settings: Mapping[str, Json]) -> None:
+    """Reject ``settings``, as the evaluator receives them (:func:`with_defaults`), that do not
+    match the ``settings`` it declares: unknown or missing keys, wrong types, a blank required
+    text. Nothing is checked for an evaluator that declares none. It needs no candidate, so a
+    problem's settings are checked once, before any candidate. Raises
+    :class:`EvaluationContractError`."""
+    declared = getattr(evaluator, "settings", None)
+    if declared is None:
+        return
+    kinds = {key: _kind(entry) for key, entry in declared.items()}
+    for key, kind in kinds.items():
+        if kind not in _KINDS:
+            raise EvaluationContractError(
+                f"settings.{key}: cannot declare {kind.__name__}; use str, int, float, bool, "
+                "list or dict (or a default of one of them), or Quantity(unit)"
+            )
+    unknown = [key for key in settings if key not in kinds]
+    missing = [k for k, d in declared.items() if _required(d) and k not in settings]
+    if unknown or missing:
+        raise EvaluationContractError(
+            f"settings: expected {sorted(kinds)}"
+            + (f", unknown {unknown}" if unknown else "")
+            + (f", missing {missing}" if missing else "")
+        )
+    for key, value in settings.items():
+        if not _is(value, kinds[key]):
+            raise EvaluationContractError(
+                f"settings.{key}: expected {kinds[key].__name__}, got {value!r}"
+            )
+        # a required text (a collection name, say) cannot be blank; an optional one may be
+        if isinstance(value, str) and not value.strip() and declared[key] is str:
+            raise EvaluationContractError(f"settings.{key}: must not be blank")
+
+
 def declared_collections(evaluator: object) -> dict[str, Collection]:
     """The ``collections`` ``evaluator`` declares, by role; raises
     :class:`EvaluationContractError` for a declaration that cannot be read."""
@@ -331,33 +365,9 @@ class Evaluator:
         raise NotImplementedError
 
     def check(self, request: EvaluationRequest) -> None:
-        """Reject settings that do not match ``settings``; nothing is checked if it is unset."""
-        if self.settings is None:
-            return
-        given = request.settings
-        kinds = {key: _kind(declared) for key, declared in self.settings.items()}
-        for key, kind in kinds.items():
-            if kind not in _KINDS:
-                raise EvaluationContractError(
-                    f"settings.{key}: cannot declare {kind.__name__}; use str, int, float, bool, "
-                    "list or dict (or a default of one of them), or Quantity(unit)"
-                )
-        unknown = [key for key in given if key not in kinds]
-        missing = [k for k, d in self.settings.items() if _required(d) and k not in given]
-        if unknown or missing:
-            raise EvaluationContractError(
-                f"settings: expected {sorted(kinds)}"
-                + (f", unknown {unknown}" if unknown else "")
-                + (f", missing {missing}" if missing else "")
-            )
-        for key, value in given.items():
-            if not _is(value, kinds[key]):
-                raise EvaluationContractError(
-                    f"settings.{key}: expected {kinds[key].__name__}, got {value!r}"
-                )
-            # a required text (a collection name, say) cannot be blank; an optional one may be
-            if isinstance(value, str) and not value.strip() and self.settings[key] is str:
-                raise EvaluationContractError(f"settings.{key}: must not be blank")
+        """Reject settings that do not match ``settings`` (:func:`check_settings`); override it
+        for rules beyond that, and call ``super().check(request)``."""
+        check_settings(self, request.settings)
 
     def events(self, request: EvaluationRequest) -> Iterator[Event]:
         """Each event of the file of ``stage``, with the declared ``collections`` as attributes

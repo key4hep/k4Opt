@@ -36,6 +36,7 @@ from k4opt.evaluation import (
     Scalar,
     Status,
     available_collections,
+    check_settings,
     collection_names,
     collection_types,
     declared_collections,
@@ -406,11 +407,11 @@ def _bind_problem(
     """Check what does not depend on a candidate, before a file is created or a stage runs.
 
     Binds ``evaluators`` to the problem, checks the stages they read (those in ``provided``, the
-    files the caller supplies by stage, are not run) and decides which evaluator measures each
-    objective and constraint metric. An evaluator that declares collections of a stage without
-    an EDM4hep file (the gun's, or a HepMC file) is refused. Raises
-    :class:`EvaluationContractError`. Collections the simulation is not expected to write are
-    only warnings.
+    files the caller supplies by stage, are not run), each evaluator's settings and collections
+    against what it declares, and decides which evaluator measures each objective and
+    constraint metric. An evaluator that declares collections of a stage without an EDM4hep file
+    (the gun's, or a HepMC file) is refused. Raises :class:`EvaluationContractError`.
+    Collections the simulation is not expected to write are only warnings.
     """
     provided = provided or {}
     context = StageContext.of(spec)
@@ -424,6 +425,9 @@ def _bind_problem(
             raise EvaluationContractError(
                 f"evaluator {entry.name!r} reads collections from the {stage!r} stage, but {reason}"
             )
+        # what needs no candidate is checked before any: a check() may depend on the candidate
+        check_settings(evaluator, with_defaults(evaluator, entry.settings))
+        collection_names(evaluator, entry.collections)
     owners, declared = _owners(spec, bound)
     warnings = _unexpected_collections(spec, context, bound, provided)
     return _Binding(context, tuple(bound), targets, owners, declared, warnings)

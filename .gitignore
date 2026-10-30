@@ -20,3 +20,4 @@ junit-*.xml
 logs/
 generated/
 playground/
+runs/

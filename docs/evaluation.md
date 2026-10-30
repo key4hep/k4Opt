@@ -90,10 +90,12 @@ What the optional parts do:
   those the problem wrote; a `dict` arrives as a read-only mapping and a `list` as a tuple.
   Override `check(request)` for rules beyond that and call `super().check(request)`; plain
   evaluators can define `check` alone. Settings and collection resolution always run, even
-  without `check`. The check runs once per candidate, with a request made for that candidate,
-  before materialization, and that request is reused during its execution. `check` is for the
-  settings and the contract: what it raises stops the evaluation before anything is created,
-  as a misuse. A candidate the evaluator finds scientifically unusable is not refused there:
+  without `check`, and so does the check of the settings against what the evaluator declares
+  (`check_settings`, which `Evaluator.check` calls): when a session opens, before any
+  candidate, since they need none. `check` itself runs once per candidate, with a request made
+  for that candidate, before materialization, and that request is reused during its execution.
+  `check` is for the settings and the contract: what it raises stops the evaluation before
+  anything is created, as a misuse. A candidate the evaluator finds scientifically unusable is not refused there:
   `evaluate()` says so with `self.invalid("...")`, and the candidate is recorded as `invalid`.
 - `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
   holds every returned measurement of those metrics to the declared unit, so one metric identity
@@ -445,7 +447,7 @@ for size in (5.0, 7.0, 10.0):
 | Once, when the session opens | For every candidate, in `check()` and `evaluate()` |
 | --- | --- |
 | load the problem file (later edits to it do not reach the session) and discover the geometry | check the candidate against the parameter domains |
-| bind the evaluators, check the stages they read, decide who measures each metric | build each evaluator's request for this candidate and call its `check()` |
+| bind the evaluators, check the stages they read and their settings and collections, decide who measures each metric | build each evaluator's request for this candidate and call its `check()` |
 | collect the warnings about collections ddsim is not expected to write (`session.warnings`) | check that every file the problem names is still the one it was when the session opened |
 | record the size and SHA-256 of every file the stages read (a stage `file`, a file a ddsim option names, a file supplied with `inputs`), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, assess, write the summary |
 
