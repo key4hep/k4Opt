@@ -292,8 +292,11 @@ def test_a_trial_left_running_without_a_record_is_closed_as_failed(
     run(problem, output, 2, seed=1)
     number = _left_running(output, problem, directory)
     left = tree_digest(output / f"trial-{number:06d}") if directory else None
-    report = run(problem, output, 1, resume=True)
+    log = Log()
+    report = run(problem, output, 1, resume=True, **log.kwargs())
     assert len(report.trials) == 4  # the recovered trial does not count among the new ones
+    reported = [(t.number, t.status, t.recovered) for t in log.trials]
+    assert reported == [(number, "interrupted", True), (3, "valid", False)]  # recovered first
     recovered = report.trials[number]
     assert (recovered.status, recovered.recovered) == ("interrupted", True)
     assert optuna_study(output).trials[number].state == TrialState.FAIL
@@ -322,7 +325,11 @@ def test_a_trial_left_running_with_its_record_is_told_that_record(
     monkeypatch.setattr(optuna.Study, "tell", tell)
     (left,) = optuna_study(output).trials
     assert left.state == TrialState.RUNNING and left.constraints  # set just before the crash
-    report = run(problem, output, 1, resume=True)
+    log = Log()
+    report = run(problem, output, 1, resume=True, **log.kwargs())
+    reported = [(t.number, t.status, t.recovered) for t in log.trials]
+    assert reported == [(0, "valid", True), (1, "valid", False)]
+    assert log.trials[0] == report.trials[0]  # reported as the study reports it
     recovered = optuna_study(output).trials[0]
     record = summary(output, 0)
     metrics = {m["metric"]: m["value"] for m in record["metrics"]}

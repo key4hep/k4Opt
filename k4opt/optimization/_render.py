@@ -1,8 +1,9 @@
 """Human-readable output of a study: a line per trial as it ends, and the study at the end.
 
 On an interactive terminal the lines are colored and a progress bar of the trials stays on the
-last line, redrawn every second; piped or written to a file, each trial is one plain line, fit
-for a log. A parameter value is shown to 6 significant digits; its record holds all of them.
+last line, redrawn while the study runs; piped or written to a file, each trial is one plain
+line, fit for a log. A parameter value is shown to 6 significant digits; its record holds all of
+them. A trial a resume recovered is marked ``(recovered)``.
 """
 
 from __future__ import annotations
@@ -58,9 +59,11 @@ def trial_line(trial: TrialReport, *, color: bool = False) -> str:
             style.dim(f"{name}=") + style.bold(f"{value:.6g}")
             for name, value in trial.objectives.items()
         )
-        return f"{head}{_paint(style, outcome, outcome.ljust(10))}  {candidate}  {values}"
-    where = f"{trial.directory.name}/summary.json" if trial.record else trial.directory.name
-    return f"{head}{trial.message or ''}  {style.dim(where)}"
+        line = f"{head}{_paint(style, outcome, outcome.ljust(10))}  {candidate}  {values}"
+    else:
+        where = f"{trial.directory.name}/summary.json" if trial.record else trial.directory.name
+        line = f"{head}{trial.message or ''}  {style.dim(where)}"
+    return f"{line}  {style.dim('(recovered)')}" if trial.recovered else line
 
 
 def render_study(report: StudyReport, out: TextIO, *, color: bool = False) -> None:
@@ -101,7 +104,8 @@ class Progress:
     The bar shows the new trials that ended against ``trials``, as a bar and a percentage, the
     time since the study began, the time left, the time a trial takes and how the trials ended.
     It is redrawn every ``interval`` seconds and after each line printed above it, and left in
-    place when the study ends, marked ``✔``, or ``✘`` when it was stopped. Trials a resume
+    place when the study ends, marked ``✔``, or ``✘`` when it was stopped; a study stopped
+    before any of its new trials ended (one that could not start) leaves none. Trials a resume
     recovers are printed but do not advance it.
 
     A trial takes the mean time from the end of one trial to the end of the next. The first
@@ -155,8 +159,11 @@ class Progress:
             self._ticker.join()
             with self._lock:
                 self._ended = kind is None
-                self._draw()
-                self.out.write("\n")
+                if kind is None or self.durations:
+                    self._draw()
+                    self.out.write("\n")
+                else:  # nothing ran that the bar could tell of: the error alone says why
+                    self.out.write("\r\x1b[2K")
                 self.out.flush()
 
     def trial(self, trial: TrialReport) -> None:

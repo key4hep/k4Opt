@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 from k4opt.cli import main
+from k4opt.problem import load_problem
 from tests.support.evaluators import TRADE_OFF
+from tests.unit.optimization.conftest import optuna_study
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 
@@ -65,6 +67,24 @@ def test_failed_candidates_are_reported_and_the_command_succeeds(
     assert first.endswith("trial-000000/summary.json")
     assert summary[1] == "trials:   2: 0 valid (0 feasible, 0 infeasible), 2 failed"
     assert summary[2] == "pareto:   none feasible yet"
+
+
+def test_a_resume_prints_the_trials_it_recovers_first(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    pytest.importorskip("optuna")
+    from k4opt.optimization._optuna import search_space
+
+    problem, output = write_problem(), tmp_path / "s"
+    code, _, _ = optimize(str(problem), "--trials", "1", "--seed", "1", "--output", str(output))
+    assert code == 0
+    # a trial asked for and left running, as a session killed just after asking leaves it
+    optuna_study(output).ask(fixed_distributions=search_space(load_problem(problem)))
+    code, out, _ = optimize(str(problem), "--trials", "1", "--resume", "--output", str(output))
+    assert code == 0
+    recovered, new, *_ = out.splitlines()
+    assert recovered == "trial 1:   interrupted  trial-000001  (recovered)"
+    assert new.startswith("trial 2:   valid ") and not new.endswith("(recovered)")
 
 
 def test_a_study_that_cannot_start_or_go_on_exits_1(

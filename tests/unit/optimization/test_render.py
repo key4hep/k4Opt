@@ -59,7 +59,10 @@ def test_a_trial_is_one_line_and_its_values_are_shown_to_6_significant_digits() 
     assert trial_line(failed) == (
         "trial 12:  failed   ddsim exited with status 1  trial-000012/summary.json"
     )
-    for line in (trial(0), trial(1, feasible=False), failed, trial(3, "interrupted")):
+    recovered = trial(4, "interrupted", recovered=True)
+    assert trial_line(recovered) == "trial 4:   interrupted  trial-000004  (recovered)"
+    assert trial_line(trial(5, recovered=True)).endswith("analysis/a=0.333333  (recovered)")
+    for line in (trial(0), trial(1, feasible=False), failed, trial(3, "interrupted"), recovered):
         colored = trial_line(line, color=True)
         assert colored != trial_line(line) and ANSI.sub("", colored) == trial_line(line)
 
@@ -127,7 +130,7 @@ def test_recovered_trials_are_printed_but_do_not_advance_the_bar() -> None:
         clock.now = 65.0
         shown.trial(trial(8))
     assert shown.durations == [60.0] and "1/3 trials" in shown.line(140)
-    assert screen(out.getvalue())[0].startswith("trial 7:   interrupted")
+    assert screen(out.getvalue())[0] == "trial 7:   interrupted  trial-000007  (recovered)"
 
 
 def test_the_bar_fits_the_terminal_and_keeps_its_width_as_parts_come_and_go() -> None:
@@ -174,6 +177,22 @@ def test_the_bar_is_left_marked_when_the_study_ends_and_lines_go_above_it(
     assert last.startswith("✘ ━━━━━━━━━━━━━━━━━━━━─") and "50%  1/2 trials" in last
 
 
+def test_a_study_that_stops_before_a_trial_ended_leaves_no_bar() -> None:
+    clock, out = Clock(), Terminal()
+
+    def stopped(recovered: bool) -> None:
+        with progress(30, clock, out) as shown:
+            if recovered:
+                shown.trial(trial(3, "interrupted", recovered=True))
+            raise KeyboardInterrupt
+
+    for recovered in (False, True):
+        with pytest.raises(KeyboardInterrupt):
+            stopped(recovered)
+    assert "0/30 trials" in out.getvalue()  # drawn while it ran
+    assert screen(out.getvalue()) == ["trial 3:   interrupted  trial-000003  (recovered)", ""]
+
+
 def test_on_a_terminal_the_command_draws_the_bar_and_colors_the_output(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -194,6 +213,12 @@ def test_on_a_terminal_the_command_draws_the_bar_and_colors_the_output(
     lines = screen(text)
     assert lines[2].startswith("✔ ") and "100%  2/2 trials" in lines[2]
     assert lines[3].startswith("study:    trade-")
+
+    out, err = Terminal(), io.StringIO()  # a study that cannot start: its error, and no bar
+    argv = ["optimize", str(problem), "--evaluator", TRADE_OFF, "--trials", "2", "--resume"]
+    code = main([*argv, "--output", str(tmp_path / "none")], stdout=out, stderr=err)
+    assert code == 1 and "no study to resume" in err.getvalue()
+    assert screen(out.getvalue()) == [""]
 
     monkeypatch.setenv("NO_COLOR", "1")
     code, text = optimize("plain")

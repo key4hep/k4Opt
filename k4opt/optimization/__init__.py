@@ -56,10 +56,10 @@ def optimize(
     first and do not count among ``trials``. ``storage`` is an Optuna database URL in place of
     the journal file in ``output``, given again on every resume.
 
-    ``warn`` is called with each warning, ``progress`` with each trial as it ends. Invalid and
-    failed candidates are FAIL trials and the study goes on. Raises
-    :class:`OptimizationError` for a study that cannot start or resume, and when a trial stops
-    it (a broken evaluation contract, a record that does not hold up); a
+    ``warn`` is called with each warning, ``progress`` with each trial as it ends, the trials a
+    resume finishes first (``recovered``). Invalid and failed candidates are FAIL trials and the
+    study goes on. Raises :class:`OptimizationError` for a study that cannot start or resume,
+    and when a trial stops it (a broken evaluation contract, a record that does not hold up); a
     :class:`~k4opt.errors.K4OptError` for an invalid problem or evaluator, before anything is
     created. Ctrl-C and SIGTERM end the running trial (FAIL, or told its record), remove the
     lock and raise :class:`KeyboardInterrupt`.

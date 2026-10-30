@@ -38,7 +38,9 @@ the time a trial takes and how the trials ended; on a narrow terminal the last o
 A trial takes the mean time from the end of one trial to the end of the next, without the first
 trial of the session, whose time also holds the study's setup. The time left is that of the
 trials still to run, less the time the running one has had, so it counts down between the ends of
-trials. When the study ends, the bar is left in place and marked `✔`, or `✘` when it was stopped.
+trials. When the study ends, the bar is left in place and marked `✔`, or `✘` when it was stopped;
+a study that stops before any of its new trials ended (one that cannot start) leaves only its
+error.
 Piped or written to a file, the output is the plain lines above, as in a log; `NO_COLOR=1` turns
 color off.
 
@@ -268,9 +270,8 @@ and recovery closes it as FAIL.
 
 A study whose setup a killed process cut short, before its first trial, is set up anew or
 finished by the resume. A `trial-*` directory that no trial of the study names makes the resume
-refuse. Recovered
-trials do not count among the `--trials` of the resume, and interrupted trials are not retried
-automatically.
+refuse. Recovered trials are printed first, marked `(recovered)`, but they do not count among
+the `--trials` of the resume, and interrupted trials are not retried automatically.
 
 ## Storage
 
@@ -297,7 +298,7 @@ report = optimize(
     trials=30,
     seed=42,  # or resume=True, storage="postgresql://..."
     warn=print,  # each warning
-    progress=print,  # each TrialReport as its trial ends
+    progress=print,  # each TrialReport as its trial ends, the recovered ones of a resume first
 )
 report.pareto  # the trial numbers on the Pareto front of the feasible valid trials
 report.trials  # TrialReport: number, directory, candidate, status, feasible, objectives,
