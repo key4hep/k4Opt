@@ -6,6 +6,7 @@ import hashlib
 import json
 import pickle
 import shutil
+import signal
 from pathlib import Path
 
 import pytest
@@ -261,3 +262,80 @@ def test_references_that_come_to_name_one_file_keep_their_entries(
     assert [entry["sha256"] for entry in after.values()] == [
         entry["sha256"] for entry in before.values()
     ]
+
+
+@pytest.mark.parametrize("cycle", ["direct", "indirect"])
+def test_an_external_include_cycle_is_followed_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cycle: str
+) -> None:
+    back = "a" if cycle == "direct" else "b"
+    ext = write_tree(
+        tmp_path / "ext",
+        {
+            "a.xml": f'<lccdd><include ref="${{EXT}}/{back}.xml"/></lccdd>',
+            "b.xml": '<lccdd><include ref="${EXT}/a.xml"/></lccdd>',
+        },
+    )
+    geo = write_tree(tmp_path / "geo", {"main.xml": '<lccdd><include ref="${EXT}/a.xml"/></lccdd>'})
+    monkeypatch.setenv("EXT", str(ext))
+
+    def hung(signum: int, frame: object) -> None:
+        raise TimeoutError("external_files went round the cycle")
+
+    previous = signal.signal(signal.SIGALRM, hung)
+    signal.alarm(10)
+    try:
+        found = GeometrySource("main.xml", root=geo).external_files()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    a = {"path": str(ext / "a.xml"), "sha256": _sha256(ext / "a.xml"), "files": {}}
+    b = {"path": str(ext / "b.xml"), "sha256": _sha256(ext / "b.xml"), "files": {}}
+    if cycle == "direct":
+        assert found == {"${EXT}/a.xml": a, "${EXT}/a.xml (in a.xml via ${EXT}/a.xml)": a}
+    else:
+        assert found == {
+            "${EXT}/a.xml": a,
+            "${EXT}/b.xml": b,
+            "${EXT}/a.xml (in b.xml via ${EXT}/b.xml)": a,
+        }
+
+
+def test_a_reference_in_a_file_read_through_a_symlink_resolves_beside_the_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a/shared.xml"/><include ref="b/shared.xml"/></lccdd>',
+            "a/shared.xml": '<lccdd><shape ref="${REL}/model.stl"/></lccdd>',
+            "a/cad/model.stl": "solid a",
+            "b/cad/model.stl": "solid b",
+        },
+    )
+    (geo / "b" / "shared.xml").symlink_to("../a/shared.xml")
+    monkeypatch.setenv("REL", "cad")
+    source = GeometrySource("main.xml", root=geo)
+    found = source.external_files()
+    a, b = geo / "a" / "cad" / "model.stl", geo / "b" / "cad" / "model.stl"
+    assert found == {
+        "${REL}/model.stl": {"path": str(a), "sha256": _sha256(a)},
+        "${REL}/model.stl (in b/shared.xml)": {"path": str(b), "sha256": _sha256(b)},
+    }
+    b.write_text("solid other")
+    assert source.external_files() != found
+
+
+def test_a_variable_that_alone_names_a_resource_is_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = write_tree(tmp_path / "cad", {"model.stl": "solid"}) / "model.stl"
+    main = '<lccdd><shape ref="${CAD_MODEL}"/><m ref="${MAT}"/></lccdd>'
+    geo = write_tree(tmp_path / "geo", {"main.xml": main})
+    monkeypatch.setenv("CAD_MODEL", str(model))
+    monkeypatch.setenv("MAT", "Silicon")  # a symbolic name: no file
+    found = GeometrySource("main.xml", root=geo).external_files()
+    assert found == {
+        "${CAD_MODEL}": {"path": str(model), "sha256": _sha256(model)},
+        "${MAT}": {"path": None, "sha256": None},
+    }
