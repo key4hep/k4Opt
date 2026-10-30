@@ -23,11 +23,14 @@ run = simulate(
 print(run.error or run.output)
 ```
 
-`simulate` raises `DdsimError` for unsupported settings, options it cannot pass on faithfully or
-an existing `workdir`, before anything is run. A `ddsim` that cannot run or fails is reported in
+`simulate` raises `DdsimError` for unsupported settings, options it cannot pass on faithfully,
+a `timeout` that is not a positive number of seconds or an existing `workdir`, before anything
+is run. A `ddsim` that cannot run or fails is reported in
 `SimulationRun.error` (not found, not started, nonzero exit with the tail of its standard
 error, no output file, killed when it ran longer than `timeout` seconds) with `returncode`
-(`None` when it was killed), `argv` and the files. `check_arguments` does the first
+(`None` when it was killed), `argv` and the files. `ddsim` runs in a process group of its own,
+which is killed as a whole when its time runs out or k4opt is interrupted, so the processes a
+wrapper script started (one without `exec`, a container) do not outlive it. `check_arguments` does the first
 part alone, `check_particle_gun` and `check_options` check a gun or options on their own (the
 problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`,
 `ddsim.stderr.log` and `ddsim.json` (argument list, directory, exit code, time limit).

@@ -7,7 +7,6 @@ import hashlib
 import io
 import json
 import shutil
-import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -1465,16 +1464,15 @@ def test_what_changes_while_a_candidate_runs_leaves_it_without_a_record(
     session = EvaluationSession.open(problem_file, [cell_count()])
 
     def changing(argv: list[str], **kwargs: Any) -> Any:  # while ddsim reads the files
-        if Path(argv[0]).name == "ddsim":
-            if change == "generation file":
-                sample.write_bytes(b"HepMC::Version 3\nE 0\n")
-            elif change == "external file":
-                dd4hep.write_text("<define/>")
-            else:
-                monkeypatch.setattr(revision, "source_digest", lambda directory: "edited since")
+        if change == "generation file":
+            sample.write_bytes(b"HepMC::Version 3\nE 0\n")
+        elif change == "external file":
+            dd4hep.write_text("<define/>")
+        else:
+            monkeypatch.setattr(revision, "source_digest", lambda directory: "edited since")
         return fake(argv, **kwargs)
 
-    monkeypatch.setattr(ddsim_run.subprocess, "run", changing)
+    monkeypatch.setattr(ddsim_run, "_execute", changing)
     message = {
         "generation file": rf"stages\.generation\.file: {sample} changed after the session",
         "external file": r"geometry: \$\{DD4hepINSTALL\}/.*detector_types\.xml does not read",
@@ -1529,11 +1527,10 @@ def test_a_candidate_records_and_checks_the_external_files_its_values_name(
     else:
 
         def changing(argv: list[str], **kwargs: Any) -> Any:  # while ddsim reads the file
-            if Path(argv[0]).name == "ddsim":
-                model.write_text("solid other")
+            model.write_text("solid other")
             return fake(argv, **kwargs)
 
-        monkeypatch.setattr(ddsim_run.subprocess, "run", changing)
+        monkeypatch.setattr(ddsim_run, "_execute", changing)
         message = r"\$\{CAD\}/b\.stl does not read the files it read when the candidate started"
     with pytest.raises(RunError, match=rf"geometry: {message}.*which has no {SUMMARY_NAME}"):
         session.evaluate({RADIUS: 500.0, SUPPORT: "${CAD}/b.stl"}, tmp_path / "c")
@@ -1544,13 +1541,11 @@ def test_a_candidate_records_and_checks_the_external_files_its_values_name(
 def test_a_simulation_that_runs_out_of_time_fails_its_candidate(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def stuck(argv: list[str], **kwargs: Any) -> Any:
-        if Path(argv[0]).name != "ddsim":
-            return fake(argv, **kwargs)
+    def stuck(argv: list[str], **kwargs: Any) -> None:
         fake.calls.append((argv, kwargs))
-        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])  # killed by subprocess.run
+        return None  # killed when its time ran out
 
-    monkeypatch.setattr(ddsim_run.subprocess, "run", stuck)
+    monkeypatch.setattr(ddsim_run, "_execute", stuck)
     session = EvaluationSession.open(problem_file, [cell_count()], timeout=90)
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert outcome.candidate.status == "failed"

@@ -273,8 +273,9 @@ and their own external references are entries of their own. An include among the
 that cannot be followed (a missing file) is listed under `unresolved` by
 `file:line`, and the others are still followed; `files` is `null` only when the
 external include itself cannot be parsed. A reference written alike in several
-files that names a different file in each (a relative `${VAR}`) has an entry for
-each: the first under the reference, the others under `reference (in file)`. An
+files has an entry for each file that holds it: the first under the reference, the
+others under `reference (in file)`. A relative `${VAR}` names another file in each,
+and the entries do not depend on what the references resolve to now. An
 evaluation session records this with the fingerprint and checks it around every
 candidate; a study compares it by content, not by path
 ([resuming](optimization.md#resuming-a-study)).

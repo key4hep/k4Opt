@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
+import math
 import os
 import shutil
+import signal
 import subprocess
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from k4opt.ddsim.command import ddsim_arguments, option_args, particle_gun_args
 from k4opt.ddsim.errors import DdsimError
@@ -92,6 +96,39 @@ def _tail(path: Path) -> str:
     return "\n".join(line.rstrip("\r\n") for line in lines)
 
 
+def _check_timeout(timeout: float | None) -> None:
+    """Raise :class:`DdsimError` unless ``timeout`` is ``None`` (no limit) or a positive, finite
+    number of seconds: ``nan`` would never run out, a negative one at once."""
+    if timeout is None:
+        return
+    number = isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+    if not number or not 0 < timeout < math.inf:
+        raise DdsimError(f"timeout must be a positive number of seconds, got {timeout!r}")
+
+
+def _execute(
+    argv: list[str], *, cwd: Path, stdout: IO[bytes], stderr: IO[bytes], timeout: float | None
+) -> int | None:
+    """Run ``argv`` to its end: its exit status, ``None`` if it ran longer than ``timeout``.
+
+    It runs in a process group of its own, which is killed as a whole when its time runs out or
+    this process is interrupted (Ctrl-C, SIGTERM), so nothing a wrapper script started (a shell
+    script without ``exec``, a container) outlives it; a process that leaves the group does.
+    """
+    with subprocess.Popen(
+        argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, process_group=0
+    ) as process:
+        try:
+            return process.wait(timeout=timeout)
+        except BaseException as exc:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            if isinstance(exc, subprocess.TimeoutExpired):
+                return None
+            raise
+
+
 def simulate(
     *,
     compact: Path,
@@ -112,8 +149,9 @@ def simulate(
     ``workdir``, so a file named in an option (``physics.pdgfile``) must be absolute.
     ``workdir`` receives ``events.edm4hep.root``, ``ddsim.stdout.log``, ``ddsim.stderr.log``
     and ``ddsim.json`` (command, directory, exit code, time limit). A ``ddsim`` that runs longer
-    than ``timeout`` seconds is killed, and the run fails with its logs kept. Raises
-    :class:`DdsimError` for unsupported settings or options or an existing ``workdir``.
+    than ``timeout`` seconds is killed with every process it started, and the run fails with its
+    logs kept. Raises :class:`DdsimError` for unsupported settings or options, a ``timeout`` that
+    is not a positive number of seconds, or an existing ``workdir``.
     """
     # ddsim runs inside workdir, so every path in its command line must be absolute
     compact = Path(os.path.abspath(compact))
@@ -132,6 +170,7 @@ def simulate(
         sample=sample,
         options=options,
     )
+    _check_timeout(timeout)
 
     def run(argv: tuple[str, ...], returncode: int | None, error: str | None) -> SimulationRun:
         return SimulationRun(argv, workdir, returncode, output, stdout, stderr, command, error)
@@ -148,21 +187,10 @@ def simulate(
         return run((), None, "ddsim not found on PATH (is the Key4hep environment set up?)")
     # a relative PATH entry would no longer resolve from inside workdir
     argv = (os.path.abspath(found), *arguments)
-    returncode: int | None = None  # None: killed when its time ran out
     try:
         with stdout.open("wb") as out, stderr.open("wb") as err:
-            returncode = subprocess.run(
-                list(argv),
-                cwd=workdir,
-                stdin=subprocess.DEVNULL,
-                stdout=out,
-                stderr=err,
-                shell=False,
-                check=False,
-                timeout=timeout,
-            ).returncode
-    except subprocess.TimeoutExpired:
-        pass  # subprocess.run killed it and waited for it to end
+            # None: killed when its time ran out
+            returncode = _execute(list(argv), cwd=workdir, stdout=out, stderr=err, timeout=timeout)
     except OSError as exc:
         return run(argv, None, f"ddsim could not be started: {exc}")
     error = None

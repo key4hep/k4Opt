@@ -334,30 +334,31 @@ def external_files(root: Path, externals: Iterable[ExternalInclude]) -> dict[str
     that cannot be followed are listed as ``unresolved``, their reference by ``file:line``; the
     others are still followed. The external references of those files are entries of their own.
 
-    A reference written alike in several places that names other files there (a relative
-    ``${VAR}`` in other directories) has an entry for each: the first by the reference, the
-    others by the reference and the file that holds it (``ref (in file)``).
+    A reference written alike in several files has an entry for each file that holds it: the
+    first by the reference, the others by the reference and that file (``ref (in file)``). A
+    relative ``${VAR}`` names another file in each, and which entries there are does not depend
+    on what the references resolve to now, so the same files read the same entries.
     """
     found: dict[str, dict[str, Json]] = {}
-    keys: dict[tuple[str, str | None], str] = {}  # (reference, file it names) -> its entry
+    keys: dict[tuple[str, str], str] = {}  # (reference, file that holds it) -> its entry
     pending = deque((root, external, external.file) for external in externals)
     while pending:
         base, external, where = pending.popleft()
         if not external.ref.strip():
             continue
         path = resolve_external(base, external)
-        named = (external.ref, None if path is None else str(path))
-        key = keys.get(named)
+        held = (external.ref, where)
+        key = keys.get(held)
         if key is None:
             key = external.ref if external.ref not in found else f"{external.ref} (in {where})"
-            while key in found:  # pragma: no cover - one file holding one reference twice
+            while key in found:  # pragma: no cover - a reference spelled like "ref (in file)"
                 key += "'"
-            keys[named] = key
+            keys[held] = key
             try:
                 digest = None if path is None else sha256_file(path)
             except OSError:
                 digest = None
-            found[key] = {"path": named[1], "sha256": digest}
+            found[key] = {"path": None if path is None else str(path), "sha256": digest}
         entry = found[key]
         # a file named as a resource before may be included here: what it includes is read too
         if path is None or entry["sha256"] is None or not external.include or "files" in entry:

@@ -196,7 +196,7 @@ def test_external_files_say_what_the_fingerprint_leaves_out(
     assert source.external_files()["${AUX}/broken.xml"]["files"] != broken["files"]
 
 
-def test_a_reference_written_alike_has_an_entry_for_each_file_it_names(
+def test_a_reference_written_alike_has_an_entry_for_each_file_that_holds_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     aux = write_tree(
@@ -207,8 +207,14 @@ def test_a_reference_written_alike_has_an_entry_for_each_file_it_names(
         {
             "main.xml": '<lccdd><include ref="a/x.xml"/><include ref="b/y.xml"/></lccdd>',
             # a relative ${REL} names the file beside each of them
-            "a/x.xml": '<lccdd><shape ref="${REL}/m.stl"/><shape ref="${AUX}/c.xml"/></lccdd>',
-            "b/y.xml": '<lccdd><shape ref="${REL}/m.stl"/><include ref="${AUX}/c.xml"/></lccdd>',
+            "a/x.xml": """\
+                <lccdd>
+                  <shape ref="${REL}/m.stl"/>
+                  <shape ref="${AUX}/c.xml"/>
+                  <include ref="${AUX}/c.xml"/>
+                </lccdd>
+            """,
+            "b/y.xml": '<lccdd><shape ref="${REL}/m.stl"/></lccdd>',
             "a/cad/m.stl": "solid a",
             "b/cad/m.stl": "solid b",
         },
@@ -229,3 +235,29 @@ def test_a_reference_written_alike_has_an_entry_for_each_file_it_names(
             "sha256": _sha256(geo / "b/cad/m.stl"),
         },
     }
+
+
+def test_references_that_come_to_name_one_file_keep_their_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a/x.xml"/><include ref="b/y.xml"/></lccdd>',
+            "a/x.xml": '<lccdd><shape ref="${REL}/m.stl"/></lccdd>',
+            "b/y.xml": '<lccdd><shape ref="${REL}/m.stl"/></lccdd>',
+            "a/cad/m.stl": "solid",
+            "b/cad/m.stl": "solid",
+        },
+    )
+    shared = write_tree(tmp_path / "shared", {"m.stl": "solid"})
+    source = GeometrySource("main.xml", root=geo)
+    monkeypatch.setenv("REL", "cad")
+    before = source.external_files()
+    monkeypatch.setenv("REL", str(shared))  # both name one file now, which holds the same bytes
+    after = source.external_files()
+    assert list(after) == list(before) == ["${REL}/m.stl", "${REL}/m.stl (in b/y.xml)"]
+    assert {entry["path"] for entry in after.values()} == {str(shared / "m.stl")}
+    assert [entry["sha256"] for entry in after.values()] == [
+        entry["sha256"] for entry in before.values()
+    ]

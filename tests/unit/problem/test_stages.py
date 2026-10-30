@@ -148,7 +148,7 @@ def test_the_simulation_stage_runs_ddsim_from_the_problem(
     assert f"--compactFile={geometry}" in argv
     assert "--numberOfEvents=1000" in argv and "--random.seed=42" in argv
     assert "--gun.particle=gamma" in argv  # the problem's gun
-    assert kwargs["shell"] is False and kwargs["cwd"] == tmp_path / "run" / "simulation"
+    assert kwargs["cwd"] == tmp_path / "run" / "simulation"
     assert outcome.provenance["argv"] == tuple(argv)
 
 
@@ -196,7 +196,7 @@ def test_ddsim_that_cannot_start_is_an_error_outcome(
     def refuse(*args: Any, **kwargs: Any) -> None:
         raise PermissionError("denied")
 
-    monkeypatch.setattr(ddsim_run.subprocess, "run", refuse)
+    monkeypatch.setattr(ddsim_run, "_execute", refuse)
     outcome = run_stage(
         context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )

@@ -255,7 +255,8 @@ the same proposals again.
 
 **Ctrl-C and SIGTERM** (`systemctl --user stop`, a batch system ending a job) stop the study
 cleanly. The running trial is FAIL, or is told its record if one was published just before;
-ddsim is killed; the lock is removed; the command exits 1 and says how to resume.
+ddsim is killed, with any process it started; the lock is removed; the command exits 1 and says
+how to resume.
 
 **The lock.** `.lock` is created exclusively when a process starts working on a study, and
 removed when it ends, so two processes never work on one study. A lock that a killed process

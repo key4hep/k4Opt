@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import signal
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -154,27 +157,91 @@ def test_a_sample_is_passed_as_an_absolute_input_file(
     assert run.error is None
 
 
-def test_a_ddsim_that_runs_out_of_time_is_killed_and_its_logs_kept(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+# what a wrapper script around ddsim does when it does not ``exec``: run it as its own child
+WRAPPER = """\
+#!/bin/sh
+echo 'G4 stuck in event 3' >&2
+sleep 60 &
+echo $! > child.pid
+wait
+"""
+
+
+@pytest.fixture
+def wrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A ``ddsim`` wrapper that never ends; the file its child writes its process ID to."""
     ddsim = tmp_path / "bin" / "ddsim"
     ddsim.parent.mkdir()
-    ddsim.write_text("#!/bin/sh\necho 'G4 stuck in event 3' >&2\nexec sleep 60\n")
+    ddsim.write_text(WRAPPER)
     ddsim.chmod(0o755)
     monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: str(ddsim))
-    started = time.monotonic()
-    run = simulate(
+    child = tmp_path / "run" / "child.pid"
+    yield child
+    if child.is_file():  # never left behind, whatever the test found
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(int(child.read_text()), signal.SIGKILL)
+
+
+def _ended(pid: int) -> bool:
+    """Whether process ``pid`` ends within 10 s; a zombie its new parent has not reaped has."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except OSError:
+            return True
+        if state in ("Z", "X"):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _simulate(tmp_path: Path, timeout: float | None) -> ddsim_run.SimulationRun:
+    return simulate(
         compact=tmp_path / "c.xml",
         workdir=tmp_path / "run",
         events=1,
         seed=None,
         sample=tmp_path / "events.hepmc",
         options={},
-        timeout=0.5,
+        timeout=timeout,
     )
+
+
+def test_a_ddsim_that_runs_out_of_time_is_killed_with_what_it_started(
+    tmp_path: Path, wrapped: Path
+) -> None:
+    started = time.monotonic()
+    run = _simulate(tmp_path, timeout=0.5)
     assert time.monotonic() - started < 30
     assert run.returncode is None and run.error is not None
     assert run.error.startswith("ddsim ran longer than 0.5 s and was killed")
     assert run.error.endswith("G4 stuck in event 3")
     assert json.loads(run.files["command"].read_text())["timeout"] == 0.5
     assert {"stdout", "stderr", "command"} <= run.files.keys()
+    assert _ended(int(wrapped.read_text())), "the wrapper's child outlived it"
+
+
+def test_an_interrupted_ddsim_is_killed_with_what_it_started(tmp_path: Path, wrapped: Path) -> None:
+    def interrupt(signum: int, frame: object) -> None:
+        raise KeyboardInterrupt  # what Ctrl-C, or SIGTERM in k4opt optimize, raises
+
+    previous = signal.signal(signal.SIGALRM, interrupt)
+    signal.setitimer(signal.ITIMER_REAL, 0.5)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _simulate(tmp_path, timeout=None)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+    assert _ended(int(wrapped.read_text())), "the wrapper's child outlived it"
+
+
+@pytest.mark.parametrize("timeout", [0, -1.0, float("nan"), float("inf"), True])
+def test_a_timeout_that_is_no_time_limit_is_refused_before_anything_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeout: float
+) -> None:
+    fake = simulation.install(monkeypatch)
+    with pytest.raises(DdsimError, match="timeout must be a positive number of seconds"):
+        _simulate(tmp_path, timeout=timeout)
+    assert not (tmp_path / "run").exists() and fake.calls == []
