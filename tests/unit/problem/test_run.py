@@ -1032,7 +1032,7 @@ def test_a_misspelled_collection_warns_before_the_run_and_fails_after_it(
     assert (evaluator["status"], evaluator["elapsed_seconds"]) == ("failed", None)
     assert evaluator["message"] == (
         "collection 'InnerTrackerBarelCollection' (hits) is not in events.edm4hep.root, which "
-        f"holds: {COLLECTION} (SimCalorimeterHit)"
+        f"holds: {COLLECTION}"
     )
     assert len(summary["warnings"]) == 1
 

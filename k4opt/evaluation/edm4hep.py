@@ -9,7 +9,7 @@ reader) is an :class:`EvaluationFailed`, which ``k4opt`` reports as a ``failed``
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -147,13 +147,28 @@ def read_collection(path: Path, collection: str, value_type: str) -> Iterator[An
         yield event.elements
 
 
-def collection_types(path: Path) -> dict[str, str]:
-    """The collections of the first event of ``path``, with the type of their elements
-    (``edm4hep::SimCalorimeterHit``); empty for a file without events."""
+def available_collections(path: Path) -> tuple[str, ...]:
+    """The names of the collections of the first event of ``path``, none of which is read;
+    empty for a file without events."""
     with _unreadable(path):
         for event in _frames(path):
+            return tuple(str(name) for name in event.getAvailableCollections())
+    return ()
+
+
+def collection_types(path: Path, names: Iterable[str]) -> dict[str, str]:
+    """The type of the elements (``edm4hep::SimCalorimeterHit``) of each collection of ``names``
+    that the first event of ``path`` holds.
+
+    Only those collections are read: podio unpacks a collection when it is read, so another one
+    that cannot be (an unknown datamodel, say) does not matter here.
+    """
+    with _unreadable(path):
+        for event in _frames(path):
+            available = {str(name) for name in event.getAvailableCollections()}
             return {
-                str(name): _type_name(event.get(name).getValueTypeName())
-                for name in event.getAvailableCollections()
+                name: _type_name(event.get(name).getValueTypeName())
+                for name in names
+                if name in available
             }
     return {}

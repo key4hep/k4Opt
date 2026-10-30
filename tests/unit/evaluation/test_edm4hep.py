@@ -11,6 +11,7 @@ import pytest
 
 from k4opt.evaluation import (
     EvaluationFailed,
+    available_collections,
     collection_types,
     count_events,
     edm4hep,
@@ -207,13 +208,35 @@ def test_the_collections_of_an_event_come_from_that_one_event(
     assert repr(events[1]) == "Event(hits=0, particles=2)"
 
 
-def test_the_collections_of_a_file_are_listed_with_their_types(
+class Unreadable(Event):
+    """An event with a collection that podio cannot unpack (an unknown datamodel, say)."""
+
+    def get(self, name: str) -> Any:
+        if name == "Broken":
+            raise CppException("no dictionary for the collection type")
+        return super().get(name)
+
+
+def test_the_collections_of_a_file_are_listed_without_reading_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    simulation.install_events(monkeypatch, [Unreadable(Broken=Hits([1]), **{COLLECTION: Hits([])})])
+    assert available_collections(PATH) == ("Broken", COLLECTION)
+    simulation.install_events(monkeypatch, [])
+    assert available_collections(PATH) == ()
+
+
+def test_only_the_collections_asked_for_are_read_for_their_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     photon = Particle(momentum=(1.0, 0.0, 0.0))
-    simulation.install_events(
-        monkeypatch, [Event(**{COLLECTION: Hits([1]), "MCParticles": Particles([photon])})]
+    event = Unreadable(
+        Broken=Hits([1]), **{COLLECTION: Hits([1]), "MCParticles": Particles([photon])}
     )
-    assert collection_types(PATH) == {COLLECTION: HIT_TYPE, "MCParticles": PARTICLE_TYPE}
+    simulation.install_events(monkeypatch, [event])
+    wanted = [COLLECTION, "MCParticles", "Missing"]
+    assert collection_types(PATH, wanted) == {COLLECTION: HIT_TYPE, "MCParticles": PARTICLE_TYPE}
+    with pytest.raises(EvaluationFailed, match="no dictionary"):
+        collection_types(PATH, ["Broken"])
     simulation.install_events(monkeypatch, [])
-    assert collection_types(PATH) == {}
+    assert collection_types(PATH, wanted) == {}

@@ -37,6 +37,7 @@ from k4opt.evaluation.base import (
 )
 from k4opt.evaluation.edm4hep import (
     Event,
+    available_collections,
     collection_types,
     count_events,
     read_collection,
@@ -77,6 +78,7 @@ __all__ = [
     "Quantity",
     "Scalar",
     "Status",
+    "available_collections",
     "collection_names",
     "collection_types",
     "count_events",

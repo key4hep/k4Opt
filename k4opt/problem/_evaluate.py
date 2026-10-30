@@ -35,6 +35,7 @@ from k4opt.evaluation import (
     Measurement,
     Scalar,
     Status,
+    available_collections,
     collection_names,
     collection_types,
     declared_collections,
@@ -332,11 +333,12 @@ def _unexpected_collections(
 def _collection_error(
     evaluator: EvaluatorProtocol,
     request: EvaluationRequest,
-    seen: dict[Path, dict[str, str] | str],
+    seen: dict[Path, tuple[str, ...] | str],
 ) -> str | None:
     """Why the file of the evaluator's stage lacks a collection it declares, or holds it with
-    another type; ``None`` if every one is there. ``seen`` keeps each file's collections (or why
-    they cannot be listed), so a file read by several evaluators is opened once."""
+    another type; ``None`` if every one is there. Only the declared collections are read, so one
+    the evaluator does not read cannot fail it. ``seen`` keeps the collection names of each file
+    (or why they cannot be listed), so a file read by several evaluators is listed once."""
     declared = declared_collections(evaluator)
     stage = _stage(evaluator)
     if not declared or stage is None or stage not in request.inputs:
@@ -344,18 +346,23 @@ def _collection_error(
     path = request.inputs[stage]
     if path not in seen:
         try:
-            seen[path] = collection_types(path)
+            seen[path] = available_collections(path)
         except EvaluationFailed as exc:
             seen[path] = str(exc)
-    types = seen[path]
-    if isinstance(types, str):
-        return types
-    for role, collection in declared.items():
-        name = request.collections[role]
-        held = types.get(name)
-        if held is None:
-            listing = ", ".join(f"{n} ({t.removeprefix('edm4hep::')})" for n, t in types.items())
+    available = seen[path]
+    if isinstance(available, str):
+        return available
+    names = {role: request.collections[role] for role in declared}
+    for role, name in names.items():
+        if name not in available:
+            listing = ", ".join(available) or "no collections"
             return f"collection {name!r} ({role}) is not in {path.name}, which holds: {listing}"
+    try:
+        types = collection_types(path, names.values())
+    except EvaluationFailed as exc:
+        return str(exc)
+    for role, collection in declared.items():
+        name, held = names[role], types.get(names[role])
         if held != collection.podio_type:
             return (
                 f"collection {name!r} ({role}) holds {held!r}, but the evaluator reads "
@@ -477,7 +484,7 @@ def _measure(
     stages: StageRecords,
     inputs: Mapping[str, Path],
     workdir: Path | None,
-    seen: dict[Path, dict[str, str] | str],
+    seen: dict[Path, tuple[str, ...] | str],
 ) -> EvaluationRecord:
     """The record of one evaluator, called once on the files of the stages it reads.
 
@@ -630,7 +637,7 @@ def _evaluate_candidate(
     inputs = dict(inputs or {})
     plan = _preflight(spec, values, evaluators, inputs)
     stages = run_stages(plan.context, *plan.targets, inputs=inputs, workdir=workdir)
-    seen: dict[Path, dict[str, str] | str] = {}  # the collections of each stage file
+    seen: dict[Path, tuple[str, ...] | str] = {}  # the collection names of each stage file
     records = tuple(
         _measure(spec, plan, values, key, entry, evaluator, stages, inputs, workdir, seen)
         for entry, evaluator in plan.evaluators

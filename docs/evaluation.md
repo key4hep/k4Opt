@@ -190,8 +190,9 @@ collections of an `Event` come from the same frame, so they belong to the same p
 Nothing is matched up across files or samples: `request.read(stage, collection, value_type)`
 reads one collection of any stage's file, and two collections read that way are not known to
 be aligned event by event. `read_collection(path, collection, value_type)` is the one-collection
-form, `collection_types(path)` lists the collections of a file with the types of their elements,
-and `count_events(path)` counts the events.
+form, `available_collections(path)` lists the collections of a file without reading any,
+`collection_types(path, names)` gives the element types of the named ones (podio unpacks a
+collection when it is read, so only those are), and `count_events(path)` counts the events.
 
 `podio` comes from the Key4hep stack and is imported only when a file is opened, so
 `k4opt.evaluation` imports without it. A file that cannot be opened, a missing `events` category
@@ -211,7 +212,7 @@ demonstrably wrong blocks a run:
 | --- | --- | --- |
 | A declaration that cannot be read: a role that is no Python identifier, a type that is no type name, collections without a `stage`; a role the problem's entry names but the evaluator does not declare, or one without a name; collections from a stage that makes no file (a generation run by the gun, which ddsim fires; give it as a file or read from the simulation) | before anything runs; no Key4hep stack needed | `EvaluationContractError` |
 | A name ddsim is not expected to write | before anything runs | a warning with the closest expected name ("did you mean 'ECalBarrelCollection'?"); the run goes on |
-| A collection missing from the stage's actual file, or holding another type | after the stage, before the evaluator is called | that evaluator is `failed`, with the collections and types the file holds; it is not called |
+| A collection missing from the stage's actual file, or holding another type | after the stage, before the evaluator is called | that evaluator is `failed`, with the collections the file holds; it is not called. Only the collections it declares are read, so one it does not read (of a datamodel without a dictionary, say) cannot fail it |
 
 The expectation comes from the unmodified geometry: one collection per `<readout>` (and
 `<hits_collection>`) named in its XML, a `<readout>Contributions` collection next to each, and

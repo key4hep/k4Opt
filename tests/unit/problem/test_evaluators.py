@@ -662,8 +662,7 @@ def test_analysis_metrics_need_no_analysis_stage(
     [
         (
             [Event(Other=Hits([1]))],
-            f"collection {COLLECTION!r} (hits) is not in events.edm4hep.root, which holds: "
-            "Other (SimCalorimeterHit)",
+            f"collection {COLLECTION!r} (hits) is not in events.edm4hep.root, which holds: Other",
         ),
         (
             [Event(**{COLLECTION: Hits([1], "edm4hep::SimTrackerHit")})],
@@ -696,13 +695,13 @@ def test_the_collections_of_a_file_are_listed_once_for_all_its_readers(
 ) -> None:
     simulation.install(monkeypatch)
     listed: list[Path] = []
-    real = _evaluate.collection_types
+    real = _evaluate.available_collections
 
-    def counting(path: Path) -> dict[str, str]:
+    def counting(path: Path) -> tuple[str, ...]:
         listed.append(path)
         return real(path)
 
-    monkeypatch.setattr(_evaluate, "collection_types", counting)
+    monkeypatch.setattr(_evaluate, "available_collections", counting)
     spec = problem(doc, "test.cell_count", "test.hit_energy", objectives=(CELLS, ENERGY))
     candidate = evaluate(spec, [cell_count(), hit_energy()], tmp_path, geometry)
     assert candidate.status is Status.VALID
@@ -751,3 +750,23 @@ def test_collections_of_a_generation_given_as_a_file_are_read(
     )
     candidate = evaluate(with_sample(spec, tmp_path), [cell_count(), Truth()], tmp_path, geometry)
     assert candidate.status is Status.VALID and candidate.value(*TRUTH).value == 1
+
+
+class Unpackable(Event):
+    """An event with a collection podio cannot unpack, which no evaluator reads."""
+
+    def get(self, name: str) -> Any:
+        if name == "Broken":
+            raise RuntimeError("no dictionary for the collection type")
+        return super().get(name)
+
+
+def test_a_collection_no_evaluator_reads_cannot_fail_the_ones_that_read_the_file(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(
+        monkeypatch, [Unpackable(Broken=Hits([1]), **{COLLECTION: Hits([1, 2])})] * 3
+    )
+    spec = problem(doc, "test.cell_count", objectives=(CELLS,))
+    candidate = evaluate(spec, [cell_count()], tmp_path, geometry)
+    assert candidate.status is Status.VALID and candidate.value(*CELLS).value == 2
