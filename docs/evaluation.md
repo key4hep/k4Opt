@@ -335,9 +335,10 @@ candidate then gets a new instance of each evaluator, before anything of the can
 created: k4opt calls its `check()` and later its `evaluate()`, then drops it. Nothing an
 evaluator keeps on `self` reaches another candidate.
 
-Every instance must declare what the first did: the same class, `name`, `version`, `stage` and
-`metrics`, since the records name the first one's class as the code that ran and its metrics
-decide who measures what. An instance that declares otherwise, or a constructor that raises, is
+Every instance must declare what the first did: the same class, `name`, `version`, `stage`,
+`settings`, `collections` and `metrics`. The records name the first one's class as the code that
+ran, its metrics decide who measures what, and its settings and collections, defaults included,
+make the request, which must not change from one candidate to the next. An instance that declares otherwise, or a constructor that raises, is
 an `EvaluationContractError` before anything of the candidate is created; giving an instance
 instead of its class is one too. Setup that is expensive and the same for every candidate (a
 model file, a lookup table) belongs in a module-level cache of the evaluator's own

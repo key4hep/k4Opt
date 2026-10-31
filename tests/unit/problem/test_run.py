@@ -20,6 +20,7 @@ from k4opt.cli import main
 from k4opt.ddsim import run as ddsim_run
 from k4opt.errors import K4OptError
 from k4opt.evaluation import (
+    Collection,
     EvaluationContractError,
     EvaluationRequest,
     Quantity,
@@ -1318,6 +1319,10 @@ def test_an_evaluator_that_cannot_be_created_stops_before_anything_is_created(
         ("name", "test.other", "name 'test.other', not 'test.cell_count'"),
         ("version", "2", "version '2', not '1'"),
         ("metrics", {"other": "1"}, "metrics .*'other'"),
+        # the defaults and collections the request is made with: another trial would be
+        # measured otherwise under the same problem and study
+        ("settings", {"threshold": Quantity("GeV", default=1.0)}, "settings .*'threshold'"),
+        ("collections", {"hits": Collection("SimTrackerHit")}, "collections .*SimTrackerHit"),
     ],
 )
 def test_a_new_instance_must_declare_what_the_first_did(

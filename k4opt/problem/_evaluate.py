@@ -209,13 +209,16 @@ def _create(implementation: EvaluatorFactory) -> EvaluatorProtocol:
 
 class _Declaration(NamedTuple):
     """What every instance of an implementation must say of itself as its probe did: the session
-    records the probe's class as the code that runs, and the stage and metrics decided what each
-    evaluator reads and measures."""
+    records the probe's class as the code that runs, the stage and metrics decided what each
+    evaluator reads and measures, and the settings and collections (their defaults included)
+    make the request it gets, which must not change from one candidate to the next."""
 
     cls: type
     name: str
     version: str
     stage: str | None
+    settings: Mapping[str, object]
+    collections: Mapping[str, object]
     metrics: Mapping[MetricKey, str] | None
 
 
@@ -225,6 +228,8 @@ def _declaration(evaluator: EvaluatorProtocol) -> _Declaration:
         evaluator.name,
         evaluator.version,
         _stage(evaluator),
+        dict(getattr(evaluator, "settings", None) or {}),
+        declared_collections(evaluator),
         metric_units(evaluator),
     )
 
@@ -243,7 +248,7 @@ def _instance(bound: _Bound) -> EvaluatorProtocol:
     """A new instance of a bound implementation; :class:`EvaluationContractError` unless it
     declares what the probe declared."""
     evaluator = _create(bound.implementation)
-    labels = ("class", "name", "version", "stage", "metrics")
+    labels = ("class", "name", "version", "stage", "settings", "collections", "metrics")
     changed = [
         f"{label} {new!r}, not {old!r}"
         for label, new, old in zip(labels, _declaration(evaluator), bound.declaration, strict=True)

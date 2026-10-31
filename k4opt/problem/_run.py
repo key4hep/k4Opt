@@ -401,7 +401,8 @@ class EvaluationSession:
     as a ``file``, a file a ddsim option names, a file the caller supplies, and what the
     geometry's external references read. Every candidate gets a new instance of each evaluator,
     so no state of one reaches another candidate; it must declare what the first instance,
-    created when the session opened, declared (its class, name, version, stage and metrics).
+    created when the session opened, declared (its class, name, version, stage, settings,
+    collections and metrics).
     Each candidate is then checked afresh, by :meth:`check` and again by :meth:`evaluate`: its
     values against the parameter domains, the ``check()`` of each new instance with a request
     made for this candidate, and that none of those files, the environment or k4opt's
