@@ -170,15 +170,15 @@ def test_ddsim_options_keep_their_order_and_values(doc: dict[str, Any]) -> None:
 
 
 def test_a_generation_file_replaces_the_gun(doc: dict[str, Any]) -> None:
-    doc["stages"]["generation"] = {"file": "samples/zh.hepmc"}
+    doc["stages"]["generation"] = {"file": "events/zh.hepmc"}
     problem = parse_problem(doc)
     generation = problem.stages["generation"]
     assert (generation.executor, generation.file, generation.options) == (
         None,
-        "samples/zh.hepmc",
+        "events/zh.hepmc",
         {},
     )
-    assert problem.to_dict()["stages"]["generation"] == {"file": "samples/zh.hepmc"}
+    assert problem.to_dict()["stages"]["generation"] == {"file": "events/zh.hepmc"}
     assert parse_problem(problem.to_dict()) == problem
 
 

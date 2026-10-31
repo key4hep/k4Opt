@@ -1,9 +1,9 @@
 # ddsim
 
 `k4opt.ddsim` runs Key4hep's `ddsim` once on a prepared geometry with a particle gun or an input
-sample: it builds the command from the problem's `stages` (the gun of `stages.generation`, or its
-`file`, and `events`, `seed` and the ddsim options of `stages.simulation`), runs the `ddsim` of
-the active Key4hep environment and keeps the command, exit code and logs. It does not read the
+event file: it builds the command from the problem's `stages` (the gun of `stages.generation`, or
+its `file`, and `events`, `seed` and the ddsim options of `stages.simulation`), runs the `ddsim`
+of the active Key4hep environment and keeps the command, exit code and logs. It does not read the
 output; an evaluator does (see [evaluators.md](evaluators.md)). `k4opt evaluate` runs it as the
 `simulation` [stage](evaluation.md#stages) once per candidate, so evaluators never call it.
 Checked against the `ddsim` of the nightly 2026-10-20 (its `--help` and its sources).
@@ -16,7 +16,7 @@ run = simulate(
     workdir=new_dir,
     events=100,
     seed=42,
-    particle_gun=gun,  # the keys of stages.generation; or sample=Path("events.hepmc") instead
+    particle_gun=gun,  # the keys of stages.generation; or input_file=Path("events.hepmc")
     options={"physics.list": "FTFP_BERT"},
     timeout=3600,  # seconds; no limit without it
 )
@@ -63,7 +63,7 @@ Instead of a gun, a generation stage given as a file simulates its events:
 ```yaml
 stages:
   generation:
-    file: samples/zh.hepmc
+    file: events/zh.hepmc
   simulation:
     executor: ddsim
     events: 500

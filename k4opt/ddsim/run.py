@@ -69,7 +69,7 @@ def check_arguments(
     events: int,
     seed: int | None,
     particle_gun: Json = None,
-    sample: Path | None = None,
+    input_file: Path | None = None,
     options: Mapping[str, Json],
 ) -> None:
     """Raise :class:`DdsimError` if these settings cannot be turned into a ``ddsim`` command.
@@ -82,7 +82,7 @@ def check_arguments(
         events=events,
         seed=seed,
         particle_gun=particle_gun,
-        sample=sample,
+        input_file=input_file,
         options=options,
     )
 
@@ -136,16 +136,16 @@ def simulate(
     events: int,
     seed: int | None,
     particle_gun: Json = None,
-    sample: Path | None = None,
+    input_file: Path | None = None,
     options: Mapping[str, Json],
     timeout: float | None = None,
 ) -> SimulationRun:
     """Run the ``ddsim`` found on ``PATH`` on ``compact``, in the new directory ``workdir``.
 
     The command is an argument list without a shell: the options k4opt manages (geometry,
-    output, event count, seed, particle gun or input sample) followed by ``options`` in order
-    (see :func:`~k4opt.ddsim.command.option_args`). Relative ``compact`` and ``sample`` paths
-    are taken from the current directory; option values are passed unchanged and ddsim runs in
+    output, event count, seed, particle gun or input file) followed by ``options`` in order
+    (see :func:`~k4opt.ddsim.command.option_args`). Relative ``compact`` and ``input_file``
+    paths are taken from the current directory; option values are passed unchanged and ddsim runs in
     ``workdir``, so a file named in an option (``physics.pdgfile``) must be absolute.
     ``workdir`` receives ``events.edm4hep.root``, ``ddsim.stdout.log``, ``ddsim.stderr.log``
     and ``ddsim.json`` (command, directory, exit code, time limit). A ``ddsim`` that runs longer
@@ -155,7 +155,7 @@ def simulate(
     """
     # ddsim runs inside workdir, so every path in its command line must be absolute
     compact = Path(os.path.abspath(compact))
-    sample = None if sample is None else Path(os.path.abspath(sample))
+    input_file = None if input_file is None else Path(os.path.abspath(input_file))
     workdir = Path(os.path.abspath(workdir))
     output = workdir / "events.edm4hep.root"
     stdout, stderr, command = (
@@ -167,7 +167,7 @@ def simulate(
         events=events,
         seed=seed,
         particle_gun=particle_gun,
-        sample=sample,
+        input_file=input_file,
         options=options,
     )
     _check_timeout(timeout)

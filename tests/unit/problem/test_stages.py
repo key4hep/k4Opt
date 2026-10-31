@@ -271,9 +271,9 @@ def test_a_failed_stage_leaves_the_stages_after_it_unrun_with_the_reason(
     # a generation file that vanished after the preflight: it cannot be read, simulation never
     # runs
     missing = tmp_path / "gone.hepmc"
-    sample = with_stages(spec, generation=Stage("generation", file=str(missing)))
+    broken = with_stages(spec, generation=Stage("generation", file=str(missing)))
     records = run_stages(
-        sample, "simulation", inputs={"geometry": tmp_path / "c.xml"}, workdir=tmp_path / "run"
+        broken, "simulation", inputs={"geometry": tmp_path / "c.xml"}, workdir=tmp_path / "run"
     )
     assert fake.calls == []
     assert f"cannot read {missing}" in records.errors["generation"]
@@ -292,9 +292,9 @@ def test_a_supplied_stage_does_not_inherit_the_failure_of_a_stage_before_it(
     events_file.write_bytes(b"fake")
     # another evaluator reads generation, which fails; the supplied simulation never needed it
     missing = tmp_path / "gone.hepmc"
-    sample = with_stages(spec, generation=Stage("generation", file=str(missing)))
+    broken = with_stages(spec, generation=Stage("generation", file=str(missing)))
     records = run_stages(
-        sample, "generation", "simulation", inputs={"simulation": events_file}, workdir=None
+        broken, "generation", "simulation", inputs={"simulation": events_file}, workdir=None
     )
     assert "cannot read" in (records.error("generation") or "")
     assert records.chain("simulation") == ["simulation"]
@@ -339,7 +339,7 @@ def test_a_failed_stage_blocks_only_the_stages_that_read_it(
     assert records.error("after_right") is None and records.error("last") == "boom"
 
 
-# --- generation: a particle gun or a sample file ---
+# --- generation: a particle gun or an event file ---
 
 
 def test_a_particle_gun_provides_no_file_but_is_recorded(spec: ProblemSpec, tmp_path: Path) -> None:
@@ -349,19 +349,19 @@ def test_a_particle_gun_provides_no_file_but_is_recorded(spec: ProblemSpec, tmp_
 
 
 @pytest.fixture
-def sample_spec(doc: dict[str, Any], tmp_path: Path) -> ProblemSpec:
-    (tmp_path / "samples").mkdir()
-    (tmp_path / "samples" / "zh.hepmc").write_bytes(b"HepMC::Version 3\nevents\n")
-    doc["stages"]["generation"] = {"file": "samples/zh.hepmc"}
+def file_spec(doc: dict[str, Any], tmp_path: Path) -> ProblemSpec:
+    (tmp_path / "events").mkdir()
+    (tmp_path / "events" / "zh.hepmc").write_bytes(b"HepMC::Version 3\nevents\n")
+    doc["stages"]["generation"] = {"file": "events/zh.hepmc"}
     # a loaded problem remembers the directory of its file; relative files are read from there
     return dataclasses.replace(parse_problem(doc), _directory=tmp_path)
 
 
 def test_a_generation_file_is_given_hashed_and_resolved_from_the_problem_directory(
-    sample_spec: ProblemSpec, tmp_path: Path
+    file_spec: ProblemSpec, tmp_path: Path
 ) -> None:
-    records = run_stages(context(sample_spec), "generation", inputs={}, workdir=None)
-    path = tmp_path / "samples" / "zh.hepmc"
+    records = run_stages(context(file_spec), "generation", inputs={}, workdir=None)
+    path = tmp_path / "events" / "zh.hepmc"
     assert records.errors == {}
     assert records.outputs == {"generation": {"events": path}}
     assert records.provenance == {
@@ -375,15 +375,15 @@ def test_a_generation_file_is_given_hashed_and_resolved_from_the_problem_directo
     assert records.provided == {"generation"} and records.supplied == frozenset()
 
 
-def test_a_missing_sample_is_refused_before_anything_runs(
-    sample_spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_missing_generation_file_is_refused_before_anything_runs(
+    file_spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
-    (tmp_path / "samples" / "zh.hepmc").unlink()
+    (tmp_path / "events" / "zh.hepmc").unlink()
     with pytest.raises(
         EvaluationContractError, match=r"stages\.generation\.file: .* is not a file"
     ):
-        check_stages(context(sample_spec), "simulation")
+        check_stages(context(file_spec), "simulation")
     assert fake.calls == []
 
 
@@ -393,20 +393,20 @@ def test_a_context_without_generation_is_refused(spec: ProblemSpec) -> None:
         check_stages(alone, "simulation")
 
 
-def test_simulation_reads_the_sample_instead_of_a_gun(
-    sample_spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_simulation_reads_the_generation_file_instead_of_a_gun(
+    file_spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
-    sample = tmp_path / "samples" / "zh.hepmc"
+    hepmc = tmp_path / "events" / "zh.hepmc"
     outcome = run_stage(
-        context(sample_spec),
+        context(file_spec),
         "simulation",
-        inputs={"geometry": geometry, "generation": sample},
+        inputs={"geometry": geometry, "generation": hepmc},
         workdir=tmp_path / "run",
     )
     assert outcome.error is None
     ((argv, _),) = fake.calls
-    assert f"--inputFiles={sample}" in argv
+    assert f"--inputFiles={hepmc}" in argv
     assert not any(a.startswith(("--gun", "--enableGun")) for a in argv)
 
 
@@ -501,16 +501,16 @@ def test_the_files_a_problem_names_are_those_its_stages_read(
 ) -> None:
     options = {"physics.pdgfile": "particles.tbl"}
     sim = Stage("simulation", executor="ddsim", events=3, options=options)
-    sample = Stage("generation", file="zh.hepmc")
+    generation = Stage("generation", file="zh.hepmc")
     ctx = dataclasses.replace(
-        with_stages(spec, generation=sample, simulation=sim), directory=tmp_path
+        with_stages(spec, generation=generation, simulation=sim), directory=tmp_path
     )
     assert input_files(ctx, "simulation") == {
         "stages.generation.file": tmp_path / "zh.hepmc",
         "stages.simulation.physics.pdgfile": tmp_path / "particles.tbl",
     }
     assert input_files(ctx, "generation") == {"stages.generation.file": tmp_path / "zh.hepmc"}
-    # a supplied simulation reads neither: it does not run, and nothing else needs the sample
+    # a supplied simulation reads neither: it does not run, and nothing else needs the event file
     assert input_files(ctx, "simulation", provided={"simulation"}) == {}
     assert input_files(ctx, "simulation", provided={"generation"}) == {
         "stages.simulation.physics.pdgfile": tmp_path / "particles.tbl"
@@ -629,13 +629,13 @@ def test_a_supplied_generation_still_represents_the_candidate(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     simulation.install(monkeypatch)
-    sample = tmp_path / "mine.hepmc"
-    sample.write_bytes(b"HepMC::Version 3\n")
+    hepmc = tmp_path / "mine.hepmc"
+    hepmc.write_bytes(b"HepMC::Version 3\n")
     candidate = evaluate(
         spec,
         {CELL: 6},
         Reader(),
-        inputs={"geometry": geometry, "generation": sample},
+        inputs={"geometry": geometry, "generation": hepmc},
         workdir=tmp_path / "run",
     )
     # the candidate's geometry was simulated; the events do not depend on it
@@ -845,45 +845,45 @@ def test_the_simulation_stage_needs_a_geometry_and_a_workdir(
     assert fake.calls == []
 
 
-def test_a_sample_problem_runs_generation_then_simulation_and_records_the_hash(
-    sample_spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_generation_file_problem_runs_generation_then_simulation_and_records_the_hash(
+    file_spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
     reader = Reader()
     candidate = evaluate(
-        sample_spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        file_spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
-    sample = tmp_path / "samples" / "zh.hepmc"
+    hepmc = tmp_path / "events" / "zh.hepmc"
     ((argv, _),) = fake.calls
-    assert f"--inputFiles={sample}" in argv
+    assert f"--inputFiles={hepmc}" in argv
     # an evaluator reads the files of every stage it needs, not only of the one it reads
-    assert candidate.records[0].request.inputs["generation"] == sample
+    assert candidate.records[0].request.inputs["generation"] == hepmc
     assert reader.calls[0].inputs["simulation"].name == "events.edm4hep.root"
     stages = candidate.stages.provenance
     assert list(stages) == ["generation", "simulation"]
-    assert stages["generation"]["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert stages["generation"]["sha256"] == hashlib.sha256(hepmc.read_bytes()).hexdigest()
 
 
 def test_a_failed_generation_stops_before_simulation(
-    sample_spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    file_spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
-    sample = tmp_path / "samples" / "zh.hepmc"
+    hepmc = tmp_path / "events" / "zh.hepmc"
     real_open = Path.open
 
     def unreadable(self: Path, *args: Any, **kwargs: Any) -> Any:
-        if self == sample:
+        if self == hepmc:
             raise PermissionError("denied")
         return real_open(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", unreadable)
     reader = Reader()
     candidate = evaluate(
-        sample_spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        file_spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     (record,) = candidate.records
     assert record.result.status is Status.FAILED
-    assert f"cannot read {sample}: denied" in (record.result.message or "")
+    assert f"cannot read {hepmc}: denied" in (record.result.message or "")
     assert fake.calls == [] and reader.calls == []
     # the simulation stage is recorded as not run, with the reason
     assert candidate.stages.errors["simulation"] == "not run because the 'generation' stage failed"
@@ -896,8 +896,8 @@ def test_a_supplied_generation_file_replaces_the_particle_gun(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
-    sample = tmp_path / "mine.hepmc"
-    sample.write_bytes(b"HepMC::Version 3\n")
+    hepmc = tmp_path / "mine.hepmc"
+    hepmc.write_bytes(b"HepMC::Version 3\n")
     # the problem describes a gun, yet the caller's file is what is simulated; preflight agrees
     assert check_stages(context(spec), "simulation", provided={"generation"}) == ["simulation"]
     reader = Reader()
@@ -905,17 +905,17 @@ def test_a_supplied_generation_file_replaces_the_particle_gun(
         spec,
         {CELL: 6},
         reader,
-        inputs={"geometry": geometry, "generation": sample},
+        inputs={"geometry": geometry, "generation": hepmc},
         workdir=tmp_path / "run",
     )
     ((argv, _),) = fake.calls
-    assert f"--inputFiles={sample}" in argv
+    assert f"--inputFiles={hepmc}" in argv
     assert not any(a.startswith(("--gun", "--enableGun")) for a in argv)
     assert candidate.records[0].result.status is Status.VALID
     stages = candidate.stages.provenance
     assert list(stages) == ["generation", "simulation"]
-    assert stages["generation"]["provided"] == str(sample)
-    assert stages["generation"]["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert stages["generation"]["provided"] == str(hepmc)
+    assert stages["generation"]["sha256"] == hashlib.sha256(hepmc.read_bytes()).hexdigest()
     assert "argv" in stages["simulation"]
 
 
@@ -966,36 +966,36 @@ def test_an_evaluator_may_read_only_generation(
     doc: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
-    (tmp_path / "samples").mkdir()
-    (tmp_path / "samples" / "zh.hepmc").write_bytes(b"HepMC::Version 3\nevents\n")
-    doc["stages"]["generation"] = {"file": "samples/zh.hepmc"}
-    sample_spec = dataclasses.replace(without_stages(doc, reads="generation"), _directory=tmp_path)
+    (tmp_path / "events").mkdir()
+    (tmp_path / "events" / "zh.hepmc").write_bytes(b"HepMC::Version 3\nevents\n")
+    doc["stages"]["generation"] = {"file": "events/zh.hepmc"}
+    file_spec = dataclasses.replace(without_stages(doc, reads="generation"), _directory=tmp_path)
 
-    class NeedsSample(OwnWorkflow):
+    class NeedsGeneration(OwnWorkflow):
         stage = "generation"
 
-    own = NeedsSample()
+    own = NeedsGeneration()
     # a file only has to be found and hashed: no geometry and no workdir are needed
-    candidate = evaluate(sample_spec, {CELL: 6}, own)
+    candidate = evaluate(file_spec, {CELL: 6}, own)
     assert fake.calls == []  # no simulation
     assert list(candidate.stages.provenance) == ["generation"]
     assert own.seen is not None
-    assert own.seen.inputs["generation"] == tmp_path / "samples" / "zh.hepmc"  # resolved
+    assert own.seen.inputs["generation"] == tmp_path / "events" / "zh.hepmc"  # resolved
 
 
-# --- hashing a sample once per file version, not once per candidate ---
+# --- hashing an input file once per file version, not once per candidate ---
 
 
-def test_a_sample_is_hashed_once_until_it_changes(tmp_path: Path) -> None:
-    sample = tmp_path / "zh.hepmc"
-    sample.write_bytes(b"one")
+def test_a_file_is_hashed_once_until_it_changes(tmp_path: Path) -> None:
+    hepmc = tmp_path / "zh.hepmc"
+    hepmc.write_bytes(b"one")
     _sha256.cache_clear()
-    first = file_identity(sample)
+    first = file_identity(hepmc)
     for _ in range(3):
-        assert file_identity(sample) == first
+        assert file_identity(hepmc) == first
     assert _sha256.cache_info().misses == 1 and _sha256.cache_info().hits == 3
-    sample.write_bytes(b"three")  # another size: a different file version
-    changed = file_identity(sample)
+    hepmc.write_bytes(b"three")  # another size: a different file version
+    changed = file_identity(hepmc)
     assert changed["sha256"] == hashlib.sha256(b"three").hexdigest() != first["sha256"]
 
 
@@ -1084,15 +1084,15 @@ def test_a_particle_gun_generation_needs_nothing_either(doc: dict[str, Any]) -> 
     assert gun["particle"] == "gamma"  # type: ignore[index]
 
 
-def test_a_sample_replaced_with_the_same_size_and_mtime_is_hashed_again(tmp_path: Path) -> None:
-    sample = tmp_path / "zh.hepmc"
-    sample.write_bytes(b"AAAA")
-    before = sample.stat()
+def test_a_file_replaced_with_the_same_size_and_mtime_is_hashed_again(tmp_path: Path) -> None:
+    hepmc = tmp_path / "zh.hepmc"
+    hepmc.write_bytes(b"AAAA")
+    before = hepmc.stat()
     _sha256.cache_clear()
-    first = file_identity(sample)
+    first = file_identity(hepmc)
     time.sleep(0.05)  # ctime comes from a coarse kernel clock; see _sha256
-    sample.write_bytes(b"BBBB")  # same size ...
-    os.utime(sample, ns=(before.st_atime_ns, before.st_mtime_ns))  # ... and the old mtime back
-    second = file_identity(sample)
+    hepmc.write_bytes(b"BBBB")  # same size ...
+    os.utime(hepmc, ns=(before.st_atime_ns, before.st_mtime_ns))  # ... and the old mtime back
+    second = file_identity(hepmc)
     assert first["sha256"] == hashlib.sha256(b"AAAA").hexdigest()
     assert second["sha256"] == hashlib.sha256(b"BBBB").hexdigest()

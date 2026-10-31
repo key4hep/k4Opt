@@ -139,31 +139,31 @@ def test_identifiers_are_kept_exactly() -> None:
     assert m.stage == " odd stage "
 
 
-def test_from_samples_gives_the_mean_and_its_standard_error() -> None:
-    m = Measurement.from_samples("s", "m", [2, 4, 4, 4, 5, 5, 7, 9], unit="1")
+def test_from_values_gives_the_mean_and_its_standard_error() -> None:
+    m = Measurement.from_values("s", "m", [2, 4, 4, 4, 5, 5, 7, 9], unit="1")
     assert (m.stage, m.metric, m.unit, m.value) == ("s", "m", "1", 5)
     assert m.uncertainty == pytest.approx(math.sqrt(32 / 7) / math.sqrt(8))  # s with ddof=1
 
 
-def test_from_samples_of_one_value_has_no_uncertainty_not_a_zero_one() -> None:
-    m = Measurement.from_samples("s", "m", [12])
+def test_from_values_of_one_value_has_no_uncertainty_not_a_zero_one() -> None:
+    m = Measurement.from_values("s", "m", [12])
     assert (m.value, m.uncertainty) == (12, None)
 
 
-def test_from_samples_of_identical_values_has_a_zero_uncertainty() -> None:
-    assert Measurement.from_samples("s", "m", [5, 5, 5]).uncertainty == 0
+def test_from_values_of_identical_values_has_a_zero_uncertainty() -> None:
+    assert Measurement.from_values("s", "m", [5, 5, 5]).uncertainty == 0
 
 
-def test_from_samples_needs_samples_and_finite_ones() -> None:
-    with pytest.raises(EvaluationContractError, match="no samples"):
-        Measurement.from_samples("s", "m", [])
+def test_from_values_needs_values_and_finite_ones() -> None:
+    with pytest.raises(EvaluationContractError, match="no values"):
+        Measurement.from_values("s", "m", [])
     with pytest.raises(EvaluationContractError, match="finite"):
-        Measurement.from_samples("s", "m", [1.0, math.inf])
+        Measurement.from_values("s", "m", [1.0, math.inf])
 
 
-def test_from_samples_too_large_to_average_is_a_contract_error() -> None:
+def test_from_values_too_large_to_average_is_a_contract_error() -> None:
     with pytest.raises(EvaluationContractError, match="too large to average"):
-        Measurement.from_samples("s", "m", [10**400, 1])
+        Measurement.from_values("s", "m", [10**400, 1])
 
 
 def test_other_real_numbers_are_stored_as_python_numbers() -> None:
@@ -171,7 +171,7 @@ def test_other_real_numbers_are_stored_as_python_numbers() -> None:
     m = Measurement("s", "m", Fraction(1, 4), uncertainty=Fraction(1, 8))
     assert (m.value, m.uncertainty) == (0.25, 0.125)
     assert type(m.value) is float and type(m.uncertainty) is float
-    assert Measurement.from_samples("s", "m", [Fraction(1), Fraction(3)]).value == 2
+    assert Measurement.from_values("s", "m", [Fraction(1), Fraction(3)]).value == 2
     result = EvaluationResult.valid(provenance={"x": Fraction(1, 2)})
     assert result.provenance["x"] == 0.5 and type(result.provenance["x"]) is float
     with pytest.raises(EvaluationContractError, match="value"):

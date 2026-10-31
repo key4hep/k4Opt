@@ -31,7 +31,7 @@ def test_an_unwritable_workdir_is_a_failed_run(
         workdir=blocker / "run",
         events=1,
         seed=None,
-        sample=tmp_path / "events.hepmc",
+        input_file=tmp_path / "events.hepmc",
         options={},
     )
     assert run.returncode is None and "cannot create simulation directory" in run.error
@@ -53,7 +53,7 @@ def test_a_command_record_write_failure_keeps_the_process_outcome(
         workdir=tmp_path / "run",
         events=1,
         seed=None,
-        sample=tmp_path / "events.hepmc",
+        input_file=tmp_path / "events.hepmc",
         options={},
     )
     assert run.returncode == returncode
@@ -138,7 +138,7 @@ def test_an_existing_workdir_is_refused(tmp_path: Path, monkeypatch: pytest.Monk
     assert fake.calls == []
 
 
-def test_a_sample_is_passed_as_an_absolute_input_file(
+def test_an_input_file_is_passed_as_an_absolute_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
@@ -148,7 +148,7 @@ def test_a_sample_is_passed_as_an_absolute_input_file(
         workdir=Path("run"),
         events=1,
         seed=None,
-        sample=Path("zh.hepmc"),
+        input_file=Path("zh.hepmc"),
         options={},
     )
     ((argv, _),) = fake.calls
@@ -202,7 +202,7 @@ def _simulate(tmp_path: Path, timeout: float | None) -> ddsim_run.SimulationRun:
         workdir=tmp_path / "run",
         events=1,
         seed=None,
-        sample=tmp_path / "events.hepmc",
+        input_file=tmp_path / "events.hepmc",
         options={},
         timeout=timeout,
     )

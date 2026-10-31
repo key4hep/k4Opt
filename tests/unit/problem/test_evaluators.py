@@ -44,7 +44,7 @@ STAGES = {
     "test.hit_energy": "simulation",
     "test.busiest": "simulation",
     "test.rival": "simulation",
-    "test.sample_size": "generation",
+    "test.file_size": "generation",
     "test.truth": "generation",
 }
 
@@ -54,10 +54,10 @@ def problem(
     *names: str,
     objectives: tuple[tuple[str, str], ...] = (CELLS,),
     constraints: tuple[dict[str, Any], ...] = (),
-    sample: str | None = None,
+    generation_file: str | None = None,
 ) -> ProblemSpec:
     """The shared problem with evaluators ``names`` (version 1), each reading its stage, the
-    stages they need (the gun, or the generation file ``sample``, and 3 simulated events) and
+    stages they need (the gun, or ``generation_file``, and 3 simulated events) and
     these objectives."""
     doc = copy.deepcopy(doc)
     doc["evaluators"] = [
@@ -70,7 +70,7 @@ def problem(
     doc["stages"] = {}
     if read:
         gun = {"executor": "gun", **GUN}
-        doc["stages"]["generation"] = gun if sample is None else {"file": sample}
+        doc["stages"]["generation"] = gun if generation_file is None else {"file": generation_file}
     if "simulation" in read:
         doc["stages"]["simulation"] = {"executor": "ddsim", "events": 3}
     doc["objectives"] = [{"stage": s, "metric": m, "direction": "minimize"} for s, m in objectives]
@@ -183,51 +183,51 @@ def test_an_evaluator_that_reads_no_stage_runs_no_simulation(
     assert candidate.status is Status.VALID and candidate.value(*ECHO).value == 6
 
 
-class SampleSize(Evaluator):
-    """Reads only the generation stage: the size of the sample file."""
+class FileSize(Evaluator):
+    """Reads only the generation stage: the size of the generation file."""
 
-    name = "test.sample_size"
+    name = "test.file_size"
     version = "1"
     stage = "generation"
-    metrics = {("analysis", "sample.bytes"): "B"}
+    metrics = {("analysis", "generation.bytes"): "B"}
 
     def __init__(self) -> None:
         self.seen: list[EvaluationRequest] = []
 
     def evaluate(self, request: EvaluationRequest) -> Any:
         self.seen.append(request)
-        return {("analysis", "sample.bytes"): request.inputs["generation"].stat().st_size}
+        return {("analysis", "generation.bytes"): request.inputs["generation"].stat().st_size}
 
 
 @pytest.fixture
-def sample_doc(doc: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
+def hepmc_doc(doc: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     (tmp_path / "zh.hepmc").write_bytes(b"HepMC::Version 3\n")
     return doc
 
 
-def with_sample(spec: ProblemSpec, tmp_path: Path) -> ProblemSpec:
+def in_directory(spec: ProblemSpec, tmp_path: Path) -> ProblemSpec:
     return dataclasses.replace(spec, _directory=tmp_path)
 
 
 def test_each_evaluator_reads_the_files_of_the_stages_it_needs_and_no_others(
-    sample_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+    hepmc_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
 ) -> None:
     spec = problem(
-        sample_doc,
+        hepmc_doc,
         "test.cell_count",
-        "test.sample_size",
-        objectives=(CELLS, ("analysis", "sample.bytes")),
-        sample="zh.hepmc",
+        "test.file_size",
+        objectives=(CELLS, ("analysis", "generation.bytes")),
+        generation_file="zh.hepmc",
     )
-    cells, size = Spy(cell_count(), log), SampleSize()
-    candidate = evaluate(with_sample(spec, tmp_path), [cells, size], tmp_path, geometry)
+    cells, size = Spy(cell_count(), log), FileSize()
+    candidate = evaluate(in_directory(spec, tmp_path), [cells, size], tmp_path, geometry)
     assert log.count("ddsim") == 1
-    # simulation needs generation, so its reader gets both files; the sample reader only its own
+    # simulation needs generation, so its reader gets both files; the generation reader only its own
     assert set(cells.evaluated[0].inputs) == {"geometry", "generation", "simulation"}
     assert set(size.seen[0].inputs) == {"geometry", "generation"}
     assert candidate.reads == {
         "test.cell_count": ("generation", "simulation"),
-        "test.sample_size": ("generation",),
+        "test.file_size": ("generation",),
     }
 
 
@@ -249,29 +249,29 @@ def test_an_evaluator_is_given_the_same_request_alone_and_among_others(
 
 
 def test_supplied_stage_files_only_reach_the_evaluators_that_read_them(
-    sample_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+    hepmc_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
 ) -> None:
     spec = problem(
-        sample_doc,
+        hepmc_doc,
         "test.cell_count",
-        "test.sample_size",
+        "test.file_size",
         "test.parameter_echo",
-        objectives=(CELLS, ("analysis", "sample.bytes"), ECHO),
-        sample="zh.hepmc",
+        objectives=(CELLS, ("analysis", "generation.bytes"), ECHO),
+        generation_file="zh.hepmc",
     )
     events_file = tmp_path / "provided.root"
     events_file.write_bytes(b"fake")
-    cells, sample, echo = Spy(cell_count(), log), SampleSize(), Spy(parameter_echo(), log)
+    cells, size, echo = Spy(cell_count(), log), FileSize(), Spy(parameter_echo(), log)
     result = _evaluate_candidate(
-        with_sample(spec, tmp_path),
+        in_directory(spec, tmp_path),
         {CELL: 6},
-        [cells, sample, echo],
+        [cells, size, echo],
         inputs={"geometry": geometry, "simulation": events_file},
         workdir=tmp_path / "run",
     )
     assert result.status is Status.VALID and "ddsim" not in log
     assert set(cells.evaluated[0].inputs) == {"geometry", "simulation"}
-    assert set(sample.seen[0].inputs) == {"geometry", "generation"}
+    assert set(size.seen[0].inputs) == {"geometry", "generation"}
     assert set(echo.evaluated[0].inputs) == {"geometry"}
     assert result.reads[echo.name] == ()
 
@@ -299,18 +299,18 @@ def test_an_independent_evaluator_keeps_its_result_when_the_simulation_fails(
 
 
 def test_a_generation_reader_keeps_its_result_when_the_simulation_fails(
-    sample_doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
+    hepmc_doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     simulation.install(monkeypatch, returncode=2)
     spec = problem(
-        sample_doc,
+        hepmc_doc,
         "test.cell_count",
-        "test.sample_size",
-        objectives=(CELLS, ("analysis", "sample.bytes")),
-        sample="zh.hepmc",
+        "test.file_size",
+        objectives=(CELLS, ("analysis", "generation.bytes")),
+        generation_file="zh.hepmc",
     )
-    size = SampleSize()
-    candidate = evaluate(with_sample(spec, tmp_path), [cell_count(), size], tmp_path, geometry)
+    size = FileSize()
+    candidate = evaluate(in_directory(spec, tmp_path), [cell_count(), size], tmp_path, geometry)
     cells, sized = candidate.records
     assert cells.result.status is Status.FAILED
     assert sized.result.status is Status.VALID and set(size.seen[0].inputs) == {
@@ -321,37 +321,37 @@ def test_a_generation_reader_keeps_its_result_when_the_simulation_fails(
 
 @pytest.mark.parametrize("readable", [True, False])
 def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluator_runs(
-    sample_doc: dict[str, Any],
+    hepmc_doc: dict[str, Any],
     tmp_path: Path,
     log: list[str],
     monkeypatch: pytest.MonkeyPatch,
     readable: bool,
 ) -> None:
-    # the caller's simulation file bypasses generation, which runs only for the sample reader:
+    # the caller's simulation file bypasses generation, which runs only for the generation reader:
     # its file never reaches the simulation reader, and its failure does not fail that reader
     spec = problem(
-        sample_doc,
+        hepmc_doc,
         "test.cell_count",
-        "test.sample_size",
-        objectives=(CELLS, ("analysis", "sample.bytes")),
-        sample="zh.hepmc",
+        "test.file_size",
+        objectives=(CELLS, ("analysis", "generation.bytes")),
+        generation_file="zh.hepmc",
     )
-    sample, events_file = tmp_path / "zh.hepmc", tmp_path / "mine.edm4hep.root"
+    hepmc, events_file = tmp_path / "zh.hepmc", tmp_path / "mine.edm4hep.root"
     events_file.write_bytes(b"fake")
     if not readable:
         real_open = Path.open
 
         def unreadable(self: Path, *args: Any, **kwargs: Any) -> Any:
-            if self == sample:
+            if self == hepmc:
                 raise PermissionError("denied")
             return real_open(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "open", unreadable)
     cells = Spy(cell_count(), log)
     candidate = _evaluate_candidate(
-        with_sample(spec, tmp_path),
+        in_directory(spec, tmp_path),
         {CELL: 6},
-        [cells, SampleSize()],
+        [cells, FileSize()],
         inputs={"simulation": events_file},
     )
     assert "ddsim" not in log
@@ -364,7 +364,7 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
         assert sized.result.status is Status.VALID and candidate.status is Status.VALID
     else:
         assert sized.result.status is Status.FAILED
-        assert f"cannot read {sample}: denied" in (sized.result.message or "")
+        assert f"cannot read {hepmc}: denied" in (sized.result.message or "")
 
 
 # --- the candidate's status: incomplete is never reported as scientifically invalid ---
@@ -779,24 +779,32 @@ def test_collections_of_an_edm4hep_generation_file_are_read(
     events = [Event(**{COLLECTION: Hits([1]), "MCParticles": Particles([photon])})] * 3
     simulation.install(monkeypatch, events)
     spec = problem(
-        doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH), sample="zh.edm4hep.root"
+        doc,
+        "test.cell_count",
+        "test.truth",
+        objectives=(CELLS, TRUTH),
+        generation_file="zh.edm4hep.root",
     )
-    candidate = evaluate(with_sample(spec, tmp_path), [cell_count(), Truth()], tmp_path, geometry)
+    candidate = evaluate(in_directory(spec, tmp_path), [cell_count(), Truth()], tmp_path, geometry)
     assert candidate.status is Status.VALID and candidate.value(*TRUTH).value == 1
 
 
 @pytest.mark.parametrize("supplied", [False, True])
 def test_collections_of_a_file_podio_cannot_read_are_refused_before_anything_runs(
-    sample_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str], supplied: bool
+    hepmc_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str], supplied: bool
 ) -> None:
     # a HepMC file is an input of ddsim, not a file an evaluator can read collections from: the
     # simulation another evaluator needs must not run first only for this one to fail
     spec = problem(
-        sample_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH), sample="zh.hepmc"
+        hepmc_doc,
+        "test.cell_count",
+        "test.truth",
+        objectives=(CELLS, TRUTH),
+        generation_file="zh.hepmc",
     )
     inputs = {"geometry": geometry}
     if supplied:  # k4opt evaluate --input generation=zh.hepmc, with the gun in the problem
-        spec = problem(sample_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH))
+        spec = problem(hepmc_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH))
         inputs["generation"] = tmp_path / "zh.hepmc"
     with pytest.raises(
         EvaluationContractError,
@@ -804,7 +812,7 @@ def test_collections_of_a_file_podio_cannot_read_are_refused_before_anything_run
         r"zh\.hepmc is no EDM4hep file that podio reads \(\.root or \.sio\)",
     ):
         _evaluate_candidate(
-            with_sample(spec, tmp_path),
+            in_directory(spec, tmp_path),
             {CELL: 6},
             [cell_count(), Truth()],
             inputs=inputs,

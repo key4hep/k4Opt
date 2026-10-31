@@ -318,13 +318,13 @@ def test_invalid_seeds_are_rejected(seed: Any) -> None:
         )
 
 
-def test_a_sample_replaces_the_particle_gun() -> None:
+def test_an_input_file_replaces_the_particle_gun() -> None:
     built = ddsim_arguments(
         compact=Path("/run/c.xml"),
         output=Path("/run/o.root"),
         events=7,
         seed=42,
-        sample=Path("/data/zh.hepmc"),
+        input_file=Path("/data/zh.hepmc"),
         options={"physics.list": "FTFP_BERT"},
     )
     assert "--inputFiles=/data/zh.hepmc" in built
@@ -332,18 +332,18 @@ def test_a_sample_replaces_the_particle_gun() -> None:
     assert built[-1] == "--physics.list=FTFP_BERT"
 
 
-@pytest.mark.parametrize("sample", [None, Path("/data/zh.hepmc")])
-def test_exactly_one_of_particle_gun_and_sample_is_needed(sample: Path | None) -> None:
-    gun = None if sample is None else GENERATOR
-    # neither (sample None, gun None) and both (sample given, gun given) are refused
-    with pytest.raises(DdsimError, match="exactly one of particle_gun and sample"):
+@pytest.mark.parametrize("input_file", [None, Path("/data/zh.hepmc")])
+def test_exactly_one_of_particle_gun_and_input_file_is_needed(input_file: Path | None) -> None:
+    gun = None if input_file is None else GENERATOR
+    # neither (file None, gun None) and both (file given, gun given) are refused
+    with pytest.raises(DdsimError, match="exactly one of particle_gun and input_file"):
         ddsim_arguments(
             compact=Path("c.xml"),
             output=Path("o.root"),
             events=1,
             seed=None,
             particle_gun=gun,
-            sample=sample,
+            input_file=input_file,
             options={},
         )
 

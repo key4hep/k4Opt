@@ -106,7 +106,7 @@ What the optional parts do:
   that is not a nonblank string (`"1"` for a dimensionless metric). Both are checked before
   anything runs.
 - the return value: a mapping of metric to a number or to per-event numbers (a list, a numpy
-  array, ...; `Measurement.from_samples`) becomes a `valid` result, with the unit from `metrics`.
+  array, ...; `Measurement.from_values`) becomes a `valid` result, with the unit from `metrics`.
   A metric is written `"name"` (classified under `stage`) or as a pair `(stage, name)`. Return an
   `EvaluationResult` for artifacts, provenance or diagnostics. An empty list is an
   `EvaluationContractError`, since it may be a bug: an evaluator that found nothing to measure
@@ -166,10 +166,11 @@ for, here and in `provenance`. An omitted uncertainty means *not provided*, not 
 `(stage, metric)` occurs once per result. A missing measurement is absent, never `0`, `inf` or
 a fake success.
 
-`Measurement.from_samples(stage, metric, samples, unit)` averages per-event values: the value
-is the sample mean and the uncertainty the standard error of the mean, `s / sqrt(N)` with `s`
-the sample standard deviation (`ddof=1`); a single sample has no uncertainty. Statistical
-uncertainty only: it says nothing about systematic effects.
+`Measurement.from_values(stage, metric, values, unit)` averages per-event values: the value
+is their unweighted mean and the uncertainty the standard error of the mean, `s / sqrt(N)` with
+`s` the sample standard deviation (`ddof=1`); a single value has no uncertainty. Every value
+counts once, so events with weights (signed ones included) need the evaluator's own weighted
+estimate. Statistical uncertainty only: it says nothing about systematic effects.
 
 Build a result with the constructor that matches the outcome:
 
@@ -194,10 +195,10 @@ measurements: build the result by hand to keep diagnostics.
 value_type)})` yields an `Event` per event (podio frame) of an EDM4hep file, in file order, whose
 attributes are the roles: each the list of that collection's elements in this event. All the
 collections of an `Event` come from the same frame, so they belong to the same physics event.
-Nothing is matched up across files or samples: `request.read(stage, collection, value_type)`
-reads one collection of any stage's file, and two collections read that way are not known to
-be aligned event by event. `read_collection(path, collection, value_type)` is the one-collection
-form, `available_collections(path)` lists the collections of a file without reading any,
+Nothing is matched up across files: `request.read(stage, collection, value_type)` reads one
+collection of any stage's file, and two collections read that way are not known to be aligned
+event by event. `read_collection(path, collection, value_type)` is the one-collection form,
+`available_collections(path)` lists the collections of a file without reading any,
 `collection_types(path, names)` gives the element types of the named ones (podio unpacks a
 collection when it is read, so only those are), and `count_events(path)` counts the events.
 
