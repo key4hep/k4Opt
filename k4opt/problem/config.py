@@ -76,6 +76,7 @@ _SCHEMA_FAMILY = "k4opt.problem/"
 _EVALUATOR_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 # lowercase, so that no two names differ only in case (run directories are named after them)
 _SAMPLE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_ABSENT = object()  # a key the document leaves out, unlike one written as null
 
 
 def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
@@ -466,7 +467,8 @@ def _samples(
         for stage in STAGE_TYPES:
             if stage not in stages and stage not in shared:
                 continue
-            entry, place = _completed(name, stage, stages.get(stage), shared.get(stage))
+            own = stages.get(stage, _ABSENT)  # null is written, not absent
+            entry, place = _completed(name, stage, own, shared.get(stage))
             if place.shared:
                 taken.add(stage)
             made[stage] = _stage(where, place, entry)
@@ -494,9 +496,9 @@ def _samples(
 def _completed(
     sample: str, stage: str, own: object, shared: Mapping[str, Any] | None
 ) -> tuple[Mapping[str, Any], _Place]:
-    """The stage ``stage`` of the sample ``sample``: its ``own`` entry (``None`` if it defines
+    """The stage ``stage`` of the sample ``sample``: its ``own`` entry (``_ABSENT`` if it defines
     none), the ``shared`` one, or the shared one completed by its own, and where it came from."""
-    if own is None:
+    if own is _ABSENT:
         assert shared is not None
         return shared, _Place(sample, stage, own=False, shared=frozenset(shared))
     path = f"samples.{sample}.{stage}"

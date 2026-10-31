@@ -860,6 +860,19 @@ def test_shared_stage_errors(
     reject(doc, message)
 
 
+@pytest.mark.parametrize("sharing", [True, False])
+def test_a_stage_written_as_null_is_refused_not_taken_from_stages(
+    doc: dict[str, Any], sharing: bool
+) -> None:
+    # null is a stage written wrong, not a stage left out: it neither takes stages.generation
+    # nor crashes without one
+    doc = shared(doc) if sharing else two_samples(doc)
+    if sharing:
+        doc["stages"]["generation"]["particle"] = "pi-"  # complete, so null would pass unseen
+    doc["samples"]["pion"]["generation"] = None
+    reject(doc, "samples.pion.generation: must be a mapping, got NoneType")
+
+
 def test_a_shared_stage_a_sample_does_not_use_says_where_it_comes_from(
     doc: dict[str, Any],
 ) -> None:
