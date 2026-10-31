@@ -2580,3 +2580,27 @@ def test_a_blocked_evaluation_has_no_directory_and_no_artifacts(
     change(data, f"{VALID}/workdir", "samples/gamma/evaluators/test.cell_count")
     with pytest.raises(RecordError, match="it is blocked, so it was never called, yet has a work"):
         Assessment.from_summary(session.spec, data)
+
+
+def test_a_geometry_changed_between_two_samples_simulates_no_further_and_leaves_no_summary(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    two_samples(problem_file)
+    run_dir = tmp_path / "a"
+    copied = run_dir / "geometry" / "compact" / "det_v1" / "tracker.xml"
+
+    class Editing(cell_count()):  # type: ignore[misc]
+        """Edits the candidate's geometry while it measures the first sample."""
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            if not fake.calls[1:]:  # only gamma is simulated yet
+                copied.write_text(copied.read_text().replace("450.0*mm", "500.0*mm"))
+            return super().evaluate(request)
+
+    session = EvaluationSession.open(problem_file, [Editing])
+    message = "geometry/compact/det_v1/tracker.xml changed after it was made"
+    with pytest.raises(RunError, match=re.escape(message)):
+        session.evaluate({RADIUS: 450.0}, run_dir)
+    # pion was not simulated with the edited geometry, and no record says one geometry was
+    assert [particle(argv) for argv, _ in fake.calls] == ["gamma"]
+    assert not (run_dir / SUMMARY_NAME).exists()

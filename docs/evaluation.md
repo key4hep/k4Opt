@@ -230,8 +230,12 @@ unhashed output are unchanged. While the candidate runs, each file a task made i
 size, times and inode, kept in memory and never recorded: a task whose input file changed after
 it was made fails without running, one whose input changes while it runs fails with what it
 returned kept as diagnostics, and if any file a task made changed by the end of the candidate,
-no `summary.json` is written. A hashed file whose stat changed is hashed again, and only other
-bytes count as a change. A file rewritten with the same size within one tick of the kernel's
+no `summary.json` is written. The files of the candidate's geometry are watched the same way,
+as a whole: every simulation and every evaluation reads the geometry, so a file of the snapshot
+that changes, goes or is added fails the tasks that read it after the change, and leaves no record
+(the fingerprint describes the snapshot as materialized; the samples simulated after an edit would
+not have the geometry it describes). A hashed file whose stat changed is hashed again, and only
+other bytes count as a change. A file rewritten with the same size within one tick of the kernel's
 clock (milliseconds) keeps its stat, so it is not told apart.
 
 Every path a record holds of a file in its run directory is relative to that directory

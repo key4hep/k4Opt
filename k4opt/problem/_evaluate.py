@@ -79,6 +79,7 @@ from k4opt.problem._tasks import (
     Task,
     TaskId,
     TaskResult,
+    Tree,
     candidate_message,
     candidate_status,
     changed_files,
@@ -1009,8 +1010,15 @@ def _execute_plan(
             if geometry is None:
                 return TaskResult(task.id, DONE)
             compact, recorded = geometry()
+            # every simulation of every sample reads these files: watched like what a stage made
+            tree = Tree.of(own) if own is not None and own.is_dir() else None
             return TaskResult(
-                task.id, DONE, output=compact, provenance=recorded, elapsed_seconds=_since(began)
+                task.id,
+                DONE,
+                output=compact,
+                provenance=recorded,
+                elapsed_seconds=_since(began),
+                tree=tree,
             )
         if task.id.kind is Kind.STAGE:
             assert task.id.sample is not None

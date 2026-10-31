@@ -24,7 +24,9 @@ The files a task makes in its directory (the events of a simulation, an evaluato
 are :class:`Made`: what the record says of each, and the file's ``stat`` when it was made. A file
 whose stat changed is no longer what the record says (:meth:`Made.changed`), so the tasks that
 read it check it before and after they run (:func:`changed_files`), and the candidate checks all
-of them at its end. The stats are machine-specific and never recorded.
+of them at its end. The files of the geometry, which the record identifies together by their
+fingerprint and every simulation of every sample reads, are watched as one :class:`Tree`. The
+stats are machine-specific and never recorded.
 """
 
 from __future__ import annotations
@@ -257,11 +259,43 @@ class Made:
             return True
 
 
+@dataclass(frozen=True, slots=True)
+class Tree:
+    """Every file below ``root``, a directory a task made, by its path relative to ``root``, with
+    its stat when the task was done: a tree the record identifies as a whole (the geometry, by
+    its fingerprint), so any file in it that changes, goes or is added changes it."""
+
+    root: Path
+    stats: Mapping[str, Stat]
+
+    @classmethod
+    def of(cls, root: Path) -> Tree:
+        stats = {
+            path.relative_to(root).as_posix(): stat
+            for path in sorted(root.rglob("*"))
+            if not path.is_dir() and (stat := _stat(path)) is not None
+        }
+        return cls(root, FrozenMap(stats))
+
+    def changed(self) -> list[str]:
+        """The files of the tree, by relative path, that are not as they were."""
+        now = Tree.of(self.root).stats
+        return [
+            name
+            for name in dict.fromkeys([*self.stats, *now])
+            if now.get(name) != self.stats.get(name)
+        ]
+
+
 def changed_files(results: Iterable[TaskResult]) -> list[str]:
-    """The references of the files that the tasks of ``results`` made and that changed since."""
-    return [
-        made.artifact.ref for result in results for made in result.made.values() if made.changed()
-    ]
+    """The files that the tasks of ``results`` made and that changed since: the reference of
+    each, or for a tree its path below the task (``geometry/compact/ECalBarrel.xml``)."""
+    changed = []
+    for result in results:
+        if result.tree is not None:
+            changed += [f"{result.id.label}/{name}" for name in result.tree.changed()]
+        changed += [made.artifact.ref for made in result.made.values() if made.changed()]
+    return changed
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,7 +308,8 @@ class TaskResult:
     by its name (the compact file of the geometry, the events of a stage), ``None`` if it gives
     nothing (a particle gun); ``artifacts`` are its other files (logs) and ``provenance`` how it
     ran. ``made`` holds, by name, the files it made that its record identifies: the output of a
-    stage that ran, the artifacts of an evaluator. ``blocked_by`` holds the tasks that did not
+    stage that ran, the artifacts of an evaluator; ``tree`` the files of the geometry it made,
+    which its record identifies together. ``blocked_by`` holds the tasks that did not
     succeed and kept a ``blocked`` one from running; ``record`` the evaluator's record, blocked
     ones included. ``elapsed_seconds`` is
     the wall time k4opt spent on it, ``None`` if it did not run.
@@ -290,6 +325,7 @@ class TaskResult:
     blocked_by: tuple[TaskId, ...] = ()
     record: EvaluationRecord | None = None
     made: Mapping[str, Made] = field(default_factory=lambda: FrozenMap({}))
+    tree: Tree | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifacts", FrozenMap(self.artifacts))
