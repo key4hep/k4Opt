@@ -15,6 +15,9 @@ class adds what most evaluators would write anyway:
   its declared unit;
 * ``metrics = {"hit_cells": "1"}`` maps each metric to its unit; its stage is ``stage``,
   or the metric is written ``(stage, metric)``;
+* ``artifacts = {"histogram": "shower widths, JSON {edges, counts}"}`` names the files a
+  ``valid`` result returns, each with what it holds: every one, written in ``request.workdir``,
+  and no other;
 * ``evaluate`` may return ``{"hit_cells": 3.2}`` or ``{"hit_cells": [3, 4, 2]}`` (a number, or
   per-event values, a list or a numpy array, that become their unweighted mean with its
   standard error) instead of an :class:`EvaluationResult`;
@@ -36,7 +39,13 @@ from typing import Any, NoReturn, cast
 from k4opt.evaluation import units
 from k4opt.evaluation.edm4hep import Event, read_events
 from k4opt.evaluation.errors import EvaluationContractError, EvaluationFailed, EvaluationInvalid
-from k4opt.evaluation.models import EvaluationRequest, EvaluationResult, Measurement, Status
+from k4opt.evaluation.models import (
+    ARTIFACT_NAME,
+    EvaluationRequest,
+    EvaluationResult,
+    Measurement,
+    Status,
+)
 from k4opt.frozen import Json
 
 _TYPE = re.compile(r"[A-Za-z_]\w*(::[A-Za-z_]\w*)?")
@@ -316,6 +325,31 @@ def metric_units(evaluator: object) -> dict[tuple[str, str], str] | None:
     return units
 
 
+def declared_artifacts(evaluator: object) -> dict[str, str] | None:
+    """The ``artifacts`` ``evaluator`` declares, each name with what the file holds; ``None`` if
+    it declares none. Raises :class:`EvaluationContractError` for a declaration that cannot be
+    read."""
+    declared = getattr(evaluator, "artifacts", None)
+    if declared is None:
+        return None
+    if not isinstance(declared, Mapping):
+        raise EvaluationContractError(
+            "artifacts: declare a mapping of name to what the file holds, such as "
+            f"{{'histogram': 'shower widths, JSON {{edges, counts}}'}}; got {declared!r}"
+        )
+    for name, described in declared.items():
+        if not isinstance(name, str) or not ARTIFACT_NAME.fullmatch(name):
+            raise EvaluationContractError(
+                f"artifacts: name {name!r} must start with a letter or digit and hold only "
+                "letters, digits, '.', '_' and '-'"
+            )
+        if not isinstance(described, str) or not described.strip():
+            raise EvaluationContractError(
+                f"artifacts.{name}: say what the file holds, got {described!r}"
+            )
+    return dict(declared)
+
+
 def result_from(evaluator: object, returned: EvaluationResult | Values) -> EvaluationResult:
     """The result that ``evaluate`` returned, or the ``valid`` one its metric values stand for."""
     if isinstance(returned, EvaluationResult):
@@ -357,8 +391,8 @@ def result_from(evaluator: object, returned: EvaluationResult | Values) -> Evalu
 
 class Evaluator:
     """Base class of evaluators; see the module documentation. ``name`` and ``version`` are
-    required; ``stage`` (the pipeline stage it reads), ``collections``, ``settings`` and
-    ``metrics`` are optional."""
+    required; ``stage`` (the pipeline stage it reads), ``collections``, ``settings``,
+    ``metrics`` and ``artifacts`` are optional."""
 
     name: str
     version: str
@@ -366,6 +400,7 @@ class Evaluator:
     collections: Mapping[str, Collection] | None = None
     settings: Mapping[str, Any] | None = None
     metrics: Mapping[MetricKey, str] | None = None
+    artifacts: Mapping[str, str] | None = None
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult | Values:
         raise NotImplementedError

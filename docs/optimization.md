@@ -202,7 +202,8 @@ keeps its geometry and its EDM4hep file.
   (`samples.<sample>.<stage>.file`, `samples.<sample>.simulation.<option>` for a file a ddsim
   option names);
 - `implementations`: each evaluator the problem binds, once however many entries bind it, by
-  name: its version, the stage it reads, its source identity and declared metrics;
+  name: its version, the stage it reads, its source identity, declared metrics and declared
+  artifacts;
 - the compact file, source root and fingerprint of the unmodified geometry, and the path and
   SHA-256 of each file its external references read (`${DD4hepINSTALL}/...`, `${K4GEO}/...`,
   absolute paths);
@@ -218,13 +219,14 @@ keeps its geometry and its EDM4hep file.
 `k4opt optimize ... --resume --output DIR --trials N` runs `N` more trials of the study in
 `DIR`. A study resumes only with what it was made with, compared by content and never by
 location. Moving the problem directory, an evaluator file, the k4geo tree or the study
-directory itself is fine.
+directory itself is fine: a trial's record names the files of its run directory relative to it
+([Artifacts and the files of a run](evaluation.md#artifacts-and-the-files-of-a-run)).
 
 | Part | Compared: must be equal | Recorded only |
 | --- | --- | --- |
 | problem | its definition, but not its `name` | the path of the file |
 | files the problem names | size and SHA-256 of each | their paths |
-| evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
+| evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units and the artifacts it declares (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
 | k4opt | the SHA-256 of its code | version, git commit |

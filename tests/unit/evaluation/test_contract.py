@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import FrozenInstanceError, dataclass
 from decimal import Decimal
 from fractions import Fraction
@@ -13,6 +14,7 @@ import pytest
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import (
+    Artifact,
     EvaluationContractError,
     EvaluationRequest,
     EvaluationResult,
@@ -280,6 +282,44 @@ def test_artifact_paths_are_preserved_and_not_checked(tmp_path: Path) -> None:
         EvaluationResult.valid([M], artifacts={"events": "a.root"})  # type: ignore[dict-item]
     with pytest.raises(EvaluationContractError, match="name"):
         EvaluationResult.valid([M], artifacts={" ": Path("a")})
+
+
+@pytest.mark.parametrize("name", ["histogram", "ddsim.json", "plot_2", "1D-shape"])
+def test_an_artifact_name_is_part_of_a_reference(name: str) -> None:
+    assert list(EvaluationResult.valid([M], artifacts={name: Path("a")}).artifacts) == [name]
+
+
+@pytest.mark.parametrize("name", ["a#b", "a/b", ".hidden", "-x", "two words"])
+def test_an_artifact_name_that_would_break_its_reference_is_refused(name: str) -> None:
+    with pytest.raises(EvaluationContractError, match=f"name {name!r} must start with a letter"):
+        EvaluationResult.valid([M], artifacts={name: Path("a")})
+
+
+def test_an_artifact_is_a_reference_a_path_a_size_and_a_hash_if_computed() -> None:
+    sha256 = "0" * 64
+    artifact = Artifact("gamma/plot#histogram", Path("/run/h.json"), 12, sha256)
+    assert (artifact.ref, artifact.bytes, artifact.sha256) == ("gamma/plot#histogram", 12, sha256)
+    assert Artifact("gamma/simulation#events", Path("e.root"), 0).sha256 is None  # not hashed
+
+
+@pytest.mark.parametrize(
+    ("ref", "path", "size", "sha256", "message"),
+    [
+        ("gamma/plot", Path("a"), 1, None, "must be <task>#<name>"),
+        ("#histogram", Path("a"), 1, None, "must be <task>#<name>"),
+        ("gamma/plot#a/b", Path("a"), 1, None, "must be <task>#<name>"),
+        ("t#a", "a", 1, None, "path must be a pathlib.Path"),
+        ("t#a", Path("a"), -1, None, "bytes must be a size, got -1"),
+        ("t#a", Path("a"), True, None, "bytes must be a size"),
+        ("t#a", Path("a"), 1, "abc", "sha256 must be 64 lowercase hex digits"),
+        ("t#a", Path("a"), 1, "F" * 64, "sha256 must be 64 lowercase hex digits"),
+    ],
+)
+def test_an_artifact_that_claims_what_it_cannot_be_is_refused(
+    ref: str, path: Any, size: Any, sha256: Any, message: str
+) -> None:
+    with pytest.raises(EvaluationContractError, match=re.escape(message)):
+        Artifact(ref, path, size, sha256)
 
 
 def test_provenance_is_copied_and_read_only() -> None:

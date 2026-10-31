@@ -68,7 +68,9 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    message lists what the file holds;
 3. the candidate is [assessed](evaluation.md#assessment-objectives-limits-and-feasibility)
    against the objectives and constraints, and `<output>/summary.json` (`k4opt.run/1`) is
-   written:
+   written. Every path it holds of a file in `<output>` is relative to `<output>`, so the
+   directory can be moved or archived
+   ([details](evaluation.md#artifacts-and-the-files-of-a-run)):
    - `id`, the record's own identity (a UUID), and `run`, what it was made for: `null` for
      `k4opt evaluate`, a study and trial when an optimizer asks for it;
    - `problem`: the original path and name plus `definition`, the normalized problem loaded
@@ -90,31 +92,34 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      binds them: version, the stage it reads, its source identity (`source`: path, size and
      SHA-256 of the file defining its class, taken at import, whether they are the bytes
      `executed`, and the `revision` of the git checkout that tracks it;
-     [details](evaluation.md#loading-an-evaluator)) and the metrics it declares with their units
-     (`metrics`, `null` if it declares none);
+     [details](evaluation.md#loading-an-evaluator)), the metrics it declares with their units
+     (`metrics`, `null` if it declares none) and the names of the artifacts it declares
+     (`artifacts`, `null` if it declares none);
    - `samples`, each sample of the problem by its name, in problem order, with its `stages` and
      its `evaluations`:
      - `stages`, each once and in pipeline order: its `status` (`done`, `failed` or `blocked`)
        and `message`; the particle gun, or the size and SHA-256 of a given or supplied file; the
-       exact `ddsim` command, directory and exit code, the files its options name, with their
-       hashes; the events found (`events_read`), the tasks it `reads` (labeled
-       `gamma_10gev/generation`, and `geometry`) and those it was `blocked_by`, and the time
-       spent on it (`null` if it did not run);
+       exact `ddsim` command and exit code, the files its options name, with their hashes; the
+       events found (`events_read`), its `directory`, its `outputs` (the EDM4hep file of a
+       simulation that is `done`: its reference `gamma_10gev/simulation#events`, path and size,
+       never hashed, so `sha256` is `null`) and `logs` (`stdout`, `stderr`, `command`), the tasks
+       it `reads` (labeled `gamma_10gev/generation`, and `geometry`) and those it was
+       `blocked_by`, and the time spent on it (`null` if it did not run);
      - `evaluations`, each binding that measures the sample by its name, in problem order: the
        `implementation` it binds, status, message, settings (`declared` as the problem wrote
        them, `used` as the evaluator received them, with defaults and quantities in the declared
        unit), the collection of each role, the tasks it `reads` (`geometry` and the sample's
-       stages) and those it was `blocked_by`, its measurements with uncertainty, the artifacts
-       and provenance it returned, its directory and the time of its `evaluate()` call (`null` if
-       it was not called);
+       stages) and those it was `blocked_by`, its measurements with uncertainty, the artifacts it
+       returned (each with its reference `gamma_10gev/calo.photon#histogram`, path, size and
+       SHA-256, taken when it returned) and its provenance, its directory (`workdir`, `null` if it
+       was not called) and the time of its `evaluate()` call (`null` if it was not called);
    - `evaluations`: those of the bindings that measure the candidate, which read no stage, the
      same way;
    - `geometry`: its `status` (always `done`: a geometry that cannot be made stops the run), the
      time spent making it, the geometry fingerprint and manifest, the path and SHA-256 of each file its external
      references read (`externals`) and of each file only this candidate's values name
      (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), the time of the
-     whole evaluation, the files of the stages under `paths` (`gamma_10gev/simulation.stdout`),
-     and the environment (`declared`: the
+     whole evaluation, `run_dir`, where the run was made, and the environment (`declared`: the
      problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git
      checkout (`null` when it is installed rather than checked out), `KEY4HEP_STACK` and `K4GEO`

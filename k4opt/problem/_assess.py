@@ -16,16 +16,25 @@ import json
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, NamedTuple, cast
 
-from k4opt.evaluation import EvaluationContractError, Measurement, Scalar, Status
+from k4opt.evaluation import (
+    ARTIFACT_NAME,
+    Artifact,
+    EvaluationContractError,
+    Measurement,
+    Scalar,
+    Status,
+)
 from k4opt.frozen import thaw
 from k4opt.problem._evaluate import CandidateRecord, MetricKey, _validate_candidate
-from k4opt.problem._stages import STAGE_TYPES, changed_by_geometry
+from k4opt.problem._stages import STAGE_TYPES, changed_by_geometry, stage_output
 from k4opt.problem._tasks import (
     DONE,
     GEOMETRY,
     Kind,
+    Plan,
     TaskId,
     TaskResult,
     blocked,
@@ -183,32 +192,36 @@ class Assessment:
         of the implementation the problem binds it to, with the settings (``declared``) and
         collections the problem gives it. The candidate's tasks are planned again from the problem
         and the stages the record says were ``supplied``: each must read what the plan says, be
-        ``blocked`` exactly when a task
-        it reads did not succeed (by the tasks the plan makes it blocked by, with their message)
-        and otherwise have run. The candidate's status and message are recomputed from its tasks'
-        (``failed`` before ``invalid`` before ``valid``), and so is whether it represents its
+        ``blocked`` exactly when a task it reads did not succeed (by the tasks the plan makes it
+        blocked by, with their message) and otherwise have run. Each file a task made is named by
+        its reference (``gamma/simulation#events``) and by a path relative to the run directory, in
+        the task's own directory: the output of a stage that ran and is ``done``, never hashed, and
+        the artifacts of an evaluation, each hashed, those its implementation declares and, for a
+        ``valid`` one, every one of them. The candidate's status and message are recomputed from its
+        tasks' (``failed`` before ``invalid`` before ``valid``), and so is whether it represents its
         candidate; each objective and constraint value is taken from the own measurements of the
-        evaluation it names, if that evaluation is ``valid``. The rules a live evaluation
-        enforces are checked again: the candidate is in the problem's domains and
-        ``candidate_key`` is its key, an ``invalid`` or ``failed`` task has a message, a blocked
-        evaluator measured nothing, a measurement of a metric its implementation declares carries
-        the declared unit, a binding whose implementation declares metrics declares those named
-        of it, and a constraint's unit is that of its metric. Raises
-        :class:`~k4opt.problem.RecordError` if the record is malformed or breaks one of those
-        rules, was made for another problem (its definition differs other than in ``name``), or if
-        its ``status``, ``message``, ``represents_candidate``, ``metrics`` or ``assessment``
-        disagree with the recomputation.
+        evaluation it names, if that evaluation is ``valid``. The rules a live evaluation enforces
+        are checked again: the candidate is in the problem's domains and ``candidate_key`` is its
+        key, an ``invalid`` or ``failed`` task has a message, a blocked evaluator measured nothing,
+        a measurement of a metric its implementation declares carries the declared unit, a binding
+        whose implementation declares metrics declares those named of it, and a constraint's unit is
+        that of its metric. Raises :class:`~k4opt.problem.RecordError` if the record is malformed or
+        breaks one of those rules, was made for another problem (its definition differs other than
+        in ``name``), or if its ``status``, ``message``, ``represents_candidate``, ``metrics`` or
+        ``assessment`` disagree with the recomputation.
         """
         record = _mapping(summary, "record")
         if record.get("schema") != SUMMARY_SCHEMA:
             raise RecordError(f"schema is {record.get('schema')!r}, not {SUMMARY_SCHEMA!r}")
         _check_problem(spec, record)
         _check_candidate(spec, record)
+        _text(record.get("run_dir"), "run_dir")  # where it was made: provenance only
         declared = _implementations(spec, record)
         samples = _samples(spec, record)
-        evaluators = _evaluations(spec, record, samples, declared)
         supplied = _supplied(spec, record)
-        results = _results(spec, record, samples, supplied, evaluators)
+        plan = plan_tasks(spec.samples, spec.evaluators, supplied)
+        evaluators = _evaluations(spec, record, samples, declared, plan)
+        results = _results(record, samples, supplied, evaluators, plan)
         status = candidate_status(result.status for result in results)
         if record.get("status") != status:
             raise RecordError(
@@ -419,12 +432,18 @@ def _check_candidate(spec: ProblemSpec, record: Mapping[str, object]) -> None:
         )
 
 
-def _implementations(
-    spec: ProblemSpec, record: Mapping[str, object]
-) -> dict[str, dict[MetricKey, str] | None]:
-    """The metrics each implementation of the record declares (``None``: none), by name; they
-    must be those the problem binds, in the order it first binds them, with its versions and
-    reading the stage its entries say."""
+class _Implementation(NamedTuple):
+    """What an implementation of a record declares: its metrics with their units, and the names
+    of its artifacts; ``None`` for none."""
+
+    metrics: dict[MetricKey, str] | None
+    artifacts: list[str] | None
+
+
+def _implementations(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, _Implementation]:
+    """What each implementation of the record declares, by name; they must be those the problem
+    binds, in the order it first binds them, with its versions and reading the stage its entries
+    say."""
     implementations = _mapping(record.get("implementations"), "implementations")
     versions = {entry.name: entry.version for entry in spec.evaluators}
     if list(implementations) != list(versions):
@@ -432,7 +451,7 @@ def _implementations(
             f"its implementations are {list(implementations)}, but the problem binds "
             f"{list(versions)}"
         )
-    declared: dict[str, dict[MetricKey, str] | None] = {}
+    declared: dict[str, _Implementation] = {}
     for name, entry in implementations.items():
         where = f"implementation {name!r}"
         implementation = _mapping(entry, where)
@@ -447,8 +466,63 @@ def _implementations(
                     f"{where}: stage {implementation.get('stage')!r}, but the problem has it read "
                     f"{entry.stage!r}"
                 )
-        declared[name] = _declared(implementation.get("metrics"), where)
+        declared[name] = _Implementation(
+            _declared(implementation.get("metrics"), where),
+            _artifact_names(implementation.get("artifacts"), where),
+        )
     return declared
+
+
+def _artifact_names(value: object, where: str) -> list[str] | None:
+    """The names of the artifacts an implementation of a record declares, ``None`` for none."""
+    if value is None:
+        return None
+    names = _list(value, f"{where}: artifacts")
+    for name in names:
+        if not isinstance(name, str) or not ARTIFACT_NAME.fullmatch(name):
+            raise RecordError(f"{where}: artifacts: {name!r} is no artifact name")
+    if len(set(names)) != len(names):
+        raise RecordError(f"{where}: artifacts: {names} names one twice")
+    return cast(list[str], names)
+
+
+def _in_run(value: object, directory: str | None, where: str) -> str:
+    """A path a record names of a file in the run directory: relative to it, as it must be to
+    stay true when the directory moves, and in ``directory``, the task's own."""
+    text = _text(value, where)
+    path = PurePosixPath(text)
+    if path.is_absolute() or ".." in path.parts or path.as_posix() != text:
+        raise RecordError(f"{where}: {text!r} is not a plain path relative to the run directory")
+    if directory is None or path == PurePosixPath(directory) or not path.is_relative_to(directory):
+        raise RecordError(f"{where}: {text!r} is not in the task's own directory {directory!r}")
+    return text
+
+
+def _files(
+    value: object, task: TaskId, directory: str | None, where: str, *, hashed: bool
+) -> dict[str, Artifact]:
+    """The files a task of a record made, by name: each named ``<task>#<name>``, in the task's
+    own ``directory``, with its size, and with its SHA-256 exactly if such files are
+    ``hashed``."""
+    files: dict[str, Artifact] = {}
+    for name, entry in _mapping(value, where).items():
+        at = f"{where}.{name}"
+        item = _mapping(entry, at)
+        ref = f"{task.label}#{name}"
+        if item.get("ref") != ref:
+            raise RecordError(f"{at}: ref {item.get('ref')!r}, not {ref!r}")
+        path = _in_run(item.get("path"), directory, f"{at}.path")
+        sha256 = item.get("sha256")
+        if (sha256 is not None) != hashed:
+            claim = "is hashed when it is made" if hashed else "is never hashed"
+            raise RecordError(f"{at}: sha256 {sha256!r}, but such a file {claim}")
+        try:
+            files[name] = Artifact(
+                ref, Path(path), cast(int, item.get("bytes")), cast(str | None, sha256)
+            )
+        except EvaluationContractError as exc:
+            raise RecordError(f"{at}: {exc}") from None
+    return files
 
 
 def _samples(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
@@ -465,12 +539,14 @@ def _evaluations(
     spec: ProblemSpec,
     record: Mapping[str, object],
     samples: Mapping[str, Mapping[str, object]],
-    declared: Mapping[str, Mapping[MetricKey, str] | None],
+    declared: Mapping[str, _Implementation],
+    plan: Plan,
 ) -> dict[TaskId, _Evaluator]:
     """Each evaluation of the record, in plan order, checked as a live result is: of the
     implementation the problem binds it to, with the settings and collections the problem gives
-    it. Those of each sample are in its part of the record, those of the candidate in
-    ``evaluations``, each by binding in problem order."""
+    it, and the artifacts it declares in the directory ``plan`` gives it. Those of each sample
+    are in its part of the record, those of the candidate in ``evaluations``, each by binding in
+    problem order."""
     held: dict[str | None, Mapping[str, object]] = {
         name: _mapping(part.get("evaluations"), f"samples.{name}.evaluations")
         for name, part in samples.items()
@@ -507,7 +583,21 @@ def _evaluations(
                 f"{dict(spec_entry.collections)!r}"
             )
         fragment = _fragment(entry, where, set(Status))
-        metrics = declared[spec_entry.name]
+        metrics, names = declared[spec_entry.name]
+        directory = plan[task].directory
+        workdir = entry.get("workdir")
+        if workdir not in (None, directory):
+            raise RecordError(f"{where}: workdir {workdir!r}, but its directory is {directory!r}")
+        files = _files(entry.get("artifacts"), task, workdir, f"{where}: artifacts", hashed=True)
+        if names is not None:
+            unknown = [name for name in files if name not in names]
+            if unknown:
+                raise RecordError(f"{where}: artifacts {unknown}, which it does not declare")
+            missing = [name for name in names if name not in files]
+            if missing and fragment.status == Status.VALID:
+                raise RecordError(f"{where}: it is valid without its declared artifacts {missing}")
+        if fragment.status == Status.BLOCKED and workdir is not None:
+            raise RecordError(f"{where}: it is blocked, so it was never called, yet has a workdir")
         own: dict[MetricKey, Measurement] = {}
         for index, item in enumerate(_list(entry.get("measurements"), f"{where}: measurements")):
             at = f"{where}: measurements[{index}]"
@@ -552,15 +642,15 @@ _STAGE_STATUSES = (DONE, Status.FAILED, Status.BLOCKED)
 
 
 def _results(
-    spec: ProblemSpec,
     record: Mapping[str, object],
     samples: Mapping[str, Mapping[str, object]],
     supplied: Collection[TaskId],
     evaluators: Mapping[TaskId, _Evaluator],
+    plan: Plan,
 ) -> list[TaskResult]:
     """The status of each task of the record, in plan order, checked against the plan of the
-    problem: what each task reads, and which are blocked and by what."""
-    plan = plan_tasks(spec.samples, spec.evaluators, supplied)
+    problem: what each task reads, which are blocked and by what, and the files each stage made
+    in its directory."""
     planned = [task.id for task in plan.of(Kind.STAGE)]
     unread = [task.label for task in supplied if task not in planned]
     if unread:
@@ -574,12 +664,31 @@ def _results(
             raise RecordError(f"{where} are {list(stages)}, but the problem makes {made}")
         for name, entry in stages.items():
             made_by = stage_task(name, sample)
-            fragments[made_by] = _fragment(
-                _mapping(entry, f"{where}.{name}"), f"stage {made_by.label!r}", _STAGE_STATUSES
+            at = f"stage {made_by.label!r}"
+            part = _mapping(entry, f"{where}.{name}")
+            fragment = _fragment(part, at, _STAGE_STATUSES)
+            fragments[made_by] = fragment
+            directory = plan[made_by].directory  # None unless it runs and writes files
+            if part.get("directory") != directory:
+                raise RecordError(
+                    f"{at}: directory {part.get('directory')!r}, but its directory is {directory!r}"
+                )
+            outputs = _files(
+                part.get("outputs"), made_by, directory, f"{at}: outputs", hashed=False
             )
+            made = [stage_output(name)] if fragment.status == DONE and directory else []
+            if list(outputs) != made:
+                raise RecordError(
+                    f"{at}: outputs {list(outputs)}, but a stage that is {fragment.status} "
+                    f"{'makes ' + ', '.join(made) if made else 'makes none'} in its directory"
+                )
+            for role, path in _mapping(part.get("logs"), f"{at}: logs").items():
+                _in_run(path, directory, f"{at}: logs.{role}")
     geometry = _mapping(record.get("geometry"), "geometry")
     if geometry.get("status") != DONE:
         raise RecordError(f"geometry: status {geometry.get('status')!r}, but it is always done")
+    for key in ("compact", "manifest"):
+        _in_run(geometry.get(key), GEOMETRY.name, f"geometry: {key}")
     fragments |= {task: e.fragment for task, e in evaluators.items()}
     results: dict[TaskId, TaskResult] = {GEOMETRY: TaskResult(GEOMETRY, DONE)}
     for task in plan.tasks:

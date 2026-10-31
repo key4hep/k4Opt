@@ -8,8 +8,11 @@ candidate's tasks (:mod:`k4opt.problem._tasks`): its geometry, every stage of ea
 its evaluators read, each once (:mod:`k4opt.problem._stages`), and each evaluation once: an
 evaluator on one of its samples, or on the candidate, with the outputs of the tasks it reads. A
 task whose needs did not all succeed is ``blocked`` and not run. Each ``valid`` result must
-carry the metrics the objectives and constraints name of it. It neither locates evaluators nor
-materializes geometry: the caller's function does that, as the work of the geometry task.
+carry the metrics the objectives and constraints name of it, and the artifacts its evaluator
+declares; every artifact must be a file in the evaluation's own directory, and is hashed once,
+when the evaluation returns. A task whose input files changed since they were made fails. It
+neither locates evaluators nor materializes geometry: the caller's function does that, as the
+work of the geometry task.
 
 An entry of ``evaluators`` is a binding of an implementation, an evaluator class, identified by
 its binding name (``as:``, the implementation's ``name`` when not given): tasks, records, run
@@ -50,6 +53,7 @@ from k4opt.evaluation import (
     check_settings,
     collection_names,
     collection_types,
+    declared_artifacts,
     declared_collections,
     metric_units,
     result_from,
@@ -64,17 +68,20 @@ from k4opt.problem._stages import (
     check_stages,
     make_stage,
     no_edm4hep_file,
+    stage_output,
 )
 from k4opt.problem._tasks import (
     DONE,
     GEOMETRY,
     Kind,
+    Made,
     Plan,
     Task,
     TaskId,
     TaskResult,
     candidate_message,
     candidate_status,
+    changed_files,
     evaluations,
     plan_tasks,
     run_tasks,
@@ -228,8 +235,9 @@ def _create(implementation: type[EvaluatorProtocol]) -> EvaluatorProtocol:
 class _Declaration(NamedTuple):
     """What every instance of an implementation must say of itself as its probe did: the session
     records the probe's class as the code that runs, the stage and metrics decided what each
-    evaluator reads and measures, and the settings and collections (their defaults included)
-    make the request it gets, which must not change from one candidate to the next."""
+    evaluator reads and measures, the settings and collections (their defaults included)
+    make the request it gets, which must not change from one candidate to the next, and the
+    artifacts are what its results are checked against."""
 
     cls: type
     name: str
@@ -238,6 +246,7 @@ class _Declaration(NamedTuple):
     settings: Mapping[str, object]
     collections: Mapping[str, object]
     metrics: Mapping[MetricKey, str] | None
+    artifacts: Mapping[str, str] | None
 
 
 def _declaration(evaluator: EvaluatorProtocol) -> _Declaration:
@@ -251,6 +260,7 @@ def _declaration(evaluator: EvaluatorProtocol) -> _Declaration:
         deepcopy(dict(getattr(evaluator, "settings", None) or {})),
         declared_collections(evaluator),
         metric_units(evaluator),
+        declared_artifacts(evaluator),
     )
 
 
@@ -268,7 +278,16 @@ def _instance(bound: _Bound) -> EvaluatorProtocol:
     """A new instance of a bound implementation; :class:`EvaluationContractError` unless it
     declares what the probe declared."""
     evaluator = _create(bound.implementation)
-    labels = ("class", "name", "version", "stage", "settings", "collections", "metrics")
+    labels = (
+        "class",
+        "name",
+        "version",
+        "stage",
+        "settings",
+        "collections",
+        "metrics",
+        "artifacts",
+    )
     changed = [
         f"{label} {new!r}, not {old!r}"
         for label, new, old in zip(labels, _declaration(evaluator), bound.declaration, strict=True)
@@ -672,26 +691,33 @@ def _measure(
     reads: Mapping[TaskId, TaskResult],
     workdir: Path | None,
     seen: dict[Path, tuple[str, ...] | str],
-) -> EvaluationRecord:
+) -> tuple[EvaluationRecord, dict[str, Made]]:
     """The record of one evaluation, its evaluator called once on the outputs of the tasks it
-    ``reads``, which all succeeded.
+    ``reads``, which all succeeded, and the artifacts it made (:func:`_artifacts`).
 
     An evaluator whose stage's file lacks a collection it declares (or holds it with another
-    type) gets a ``failed`` result saying so and is not called. Its own directory ``workdir``
-    is created just before the call; ``elapsed_seconds`` is the time of the call alone.
+    type), or reads a file that changed since its task made it, gets a ``failed`` result saying
+    so and is not called. Its own directory ``workdir`` is created just before the call;
+    ``elapsed_seconds`` is the time of the call alone. A file it reads that changes during the
+    call fails it too: the record could not say what it read.
     """
     entry, evaluator = prepared.evaluators[task]
     request = replace(prepared.requests[task], inputs=_inputs(reads))
+    changed = changed_files(reads.values())
+    if changed:
+        result = EvaluationResult.failed(_changed_before(changed))
+        return _record(spec, task, entry, evaluator, key, request, result), {}
     error = _collection_error(evaluator, request, seen)
     if error is not None:
-        return _record(spec, task, entry, evaluator, key, request, EvaluationResult.failed(error))
+        result = EvaluationResult.failed(error)
+        return _record(spec, task, entry, evaluator, key, request, result), {}
     request = replace(request, workdir=workdir)
     if workdir is not None:
         try:
             workdir.mkdir(parents=True)
         except OSError as exc:
             result = EvaluationResult.failed(f"cannot create evaluator directory {workdir}: {exc}")
-            return _record(spec, task, entry, evaluator, key, request, result)
+            return _record(spec, task, entry, evaluator, key, request, result), {}
     started = time.perf_counter()
     try:
         result = result_from(evaluator, evaluator.evaluate(request))
@@ -700,7 +726,72 @@ def _measure(
     except EvaluationInvalid as exc:
         result = EvaluationResult.invalid(str(exc))
     elapsed = time.perf_counter() - started
-    return _record(spec, task, entry, evaluator, key, request, result, elapsed)
+    record = _record(spec, task, entry, evaluator, key, request, result, elapsed)
+    made = _artifacts(task, evaluator, result, workdir)
+    changed = changed_files(reads.values())
+    if changed:  # what it returned stays, as diagnostics of a failed result
+        result = EvaluationResult.failed(
+            _changed_during(changed),
+            result.measurements,
+            artifacts=result.artifacts,
+            provenance=result.provenance,
+        )
+        record = replace(record, result=result)
+    return record, made
+
+
+def _changed_before(refs: Sequence[str]) -> str:
+    return f"not run: {', '.join(refs)} changed after it was made"
+
+
+def _changed_during(refs: Sequence[str]) -> str:
+    return f"{', '.join(refs)} changed while it ran, so the record cannot say what it read"
+
+
+def _artifacts(
+    task: TaskId, evaluator: EvaluatorProtocol, result: EvaluationResult, workdir: Path | None
+) -> dict[str, Made]:
+    """The artifacts of the result of the evaluation ``task``, each hashed once, now.
+
+    Each must be a file in the evaluation's own directory ``workdir``, its links resolved. An
+    evaluator that declares ``artifacts`` returns no other, and a ``valid`` result of it every
+    one. Raises :class:`EvaluationContractError`.
+    """
+    where = f"evaluator {task.label!r}"
+    declared = declared_artifacts(evaluator)
+    if declared is not None:
+        unknown = [name for name in result.artifacts if name not in declared]
+        if unknown:
+            raise EvaluationContractError(
+                f"{where} returned the artifact(s) {', '.join(unknown)}, which it does not "
+                f"declare; it declares {', '.join(declared) or 'none'}"
+            )
+        missing = [name for name in declared if name not in result.artifacts]
+        if missing and result.status is Status.VALID:
+            raise EvaluationContractError(
+                f"{where} returned a valid result without its declared artifact(s) "
+                f"{', '.join(missing)}"
+            )
+    made: dict[str, Made] = {}
+    for name, path in result.artifacts.items():
+        if workdir is None:
+            raise EvaluationContractError(
+                f"{where}: artifact {name!r}: the evaluation has no directory of its own to "
+                "write it in"
+            )
+        own, resolved = workdir.resolve(), path.resolve()
+        if resolved == own or not resolved.is_relative_to(own):
+            raise EvaluationContractError(
+                f"{where}: artifact {name!r} ({path}) is not in its own directory {workdir}; "
+                "write it in request.workdir"
+            )
+        try:
+            made[name] = Made.file(task, name, resolved, hashed=True)
+        except OSError as exc:
+            raise EvaluationContractError(
+                f"{where}: artifact {name!r} ({path}) is no file it can read: {exc}"
+            ) from None
+    return made
 
 
 def _record(
@@ -789,6 +880,11 @@ class CandidateRecord:
     def message(self) -> str | None:
         """Every task that failed or is invalid, with its message, then those they blocked."""
         return candidate_message(self.results.values())
+
+    def changed(self) -> list[str]:
+        """The references of the files its tasks made that are no longer what its record says
+        (:meth:`~k4opt.problem._tasks.Made.changed`)."""
+        return changed_files(self.results.values())
 
     def record(self, label: str) -> EvaluationRecord:
         """The record of the evaluation ``label`` (``gamma/calo.photon``, ``readout``);
@@ -918,6 +1014,9 @@ def _execute_plan(
             )
         if task.id.kind is Kind.STAGE:
             assert task.id.sample is not None
+            changed = changed_files(reads.values())
+            if changed:
+                return TaskResult(task.id, Status.FAILED, _changed_before(changed))
             outcome, main = make_stage(
                 contexts[task.id.sample],
                 task.id.name,
@@ -925,19 +1024,35 @@ def _execute_plan(
                 workdir=own,
                 supplied=supplied.get(task.id),
             )
+            error, made = outcome.error, {}
+            if error is None and main is not None and task.given is None:
+                name = stage_output(task.id.name)  # made in its directory: never hashed
+                try:
+                    made[name] = Made.file(task.id, name, main, hashed=False)
+                except OSError as exc:
+                    error, main = f"cannot read its output: {exc}", None
+            changed = changed_files(reads.values())
+            if changed and error is None:
+                error, main, made = _changed_during(changed), None, {}
             return TaskResult(
                 task.id,
-                DONE if outcome.error is None else Status.FAILED,
-                outcome.error,
+                DONE if error is None else Status.FAILED,
+                error,
                 main,
                 outcome.artifacts,
                 outcome.provenance,
                 _since(began),
+                made=made,
             )
-        record = _measure(spec, prepared, key, task.id, reads, own, seen)
+        record, made = _measure(spec, prepared, key, task.id, reads, own, seen)
         result = record.result
         return TaskResult(
-            task.id, result.status, result.message, elapsed_seconds=_since(began), record=record
+            task.id,
+            result.status,
+            result.message,
+            elapsed_seconds=_since(began),
+            record=record,
+            made=made,
         )
 
     results = run_tasks(plan, run)

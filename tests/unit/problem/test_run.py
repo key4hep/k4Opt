@@ -22,6 +22,7 @@ from k4opt.cli import main
 from k4opt.ddsim import run as ddsim_run
 from k4opt.errors import K4OptError
 from k4opt.evaluation import (
+    Artifact,
     Collection,
     EvaluationContractError,
     EvaluationRequest,
@@ -41,12 +42,13 @@ from k4opt.problem import (
     RecordError,
     RunError,
     RunOutcome,
+    _stages,
     load_problem,
     parse_problem,
 )
 from k4opt.problem._run import _parse_candidate, _xml_value, assemble
 from k4opt.problem._run import run_candidate as _run_candidate
-from k4opt.problem._tasks import Plan, RunTask, TaskId, TaskResult, blocked
+from k4opt.problem._tasks import Kind, Plan, RunTask, TaskId, TaskResult, blocked
 from k4opt.revision import code_fingerprint, code_identity
 from tests.support import simulation
 from tests.support.common import tree_digest
@@ -216,7 +218,10 @@ def test_summary_is_written_and_truthful(
     assert outcome.events == {"gamma": (3, 3)}
     assert on_disk["geometry"]["fingerprint"] == outcome.fingerprint
     assert on_disk["geometry"]["status"] == "done"
-    assert Path(on_disk["geometry"]["manifest"]).is_file()
+    # each file in the run directory by its path relative to it, which it was made in
+    assert on_disk["run_dir"] == str(tmp_path / "a")
+    assert on_disk["geometry"]["manifest"] == "geometry/k4opt-manifest.json"
+    assert (tmp_path / "a" / on_disk["geometry"]["compact"]).is_file()
     assert on_disk["geometry"]["changes"] == [
         {"target": RADIUS, "old_value": "400*mm", "new_value": "450.0*mm"}
     ]
@@ -241,20 +246,30 @@ def test_summary_is_written_and_truthful(
     assert evaluator["provenance"] == {} and evaluator["artifacts"] == {}  # none of its own
     assert evaluator["reads"] == ["geometry", "gamma/generation", "gamma/simulation"]
     assert evaluator["blocked_by"] == []
-    workdir = tmp_path / "a" / "samples" / "gamma" / "evaluators" / "test.cell_count"
-    assert evaluator["workdir"] == str(workdir)
+    assert evaluator["workdir"] == "samples/gamma/evaluators/test.cell_count"
+    assert (tmp_path / "a" / evaluator["workdir"]).is_dir()
     # every second once: the geometry, each stage, the evaluator's own call, and the candidate
     # around them
     seconds = [stage["elapsed_seconds"] for stage in on_disk["samples"]["gamma"]["stages"].values()]
     seconds += [on_disk["geometry"]["elapsed_seconds"], evaluator["elapsed_seconds"]]
     assert min(seconds) >= 0 and sum(seconds) <= on_disk["elapsed_seconds"]
-    # the files of the stages, named <sample>/<stage>.<role>: what the real-ddsim test reads back
-    paths = on_disk["paths"]
-    assert paths["run_dir"] == str(tmp_path / "a")
-    for role in ("stdout", "stderr", "command", "edm4hep"):
-        path = Path(paths[f"gamma/simulation.{role}"])
-        assert path.is_file() and path.parent == tmp_path / "a" / "samples" / "gamma" / "simulation"
-    assert {"stdout", "stderr", "edm4hep"}.isdisjoint(paths)  # no unprefixed leftovers
+    # what the simulation made in its directory: its output, by reference, never hashed, and
+    # its logs
+    assert simulated["directory"] == "samples/gamma/simulation"
+    events = tmp_path / "a" / "samples" / "gamma" / "simulation" / "events.edm4hep.root"
+    assert simulated["outputs"] == {
+        "events": {
+            "ref": "gamma/simulation#events",
+            "path": "samples/gamma/simulation/events.edm4hep.root",
+            "bytes": events.stat().st_size,
+            "sha256": None,
+        }
+    }
+    assert list(simulated["logs"]) == ["stdout", "stderr", "command"]
+    for path in simulated["logs"].values():
+        assert (tmp_path / "a" / path).is_file()
+        assert path.startswith("samples/gamma/simulation/")
+    assert "paths" not in on_disk and "cwd" not in simulated
     assert (
         on_disk["samples"]["gamma"]["stages"]["generation"]["particle_gun"]["particle"] == "gamma"
     )
@@ -584,7 +599,9 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
     assert summary["samples"]["gamma"]["stages"]["simulation"]["returncode"] == 2
     assert summary["samples"]["gamma"]["stages"]["simulation"]["status"] == "failed"
     assert "bad volume" in summary["samples"]["gamma"]["stages"]["simulation"]["message"]
-    assert "bad volume" in Path(summary["paths"]["gamma/simulation.stderr"]).read_text()
+    failed = summary["samples"]["gamma"]["stages"]["simulation"]
+    assert failed["outputs"] == {}  # what ddsim left behind is no output
+    assert "bad volume" in (tmp_path / "a" / failed["logs"]["stderr"]).read_text()
 
 
 @pytest.mark.parametrize(
@@ -799,6 +816,10 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
             "bytes": 4,
             "sha256": hashlib.sha256(b"fake").hexdigest(),
             "events_read": 3,
+            # it ran nowhere and made nothing: the file is the caller's, by its path
+            "directory": None,
+            "outputs": {},
+            "logs": {},
             "reads": [],  # it is given, so it reads nothing
             "blocked_by": [],
             "elapsed_seconds": summary["samples"]["gamma"]["stages"]["simulation"][
@@ -1412,6 +1433,8 @@ def test_an_evaluator_that_cannot_be_created_stops_before_anything_is_created(
         # measured otherwise under the same problem and study
         ("settings", {"threshold": Quantity("GeV", default=1.0)}, "settings .*'threshold'"),
         ("collections", {"hits": Collection("SimTrackerHit")}, "collections .*SimTrackerHit"),
+        # what its results are checked against
+        ("artifacts", {"other": "a file"}, "artifacts .*'other'"),
     ],
 )
 def test_a_new_instance_must_declare_what_the_first_did(
@@ -2033,7 +2056,8 @@ SIMULATED = "samples/gamma/stages/simulation"
         (
             f"{SIMULATED}/status",
             "done",
-            "evaluator 'gamma/test.cell_count' is blocked, but every task it reads succeeded",
+            "stage 'gamma/simulation': outputs [], but a stage that is done makes events in its "
+            "directory",
         ),
         (
             f"{SIMULATED}/status",
@@ -2335,3 +2359,224 @@ def test_samples_with_identical_stages_are_a_warning(
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert len(fake.calls) == 2  # each all the same
     assert outcome.candidate.status == "valid"
+
+
+# --- the files of a candidate: named by reference, relative to the run, hashed where claimed ---
+
+HISTOGRAM = "hit cells per event, JSON"
+
+
+def plotting(**declared: str) -> type[Any]:
+    """``test.cell_count``, writing the cells per event as the artifact ``histogram`` in its own
+    directory, and declaring the artifacts ``declared`` (``histogram``, unless given)."""
+
+    class Plotting(cell_count()):  # type: ignore[misc]
+        artifacts = declared or {"histogram": HISTOGRAM}
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            measured = result_from(self, super().evaluate(request))
+            assert request.workdir is not None
+            histogram = request.workdir / "histogram.json"
+            histogram.write_text(json.dumps([3, 2, 4]))
+            return dataclasses.replace(measured, artifacts={"histogram": histogram})
+
+    return Plotting
+
+
+def paths_in(value: Any, at: str = "") -> list[tuple[str, str]]:
+    """Every text of a summary, with where it is (``samples/gamma/stages/simulation/argv``)."""
+    if isinstance(value, dict):
+        return [found for k, v in value.items() for found in paths_in(v, f"{at}/{k}")]
+    if isinstance(value, list):
+        return [found for item in value for found in paths_in(item, at)]
+    return [(at, value)] if isinstance(value, str) else []
+
+
+def test_a_record_stays_true_wherever_its_run_directory_is_moved(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    session = EvaluationSession.open(problem_file, [plotting()])
+    made = tmp_path / "a"
+    session.evaluate({RADIUS: 450.0}, made)
+    summary = json.loads((made / SUMMARY_NAME).read_text())
+    # the run directory once, where it was made; the exact ddsim command as it ran
+    named = {at for at, text in paths_in(summary) if str(made) in text}
+    assert named == {"/run_dir", "/samples/gamma/stages/simulation/argv"}
+    moved = tmp_path / "archive" / "a"
+    moved.parent.mkdir()
+    shutil.move(made, moved)
+    Assessment.from_summary(session.spec, summary)  # holds up as it is
+    stages = summary["samples"]["gamma"]["stages"]
+    (evaluation,) = summary["samples"]["gamma"]["evaluations"].values()
+    files = [
+        summary["geometry"]["compact"],
+        summary["geometry"]["manifest"],
+        stages["simulation"]["outputs"]["events"]["path"],
+        *stages["simulation"]["logs"].values(),
+        evaluation["artifacts"]["histogram"]["path"],
+    ]
+    assert all((moved / path).is_file() for path in files)  # each read from where it is now
+    histogram = evaluation["artifacts"]["histogram"]
+    assert (
+        hashlib.sha256((moved / histogram["path"]).read_bytes()).hexdigest() == histogram["sha256"]
+    )
+
+
+def test_an_artifact_is_recorded_by_reference_path_size_and_hash(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    outcome = run_candidate(
+        problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[plotting()]
+    )
+    summary = json.loads(outcome.summary_path.read_text())
+    (evaluation,) = summary["samples"]["gamma"]["evaluations"].values()
+    path = (
+        tmp_path / "a" / "samples" / "gamma" / "evaluators" / "test.cell_count" / "histogram.json"
+    )
+    assert evaluation["artifacts"] == {
+        "histogram": {
+            "ref": "gamma/test.cell_count#histogram",
+            "path": "samples/gamma/evaluators/test.cell_count/histogram.json",
+            "bytes": path.stat().st_size,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    }
+    # what the implementation declares, as the record of every binding of it is checked against
+    assert summary["implementations"]["test.cell_count"]["artifacts"] == ["histogram"]
+    (made,) = outcome.candidate.results[
+        TaskId(Kind.EVALUATOR, "test.cell_count", "gamma")
+    ].made.values()
+    assert made.artifact == Artifact(
+        "gamma/test.cell_count#histogram",
+        path,
+        path.stat().st_size,
+        evaluation["artifacts"]["histogram"]["sha256"],
+    )
+    without = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "b")
+    assert without.summary["implementations"]["test.cell_count"]["artifacts"] is None
+
+
+def test_an_artifact_is_hashed_once_and_an_edm4hep_output_never(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hashed: list[str] = []
+
+    def sha256(path: str, *key: int) -> str:
+        hashed.append(path)
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    monkeypatch.setattr(_stages, "_sha256", sha256)  # uncached: every hash is counted
+    run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[plotting()])
+    artifact = tmp_path / "a" / "samples" / "gamma" / "evaluators" / "test.cell_count"
+    assert hashed == [str(artifact / "histogram.json")]  # a gun reads no file
+
+
+@pytest.mark.parametrize(
+    ("changed", "message"),
+    [
+        # a file the record names, changed after its task made it: the record would lie
+        ("histogram", "gamma/test.cell_count#histogram changed after it was made"),
+        ("events", "gamma/simulation#events changed after it was made"),
+    ],
+)
+def test_a_file_that_changes_after_it_was_made_leaves_no_summary(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, changed: str, message: str
+) -> None:
+    declare(problem_file, ["test.cell_count", "test.parameter_echo"], [CELLS, ECHO])
+    run_dir = tmp_path / "a"
+
+    class Meddling(parameter_echo()):  # type: ignore[misc]
+        """Measures the candidate after the sample was measured, and changes one of its files."""
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            sample = run_dir / "samples" / "gamma"
+            files = {
+                "histogram": sample / "evaluators" / "test.cell_count" / "histogram.json",
+                "events": sample / "simulation" / "events.edm4hep.root",
+            }
+            with files[changed].open("ab") as handle:
+                handle.write(b"more")
+            return super().evaluate(request)
+
+    session = EvaluationSession.open(problem_file, [plotting(), Meddling])
+    with pytest.raises(RunError, match=re.escape(message)):
+        session.evaluate({RADIUS: 450.0}, run_dir)
+    assert not (run_dir / SUMMARY_NAME).exists()
+
+
+def test_a_hashed_file_whose_stat_changed_but_not_its_bytes_is_unchanged(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    run_dir = tmp_path / "a"
+    declare(problem_file, ["test.cell_count", "test.parameter_echo"], [CELLS, ECHO])
+
+    class Touching(parameter_echo()):  # type: ignore[misc]
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            histogram = run_dir / "samples/gamma/evaluators/test.cell_count/histogram.json"
+            histogram.write_bytes(histogram.read_bytes())  # rewritten as it was: hashed again
+            return super().evaluate(request)
+
+    outcome = EvaluationSession.open(problem_file, [plotting(), Touching]).evaluate(
+        {RADIUS: 450.0}, run_dir
+    )
+    assert outcome.candidate.status == "valid" and outcome.summary_path.is_file()
+
+
+VALID = "samples/gamma/evaluations/test.cell_count"
+OUTPUT = "samples/gamma/stages/simulation/outputs/events"
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        # a content identity only where one was computed
+        (f"{VALID}/artifacts/histogram/sha256", None, "sha256 None, but such a file is hashed"),
+        (f"{OUTPUT}/sha256", "a" * 64, "but such a file is never hashed"),
+        (f"{VALID}/artifacts/histogram/sha256", "A" * 64, "sha256 must be 64 lowercase hex"),
+        # each by its reference, its own and none other
+        (f"{VALID}/artifacts/histogram/ref", "gamma/simulation#events", "ref 'gamma/simulation#"),
+        (f"{OUTPUT}/ref", "gamma/simulation#output", "not 'gamma/simulation#events'"),
+        (f"{OUTPUT}/bytes", -1, "bytes must be a size, got -1"),
+        # relative to the run directory, in the task's own directory
+        (f"{OUTPUT}/path", "/data/events.edm4hep.root", "is not a plain path relative to the run"),
+        (f"{VALID}/artifacts/histogram/path", "samples/gamma/../x", "not a plain path relative"),
+        (f"{VALID}/artifacts/histogram/path", "samples/gamma/x", "not in the task's own directory"),
+        ("samples/gamma/stages/simulation/logs/stdout", "geometry/x.log", "not in the task's own"),
+        ("geometry/compact", "/abs/compact.xml", "geometry: compact: '/abs/compact.xml' is not a"),
+        ("samples/gamma/stages/simulation/directory", "elsewhere", "directory 'elsewhere', but"),
+        (f"{VALID}/workdir", "evaluators/x", "workdir 'evaluators/x', but its directory is"),
+        ("run_dir", None, "run_dir must be a nonblank string"),
+        # what a stage that is done made, and what an evaluator declares, the record holds
+        ("samples/gamma/stages/simulation/outputs", {}, "outputs [], but a stage that is done"),
+        (f"{VALID}/artifacts", {}, "it is valid without its declared artifacts ['histogram']"),
+        ("implementations/test.cell_count/artifacts", ["plot"], "artifacts ['histogram'], which"),
+        ("implementations/test.cell_count/artifacts", ["plot", "plot"], "names one twice"),
+        ("implementations/test.cell_count/artifacts", ["a#b"], "'a#b' is no artifact name"),
+    ],
+)
+def test_a_record_whose_files_are_not_as_made_is_refused(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    path: str,
+    value: Any,
+    message: str,
+) -> None:
+    session = EvaluationSession.open(problem_file, [plotting()])
+    data = json.loads(session.evaluate({RADIUS: 450.0}, tmp_path / "a").summary_path.read_text())
+    Assessment.from_summary(session.spec, data)  # as written, it holds up
+    change(data, path, value)
+    with pytest.raises(RecordError, match=re.escape(message)):
+        Assessment.from_summary(session.spec, data)
+
+
+def test_a_blocked_evaluation_has_no_directory_and_no_artifacts(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, returncode=2)
+    session = EvaluationSession.open(problem_file, [plotting()])
+    data = json.loads(session.evaluate({RADIUS: 450.0}, tmp_path / "a").summary_path.read_text())
+    Assessment.from_summary(session.spec, data)  # blocked: valid without its artifact is fine
+    change(data, f"{VALID}/workdir", "samples/gamma/evaluators/test.cell_count")
+    with pytest.raises(RecordError, match="it is blocked, so it was never called, yet has a work"):
+        Assessment.from_summary(session.spec, data)

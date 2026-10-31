@@ -19,6 +19,12 @@ once, read by every simulation and every evaluator), one pipeline stage of one s
 A stage given as a file, in the problem or by the caller, is a task too: it reads that file and
 no task, so the stages before it are planned only if something else needs them. The samples
 share nothing but the geometry: a stage of one sample is never read by a task of another.
+
+The files a task makes in its directory (the events of a simulation, an evaluator's artifacts)
+are :class:`Made`: what the record says of each, and the file's ``stat`` when it was made. A file
+whose stat changed is no longer what the record says (:meth:`Made.changed`), so the tasks that
+read it check it before and after they run (:func:`changed_files`), and the candidate checks all
+of them at its end. The stats are machine-specific and never recorded.
 """
 
 from __future__ import annotations
@@ -29,9 +35,15 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from k4opt.evaluation import EvaluationContractError, EvaluationRecord, Status
+from k4opt.evaluation import Artifact, EvaluationContractError, EvaluationRecord, Status
 from k4opt.frozen import FrozenMap, Json, freeze
-from k4opt.problem._stages import STAGE_TYPES, graph, reads_geometry, writes_files
+from k4opt.problem._stages import (
+    STAGE_TYPES,
+    file_identity,
+    graph,
+    reads_geometry,
+    writes_files,
+)
 from k4opt.problem.models import EvaluatorSpec, Sample
 
 
@@ -197,6 +209,58 @@ def plan_tasks(
     return Plan(tuple(tasks))
 
 
+type Stat = tuple[int, int, int, int]
+"""What tells a file apart from a rewritten one: its size, mtime, ctime and inode."""
+
+
+def _stat(path: Path) -> Stat | None:
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
+
+
+@dataclass(frozen=True, slots=True)
+class Made:
+    """A file a task made in its own directory: its ``artifact`` as the record names it, and its
+    ``stat`` when it was made."""
+
+    artifact: Artifact
+    stat: Stat
+
+    @classmethod
+    def file(cls, task: TaskId, name: str, path: Path, *, hashed: bool) -> Made:
+        """The file ``path`` that ``task`` made as ``name``, with its SHA-256 if ``hashed``;
+        raises :class:`OSError` if it cannot be read."""
+        stat = _stat(path)
+        if stat is None or not path.is_file():
+            raise OSError(f"{path} is no file")
+        sha256 = file_identity(path)["sha256"] if hashed else None
+        assert sha256 is None or isinstance(sha256, str)
+        return cls(Artifact(f"{task.label}#{name}", path, stat[0], sha256), stat)
+
+    def changed(self) -> bool:
+        """Whether the file is no longer what the record says: it is gone, or its stat changed
+        and it is not hashed, or hashed again it has other bytes. Equal stats are trusted."""
+        now = _stat(self.artifact.path)
+        if now == self.stat:
+            return False
+        if now is None or self.artifact.sha256 is None:
+            return True
+        try:
+            return file_identity(self.artifact.path)["sha256"] != self.artifact.sha256
+        except OSError:
+            return True
+
+
+def changed_files(results: Iterable[TaskResult]) -> list[str]:
+    """The references of the files that the tasks of ``results`` made and that changed since."""
+    return [
+        made.artifact.ref for result in results for made in result.made.values() if made.changed()
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class TaskResult:
     """What one task left behind.
@@ -206,8 +270,10 @@ class TaskResult:
     ``message`` says why one did not succeed. ``output`` is what the tasks that read it are given,
     by its name (the compact file of the geometry, the events of a stage), ``None`` if it gives
     nothing (a particle gun); ``artifacts`` are its other files (logs) and ``provenance`` how it
-    ran. ``blocked_by`` holds the tasks that did not succeed and kept a ``blocked`` one from
-    running; ``record`` the evaluator's record, blocked ones included. ``elapsed_seconds`` is
+    ran. ``made`` holds, by name, the files it made that its record identifies: the output of a
+    stage that ran, the artifacts of an evaluator. ``blocked_by`` holds the tasks that did not
+    succeed and kept a ``blocked`` one from running; ``record`` the evaluator's record, blocked
+    ones included. ``elapsed_seconds`` is
     the wall time k4opt spent on it, ``None`` if it did not run.
     """
 
@@ -220,9 +286,11 @@ class TaskResult:
     elapsed_seconds: float | None = None
     blocked_by: tuple[TaskId, ...] = ()
     record: EvaluationRecord | None = None
+    made: Mapping[str, Made] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifacts", FrozenMap(self.artifacts))
+        object.__setattr__(self, "made", FrozenMap(self.made))
         provenance = freeze(self.provenance, f"{self.id.label} provenance", EvaluationContractError)
         object.__setattr__(self, "provenance", provenance)
         object.__setattr__(self, "blocked_by", tuple(self.blocked_by))

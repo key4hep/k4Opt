@@ -3,7 +3,9 @@ when something they read did not succeed (no Key4hep)."""
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +14,7 @@ from k4opt.problem import EvaluatorSpec, Sample, Stage
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
+    Made,
     Plan,
     Task,
     TaskId,
@@ -19,6 +22,7 @@ from k4opt.problem._tasks import (
     blocked,
     candidate_message,
     candidate_status,
+    changed_files,
     evaluator_task,
     plan_tasks,
     run_tasks,
@@ -263,3 +267,61 @@ def test_the_message_names_the_causes_then_what_they_blocked() -> None:
         "gamma/simulation failed: ddsim crashed; echo invalid: too far out; blocked: calo, energy"
     )
     assert candidate_message([done(GEOMETRY), done(evaluator_task("a"), "valid")]) is None
+
+
+# --- the files a task made, and whether they are still what its record says ---
+
+
+def test_a_made_file_is_named_by_its_task_and_hashed_only_if_asked(tmp_path: Path) -> None:
+    path = tmp_path / "events.root"
+    path.write_bytes(b"events")
+    unhashed = Made.file(SIMULATION, "events", path, hashed=False)
+    assert unhashed.artifact.ref == "gamma/simulation#events"
+    assert (unhashed.artifact.path, unhashed.artifact.bytes) == (path, 6)
+    assert unhashed.artifact.sha256 is None
+    hashed = Made.file(evaluator_task("plot", "gamma"), "histogram", path, hashed=True)
+    assert hashed.artifact.ref == "gamma/plot#histogram"
+    assert hashed.artifact.sha256 is not None and len(hashed.artifact.sha256) == 64
+    with pytest.raises(OSError, match="is no file"):
+        Made.file(SIMULATION, "events", tmp_path, hashed=False)
+
+
+@pytest.mark.parametrize("hashed", [False, True])
+def test_a_made_file_is_changed_once_its_stat_or_its_bytes_are(
+    tmp_path: Path, hashed: bool
+) -> None:
+    path = tmp_path / "events.root"
+    path.write_bytes(b"events")
+    made = Made.file(SIMULATION, "events", path, hashed=hashed)
+    assert not made.changed()
+    os.utime(path, ns=(1, 1))  # another stat, the same bytes: only a hash tells them apart
+    assert made.changed() is not hashed
+    # other bytes, of another size: a rewrite of the same size within one tick of the kernel's
+    # clock keeps every stat (the limit _sha256 documents)
+    path.write_bytes(b"other events")
+    assert made.changed()
+    path.unlink()
+    assert made.changed()
+
+
+def test_the_changed_files_are_those_of_the_results_given(tmp_path: Path) -> None:
+    kept, rewritten = tmp_path / "kept.root", tmp_path / "rewritten.root"
+    for path in (kept, rewritten):
+        path.write_bytes(b"events")
+    results = [
+        TaskResult(
+            SIMULATION, "done", made={"events": Made.file(SIMULATION, "events", kept, hashed=False)}
+        ),
+        TaskResult(GEOMETRY, "done"),
+        TaskResult(
+            stage_task("simulation", "pion"),
+            "done",
+            made={
+                "events": Made.file(
+                    stage_task("simulation", "pion"), "events", rewritten, hashed=False
+                )
+            },
+        ),
+    ]
+    rewritten.write_bytes(b"more events")
+    assert changed_files(results) == ["pion/simulation#events"]

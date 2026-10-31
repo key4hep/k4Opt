@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import numbers
+import re
 import statistics
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -24,6 +25,11 @@ from k4opt.frozen import FrozenMap, Json, freeze
 
 type Scalar = bool | int | float | str
 """A parameter value of a candidate."""
+
+ARTIFACT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+"""What an artifact may be named: it is part of its reference, ``<task>#<name>``."""
+
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 class Status(StrEnum):
@@ -72,6 +78,17 @@ def _paths(value: Mapping[str, Path], what: str) -> FrozenMap[str, Path]:
                 f"{what}[{name!r}] must be a pathlib.Path, got {type(path).__name__}"
             )
     return FrozenMap(value)
+
+
+def _artifacts(value: Mapping[str, Path]) -> FrozenMap[str, Path]:
+    artifacts = _paths(value, "artifacts")
+    for name in artifacts:
+        if not ARTIFACT_NAME.fullmatch(name):
+            raise EvaluationContractError(
+                f"artifacts: name {name!r} must start with a letter or digit and hold only "
+                "letters, digits, '.', '_' and '-'"
+            )
+    return artifacts
 
 
 def _json_mapping(value: Mapping[str, Json], what: str) -> FrozenMap[str, Json]:
@@ -220,9 +237,10 @@ class EvaluationResult:
     none (it only produced ``artifacts``; a problem that asks for a metric still requires it).
     A missing measurement is simply absent: never ``0`` or ``inf``. ``measurements`` may mix
     stages; each ``(stage, metric)`` occurs once. ``artifacts`` names
-    local output files that can be inputs of a later evaluation; whether they exist is not
-    checked here. ``message`` explains the status. ``provenance`` is JSON-compatible
-    metadata that the evaluator chose to supply.
+    local output files that can be inputs of a later evaluation, each named after
+    :data:`ARTIFACT_NAME`; whether they exist is not checked here (k4opt checks that each is a
+    file in the evaluator's ``workdir``, and hashes it). ``message`` explains the status.
+    ``provenance`` is JSON-compatible metadata that the evaluator chose to supply.
     """
 
     status: Status
@@ -296,10 +314,42 @@ class EvaluationResult:
             not isinstance(self.message, str) or not self.message.strip()
         ):
             raise EvaluationContractError(f"a {status.value} result needs a message")
-        object.__setattr__(self, "artifacts", _paths(self.artifacts, "artifacts"))
+        object.__setattr__(self, "artifacts", _artifacts(self.artifacts))
         if self.message is not None and not isinstance(self.message, str):
             raise EvaluationContractError("message must be a string")
         object.__setattr__(self, "provenance", _json_mapping(self.provenance, "provenance"))
+
+
+@dataclass(frozen=True, slots=True)
+class Artifact:
+    """A file a task of a candidate made in its own directory, as its record names it.
+
+    ``ref`` is its logical identity, ``<task>#<name>`` (``gamma/simulation#events``,
+    ``gamma/calo.shower_shape#histogram``), which stays the same wherever the run directory is
+    moved; ``path`` is where the file is; ``bytes`` its size. ``sha256`` is its content identity,
+    or ``None`` if it was not hashed (the EDM4hep file of a simulation, which can be gigabytes):
+    content is claimed only where it was hashed.
+    """
+
+    ref: str
+    path: Path
+    bytes: int
+    sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        task, separator, name = _name(self.ref, "ref").rpartition("#")
+        if not separator or not task or not ARTIFACT_NAME.fullmatch(name):
+            raise EvaluationContractError(f"ref {self.ref!r} must be <task>#<name>")
+        if not isinstance(self.path, Path):
+            raise EvaluationContractError(f"{self.ref}: path must be a pathlib.Path")
+        if isinstance(self.bytes, bool) or not isinstance(self.bytes, int) or self.bytes < 0:
+            raise EvaluationContractError(f"{self.ref}: bytes must be a size, got {self.bytes!r}")
+        if self.sha256 is not None and (
+            not isinstance(self.sha256, str) or not _SHA256.fullmatch(self.sha256)
+        ):
+            raise EvaluationContractError(
+                f"{self.ref}: sha256 must be 64 lowercase hex digits, got {self.sha256!r}"
+            )
 
 
 type CandidateKey = tuple[tuple[str, str, str, str], ...]

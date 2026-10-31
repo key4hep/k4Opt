@@ -8,8 +8,9 @@ lays out its output.
 Whether a study may be resumed, and whether the record of a trial belongs to its study, are decided
 by one comparison (:func:`compared`) of what must be equal: the problem's definition (but not its
 name), the content of every file it names, each evaluator implementation's name, version, source
-hash and declared metrics, the unmodified geometry's fingerprint and the content of the files its
-external references read, ``KEY4HEP_STACK`` and the hash of k4opt's code. Locations are recorded and
+hash, declared metrics and declared artifacts, the unmodified geometry's fingerprint and the
+content of the files its external references read, ``KEY4HEP_STACK`` and the hash of k4opt's
+code. Locations are recorded and
 never compared, so a study whose files moved resumes. A file that only candidates name (a ``ref``
 parameter) is not known before they do: each record must read it as every earlier record of the
 study did (:func:`check_candidate_files`).
@@ -202,6 +203,7 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
                     "sha256": entry["source"].get("sha256"),
                     # the units its values are in: an instance can declare them otherwise
                     "metrics": entry.get("metrics"),
+                    "artifacts": entry.get("artifacts"),
                 }
                 for name, entry in identity["implementations"].items()
             },
@@ -268,6 +270,11 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
                 found.append(
                     f"evaluator {name!r} declares other metrics or units: "
                     f"{new['metrics']}, not {old['metrics']}"
+                )
+            elif old["artifacts"] != new["artifacts"]:
+                found.append(
+                    f"evaluator {name!r} declares other artifacts: "
+                    f"{new['artifacts']}, not {old['artifacts']}"
                 )
     if then["geometry"]["fingerprint"] != now_["geometry"]["fingerprint"]:
         found.append("the geometry the candidates start from changed (another fingerprint)")
@@ -378,6 +385,10 @@ def check_record(
         if _get(new, "metrics") != old.get("metrics"):
             raise OptimizationError(
                 f"{where}: evaluator {name!r} declared other metrics or units than in the study"
+            )
+        if _get(new, "artifacts") != old.get("artifacts"):
+            raise OptimizationError(
+                f"{where}: evaluator {name!r} declared other artifacts than in the study"
             )
     observed = _get(summary, "environment", "observed")
     if _get(observed, "KEY4HEP_STACK") != study["environment"]["KEY4HEP_STACK"]:
