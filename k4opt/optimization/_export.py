@@ -42,13 +42,18 @@ def _stages(results: StudyResults) -> list[str]:
 
 def _escaped(name: str) -> str:
     """A name from the problem as a column name holds it: ``%``, ``/``, ``:`` and control
-    characters percent-escaped (``urllib.parse.unquote`` reverses it), so that neither the ``/``
-    between stage and metric nor a ``:`` suffix can be part of it, and a terminal that shows the
-    header runs nothing."""
+    characters percent-escaped (``urllib.parse.unquote`` reverses it), so that neither a ``/``
+    between evaluator, stage and metric nor a ``:`` suffix can be part of it, and a terminal that
+    shows the header runs nothing."""
     return "".join(
         urllib.parse.quote(c, safe="") if c in "%/:" or unicodedata.category(c) == "Cc" else c
         for c in name
     )
+
+
+def _label(*parts: str) -> str:
+    """``evaluator/stage/metric``, each part escaped."""
+    return "/".join(map(_escaped, parts))
 
 
 def columns(results: StudyResults) -> list[str]:
@@ -67,12 +72,12 @@ def _columns(results: StudyResults, stages: list[str]) -> list[str]:
         "recovered",
         *(f"parameter:{_escaped(p.geometry.canonical_target)}" for p in spec.parameters),
         *(
-            f"objective:{_escaped(o.stage)}/{_escaped(o.metric)}{part}"
+            f"objective:{_label(o.evaluator, o.stage, o.metric)}{part}"
             for o in spec.objectives
             for part in ("", ":unit", ":uncertainty")
         ),
         *(
-            f"limit:{_escaped(c.stage)}/{_escaped(c.metric)}:{bound}:{part}"
+            f"limit:{_label(c.evaluator, c.stage, c.metric)}:{bound}:{part}"
             for c in spec.constraints  # in the order of limit_names
             for bound in ("min", "max")
             if getattr(c, bound) is not None

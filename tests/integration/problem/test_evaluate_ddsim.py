@@ -128,7 +128,7 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
     for run in runs.values():
         assert run["status"] == "valid"
         assert run["events"] == {"requested": EVENTS, "observed": EVENTS}
-        (evaluator,) = run["evaluators"]
+        (evaluator,) = run["evaluations"].values()
         collection = evaluator["collections"]["hits"]
         assert evaluator["settings"]["used"] == {"threshold": 70e-6}  # 70 keV, in GeV
         assert run["warnings"] == []  # CLD has the ECAL barrel readout the evaluator reads
@@ -155,6 +155,8 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
 def shared(problem: Path, tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """One candidate measured by the example evaluator and the test evaluator together."""
     doc = yaml.safe_load(problem.read_text())
+    for item in (*doc["objectives"], *doc.get("constraints", [])):  # of one of two evaluators now
+        item["evaluator"] = "calo.photon"
     doc["evaluators"].append(
         {
             "name": "test.cell_count",
@@ -174,9 +176,9 @@ def test_two_evaluators_read_one_simulation(shared: dict[str, Any]) -> None:
 
     run_dir = Path(shared["paths"]["run_dir"])
     assert len(list(run_dir.glob("**/ddsim.json"))) == 1  # ddsim ran once
-    photon, cells = shared["evaluators"]
-    assert (photon["name"], photon["status"]) == ("calo.photon", "valid")
-    assert (cells["name"], cells["status"]) == ("test.cell_count", "valid")
+    photon, cells = shared["evaluations"].values()
+    assert (photon["implementation"], photon["status"]) == ("calo.photon", "valid")
+    assert (cells["implementation"], cells["status"]) == ("test.cell_count", "valid")
     assert photon["reads"] == cells["reads"] == ["geometry", "generation", "simulation"]
     assert shared["stages"]["simulation"]["status"] == "done"
     # the test evaluator's value, recomputed from the one file both read
@@ -203,7 +205,7 @@ def test_the_records_hold_the_assessment_their_measurements_give(
         (limit,) = assessment.limits
         residual = assessment.objectives[0].value
         assert (limit.name, limit.value, limit.unit) == (
-            "simulation/ecal_barrel.angular_residual:max",
+            "calo.photon/simulation/ecal_barrel.angular_residual:max",
             residual,
             "mrad",
         )

@@ -28,6 +28,7 @@ from tests.support.evaluators import TRADE_OFF, trade_off
 from tests.support.geometry import MINI_GEO
 from tests.unit.optimization.conftest import (
     RADIUS,
+    TRADE,
     Log,
     evaluator_from,
     left_running,
@@ -91,6 +92,59 @@ def test_a_study_does_not_resume_with_another_problem(
     with pytest.raises(OptimizationError, match=f"cannot resume trade-.*{message}"):
         run(problem, output, 1, resume=True)
     assert tree_digest(output) == before  # nothing changed, no lock left
+
+
+def two_bindings(write_problem: Callable[..., Path]) -> Path:
+    """``test.trade_off`` bound twice: as itself, and as ``strict``, which is invalid below 250
+    mm, with an objective on the ``a`` of each."""
+    strict = TRADE | {"as": "strict", "settings": {"invalid_below": 250.0}}
+    return write_problem(
+        evaluators=[TRADE, strict],
+        objectives=[
+            ("test.trade_off", "analysis", "a", "minimize"),
+            ("strict", "analysis", "a", "maximize"),
+        ],
+    )
+
+
+def _renamed(data: dict[str, Any]) -> None:
+    """The second binding, and the objective on it, under another name."""
+    data["evaluators"][1]["as"] = "lenient"
+    data["objectives"][1]["evaluator"] = "lenient"
+
+
+BINDING_CHANGES: dict[str, Callable[[dict[str, Any]], None]] = {
+    "settings": lambda d: d["evaluators"][1]["settings"].update(invalid_below=300.0),
+    "name": _renamed,
+}
+
+
+def test_a_study_of_two_bindings_of_one_implementation_resumes(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    problem, output = two_bindings(write_problem), tmp_path / "s"
+    run(problem, output, 2, seed=3)
+    resumed = run(problem, output, 1, resume=True)
+    assert len(resumed.trials) == 3
+    assert resumed.objectives == ("test.trade_off/analysis/a", "strict/analysis/a")
+    study = json.loads((output / "study.json").read_text())
+    assert list(study["implementations"]) == ["test.trade_off"]  # one code, bound twice
+    record = summary(output, 0)
+    assert list(record["evaluations"]) == ["test.trade_off", "strict"]
+    assert record["evaluations"]["strict"]["settings"]["used"]["invalid_below"] == 250.0
+
+
+@pytest.mark.parametrize("change", sorted(BINDING_CHANGES))
+def test_a_study_does_not_resume_when_one_binding_changes(
+    tmp_path: Path, write_problem: Callable[..., Path], change: str
+) -> None:
+    problem, output = two_bindings(write_problem), tmp_path / "s"
+    run(problem, output, 1, seed=3)
+    before = tree_digest(output)
+    _edit(problem, BINDING_CHANGES[change])
+    with pytest.raises(OptimizationError, match=r"cannot resume trade-.*evaluators.* changed"):
+        run(problem, output, 1, resume=True)
+    assert tree_digest(output) == before
 
 
 def test_a_problem_that_only_has_another_name_resumes(
@@ -227,9 +281,9 @@ def test_location_is_not_identity(
     assert log.warnings == []
     # where the evaluator was loaded from is recorded, as what loads it again, but is no identity
     study = json.loads((moved_output / "study.json").read_text())
-    reference = study["evaluators"][0]["source"]["reference"]
+    reference = study["implementations"]["test.trade_off"]["source"]["reference"]
     assert reference == f"{tmp_path / 'a' / 'trade_off.py'}:TradeOff"
-    assert summary(moved_output, 1)["evaluators"][0]["source"]["reference"] == (
+    assert summary(moved_output, 1)["implementations"]["test.trade_off"]["source"]["reference"] == (
         f"{tmp_path / 'b' / 'trade_off.py'}:TradeOff"
     )
 
@@ -385,7 +439,7 @@ def test_a_trial_left_running_with_its_record_is_told_that_record(
     metrics = {m["metric"]: m["value"] for m in record["metrics"]}
     assert recovered.state == TrialState.COMPLETE
     assert recovered.values == [metrics["a"], metrics["b"]]  # what a live trial is told
-    assert recovered.constraints == {"analysis/a:max": metrics["a"] - 350}
+    assert recovered.constraints == {"test.trade_off/analysis/a:max": metrics["a"] - 350}
     assert recovered.user_attrs["k4opt.record"]["id"] == record["id"]
     assert report.trials[0].recovered and report.trials[0].status == "valid"
 

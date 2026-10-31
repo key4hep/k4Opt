@@ -39,8 +39,9 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         metavar="FILE.py:Class",
         help=(
             "an evaluator to measure with, a file and class or package.module:Class; repeat it "
-            "for each evaluator of the problem, whose name and version it must have. The file "
-            "is executed, e.g. examples/evaluators/calo_photon.py:CaloPhoton"
+            "for each evaluator the problem names, whose name and version it must have, once "
+            "however often the problem binds it. The file is executed, e.g. "
+            "examples/evaluators/calo_photon.py:CaloPhoton"
         ),
     )
     evaluate.add_argument(
@@ -74,9 +75,9 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 
 
 def _limit(limit: Limit) -> str:
-    """``simulation/x.rms <= 1.0: violated, margin 0.25 [mrad]``."""
+    """``calo.photon/simulation/x.rms <= 1.0: violated, margin 0.25 [mrad]``."""
     unit = f" [{limit.unit}]" if limit.unit else ""
-    text = f"{limit.stage}/{limit.metric} {'<=' if limit.bound == 'max' else '>='} {limit.limit}"
+    text = f"{limit.label} {'<=' if limit.bound == 'max' else '>='} {limit.limit}"
     if limit.satisfied is None:
         return f"{text}: not assessed{unit}"
     margin = "" if limit.margin is None else f", margin {limit.margin:.6g}"
@@ -86,9 +87,11 @@ def _limit(limit: Limit) -> str:
 def _report(outcome: RunOutcome, out: TextIO) -> None:
     candidate = outcome.candidate
     print(f"status:      {candidate.status}", file=out)
-    for record in candidate.records:
+    for binding, record in candidate.evaluations.items():
         result = record.result
         name = f"{record.evaluator_name} {record.evaluator_version}"
+        if binding != record.evaluator_name:
+            name = f"{binding} ({name})"
         print(f"evaluator:   {name}: {result.status}", file=out)
         for m in result.measurements:
             error = "" if m.uncertainty is None else f" +- {m.uncertainty:.6g}"

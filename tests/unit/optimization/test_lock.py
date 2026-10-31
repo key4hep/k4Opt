@@ -200,7 +200,9 @@ def test_an_interruption_while_the_optimizer_is_told_keeps_the_record(
     with pytest.raises(KeyboardInterrupt):
         optimize(problem, [trade_off()], output, trials=2, seed=1)
     (trial,) = optuna_study(output).trials
-    assert trial.state == TrialState.COMPLETE and set(trial.constraints) == {"analysis/a:max"}
+    assert trial.state == TrialState.COMPLETE and set(trial.constraints) == {
+        "test.trade_off/analysis/a:max"
+    }
 
 
 def _wait_for(path: Path, timeout: float = 60) -> None:

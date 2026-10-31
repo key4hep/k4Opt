@@ -18,11 +18,10 @@ from optuna.distributions import (
     IntDistribution,
 )
 
-from k4opt.evaluation import Measurement
 from k4opt.optimization import OptimizationError, optimize
 from k4opt.optimization._optuna.space import constraint_values, objective_values, search_space
 from k4opt.optimization._results import limit_names
-from k4opt.problem import Assessment, Limit, parse_problem
+from k4opt.problem import Assessment, Limit, ObjectiveValue, parse_problem
 from tests.support.evaluators import candidate_check, trade_off
 from tests.support.geometry import MINI_GEO
 from tests.unit.optimization.conftest import Log, problem_document, summary
@@ -105,34 +104,36 @@ def test_proposed_values_are_in_their_domain_with_their_type_and_recorded_as_pro
         assert [type(v) for v in recorded.values()] == [type(v) for v in trial.candidate.values()]
 
 
-def assessment(*limits: Limit, objectives: tuple[Measurement, ...] = ()) -> Assessment:
+def assessment(*limits: Limit, objectives: tuple[ObjectiveValue, ...] = ()) -> Assessment:
     return Assessment(objectives, limits, all(limit.satisfied for limit in limits))
 
 
 def limit(bound: str, margin: float | None, satisfied: bool) -> Limit:
-    return Limit("simulation", "x.rms", bound, 1.0, "mm", 2.0, 0.1, margin, satisfied)  # type: ignore[arg-type]
+    return Limit("e", "simulation", "x.rms", bound, 1.0, "mm", 2.0, 0.1, margin, satisfied)  # type: ignore[arg-type]
+
+
+def objective(metric: str, value: float) -> ObjectiveValue:
+    return ObjectiveValue("e", "analysis", metric, "minimize", value)
 
 
 def test_the_physical_margins_are_the_constraint_values() -> None:
     told = constraint_values(assessment(limit("min", -1.0, True), limit("max", 0.25, False)))
-    assert told == {"simulation/x.rms:min": -1.0, "simulation/x.rms:max": 0.25}
+    assert told == {"e/simulation/x.rms:min": -1.0, "e/simulation/x.rms:max": 0.25}
     assert constraint_values(assessment()) == {}
 
 
 def test_a_margin_that_fits_no_float_cannot_be_told() -> None:
-    with pytest.raises(OptimizationError, match=r"simulation/x\.rms:max: the margin .* float"):
+    with pytest.raises(OptimizationError, match=r"e/simulation/x\.rms:max: the margin .* float"):
         constraint_values(assessment(limit("max", None, True)))
 
 
 def test_objective_values_are_floats_in_the_problems_order() -> None:
-    measured = (Measurement("analysis", "b", 3), Measurement("analysis", "a", 0.5))
+    measured = (objective("b", 3), objective("a", 0.5))
     assert objective_values(assessment(objectives=measured)) == [3.0, 0.5]
     for value in (10**400, 2**53 + 1):  # too large for a float, or told as another value
-        with pytest.raises(OptimizationError, match=r"no float holds .* exactly"):
-            objective_values(assessment(objectives=(Measurement("analysis", "a", value),)))
-    assert objective_values(assessment(objectives=(Measurement("analysis", "a", 2**53),))) == [
-        2.0**53
-    ]
+        with pytest.raises(OptimizationError, match=r"e/analysis/a: no float holds .* exactly"):
+            objective_values(assessment(objectives=(objective("a", value),)))
+    assert objective_values(assessment(objectives=(objective("a", 2**53),))) == [2.0**53]
 
 
 def test_a_storage_url_is_recorded_and_shown_without_its_secrets(
@@ -204,4 +205,8 @@ def test_each_bound_of_a_constraint_is_a_limit_of_its_own() -> None:
         {"stage": "analysis", "metric": "b", "max": 0.01},
     ]
     spec = parse_problem(problem_document(constraints=constraints))
-    assert limit_names(spec) == ["analysis/a:min", "analysis/a:max", "analysis/b:max"]
+    assert limit_names(spec) == [
+        "test.trade_off/analysis/a:min",
+        "test.trade_off/analysis/a:max",
+        "test.trade_off/analysis/b:max",
+    ]

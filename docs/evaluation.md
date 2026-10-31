@@ -99,9 +99,9 @@ What the optional parts do:
   `evaluate()` says so with `self.invalid("...")`, and the candidate is recorded as `invalid`.
 - `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
   holds every returned measurement of those metrics to the declared unit, so one metric identity
-  never carries two units. When a problem has several evaluators, every one must declare its
-  `metrics`: they say which evaluator measures which objective, and two evaluators may not
-  declare the same metric. A metric of another stage is written `("analysis", "rms")`;
+  never carries two units. An objective names the binding that measures it, so two evaluators
+  may declare metrics of the same name, and an evaluator that declares none is checked when its
+  result arrives. A metric of another stage is written `("analysis", "rms")`;
   declaring one metric twice (`"rms"` and `("simulation", "rms")`) is an error, and so is a unit
   that is not a nonblank string (`"1"` for a dimensionless metric). Both are checked before
   anything runs.
@@ -339,14 +339,14 @@ k4opt is given evaluator classes, not instances: `EvaluationSession.open(problem
 take the class. A function that builds an instance, or an instance, is refused: it could set
 up the evaluator in ways its class's source, which the records identify as the code that ran,
 does not say. When a session opens, k4opt creates one instance of each to read what it
-declares and bind it to its entry of `evaluators`; that instance is asked nothing else. Every
-candidate then gets a new instance of each evaluator, before anything of the candidate is
-created: k4opt calls its `check()` and later its `evaluate()`, then drops it. Nothing an
+declares and bind it to the entries of `evaluators` that name it; that instance is asked
+nothing else. Every candidate then gets a new instance for each binding, before anything of the
+candidate is created: k4opt calls its `check()` and later its `evaluate()`, then drops it. Nothing an
 evaluator keeps on `self` reaches another candidate.
 
 Every instance must declare what the first did: the same class, `name`, `version`, `stage`,
 `settings`, `collections` and `metrics`. The records name the first one's class as the code that
-ran, its metrics decide who measures what, and its settings and collections, defaults included,
+ran, its metrics decide what the objectives may name, and its settings and collections, defaults included,
 make the request, which must not change from one candidate to the next. What the first declared
 is copied all through when the session opens, so an evaluator that changes a nested default of
 its class (`self.settings["cuts"]["min"] = ...`) is caught at the next candidate. An instance
@@ -409,16 +409,17 @@ In order, it:
    categorical one of the choices by kind (strings need a string, booleans a boolean, numbers
    compare numerically). Units are never interpreted or converted;
 2. matches the evaluator classes to `evaluators` by the `name` of an instance of each, in any
-   order: each declared evaluator must be given exactly once, with the declared `version` and
-   reading the declared `stage`, and no other (`EvaluationContractError` otherwise, and for a
-   class that cannot be created). Each entry is identified by its name; records, run
-   directories and metric owners use that identity;
-3. before anything runs, checks the stages the evaluators read, creates a new instance of each
-   evaluator for the candidate, resolves its settings and collections, calls its `check()` and
-   decides which evaluator owns each
-   objective and constraint metric (see [problem](problem.md#evaluators);
-   `EvaluationContractError` otherwise). A collection ddsim is not expected to write is a
-   warning, kept with the candidate;
+   order: each evaluator the problem names must be given exactly once, however many entries
+   bind it, with the declared `version` and reading the declared `stage`, and no other
+   (`EvaluationContractError` otherwise, and for a class that cannot be created). Each entry is
+   a binding, identified by its binding name (`as`, its `name` when not given); tasks, records,
+   run directories and the objectives and constraints use that identity;
+3. before anything runs, checks the stages the evaluators read and that each objective and
+   constraint names a metric its binding's evaluator declares, in the declared unit (see
+   [problem](problem.md#evaluators); `EvaluationContractError` otherwise), then creates a new
+   instance of each binding's evaluator for the candidate, resolves its settings and
+   collections and calls its `check()`. A collection ddsim is not expected to write, and two
+   bindings that measure the same twice, are warnings, kept with the candidate;
 4. runs the candidate's [tasks](#stages), each after the tasks it reads, in this order: the
    geometry (`inputs["geometry"]`, already prepared), every stage the evaluators read, once
    each, then the evaluators in problem order. A stage whose file `inputs` supplies is not run,
@@ -429,23 +430,22 @@ In order, it:
 5. calls each evaluator's `evaluate()` once with a request built from the validated candidate,
    its own `settings` (defaults filled in, quantities converted) and `collections`, the
    `events` and `seed` of the stage it reads and the files of the tasks it reads, in its own
-   `workdir/evaluators/<name>`. An evaluator whose stage did not succeed is `blocked` instead,
+   `workdir/evaluators/<binding>`. An evaluator whose stage did not succeed is `blocked` instead,
    and one whose stage's file lacks a collection it declares (see
    [Collections](#collections)) is `failed`; neither is called. `EvaluationFailed` and
    `EvaluationInvalid` become a `failed` or `invalid` result; other exceptions of an evaluator
    propagate;
 6. checks each result; a violation is an `EvaluationContractError`, an inconsistent evaluator
-   rather than a violated constraint. A result must not report a metric another evaluator
-   declares; a `valid` result must report every metric its evaluator owns (extra metrics are
-   fine) in the `unit` a constraint declares; and if the evaluator declares `metrics`, every
+   rather than a violated constraint. A `valid` result must report every metric the objectives
+   and constraints name of its binding (extra metrics are fine) in the `unit` a constraint
+   declares; and if the evaluator declares `metrics`, every
    measurement of one, whatever the status, must carry the declared unit. Whether a value
    satisfies `min`/`max` is not judged here but by the session's
    [assessment](#assessment-objectives-limits-and-feasibility).
 
 The `CandidateRecord` holds the plan of its tasks and the result of each: the geometry, the
-stages (each recorded once) and one `EvaluationRecord` per evaluator in problem order
-(`records`), which evaluator owns each objective and constraint metric, and the time of the
-whole evaluation. Like the records it holds, it cannot be changed once made. Its `status` is
+stages (each recorded once) and one `EvaluationRecord` per binding in problem order
+(`evaluations`, by binding; `records`), and the time of the whole evaluation. Like the records it holds, it cannot be changed once made. Its `status` is
 the candidate's:
 
 | Tasks | Candidate | Meaning |
@@ -459,9 +459,10 @@ incomplete evaluation is never reported as a scientific verdict. Its `message` n
 that failed or is invalid, with its status and message, then the tasks they blocked
 (`simulation failed: ddsim exited with status 2 ...; blocked: calo.photon`), so a mixed outcome
 shows both. Every evaluator
-counts, also one that owns no objective (a validity check, say). `value(stage, metric)` gives an
-objective or constraint metric only from the `valid` result of the evaluator that owns it: a
-missing value is never made up, and the diagnostics of an `invalid` result never stand in for it.
+counts, also one that no objective names (a validity check, say). `value(MetricRef(evaluator,
+stage, metric))` gives an objective or constraint metric only from the `valid` result of the
+binding it names: a missing value is never made up, and the diagnostics of an `invalid` result
+never stand in for it.
 The measurements of the other evaluators are kept whatever happened to one of them.
 
 Every second is counted once: a stage's time (running it and checking its output) is recorded
@@ -514,7 +515,8 @@ must stay the same while the candidate runs and for every later candidate that n
 `evaluate(candidate, output, run=...)` records `run`, any JSON-compatible mapping, as the
 summary's `run` (a study and trial, say; `null` for `k4opt evaluate`). `identity()` returns what
 the session evaluates with: the problem's path and definition, the identities of the files the
-stages read, the evaluators' names, versions, sources and declared metrics, the compact file,
+stages read, the `implementations` (the version, stage, source and declared metrics of each
+evaluator the problem binds, by name, once however often it is bound), the compact file,
 source root and fingerprint of the unmodified geometry and what its external references read,
 `KEY4HEP_STACK` and `K4GEO`, and k4opt's version, code SHA-256 and checkout. The environment
 and k4opt's identity are taken when the session opens, before anything runs, and every summary
@@ -538,7 +540,9 @@ Each outcome carries an `Assessment` of the candidate, also written to the summa
 | `invalid` or `failed` | `null`, never a partial vector | each listed, `value`, `margin` and `satisfied` `null` | `null`: not assessed |
 | a supplied stage not made from the candidate (`--input`) | as measured | as measured | `null` |
 
-A limit is one bound of a constraint (`simulation/ecal_barrel.angular_residual:max`), judged on
+Each objective value (`ObjectiveValue`) and each limit names its metric: `evaluator`, `stage`,
+`metric` and their `label`, `evaluator/stage/metric`. A limit is one bound of a constraint
+(`calo.photon/simulation/ecal_barrel.angular_residual:max`), judged on
 the central value of the measurement: `max` is satisfied when the value is at most the limit,
 `min` when it is at least the limit, and equality satisfies both. The uncertainty is recorded
 next to the value but does not decide. `margin` is `value - max` or `min - value` in the
@@ -548,13 +552,14 @@ float (the verdict stays exact). An infeasible candidate is a complete evaluatio
 objective values; it is only outside the limits.
 
 `Assessment.from_summary(spec, summary)` recomputes the assessment of a `summary.json` as read
-back: the candidate's status from its evaluators', each objective and constraint value from the
-own measurements of the evaluator that `metrics` names as its owner. It checks again what a live
-evaluation enforces: the candidate is in the problem's domains and `candidate_key` is its key,
-an `invalid` or `failed` evaluator gives a message, each measurement of a metric its evaluator
-declares carries the declared unit, each of several evaluators declares its metrics, no metric
-is declared by two of them or reported by one that does not declare it, an owner declares the
-metrics it owns, and a constraint that declares a unit is in the unit of its metric. It raises
+back: the candidate's status from its tasks', each objective and constraint value from the own
+measurements of the binding it names. The record's `implementations` must be the evaluators the
+problem binds, with its versions, and its `evaluations` its bindings, each of the evaluator the
+problem binds it to. It checks again what a live evaluation enforces: the candidate is in the
+problem's domains and `candidate_key` is its key, an `invalid` or `failed` evaluator gives a
+message, each measurement of a metric its evaluator declares carries the declared unit, a
+binding whose evaluator declares metrics declares those named of it, and a constraint that
+declares a unit is in the unit of its metric. It raises
 `RecordError` if the record is malformed or breaks one of those rules, was made for another
 problem (its definition differs, other than in `name`), or if its `status`, `message`, `metrics`
 or `assessment` disagree with that recomputation, so any reader can check a record before

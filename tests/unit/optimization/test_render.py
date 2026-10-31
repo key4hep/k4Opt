@@ -11,12 +11,11 @@ from typing import Any
 import pytest
 
 from k4opt.cli import main
-from k4opt.evaluation import Measurement
 from k4opt.frozen import FrozenMap
 from k4opt.optimization import StudyResults, TrialReport, TrialResult
 from k4opt.optimization._render import BAR_WIDTH, Progress, trial_line
 from k4opt.optimization._show import render_results, render_trial
-from k4opt.problem import Assessment, Limit, parse_problem
+from k4opt.problem import Assessment, Limit, ObjectiveValue, parse_problem
 from tests.support.evaluators import TRADE_OFF
 from tests.unit.optimization.conftest import RADIUS, problem_document
 
@@ -35,7 +34,7 @@ def screen(text: str) -> list[str]:
 
 def trial(number: int, status: str = "valid", **fields: Any) -> TrialReport:
     if status == "valid":
-        fields = {"feasible": True, "objectives": {"analysis/a": 1 / 3}, **fields}
+        fields = {"feasible": True, "objectives": {"test.trade_off/analysis/a": 1 / 3}, **fields}
     return TrialReport(
         number, Path(f"trial-{number:06d}"), {"constants.x": 498.78582224598927}, status, **fields
     )
@@ -58,7 +57,7 @@ def progress(
 
 def test_a_trial_is_one_line_and_its_values_are_shown_to_6_significant_digits() -> None:
     assert trial_line(trial(0)) == (
-        "trial 0:   valid    feasible    constants.x=498.786  analysis/a=0.333333"
+        "trial 0:   valid    feasible    constants.x=498.786  test.trade_off/analysis/a=0.333333"
     )
     failed = trial(12, "failed", record="r", message="ddsim exited with status 1")
     assert trial_line(failed) == (
@@ -66,7 +65,9 @@ def test_a_trial_is_one_line_and_its_values_are_shown_to_6_significant_digits() 
     )
     recovered = trial(4, "interrupted", recovered=True)
     assert trial_line(recovered) == "trial 4:   interrupted  trial-000004  (recovered)"
-    assert trial_line(trial(5, recovered=True)).endswith("analysis/a=0.333333  (recovered)")
+    assert trial_line(trial(5, recovered=True)).endswith(
+        "test.trade_off/analysis/a=0.333333  (recovered)"
+    )
     for line in (trial(0), trial(1, feasible=False), failed, trial(3, "interrupted"), recovered):
         colored = trial_line(line, color=True)
         assert colored != trial_line(line) and ANSI.sub("", colored) == trial_line(line)
@@ -236,6 +237,7 @@ def test_on_a_terminal_the_command_draws_the_bar_and_colors_the_output(
 
 def test_a_study_read_back_cannot_send_the_terminal_a_control_sequence() -> None:
     esc = "\x1b[2J"  # clears the screen, were it printed as it is
+    evaluator = "test.trade_off"  # an evaluator name holds no control character
     spec = parse_problem(
         problem_document(
             objectives=[("analysis", f"a{esc}", "minimize")],
@@ -247,8 +249,8 @@ def test_a_study_read_back_cannot_send_the_terminal_a_control_sequence() -> None
             },
         )
     )
-    measured = (Measurement("analysis", f"a{esc}", 1.0, unit=f"mm{esc}"),)
-    limit = Limit("analysis", f"a{esc}", "max", 1, f"mm{esc}", 1.0, None, 0.0, True)
+    measured = (ObjectiveValue(evaluator, "analysis", f"a{esc}", "minimize", 1.0, f"mm{esc}"),)
+    limit = Limit(evaluator, "analysis", f"a{esc}", "max", 1, f"mm{esc}", 1.0, None, 0.0, True)
     trial = TrialResult(
         0,
         "valid",
@@ -265,7 +267,7 @@ def test_a_study_read_back_cannot_send_the_terminal_a_control_sequence() -> None
     document = FrozenMap(
         {
             "optimizer": FrozenMap({"storage": FrozenMap({"journal": f"study{esc}.journal"})}),
-            "evaluators": (FrozenMap({"metrics": (metric,)}),),
+            "implementations": FrozenMap({evaluator: FrozenMap({"metrics": (metric,)})}),
         }
     )
     study = StudyResults(

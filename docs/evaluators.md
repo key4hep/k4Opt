@@ -18,7 +18,7 @@ k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
 ```
 
 `--evaluator FILE.py:Class` (or `package.module:Class`) names an evaluator; give it once for each
-entry of `evaluators`, in any order. The file is executed as ordinary Python
+evaluator the problem's `evaluators` name, in any order, however many entries bind it. The file is executed as ordinary Python
 ([`load_evaluator`](evaluation.md#loading-an-evaluator)), so name only code you trust.
 
 `--input STAGE=FILE` (repeatable) uses an existing file as the output of a stage instead of
@@ -40,13 +40,13 @@ Python, an [`EvaluationSession`](evaluation.md#evaluating-candidates-evaluations
 evaluates many candidates of a problem the same way.
 `--param REFERENCE=VALUE` uses the canonical reference of the problem file and is repeated for
 each declared parameter. `--output` must not exist. Before anything is created, the candidate
-(keys, types, bounds), the supplied inputs, the evaluators (each declared one given once, with
-its version and the stage it reads, and no other), their settings and collections and their
-metrics (every objective and constraint measured by exactly one evaluator, see
+(keys, types, bounds), the supplied inputs, the evaluators (each one the problem names given
+once, with its version and the stage it reads, and no other), the settings and collections of
+each binding and the metrics the objectives and constraints name of it (see
 [problem](problem.md#evaluators)) are validated; an error exits with status 1 and creates
 nothing. A collection that ddsim is not expected to write for the geometry is printed as a
-warning (`k4opt: warning: ...`, with the closest expected name) before anything runs, and the
-run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
+warning (`k4opt: warning: ...`, with the closest expected name) before anything runs, and so
+are two bindings that measure the same twice; the run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
 
 1. the candidate becomes `Override`s (`6.0` with unit `mm` is written `6.0*mm`; units are limited
    to `um mm cm m mrad rad deg MeV GeV TeV`, expressions are not interpreted), and the geometry
@@ -55,7 +55,7 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
 2. the stages the evaluators read are made available once each: a generation `file` is checked
    and hashed, and the `simulation` stage runs `ddsim` on that snapshot in
    `<output>/simulation`. Then each evaluator, in the order of the problem, reads the files of
-   the stages it needs and may write in `<output>/evaluators/<name>`. Each of these is a
+   the stages it needs and may write in `<output>/evaluators/<binding>`. Each of these is a
    [task](evaluation.md#stages) that runs only when what it reads succeeded: if a stage fails
    or its output lacks events, the stage is `failed` and the evaluators that read it are
    `blocked`, not called; the others still are. An evaluator whose stage's file lacks a
@@ -71,23 +71,26 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    - `status` and `message` of the candidate ([how they follow from its tasks'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
      the candidate and its key, whether the run `represents_candidate`, which stages were
      `supplied` with `--input`, and the `warnings` printed before the run;
-   - `metrics`: every objective and constraint metric, the evaluator that owns it, and its
-     value, unit and uncertainty, which are `null` unless that evaluator's result is `valid`;
-   - `assessment`: the objective values in the problem's order, each bound of each constraint
+   - `metrics`: every objective and constraint metric, named by its `evaluator` (a binding),
+     `stage`, `metric` and `label` (`calo.photon/simulation/ecal_barrel.fired_cells`), and its
+     value, unit and uncertainty, which are `null` unless that binding's result is `valid`;
+   - `assessment`: the objective values in the problem's order, each with its metric and
+     direction, each bound of each constraint
      (`limits`, with the value, its margin to the limit and whether it is `satisfied`), and
      whether the candidate is `feasible` (`true`, `false`, or `null` when it is not assessed:
      not `valid`, or not made from the candidate);
-   - `evaluators`, in problem order: name, version, the stage it reads, its source identity
-     (`source`: path, size and SHA-256 of the file defining its class, taken at import,
-     whether they are the bytes `executed`, and the `revision` of the git checkout that tracks
-     it; [details](evaluation.md#loading-an-evaluator)), the metrics it declares with their
-     units (`metrics`, `null` if it declares none), status, message,
-     settings (`declared` as the problem wrote them, `used` as the evaluator received them, with
-     defaults and quantities in the declared unit), the collection of each role, the tasks it
-     `reads` (`geometry` and the stages) and those it was `blocked_by`, its measurements with
-     uncertainty, the artifacts and
-     provenance it returned, its directory and the time of its `evaluate()` call (`null` if it
-     was not called);
+   - `implementations`, each evaluator the problem binds once, by name, in the order it first
+     binds them: version, the stage it reads, its source identity (`source`: path, size and
+     SHA-256 of the file defining its class, taken at import, whether they are the bytes
+     `executed`, and the `revision` of the git checkout that tracks it;
+     [details](evaluation.md#loading-an-evaluator)) and the metrics it declares with their units
+     (`metrics`, `null` if it declares none);
+   - `evaluations`, each binding by its name, in problem order: the `implementation` it binds,
+     status, message, settings (`declared` as the problem wrote them, `used` as the evaluator
+     received them, with defaults and quantities in the declared unit), the collection of each
+     role, the tasks it `reads` (`geometry` and the stages) and those it was `blocked_by`, its
+     measurements with uncertainty, the artifacts and provenance it returned, its directory and
+     the time of its `evaluate()` call (`null` if it was not called);
    - `stages`, each once and in pipeline order: its `status` (`done`, `failed` or `blocked`) and
      `message`; the particle gun, or the size and SHA-256 of a given or supplied file; the exact
      `ddsim` command, directory and exit code, the files its options name, with their hashes;
@@ -105,8 +108,8 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      (those the session opened with, checked before each candidate) and the `ddsim` that was
      started; the pin and the stack are not compared).
 
-The command prints the candidate's status, each evaluator's status and metrics with their
-uncertainty, each limit with its verdict and margin, whether the candidate is feasible, the
+The command prints the candidate's status, each binding's status and metrics with their
+uncertainty (a binding named with `as` beside its evaluator: `photon_200kev (calo.photon 1)`), each limit with its verdict and margin, whether the candidate is feasible, the
 events, the fingerprint and the paths. For the 10 mm candidate of the
 [example study](#the-example-study), with the
 [1 mrad constraint](problem.md#constraints) added to the problem (abridged, values rounded):
@@ -115,7 +118,7 @@ events, the fingerprint and the paths. For the 10 mm candidate of the
 status:      valid
 evaluator:   calo.photon 1: valid
 metric:      simulation/ecal_barrel.angular_residual = 0.946 +- 0.034 [mrad]
-limit:       simulation/ecal_barrel.angular_residual <= 1.0: satisfied, margin -0.054 [mrad]
+limit:       calo.photon/simulation/ecal_barrel.angular_residual <= 1.0: satisfied, margin -0.054 [mrad]
 feasible:    yes
 events:      1000 of 1000
 ```

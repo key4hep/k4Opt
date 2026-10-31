@@ -43,12 +43,12 @@ OUTCOMES = ("feasible", "infeasible", "invalid", "failed", "interrupted", "error
 def limit_names(spec: ProblemSpec) -> list[str]:
     """The name of each limit of the problem, as the optimizer knows its constraint value."""
     names = [
-        f"{c.stage}/{c.metric}:{bound}"
+        f"{c.label}:{bound}"
         for c in spec.constraints
         for bound in ("min", "max")
         if getattr(c, bound) is not None
     ]
-    assert len(set(names)) == len(names)  # constraints are unique by stage and metric
+    assert len(set(names)) == len(names)  # constraints are unique by metric reference
     return names
 
 

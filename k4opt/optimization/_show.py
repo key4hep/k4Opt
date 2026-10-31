@@ -15,7 +15,7 @@ from typing import TextIO
 
 from k4opt.optimization._render import _paint, _value
 from k4opt.optimization._results import StudyResults, TrialResult
-from k4opt.problem import Parameter
+from k4opt.problem import MetricRef, Parameter
 from k4opt.terminal import Style
 
 LABEL = 12  # the width of a line's label
@@ -24,10 +24,6 @@ LABEL = 12  # the width of a line's label
 def printable(text: object) -> str:
     """``text`` with its control characters escaped (``\\x1b``, ``\\n``)."""
     return "".join(c if c.isprintable() else c.encode("unicode_escape").decode() for c in str(text))
-
-
-def _metric(stage: str, metric: str) -> str:
-    return printable(f"{stage}/{metric}")
 
 
 def _measured(value: object, unit: str | None, uncertainty: object = None, *, exact: bool) -> str:
@@ -49,28 +45,32 @@ def _domain(parameter: Parameter) -> str:
     return printable(f"{text} {parameter.unit}" if parameter.unit else text)
 
 
-def _units(results: StudyResults) -> dict[tuple[str, str], str]:
-    """The unit each evaluator of the study declares for each of its metrics."""
-    units: dict[tuple[str, str], str] = {}
-    evaluators = results.document.get("evaluators")
-    for evaluator in evaluators if isinstance(evaluators, tuple) else ():
-        metrics = evaluator.get("metrics") if isinstance(evaluator, Mapping) else None
+def _units(results: StudyResults) -> dict[MetricRef, str]:
+    """The unit each binding of the study measures each metric in, as its implementation
+    declares it."""
+    units: dict[MetricRef, str] = {}
+    implementations = results.document.get("implementations")
+    if not isinstance(implementations, Mapping):
+        return units
+    for entry in results.problem.evaluators:
+        implementation = implementations.get(entry.name)
+        metrics = implementation.get("metrics") if isinstance(implementation, Mapping) else None
         for metric in metrics if isinstance(metrics, tuple) else ():
             if isinstance(metric, Mapping):
                 stage, name, unit = metric.get("stage"), metric.get("metric"), metric.get("unit")
                 if isinstance(stage, str) and isinstance(name, str) and isinstance(unit, str):
-                    units[(stage, name)] = unit
+                    units[MetricRef(entry.binding, stage, name)] = unit
     return units
 
 
 def _limits(results: StudyResults) -> list[str]:
-    """Each limit of the problem: its name and its bound, ``analysis/a:max  <= 450 mm``."""
+    """Each limit of the problem: its name and its bound, ``e/analysis/a:max  <= 450 mm``."""
     limits = []
     for c in results.problem.constraints:
         for bound, sign in (("min", ">="), ("max", "<=")):
             limit = getattr(c, bound)
             if limit is not None:
-                name = printable(f"{c.stage}/{c.metric}:{bound}")
+                name = printable(f"{c.label}:{bound}")
                 limits.append(f"{name}  {sign} {_measured(limit, c.unit, exact=True)}")
     return limits
 
@@ -109,9 +109,8 @@ def _front_line(trial: TrialResult, results: StudyResults, style: Style) -> str:
         for p in results.problem.parameters
     ]
     objectives = [
-        style.dim(f"{_metric(m.stage, m.metric)}=")
-        + style.bold(_measured(m.value, m.unit, exact=False))
-        for m in trial.assessment.objectives
+        style.dim(f"{printable(o.label)}=") + style.bold(_measured(o.value, o.unit, exact=False))
+        for o in trial.assessment.objectives
     ]
     return f"trial {trial.number}:  " + "  ".join(candidate + objectives)
 
@@ -133,8 +132,8 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
     ]
     _print(out, style, "parameters", parameters)
     objectives = [
-        f"{_metric(o.stage, o.metric)}  {o.direction}"
-        + (f"  ({printable(units[(o.stage, o.metric)])})" if (o.stage, o.metric) in units else "")
+        f"{printable(o.label)}  {o.direction}"
+        + (f"  ({printable(units[o.ref])})" if o.ref in units else "")
         for o in spec.objectives
     ]
     _print(out, style, "objectives", objectives)
@@ -186,10 +185,10 @@ def render_trial(
         _print(out, style, "objectives", ["none: the trial has no result"])
     else:
         objectives = [
-            f"{_metric(m.stage, m.metric)} = "
-            + style.bold(_measured(m.value, m.unit, m.uncertainty, exact=True))
+            f"{printable(o.label)} = "
+            + style.bold(_measured(o.value, o.unit, o.uncertainty, exact=True))
             + f", {o.direction}"
-            for m, o in zip(assessment.objectives, spec.objectives, strict=True)
+            for o in assessment.objectives
         ]
         _print(out, style, "objectives", objectives)
     if assessment is not None and assessment.feasible is not None:

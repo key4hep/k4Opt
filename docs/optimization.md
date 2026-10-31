@@ -19,7 +19,7 @@ k4opt optimize examples/problem/cld-ecal-granularity.yaml \
 It prints each trial as it ends, and the study at the end (the values here are illustrative):
 
 ```text
-trial 0:   valid    feasible    constants.ECal_cell_size=9.79789  simulation/ecal_barrel.angular_residual=0.948  simulation/ecal_barrel.fired_cells=227
+trial 0:   valid    feasible    constants.ECal_cell_size=9.79789  calo.photon/simulation/ecal_barrel.angular_residual=0.948  calo.photon/simulation/ecal_barrel.fired_cells=227
 trial 1:   failed   simulation failed: ddsim exited with status 1 (...); blocked: calo.photon  trial-000001/summary.json
 ...
 study:    cld-ecal-granularity-3f9c2a1b, 2 objective(s), 0 limit(s), runs/cld-ecal-study/study.json
@@ -76,13 +76,15 @@ values are written into the geometry as they are, with nothing rounded or snappe
 (`9.797885082295046*mm`).
 
 **Objectives.** The optimizer is told each objective's value, in the problem's order and with
-its `direction`. One objective and several take the same path. The values are those of the
-run's [assessment](evaluation.md#assessment-objectives-limits-and-feasibility): the evaluator's
+its `direction`. One objective and several take the same path. Each is named by its label,
+`evaluator/stage/metric`, with the binding that measures it
+(`calo.photon/simulation/ecal_barrel.fired_cells`). The values are those of the run's
+[assessment](evaluation.md#assessment-objectives-limits-and-feasibility): that binding's
 measurement, as a float. A value that no float holds exactly (an integer beyond 2**53) stops
 the study rather than being told as another value.
 
-**Constraints.** Each bound of a constraint is a *limit*, named `stage/metric:bound`
-(`simulation/ecal_barrel.angular_residual:max`). For each limit the optimizer is told its
+**Constraints.** Each bound of a constraint is a *limit*, named `evaluator/stage/metric:bound`
+(`calo.photon/simulation/ecal_barrel.angular_residual:max`). For each limit the optimizer is told its
 physical margin (`value - max`, `min - value`, in the metric's unit), which is zero or below
 when the limit is satisfied. `study.json` records this choice as `"constraint_values":
 "physical margins"`. A limit is judged on the central value of the measurement, and its
@@ -144,8 +146,8 @@ is printed as it ends, so a broken environment shows at once.
   evaluation starts;
 - a file the problem names, a file the geometry's external references read, the environment or
   k4opt's code changed since the study's session opened, also while the trial ran;
-- a result breaks the evaluation contract (a `valid` result without a metric it owns, a wrong
-  unit), or an evaluator raises anything but `EvaluationFailed` or `EvaluationInvalid`;
+- a result breaks the evaluation contract (a `valid` result without a metric an objective or a
+  constraint names of it, a wrong unit), or an evaluator raises anything but `EvaluationFailed` or `EvaluationInvalid`;
 - the record does not hold up when it is read back (below);
 - a value cannot be held by a float;
 - writing fails, or Optuna or its storage fails (a database that goes away, an I/O error of the
@@ -195,7 +197,8 @@ keeps its geometry and its EDM4hep file.
 - the problem's path and normalized definition;
 - the path, size and SHA-256 of every file the problem names (`stages.*.file`, the files ddsim
   options name);
-- each evaluator's name, version, source identity and declared metrics;
+- `implementations`: each evaluator the problem binds, once however many entries bind it, by
+  name: its version, the stage it reads, its source identity and declared metrics;
 - the compact file, source root and fingerprint of the unmodified geometry, and the path and
   SHA-256 of each file its external references read (`${DD4hepINSTALL}/...`, `${K4GEO}/...`,
   absolute paths);
@@ -217,7 +220,7 @@ directory itself is fine.
 | --- | --- | --- |
 | problem | its definition, but not its `name` | the path of the file |
 | files the problem names | size and SHA-256 of each | their paths |
-| evaluators | name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
+| evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
 | k4opt | the SHA-256 of its code | version, git commit |
@@ -325,12 +328,12 @@ study:      cld-ecal-granularity-3f9c2a1b, created 2026-10-30T12:00:00+00:00
 id:         3f9c2a1b-5d0e-4f43-9a52-77c1d2e0b6a4
 directory:  /home/me/runs/cld-ecal-study (trials in study.journal)
 parameters: constants.ECal_cell_size  continuous [2.5, 20.0] mm
-objectives: simulation/ecal_barrel.angular_residual  minimize  (mrad)
-            simulation/ecal_barrel.fired_cells  minimize  (1)
+objectives: calo.photon/simulation/ecal_barrel.angular_residual  minimize  (mrad)
+            calo.photon/simulation/ecal_barrel.fired_cells  minimize  (1)
 limits:     none
 trials:     30: 28 valid (28 feasible, 0 infeasible), 1 invalid, 1 failed
 pareto:     0, 4, 7
-            trial 0:  constants.ECal_cell_size=9.79789 mm  simulation/ecal_barrel.angular_residual=0.948 mrad  simulation/ecal_barrel.fired_cells=227 1
+            trial 0:  constants.ECal_cell_size=9.79789 mm  calo.photon/simulation/ecal_barrel.angular_residual=0.948 mrad  calo.photon/simulation/ecal_barrel.fired_cells=227 1
             ...
 ```
 
@@ -401,17 +404,18 @@ JSON, never 0 or NaN, and a float keeps all its digits.
 | `feasible` | `true` or `false` for a valid trial, empty otherwise |
 | `pareto`, `recovered` | `true` for a trial on the front, for one a resume finished |
 | `parameter:<reference>` | the candidate's value (its unit is the problem's) |
-| `objective:<stage>/<metric>`, `…:unit`, `…:uncertainty` | the measured value, its unit, its uncertainty |
-| `limit:<stage>/<metric>:<bound>:value`, `…:margin`, `…:satisfied` | the value judged, its margin (zero or below when satisfied), the verdict |
+| `objective:<evaluator>/<stage>/<metric>`, `…:unit`, `…:uncertainty` | the measured value, its unit, its uncertainty |
+| `limit:<evaluator>/<stage>/<metric>:<bound>:value`, `…:margin`, `…:satisfied` | the value judged, its margin (zero or below when satisfied), the verdict |
 | `elapsed_seconds`, `stage:<stage>:elapsed_seconds` | the recorded wall-clock time of the evaluation, and of each stage that ran |
 | `record`, `record_sha256`, `record_path` | the record's id, SHA-256 and path in the study |
 | `message` | why the trial is invalid, failed or an error |
 
 In a column name, a `%`, `/`, `:` or control character within a name from the problem (a
 parameter reference, a stage or metric name) is percent-escaped (`%25`, `%2F`, `%3A`, `%1B`), so
-each column names one thing and the header holds nothing a terminal would run: `objective:analysis/count%3Aunit` is the value of the
-metric `count:unit`, and `objective:analysis/count:unit` the unit of `count`. Split such a name
-at its one `/` and unescape each part (`urllib.parse.unquote`) to get the stage and metric back.
+each column names one thing and the header holds nothing a terminal would run:
+`objective:e/analysis/count%3Aunit` is the value of the metric `count:unit` of the evaluator
+`e`, and `objective:e/analysis/count:unit` the unit of `count`. Split such a name at its two `/`
+and unescape each part (`urllib.parse.unquote`) to get the evaluator, stage and metric back.
 Booleans are `true` and `false`; control characters in text are escaped (`\x1b`), tab and
 newline kept in quoted cells. The CSV cannot tell a categorical `""` or `"1"` from an empty cell
 or the number 1: the JSON export is the typed one.

@@ -1,8 +1,8 @@
 """Internal: the work of one candidate as tasks, each run at most once and only after what it reads.
 
-A task is the smallest step with a meaning of its own: the candidate's ``geometry``
-(materialized once, read by every simulation and every evaluator), one pipeline stage
-(``generation``, ``simulation``) or one evaluator. Each task names the tasks it reads, its
+A task is the smallest step with a meaning of its own: the candidate's ``geometry`` (materialized
+once, read by every simulation and every evaluator), one pipeline stage (``generation``,
+``simulation``) or one evaluator, named by its binding. Each task names the tasks it reads, its
 ``needs``, and nothing else orders it. Three seams keep what runs apart from how it runs:
 
 * :func:`plan_tasks` resolves the dependencies from the problem alone, once per session, so that
@@ -43,14 +43,15 @@ class Kind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TaskId:
-    """A task of a candidate: its kind and its name (``geometry``, a stage type, an evaluator)."""
+    """A task of a candidate: its kind and its name (``geometry``, a stage type, the binding of an
+    evaluator)."""
 
     kind: Kind
     name: str
 
     @property
     def label(self) -> str:
-        """How records name the task; unambiguous, since an evaluator may not be named after the
+        """How records name the task; unambiguous, since no binding may be named after the
         geometry or a stage type (:data:`RESERVED_NAMES`)."""
         return self.name
 
@@ -58,7 +59,7 @@ class TaskId:
 GEOMETRY = TaskId(Kind.GEOMETRY, "geometry")
 
 RESERVED_NAMES = (GEOMETRY.name, *STAGE_TYPES)
-"""Names of tasks k4opt runs itself, which no evaluator may take."""
+"""Names of tasks k4opt runs itself, which no binding of an evaluator may take."""
 
 DONE = "done"
 """The status of a geometry or a stage that is available; an evaluator's is ``valid`` instead."""
@@ -130,7 +131,7 @@ def plan_tasks(
     evaluators: Sequence[tuple[str, str | None]],
     supplied: Collection[str] = (),
 ) -> Plan:
-    """The plan of a problem with ``stages`` and ``evaluators`` (``(name, stage it reads)`` in
+    """The plan of a problem with ``stages`` and ``evaluators`` (``(binding, stage it reads)`` in
     problem order), the stages in ``supplied`` given by the caller.
 
     The stages planned are those the evaluators read and the stages these read, except that a

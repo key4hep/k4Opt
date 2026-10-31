@@ -2,8 +2,9 @@
 
 Reads and strictly validates a ``k4opt.problem/v1alpha1`` YAML document into immutable,
 typed models: the parameters, the pipeline ``stages`` (each run by an executor or given as a
-file), the ``evaluators`` and the objectives and constraints. ``load_problem`` also resolves the
-geometry and every parameter target in the active k4geo tree (``$K4GEO``);
+file), the ``evaluators`` (named bindings of evaluator implementations) and the objectives and
+constraints, each on a metric of one of them (:class:`MetricRef`). ``load_problem`` also
+resolves the geometry and every parameter target in the active k4geo tree (``$K4GEO``);
 ``parse_problem`` is the pure variant that needs no geometry. Evaluators and metrics are not
 checked. See ``docs/problem.md``.
 
@@ -26,7 +27,7 @@ Typical use::
     outcome.assessment.feasible  # True, False or None (not assessed)
 """
 
-from k4opt.problem._assess import Assessment, Limit
+from k4opt.problem._assess import Assessment, Limit, ObjectiveValue
 from k4opt.problem._run import SUMMARY_NAME, EvaluationSession, RunOutcome
 from k4opt.problem.config import load_problem, parse_problem
 from k4opt.problem.errors import CandidateError, ProblemConfigError, RecordError, RunError
@@ -37,6 +38,7 @@ from k4opt.problem.models import (
     EvaluatorSpec,
     GeometrySelector,
     Key4hepStack,
+    MetricRef,
     Objective,
     Parameter,
     ProblemSpec,
@@ -55,7 +57,9 @@ __all__ = [
     "GeometrySelector",
     "Key4hepStack",
     "Limit",
+    "MetricRef",
     "Objective",
+    "ObjectiveValue",
     "Parameter",
     "ProblemConfigError",
     "ProblemSpec",

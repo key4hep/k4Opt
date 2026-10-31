@@ -15,6 +15,8 @@ from k4opt.problem.models import freeze, thaw
 
 def test_to_dict_is_plain_json_data(doc: dict[str, Any]) -> None:
     data = parse_problem(doc).to_dict()
+    for item in (*doc["objectives"], *doc["constraints"]):  # left out of the one evaluator's
+        item["evaluator"] = "calo.single_particle_shower"
     assert data == doc  # same content, same shape
     assert list(data) == list(doc)  # schema order
 

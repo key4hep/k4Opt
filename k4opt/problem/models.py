@@ -118,12 +118,14 @@ class Parameter:
 
 @dataclass(frozen=True, slots=True)
 class EvaluatorSpec:
-    """One evaluator of a problem: the label of its measurement contract and its settings.
+    """One evaluator of a problem: a binding of an implementation, with its settings.
 
-    ``name`` and ``version`` must equal those of the evaluator that measures, and so must
-    ``stage``, the pipeline stage it reads (``None``: it reads none). ``collections`` names the
-    collection of that stage's file for each role the evaluator declares; ``settings`` is owned
-    by that evaluator's contract.
+    ``name`` and ``version`` must equal those of the implementation that measures, and so must
+    ``stage``, the pipeline stage it reads (``None``: it reads none). ``binding`` names this use
+    of the implementation (``as:`` in the problem, its ``name`` when not given): objectives,
+    constraints, records and run directories refer to it, so one implementation can be bound
+    several times with other settings. ``collections`` names the collection of that stage's file
+    for each role the evaluator declares; ``settings`` is owned by that evaluator's contract.
     """
 
     name: str
@@ -131,6 +133,7 @@ class EvaluatorSpec:
     settings: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
     stage: str | None = None
     collections: Mapping[str, str] = field(default_factory=lambda: FrozenMap({}))
+    binding: str = ""
 
     def __post_init__(self) -> None:
         # Direct construction gets the same defensive copy as parsing does.
@@ -138,9 +141,14 @@ class EvaluatorSpec:
         assert isinstance(settings, Mapping)
         object.__setattr__(self, "settings", settings)
         object.__setattr__(self, "collections", FrozenMap(self.collections))
+        if not self.binding:
+            object.__setattr__(self, "binding", self.name)
 
     def to_dict(self) -> dict[str, object]:
-        data: dict[str, object] = {"name": self.name, "version": self.version}
+        data: dict[str, object] = {"name": self.name}
+        if self.binding != self.name:
+            data["as"] = self.binding
+        data["version"] = self.version
         if self.stage is not None:
             data["stage"] = self.stage
         if self.collections:
@@ -193,29 +201,76 @@ class Stage:
 
 
 @dataclass(frozen=True, slots=True)
-class Objective:
-    """A metric to minimize or maximize. ``stage`` classifies the metric."""
+class MetricRef:
+    """A metric of one evaluator: the identity of every value an objective or a constraint names.
 
+    ``evaluator`` is the binding that measures it (:attr:`EvaluatorSpec.binding`), ``stage`` and
+    ``metric`` name the measurement as the evaluator reports it; two bindings may report the same
+    metric, and their references differ.
+    """
+
+    evaluator: str
+    stage: str
+    metric: str
+
+    @property
+    def label(self) -> str:
+        """``evaluator/stage/metric``, such as ``calo.photon/simulation/ecal_barrel.fired_cells``;
+        records, exports and the optimizer name the value by it."""
+        return f"{self.evaluator}/{self.stage}/{self.metric}"
+
+
+@dataclass(frozen=True, slots=True)
+class Objective:
+    """A metric of an evaluator to minimize or maximize. ``stage`` classifies the metric."""
+
+    evaluator: str
     stage: str
     metric: str
     direction: Direction
 
+    @property
+    def ref(self) -> MetricRef:
+        return MetricRef(self.evaluator, self.stage, self.metric)
+
+    @property
+    def label(self) -> str:
+        return self.ref.label
+
     def to_dict(self) -> dict[str, object]:
-        return {"stage": self.stage, "metric": self.metric, "direction": self.direction}
+        return {
+            "evaluator": self.evaluator,
+            "stage": self.stage,
+            "metric": self.metric,
+            "direction": self.direction,
+        }
 
 
 @dataclass(frozen=True, slots=True)
 class Constraint:
-    """A hard, inclusive limit on a measured metric: ``min`` and/or ``max``."""
+    """A hard, inclusive limit on a metric of an evaluator: ``min`` and/or ``max``."""
 
+    evaluator: str
     stage: str
     metric: str
     min: Number | None = None
     max: Number | None = None
     unit: str | None = None
 
+    @property
+    def ref(self) -> MetricRef:
+        return MetricRef(self.evaluator, self.stage, self.metric)
+
+    @property
+    def label(self) -> str:
+        return self.ref.label
+
     def to_dict(self) -> dict[str, object]:
-        data: dict[str, object] = {"stage": self.stage, "metric": self.metric}
+        data: dict[str, object] = {
+            "evaluator": self.evaluator,
+            "stage": self.stage,
+            "metric": self.metric,
+        }
         if self.min is not None:
             data["min"] = self.min
         if self.max is not None:
@@ -259,10 +314,17 @@ class ProblemSpec:
         object.__setattr__(self, "evaluators", tuple(self.evaluators))
         object.__setattr__(self, "stages", FrozenMap(self.stages))
 
+    @property
+    def references(self) -> tuple[MetricRef, ...]:
+        """The metrics the objectives and constraints name, each once, objectives first."""
+        refs = [o.ref for o in self.objectives] + [c.ref for c in self.constraints]
+        return tuple(dict.fromkeys(refs))
+
     def to_dict(self) -> dict[str, object]:
         """Plain JSON-compatible data in schema order; a fresh copy on every call.
 
-        ``parse_problem(spec.to_dict())`` gives back an equal :class:`ProblemSpec`.
+        Every objective and constraint names its evaluator, also where the problem file leaves it
+        out. ``parse_problem(spec.to_dict())`` gives back an equal :class:`ProblemSpec`.
         """
         data: dict[str, object] = {"schema_version": SCHEMA_VERSION}
         if self.name is not None:

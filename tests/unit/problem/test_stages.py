@@ -618,17 +618,15 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
 def test_a_reader_cannot_change_the_candidate_or_its_stages(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # an optimizer reads these records, so which evaluator owns a metric, or what a stage did,
-    # must stay as recorded
+    # an optimizer reads these records, so what each task and stage did must stay as recorded
     simulation.install(monkeypatch)
     candidate = evaluate(
         spec, {CELL: 6}, Reader(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     simulated = stage(candidate, "simulation")
-    assert candidate.owners
     mappings: list[Any] = [
-        candidate.owners,
         candidate.results,
+        candidate.evaluations,
         simulated.provenance,
         simulated.artifacts,
     ]

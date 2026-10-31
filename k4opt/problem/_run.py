@@ -303,21 +303,14 @@ def _stage(task: Task, result: TaskResult) -> dict[str, object]:
     )
 
 
-def _evaluator(
-    task: Task, result: TaskResult, entry: EvaluatorSpec, taken: Mapping[str, Json]
-) -> dict[str, object]:
-    """One evaluator's own part of the summary: nothing of the stages it shares. ``taken`` is
-    what the session recorded of the evaluator when it opened: its source and its metrics."""
+def _evaluation(task: Task, result: TaskResult, entry: EvaluatorSpec) -> dict[str, object]:
+    """One binding's own part of the summary: nothing of the stages it shares, nor of its
+    implementation, which ``implementations`` records once."""
     record = result.record
-    assert record is not None  # every evaluator has one, a blocked one too
+    assert record is not None  # every binding has one, a blocked one too
     outcome, request = record.result, record.request
     return {
-        "name": record.evaluator_name,
-        "version": record.evaluator_version,
-        "stage": entry.stage,
-        "source": thaw(taken["source"]),
-        # each with the unit every measurement of it carries, whatever the status
-        "metrics": thaw(taken["metrics"]),
+        "implementation": entry.name,
         **_fragment(result),
         # as the problem wrote them, and as the evaluator received them (defaults filled in,
         # quantities in the declared unit)
@@ -352,7 +345,8 @@ def assemble(
     that task's result alone; the candidate's ``status``, ``message``, ``metrics`` and
     ``assessment`` derive from them, as :meth:`Assessment.from_summary` derives them again.
     ``record_id`` is the record's identity; the rest is what the session holds: the problem,
-    what it recorded of each evaluator (``taken``) and of the process (``process``).
+    what it recorded of each implementation (``taken``: its version, stage, source and metrics)
+    and of the process (``process``).
     """
     plan, results = candidate.plan, candidate.results
     simulation = candidate.stage("simulation")
@@ -361,7 +355,7 @@ def assemble(
     assert isinstance(environment, dict)
     argv = None if observed is None else observed.get("argv")
     simulate = spec.stages.get("simulation")
-    entries = {entry.name: entry for entry in spec.evaluators}
+    entries = {entry.binding: entry for entry in spec.evaluators}
     geometry = results[GEOMETRY]
     made = thaw(geometry.provenance)
     assert isinstance(made, dict)
@@ -378,18 +372,21 @@ def assemble(
         "represents_candidate": candidate.represents_candidate,
         "supplied": sorted(candidate.supplied),
         "warnings": list(candidate.warnings),
-        # the objective and constraint metrics, each from the evaluator that owns it
+        # the objective and constraint metrics, each from the binding it names
         "metrics": [
-            {"stage": stage, "metric": metric, "evaluator": owner}
-            | _measurement(candidate.value(stage, metric))
-            for (stage, metric), owner in candidate.owners.items()
+            {"evaluator": ref.evaluator, "stage": ref.stage, "metric": ref.metric}
+            | {"label": ref.label}
+            | _measurement(candidate.value(ref))
+            for ref in spec.references
         ],
         # the objectives and the constraints judged, from those metrics
         "assessment": assessment.to_dict(),
-        "evaluators": [
-            _evaluator(task, results[task.id], entries[task.id.name], taken[task.id.name])
+        # each implementation once, however many bindings it has
+        "implementations": {name: thaw(entry) for name, entry in taken.items()},
+        "evaluations": {
+            task.id.name: _evaluation(task, results[task.id], entries[task.id.name])
             for task in plan.of(Kind.EVALUATOR)
-        ],
+        },
         "stages": {task.id.name: _stage(task, results[task.id]) for task in plan.of(Kind.STAGE)},
         "events": {
             "requested": None if simulate is None else simulate.events,
@@ -524,10 +521,15 @@ class EvaluationSession:
         externals = freeze(spec._source.external_files(spec._catalog), "geometry", RunError)
         assert isinstance(externals, Mapping)
         taken = {}
-        for bound in binding.evaluators:  # what the first instances declared
+        for bound in binding.evaluators:  # what the first instance of each declared
             declaration = bound.declaration
+            if declaration.name in taken:
+                continue
             data = {
+                "version": declaration.version,
+                "stage": declaration.stage,
                 "source": evaluator_source(declaration.cls),
+                # each with the unit every measurement of it carries, whatever the status
                 "metrics": _declared(declaration.metrics),
             }
             frozen = freeze(data, f"evaluator {declaration.name}", RunError)
@@ -577,9 +579,10 @@ class EvaluationSession:
         ``problem``: the path and normalized definition; ``inputs``: the path, size and SHA-256
         of each file the stages read, by where it is named (``stages.generation.file``) or
         supplied (``supplied.simulation``), a file that could not be read with its path only;
-        ``evaluators``: the name, version, source identity and declared metrics of each, in
-        problem order; ``geometry``: the compact file, the source root, the fingerprint of the
-        unmodified geometry and what its external references read
+        ``implementations``: the version, stage, source identity and declared metrics of each
+        implementation the problem binds, by name, in the order it first binds them;
+        ``geometry``: the compact file, the source root, the fingerprint of the unmodified
+        geometry and what its external references read
         (:meth:`~k4opt.geometry.GeometrySource.external_files`); ``environment``:
         ``KEY4HEP_STACK`` and ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its
         git checkout, as every summary records them. The environment, k4opt and the external
@@ -596,11 +599,7 @@ class EvaluationSession:
                 label: {"path": str(file), **(identity or {})}
                 for label, (file, identity) in self._files.items()
             },
-            "evaluators": [
-                {"name": entry.name, "version": entry.version}
-                | {key: thaw(value) for key, value in self._taken[entry.name].items()}
-                for entry in self._spec.evaluators
-            ],
+            "implementations": {name: thaw(entry) for name, entry in self._taken.items()},
             "geometry": {
                 "compact": source.compact,
                 "source_root": str(source.root),
