@@ -828,6 +828,18 @@ def test_the_checked_in_examples_share_their_stages(
             "samples.pion.simulation.physics.list: ddsim reads a single value for this option",
         ),
         (
+            lambda d: d["stages"]["simulation"].update({"physics.list": float("nan")}),
+            "stages.simulation.physics.list: non-finite number nan is not allowed",
+        ),
+        (
+            lambda d: d["stages"]["generation"]["energy"].update(value=float("inf")),
+            "stages.generation.energy.value: non-finite number inf is not allowed",
+        ),
+        (
+            lambda d: d["samples"]["pion"]["simulation"].update({"physics.list": float("nan")}),
+            "samples.pion.simulation.physics.list: non-finite number nan is not allowed",
+        ),
+        (
             lambda d: d["stages"]["generation"]["energy"].update(value=-1),
             "stages.generation.energy.value: must be positive, got -1",
         ),

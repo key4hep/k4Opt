@@ -549,13 +549,28 @@ def _stage(where: str, place: _Place, m: Mapping[str, Any]) -> Stage:
                     place.key(key),
                     f"{executor} runs inside {inside}, which sets the {key}; set {instead} instead",
                 )
-    options = freeze({key: value for key, value in m.items() if key not in _STAGE_KEYS}, path)
+    raw = {key: value for key, value in m.items() if key not in _STAGE_KEYS}
+    try:
+        options = freeze(raw, path)
+    except ProblemConfigError as exc:  # its message starts with the stage: samples.g.simulation...
+        raise ProblemConfigError(_relocated(str(exc), place, raw)) from exc
     assert isinstance(options, Mapping)
     try:
         spec.options(options)
     except DdsimError as exc:  # its message starts with the stage: generation.particle: ...
         raise ProblemConfigError(_located(str(exc), place, options)) from exc
     return Stage(name, executor=executor, events=events, seed=seed, options=options)
+
+
+def _relocated(message: str, place: _Place, options: Mapping[str, object]) -> str:
+    """A ``message`` about an option of the stage at ``place`` that names the whole stage
+    (``samples.g.simulation (from stages.simulation).physics.list: ...``), pointing at where
+    the option was written."""
+    for key in sorted(options, key=len, reverse=True):  # options may hold dots: physics.list
+        prefix = f"{place.path}.{key}"
+        if message.startswith(prefix) and message[len(prefix) : len(prefix) + 1] in (".", "[", ":"):
+            return f"{place.key(key)}{message[len(prefix) :]}"
+    return message
 
 
 def _located(message: str, place: _Place, options: Mapping[str, Json]) -> str:
