@@ -238,6 +238,23 @@ def _record(output: Path, number: int) -> str:
     return (output / f"trial-{number:06d}" / "summary.json").read_text()
 
 
+def test_a_warning_shows_what_the_study_holds_escaped(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    pytest.importorskip("optuna")
+    output = tmp_path / "s"
+    code, _, _ = optimize(
+        str(write_problem()), "--trials", "1", "--seed", "1", "--output", str(output)
+    )
+    assert code == 0
+    moved = tmp_path / "study\x1b[2J"  # a directory name that would clear the screen
+    output.rename(moved)
+    (moved / "trial-000099").mkdir()  # warned about, with the study's path
+    code, _, err = study("show", str(moved))
+    assert code == 0 and err.startswith("k4opt: warning: trial-000099 in ")
+    assert "\x1b" not in err and "study\\x1b[2J" in err
+
+
 def test_study_commands_say_what_they_cannot_read(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:

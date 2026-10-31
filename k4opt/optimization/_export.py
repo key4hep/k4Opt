@@ -15,6 +15,7 @@ import io
 import json
 import os
 import unicodedata
+import urllib.parse
 from pathlib import Path
 from typing import TextIO
 
@@ -40,9 +41,14 @@ def _stages(results: StudyResults) -> list[str]:
 
 
 def _escaped(name: str) -> str:
-    """A stage or metric name as a column name holds it: ``%``, ``/`` and ``:`` percent-escaped,
-    so that neither the ``/`` between stage and metric nor a ``:`` suffix can be part of it."""
-    return name.replace("%", "%25").replace("/", "%2F").replace(":", "%3A")
+    """A name from the problem as a column name holds it: ``%``, ``/``, ``:`` and control
+    characters percent-escaped (``urllib.parse.unquote`` reverses it), so that neither the ``/``
+    between stage and metric nor a ``:`` suffix can be part of it, and a terminal that shows the
+    header runs nothing."""
+    return "".join(
+        urllib.parse.quote(c, safe="") if c in "%/:" or unicodedata.category(c) == "Cc" else c
+        for c in name
+    )
 
 
 def columns(results: StudyResults) -> list[str]:
@@ -59,7 +65,7 @@ def _columns(results: StudyResults, stages: list[str]) -> list[str]:
         "feasible",
         "pareto",
         "recovered",
-        *(f"parameter:{p.geometry.canonical_target}" for p in spec.parameters),
+        *(f"parameter:{_escaped(p.geometry.canonical_target)}" for p in spec.parameters),
         *(
             f"objective:{_escaped(o.stage)}/{_escaped(o.metric)}{part}"
             for o in spec.objectives

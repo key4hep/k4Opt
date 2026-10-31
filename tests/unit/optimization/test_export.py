@@ -101,7 +101,7 @@ def test_the_csv_holds_one_row_per_trial_with_every_value_as_recorded(
 
 def test_column_names_stay_distinct_whatever_the_stages_and_metrics_are_called() -> None:
     named = [("analysis", "count"), ("analysis", "count:unit"), ("analysis/x", "y")]
-    named += [("analysis", "x/y"), ("analysis", "50%")]  # all valid, all distinct objectives
+    named += [("analysis", "x/y"), ("analysis", "50%"), ("analysis", "cells\x1b[2J")]  # all valid
     spec = parse_problem(problem_document(objectives=[(s, m, "minimize") for s, m in named]))
     measured = tuple(Measurement(s, m, float(i), unit=f"u{i}") for i, (s, m) in enumerate(named))
     trial = TrialResult(0, "valid", {RADIUS: 300.0}, Path("t"), Assessment(measured, (), True))
@@ -111,8 +111,10 @@ def test_column_names_stay_distinct_whatever_the_stages_and_metrics_are_called()
     escaped = ["analysis/count", "analysis/count%3Aunit", "analysis%2Fx/y", "analysis/x%2Fy"]
     escaped += ["analysis/50%25"]
     (row,) = csv.DictReader(io.StringIO(to_csv(study)))
-    assert [row[f"objective:{name}"] for name in escaped] == ["0.0", "1.0", "2.0", "3.0", "4.0"]
-    assert [row[f"objective:{name}:unit"] for name in escaped] == ["u0", "u1", "u2", "u3", "u4"]
+    escaped += ["analysis/cells%1B[2J"]  # a terminal showing the header runs nothing
+    assert "\x1b" not in to_csv(study)
+    assert [row[f"objective:{name}"] for name in escaped] == [f"{i}.0" for i in range(6)]
+    assert [row[f"objective:{name}:unit"] for name in escaped] == [f"u{i}" for i in range(6)]
     # the stage and the metric read back: split at the one "/" left, then unescape each
     assert [tuple(map(urllib.parse.unquote, n.split("/"))) for n in escaped] == named
 

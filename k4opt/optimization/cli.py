@@ -23,7 +23,7 @@ from k4opt.evaluation import load_evaluator
 from k4opt.optimization import StudyResults, load_study, optimize
 from k4opt.optimization._export import FORMATS, export
 from k4opt.optimization._render import Progress, render_study
-from k4opt.optimization._show import render_results, render_trial
+from k4opt.optimization._show import printable, render_results, render_trial
 from k4opt.terminal import color, interactive
 
 
@@ -173,8 +173,8 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
 
 def _load(args: argparse.Namespace, err: TextIO) -> StudyResults:
     results = load_study(args.study, storage=args.storage)
-    for warning in results.warnings:
-        print(f"k4opt: warning: {warning}", file=err)
+    for warning in results.warnings:  # it can name a path or what a record holds
+        print(f"k4opt: warning: {printable(warning)}", file=err)
     return results
 
 

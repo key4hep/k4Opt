@@ -407,8 +407,9 @@ JSON, never 0 or NaN, and a float keeps all its digits.
 | `record`, `record_sha256`, `record_path` | the record's id, SHA-256 and path in the study |
 | `message` | why the trial is invalid, failed or an error |
 
-In a column name, a `%`, `/` or `:` within a stage or metric name is written `%25`, `%2F` or
-`%3A`, so each column names one thing: `objective:analysis/count%3Aunit` is the value of the
+In a column name, a `%`, `/`, `:` or control character within a name from the problem (a
+parameter reference, a stage or metric name) is percent-escaped (`%25`, `%2F`, `%3A`, `%1B`), so
+each column names one thing and the header holds nothing a terminal would run: `objective:analysis/count%3Aunit` is the value of the
 metric `count:unit`, and `objective:analysis/count:unit` the unit of `count`. Split such a name
 at its one `/` and unescape each part (`urllib.parse.unquote`) to get the stage and metric back.
 Booleans are `true` and `false`; control characters in text are escaped (`\x1b`), tab and
