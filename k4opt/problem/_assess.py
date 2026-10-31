@@ -19,6 +19,7 @@ from fractions import Fraction
 from typing import Any, Literal, NamedTuple, cast
 
 from k4opt.evaluation import EvaluationContractError, Measurement, Scalar, Status
+from k4opt.frozen import thaw
 from k4opt.problem._evaluate import CandidateRecord, MetricKey, _validate_candidate
 from k4opt.problem._stages import STAGE_TYPES, changed_by_geometry
 from k4opt.problem._tasks import (
@@ -166,8 +167,9 @@ class Assessment:
         """Recompute the assessment of a run record (``summary.json`` as read back) and check
         the record against it.
 
-        The record's ``implementations`` must be those the problem binds, with its versions, and
-        its ``evaluations`` its bindings, each of the implementation the problem binds it to.
+        The record's ``implementations`` must be those the problem binds, with its versions and
+        stages, and its ``evaluations`` its bindings, each of the implementation the problem binds
+        it to, with the settings (``declared``) and collections the problem gives it.
         The candidate's tasks are planned again from the problem and the stages the record says
         were ``supplied``: each must read what the plan says, be ``blocked`` exactly when a task
         it reads did not succeed (by the tasks the plan makes it blocked by, with their message)
@@ -400,7 +402,8 @@ def _implementations(
     spec: ProblemSpec, record: Mapping[str, object]
 ) -> dict[str, dict[MetricKey, str] | None]:
     """The metrics each implementation of the record declares (``None``: none), by name; they
-    must be those the problem binds, in the order it first binds them, with its versions."""
+    must be those the problem binds, in the order it first binds them, with its versions and
+    reading the stage its entries say."""
     implementations = _mapping(record.get("implementations"), "implementations")
     versions = {entry.name: entry.version for entry in spec.evaluators}
     if list(implementations) != list(versions):
@@ -417,6 +420,12 @@ def _implementations(
                 f"{where}: version {implementation.get('version')!r}, but the problem binds "
                 f"version {versions[name]!r}"
             )
+        for entry in spec.evaluators:
+            if entry.name == name and implementation.get("stage") != entry.stage:
+                raise RecordError(
+                    f"{where}: stage {implementation.get('stage')!r}, but the problem has it read "
+                    f"{entry.stage!r}"
+                )
         declared[name] = _declared(implementation.get("metrics"), where)
     return declared
 
@@ -426,7 +435,9 @@ def _evaluations(
     record: Mapping[str, object],
     declared: Mapping[str, Mapping[MetricKey, str] | None],
 ) -> dict[str, _Evaluator]:
-    """Each binding of the record by name, in problem order, checked as a live result is."""
+    """Each binding of the record by name, in problem order, checked as a live result is: of the
+    implementation the problem binds it to, with the settings and collections the problem gives
+    it."""
     evaluations = _mapping(record.get("evaluations"), "evaluations")
     bindings = [entry.binding for entry in spec.evaluators]
     if list(evaluations) != bindings:
@@ -442,6 +453,21 @@ def _evaluations(
             raise RecordError(
                 f"{where}: implementation {entry.get('implementation')!r}, but the problem binds "
                 f"{spec_entry.name!r}"
+            )
+        # as the problem wrote them; the settings used and the collections of roles the problem
+        # leaves to their defaults depend on the evaluator's code, which a record is read without
+        given = _plain(thaw(spec_entry.settings))
+        recorded = _mapping(entry.get("settings"), f"{where}: settings").get("declared")
+        if recorded != given:
+            raise RecordError(
+                f"{where}: settings.declared {recorded!r}, but the problem gives {given!r}"
+            )
+        collections = _mapping(entry.get("collections"), f"{where}: collections")
+        named = {role: collections.get(role) for role in spec_entry.collections}
+        if named != dict(spec_entry.collections):
+            raise RecordError(
+                f"{where}: collections {named!r}, but the problem gives "
+                f"{dict(spec_entry.collections)!r}"
             )
         fragment = _fragment(entry, where, set(Status))
         metrics = declared[spec_entry.name]

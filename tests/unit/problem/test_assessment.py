@@ -429,6 +429,16 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_set("evaluations", {"echo": {}}), "its evaluations are ['echo'], but the problem's"),
         (_set("implementations", {}), "its implementations are [], but the problem binds"),
         (_set("implementations/test.echo/version", "2"), "version '2', but the problem binds"),
+        # what the record says of a binding's code and inputs is the problem's, too
+        (
+            _set("implementations/test.echo/stage", "simulation"),
+            "implementation 'test.echo': stage 'simulation', but the problem has it read None",
+        ),
+        (
+            _set(f"{ECHOED}/settings/declared", {"invalid_below": 999}),
+            "evaluator 'test.echo': settings.declared {'invalid_below': 999}, but the problem",
+        ),
+        (_set(f"{ECHOED}/settings", None), "evaluator 'test.echo': settings must be a mapping"),
         (_set(f"{ECHOED}/measurements", []), "is valid but did not measure"),
         (_set(f"{ECHOED}/measurements/0/value", "450"), "must be a number"),
         (_set(f"{ECHOED}/measurements/0/value", 400.0), "recorded"),

@@ -554,8 +554,9 @@ objective values; it is only outside the limits.
 `Assessment.from_summary(spec, summary)` recomputes the assessment of a `summary.json` as read
 back: the candidate's status from its tasks', each objective and constraint value from the own
 measurements of the binding it names. The record's `implementations` must be the evaluators the
-problem binds, with its versions, and its `evaluations` its bindings, each of the evaluator the
-problem binds it to. It checks again what a live evaluation enforces: the candidate is in the
+problem binds, with its versions and stages, and its `evaluations` its bindings, each of the
+evaluator the problem binds it to, with the `settings` (as `declared`) and `collections` the
+problem gives it. It checks again what a live evaluation enforces: the candidate is in the
 problem's domains and `candidate_key` is its key, an `invalid` or `failed` evaluator gives a
 message, each measurement of a metric its evaluator declares carries the declared unit, a
 binding whose evaluator declares metrics declares those named of it, and a constraint that

@@ -2021,6 +2021,24 @@ def change(data: dict[str, Any], path: str, value: Any) -> None:
         ("supplied", ["simulation"], "but the problem makes ['simulation']"),
         ("supplied", ["geometry"], "supplied ['geometry'] must list stages"),
         ("supplied", ["simulation", "simulation"], "must list each stage once"),
+        # what a binding was configured with is the problem's, not the record's to say
+        (
+            "evaluations/test.cell_count/collections/hits",
+            "OtherCollection",
+            "evaluator 'test.cell_count': collections {'hits': 'OtherCollection'}, but the "
+            "problem gives {'hits': ",
+        ),
+        (
+            "evaluations/test.cell_count/settings/declared",
+            {"threshold": 1},
+            "evaluator 'test.cell_count': settings.declared {'threshold': 1}, but the problem",
+        ),
+        (
+            "implementations/test.cell_count/stage",
+            "generation",
+            "implementation 'test.cell_count': stage 'generation', but the problem has it read "
+            "'simulation'",
+        ),
         ("message", "simulation failed: boom", "but its tasks make it"),
         ("status", "valid", "status is 'valid', but its tasks make it 'failed'"),
     ],
