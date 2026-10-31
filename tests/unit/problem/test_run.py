@@ -1086,6 +1086,8 @@ def test_an_unwritable_evaluator_directory_is_a_recorded_failure(
     assert outcome.candidate.status == "failed"
     assert "cannot create evaluator directory" in outcome.candidate.message
     assert outcome.summary_path.is_file()
+    (evaluation,) = outcome.summary["samples"]["gamma"]["evaluations"].values()  # type: ignore[index]
+    assert evaluation["workdir"] is None  # it was not called
 
 
 # --- several evaluators of one candidate ---------------------------------------------------

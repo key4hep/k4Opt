@@ -712,13 +712,13 @@ def _measure(
     if error is not None:
         result = EvaluationResult.failed(error)
         return _record(spec, task, entry, evaluator, key, request, result), {}
-    request = replace(request, workdir=workdir)
     if workdir is not None:
         try:
             workdir.mkdir(parents=True)
-        except OSError as exc:
+        except OSError as exc:  # not called, so its request has no directory
             result = EvaluationResult.failed(f"cannot create evaluator directory {workdir}: {exc}")
             return _record(spec, task, entry, evaluator, key, request, result), {}
+    request = replace(request, workdir=workdir)
     started = time.perf_counter()
     try:
         result = result_from(evaluator, evaluator.evaluate(request))
@@ -728,7 +728,9 @@ def _measure(
         result = EvaluationResult.invalid(str(exc))
     elapsed = time.perf_counter() - started
     record = _record(spec, task, entry, evaluator, key, request, result, elapsed)
-    made = _artifacts(task, evaluator, result, workdir)
+    # what it declared when bound, which the record holds, not what it declares now
+    declared = dict(prepared.binding.evaluations)[task].declaration.artifacts
+    made = _artifacts(task, declared, result, workdir)
     changed = changed_files(reads.values())
     if changed:  # what it returned stays, as diagnostics of a failed result
         result = EvaluationResult.failed(
@@ -750,16 +752,18 @@ def _changed_during(refs: Sequence[str]) -> str:
 
 
 def _artifacts(
-    task: TaskId, evaluator: EvaluatorProtocol, result: EvaluationResult, workdir: Path | None
+    task: TaskId,
+    declared: Mapping[str, str] | None,
+    result: EvaluationResult,
+    workdir: Path | None,
 ) -> dict[str, Made]:
     """The artifacts of the result of the evaluation ``task``, each hashed once, now.
 
     Each must be a file in the evaluation's own directory ``workdir``, its links resolved. An
-    evaluator that declares ``artifacts`` returns no other, and a ``valid`` result of it every
+    evaluator that ``declared`` artifacts returns no other, and a ``valid`` result of it every
     one. Raises :class:`EvaluationContractError`.
     """
     where = f"evaluator {task.label!r}"
-    declared = declared_artifacts(evaluator)
     if declared is not None:
         unknown = [name for name in result.artifacts if name not in declared]
         if unknown:

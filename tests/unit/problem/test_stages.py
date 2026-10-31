@@ -1318,6 +1318,26 @@ def test_an_artifact_needs_a_directory_of_the_evaluation(
         evaluate(spec, {CELL: 6}, Without, inputs={"gamma/simulation": events})
 
 
+def test_artifacts_are_checked_against_what_the_evaluator_declared_when_bound(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the record holds the declaration of the binding, so a later one cannot pass for it
+    simulation.install(monkeypatch)
+
+    def redeclaring(workdir: Path) -> dict[str, Path]:
+        return {"histogram": written(workdir / "histogram.txt")}
+
+    class Redeclaring(returning(redeclaring, {"plot": "a plot"})):  # type: ignore[misc]
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            self.artifacts = {"histogram": "counts"}
+            return super().evaluate(request)
+
+    with pytest.raises(EvaluationContractError, match="histogram, which it does not declare"):
+        evaluate(
+            spec, {CELL: 6}, Redeclaring, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
+
+
 def test_a_failed_result_need_not_return_its_declared_artifacts(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
