@@ -63,14 +63,14 @@ def request(tmp_path: Path, **changes: Any) -> EvaluationRequest:
 
 def evaluate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *events: Event) -> dict[str, Any]:
     simulation.install_events(monkeypatch, events)
-    evaluator = calo_photon()
+    evaluator = calo_photon()()
     result = result_from(evaluator, evaluator.evaluate(request(tmp_path)))
     assert result.status is Status.VALID
     return {m.metric: m for m in result.measurements}
 
 
 def test_the_evaluator_asks_for_the_simulation_stage() -> None:
-    assert calo_photon().stage == "simulation"
+    assert calo_photon()().stage == "simulation"
 
 
 def test_valid_run_reports_means_and_standard_errors(
@@ -137,7 +137,7 @@ def test_cells_without_energy_give_no_direction_at_threshold_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     simulation.install_events(monkeypatch, [event([cell(0), cell(2)]), event([cell(0, 0.0)])])
-    evaluator = calo_photon()
+    evaluator = calo_photon()()
     zero = request(tmp_path, settings={"threshold": 0.0})
     measured = {m.metric: m for m in result_from(evaluator, evaluator.evaluate(zero)).measurements}
     assert measured[CELLS].value == pytest.approx(1.5)  # at the threshold, so the cell fires
@@ -164,7 +164,7 @@ def test_nothing_to_measure_is_invalid_not_a_zero(
 ) -> None:
     simulation.install_events(monkeypatch, events)
     with pytest.raises(EvaluationInvalid, match="no photon reached the calorimeter"):
-        calo_photon().evaluate(request(tmp_path))
+        calo_photon()().evaluate(request(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -189,7 +189,7 @@ def test_an_unusable_simulation_output_fails_never_gives_a_value(
 ) -> None:
     simulation.install_events(monkeypatch, events)
     with pytest.raises(EvaluationFailed, match=message):
-        calo_photon().evaluate(request(tmp_path))
+        calo_photon()().evaluate(request(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -203,7 +203,7 @@ def test_an_unusable_simulation_output_fails_never_gives_a_value(
 )
 def test_unsupported_settings_raise(tmp_path: Path, settings: dict[str, Any]) -> None:
     with pytest.raises(EvaluationContractError):
-        calo_photon().check(request(tmp_path, settings=settings))
+        calo_photon()().check(request(tmp_path, settings=settings))
 
 
 @pytest.mark.parametrize(
@@ -215,7 +215,7 @@ def test_unsupported_settings_raise(tmp_path: Path, settings: dict[str, Any]) ->
     ],
 )
 def test_the_threshold_is_received_in_gev(threshold: dict[str, Any], received: float) -> None:
-    assert with_defaults(calo_photon(), {"threshold": threshold}) == {"threshold": received}
+    assert with_defaults(calo_photon()(), {"threshold": threshold}) == {"threshold": received}
 
 
 @pytest.mark.parametrize(
@@ -229,17 +229,17 @@ def test_the_threshold_is_received_in_gev(threshold: dict[str, Any], received: f
 )
 def test_a_threshold_without_an_energy_unit_is_refused(threshold: Any, message: str) -> None:
     with pytest.raises(EvaluationContractError, match=rf"settings\.threshold.*{message}"):
-        with_defaults(calo_photon(), {"threshold": threshold})
+        with_defaults(calo_photon()(), {"threshold": threshold})
 
 
 def test_the_problem_names_the_hits_and_may_rename_the_particles() -> None:
-    assert collection_names(calo_photon(), {"hits": COLLECTION}) == COLLECTIONS
+    assert collection_names(calo_photon()(), {"hits": COLLECTION}) == COLLECTIONS
     renamed = {"hits": COLLECTION, "particles": "Truth"}
-    assert collection_names(calo_photon(), renamed) == renamed
+    assert collection_names(calo_photon()(), renamed) == renamed
     with pytest.raises(EvaluationContractError, match=r"missing \['hits'\]"):
-        collection_names(calo_photon(), {})
+        collection_names(calo_photon()(), {})
     with pytest.raises(EvaluationContractError, match=r"unknown \['hit'\]"):
-        collection_names(calo_photon(), {"hit": COLLECTION})
+        collection_names(calo_photon()(), {"hit": COLLECTION})
 
 
 def test_importing_the_evaluator_does_not_import_podio() -> None:

@@ -30,7 +30,7 @@ from optuna.storages import BaseStorage
 from optuna.trial import FrozenTrial, Trial, TrialState
 
 from k4opt.errors import K4OptError
-from k4opt.evaluation import EvaluatorProtocol
+from k4opt.evaluation import EvaluatorFactory
 from k4opt.optimization._optuna.optimizer import (
     STARTUP_TRIALS,
     check_optuna_study,
@@ -315,7 +315,7 @@ def _study_report(run: _Study) -> StudyReport:
 
 def optimize(
     problem: str | os.PathLike[str],
-    evaluators: Sequence[EvaluatorProtocol],
+    implementations: Sequence[EvaluatorFactory],
     output: str | os.PathLike[str],
     *,
     trials: int,
@@ -337,7 +337,7 @@ def optimize(
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
     # everything that can be checked before a file is created
-    session = EvaluationSession.open(problem, evaluators, timeout=timeout)
+    session = EvaluationSession.open(problem, implementations, timeout=timeout)
     spec = session.spec
     space = search_space(spec)  # the evaluators' settings were checked when the session opened
     identity: dict[str, Any] = session.identity()

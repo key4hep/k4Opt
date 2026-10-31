@@ -8,7 +8,8 @@ status, zero or more :class:`Measurement` objects, named artifacts), or just
 not depend on a problem file, a geometry or the Key4hep stack, and does not prescribe stages.
 Running evaluators, looking them up by the name in ``problem.yaml`` and persisting results are
 not part of it;
-:func:`load_evaluator` only turns ``FILE.py:Class`` into an evaluator object.
+:func:`load_evaluator` only turns ``FILE.py:Class`` into an evaluator class, of which k4opt
+creates an instance for each candidate (an :data:`EvaluatorFactory`).
 An :class:`EvaluationRecord` pairs one request and result with what the framework observed.
 See ``docs/evaluation.md``.
 
@@ -60,7 +61,7 @@ from k4opt.evaluation.models import (
     Scalar,
     Status,
 )
-from k4opt.evaluation.protocol import EvaluatorProtocol
+from k4opt.evaluation.protocol import EvaluatorFactory, EvaluatorProtocol
 
 __all__ = [
     "CandidateKey",
@@ -72,6 +73,7 @@ __all__ = [
     "EvaluationRequest",
     "EvaluationResult",
     "Evaluator",
+    "EvaluatorFactory",
     "EvaluatorLoadError",
     "EvaluatorProtocol",
     "Event",

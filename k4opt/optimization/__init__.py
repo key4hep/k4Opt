@@ -32,7 +32,7 @@ import contextlib
 import os
 from collections.abc import Callable, Iterator, Sequence
 
-from k4opt.evaluation import EvaluatorProtocol
+from k4opt.evaluation import EvaluatorFactory
 from k4opt.optimization._results import StudyResults, TrialResult
 from k4opt.optimization._study import STUDY_NAME, StudyReport, TrialReport
 from k4opt.optimization.errors import OptimizationError
@@ -66,7 +66,7 @@ def _needs_optuna(what: str) -> Iterator[None]:
 
 def optimize(
     problem: str | os.PathLike[str],
-    evaluators: Sequence[EvaluatorProtocol],
+    implementations: Sequence[EvaluatorFactory],
     output: str | os.PathLike[str],
     *,
     trials: int,
@@ -79,15 +79,17 @@ def optimize(
 ) -> StudyReport:
     """Run ``trials`` new trials of a study of the problem file ``problem`` in ``output``.
 
-    ``evaluators`` implement the problem's ``evaluators``. A new study needs an ``output`` that
-    does not exist or is empty; ``seed`` (in [0, 2**32)) seeds the sampler, one is drawn and
-    recorded without it. ``resume`` continues the study in ``output``: it must have been made
-    with the same problem, files, evaluators, geometry, Key4hep stack, k4opt code and Optuna
-    version, and is refused otherwise; trials an interrupted session left running are finished
-    first and do not count among ``trials``. ``storage`` is an Optuna database URL in place of
-    the journal file in ``output``, given again on every resume. ``timeout`` is how many
-    seconds a trial's simulation may take before ddsim is killed and the trial fails; it is not
-    part of the study, so a resume may set another one.
+    ``implementations`` (evaluator classes, as :func:`~k4opt.evaluation.load_evaluator` returns
+    them) implement the problem's ``evaluators``; every trial gets new instances. A new study
+    needs an ``output`` that does not exist or is empty; ``seed`` (in [0, 2**32)) seeds the
+    sampler, one is drawn and recorded without it. ``resume`` continues the study in
+    ``output``: it must have been made with the same problem, files, evaluators, geometry,
+    Key4hep stack, k4opt code and Optuna version, and is refused otherwise; trials an
+    interrupted session left running are finished first and do not count among ``trials``.
+    ``storage`` is an Optuna database URL in place of the journal file in ``output``, given
+    again on every resume. ``timeout`` is how many seconds a trial's simulation may take before
+    ddsim is killed and the trial fails; it is not part of the study, so a resume may set
+    another one.
 
     ``warn`` is called with each warning, ``progress`` with each trial as it ends, the trials a
     resume finishes first (``recovered``). Invalid and failed candidates are FAIL trials and the
@@ -101,7 +103,7 @@ def optimize(
         from k4opt.optimization import _optuna
     return _optuna.optimize(
         problem,
-        evaluators,
+        implementations,
         output,
         trials=trials,
         seed=seed,

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol
 
 from k4opt.evaluation.base import Values
@@ -37,3 +38,9 @@ class EvaluatorProtocol(Protocol):
         misuse (a missing required input, say) may raise anything else.
         """
         ...
+
+
+type EvaluatorFactory = Callable[[], EvaluatorProtocol]
+"""What k4opt is given to evaluate with: an evaluator class, or any callable without arguments that
+returns a new evaluator. k4opt calls it for a new instance whenever it needs one, so no state
+of an instance reaches another candidate."""

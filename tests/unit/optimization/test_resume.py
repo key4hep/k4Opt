@@ -225,6 +225,13 @@ def test_location_is_not_identity(
     )
     assert [t.status for t in report.trials] == ["valid", "valid"]
     assert log.warnings == []
+    # where the evaluator was loaded from is recorded, as what loads it again, but is no identity
+    study = json.loads((moved_output / "study.json").read_text())
+    reference = study["evaluators"][0]["source"]["reference"]
+    assert reference == f"{tmp_path / 'a' / 'trade_off.py'}:TradeOff"
+    assert summary(moved_output, 1)["evaluators"][0]["source"]["reference"] == (
+        f"{tmp_path / 'b' / 'trade_off.py'}:TradeOff"
+    )
 
 
 def test_another_baseline_geometry_or_stack_refuses(

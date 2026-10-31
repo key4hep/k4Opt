@@ -147,12 +147,12 @@ def _register_study(commands: argparse._SubParsersAction[argparse.ArgumentParser
 
 
 def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
-    evaluators = [load_evaluator(reference) for reference in args.evaluator]
+    implementations = [load_evaluator(reference) for reference in args.evaluator]
     try:
         with Progress(args.trials, out, err, bar=interactive(out), color=color(out)) as progress:
             report = optimize(
                 args.problem,
-                evaluators,
+                implementations,
                 args.output,
                 trials=args.trials,
                 seed=args.seed,

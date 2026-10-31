@@ -1,10 +1,11 @@
 """Candidates of a problem file, evaluated end to end (behind ``k4opt evaluate``).
 
-:class:`EvaluationSession` loads the problem once, binds and checks the evaluators and records
-the identity of every file the problem names. For each candidate it then validates the
-candidate, checks the evaluators' requests for it and that no such file changed (nothing is
-created before this succeeds), creates the new run directory, materializes the candidate's
-geometry into it, measures the candidate with every evaluator through
+:class:`EvaluationSession` loads the problem once, binds and checks the evaluator
+implementations and records the identity of every file the problem names. For each candidate it
+then validates the candidate, creates a new instance of each evaluator and checks its request
+for the candidate, checks that no such file changed (nothing is created before this succeeds),
+creates the new run directory, materializes the candidate's geometry into it, measures the
+candidate with those instances through
 :func:`k4opt.problem._evaluate._execute_plan`, which runs each pipeline stage once, assesses it
 against the objectives and constraints (:mod:`k4opt.problem._assess`) and writes
 ``summary.json``. :func:`run_candidate` evaluates one candidate given as ``REFERENCE=VALUE``
@@ -28,11 +29,10 @@ from k4opt import __version__
 from k4opt.evaluation import (
     CandidateKey,
     EvaluationRecord,
-    EvaluatorProtocol,
+    EvaluatorFactory,
     Measurement,
     Scalar,
     evaluator_source,
-    metric_units,
 )
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import GeometryError, GeometrySource, MaterializationResult, Override
@@ -40,7 +40,9 @@ from k4opt.jsonio import write_json
 from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
 from k4opt.problem._evaluate import (
     CandidateRecord,
+    MetricKey,
     _bind_problem,
+    _Binding,
     _execute_plan,
     _Plan,
     _preflight,
@@ -265,9 +267,9 @@ def _run_reference(run: Mapping[str, Json] | None) -> object:
     return thaw(freeze(run, "run", RunError))
 
 
-def _declared(evaluator: EvaluatorProtocol) -> list[dict[str, str]] | None:
-    """The metrics ``evaluator`` declares, each with its unit; ``None`` if it declares none."""
-    units = metric_units(evaluator)
+def _declared(units: Mapping[MetricKey, str] | None) -> list[dict[str, str]] | None:
+    """The metrics an evaluator declares (``units``), each with its unit; ``None`` if it declares
+    none."""
     if units is None:
         return None
     return [{"stage": s, "metric": m, "unit": unit} for (s, m), unit in units.items()]
@@ -394,12 +396,15 @@ class EvaluationSession:
     """Candidates of one problem, evaluated one after another with the same evaluators.
 
     :meth:`open` loads the problem file once, so later edits to it do not reach the session,
-    binds the evaluators to it and checks what does not depend on a candidate. It also records
-    the identity (size and SHA-256) of every file the stages read: a stage given as a ``file``, a
-    file a ddsim option names, a file the caller supplies, and what the geometry's external
-    references read. Each candidate is then checked afresh, by :meth:`check` and again by
-    :meth:`evaluate`: its values against the parameter domains, each evaluator's ``check()`` with
-    a request made for this candidate, and that none of those files, the environment or k4opt's
+    binds the evaluator implementations to it and checks what does not depend on a candidate.
+    It also records the identity (size and SHA-256) of every file the stages read: a stage given
+    as a ``file``, a file a ddsim option names, a file the caller supplies, and what the
+    geometry's external references read. Every candidate gets a new instance of each evaluator,
+    so no state of one reaches another candidate; it must declare what the first instance,
+    created when the session opened, declared (its class, name, version, stage and metrics).
+    Each candidate is then checked afresh, by :meth:`check` and again by :meth:`evaluate`: its
+    values against the parameter domains, the ``check()`` of each new instance with a request
+    made for this candidate, and that none of those files, the environment or k4opt's
     code changed, which :meth:`evaluate` checks again before it writes the record. A candidate
     whose values change a ``ref`` can name an external file of its own; what it reads is
     recorded, and must not change while the candidate runs nor between the candidates that name
@@ -407,7 +412,7 @@ class EvaluationSession:
     """
 
     __slots__ = (
-        "_evaluators",
+        "_binding",
         "_externals",
         "_files",
         "_inputs",
@@ -424,7 +429,7 @@ class EvaluationSession:
         self,
         path: Path,
         spec: ProblemSpec,
-        evaluators: tuple[EvaluatorProtocol, ...],
+        binding: _Binding,
         inputs: Mapping[str, Path],
         files: Mapping[str, tuple[Path, Mapping[str, Json] | None]],
         externals: Mapping[str, Json],
@@ -436,7 +441,7 @@ class EvaluationSession:
         """Use :meth:`open`."""
         self._path = path
         self._spec = spec
-        self._evaluators = evaluators
+        self._binding = binding
         self._inputs = FrozenMap(inputs)
         self._files = FrozenMap(files)
         self._externals = externals
@@ -451,28 +456,33 @@ class EvaluationSession:
     def open(
         cls,
         problem_path: str | os.PathLike[str],
-        evaluators: Sequence[EvaluatorProtocol],
+        implementations: Sequence[EvaluatorFactory],
         *,
         inputs: Mapping[str, str | os.PathLike[str]] | None = None,
         timeout: float | None = None,
     ) -> EvaluationSession:
-        """Load the problem file ``problem_path`` to evaluate its candidates with ``evaluators``.
+        """Load the problem file ``problem_path`` to evaluate its candidates with
+        ``implementations``.
 
-        ``evaluators`` implement the problem's ``evaluators``, in any order. ``inputs`` maps a
-        stage to a file that stands in for it (``k4opt evaluate --input``): that stage does not
-        run, nor do the stages only it needs, and a supplied stage that the parameters change was
-        not made from the candidate, which every outcome says (``represents_candidate``).
-        ``timeout`` is how many seconds a stage that runs a program (ddsim) may take: one that
-        runs longer is killed, and its candidate fails with the logs kept. Raises
-        a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator, stage or input, and
-        :class:`~k4opt.problem.RunError` if k4opt's own files changed since this process first
-        identified them (:func:`k4opt.revision.code_unchanged`).
+        ``implementations`` (evaluator classes, as :func:`~k4opt.evaluation.load_evaluator`
+        returns them) implement the problem's ``evaluators``, in any order; one instance of each
+        is created now to bind it to the problem, and a new one for every candidate. ``inputs``
+        maps a stage to a file that stands in for it (``k4opt evaluate --input``): that stage
+        does not run, nor do the stages only it needs, and a supplied stage that the parameters
+        change was not made from the candidate, which every outcome says
+        (``represents_candidate``). ``timeout`` is how many seconds a stage that runs a program
+        (ddsim) may take: one that runs longer is killed, and its candidate fails with the logs
+        kept. Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
+        stage or input (an :class:`~k4opt.evaluation.EvaluationContractError` for an
+        implementation that cannot be created, too), and :class:`~k4opt.problem.RunError` if
+        k4opt's own files changed since this process first identified them
+        (:func:`k4opt.revision.code_unchanged`).
         """
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         limit = _timeout(timeout)
         spec = load_problem(path)
         supplied = _supplied(inputs or {})
-        binding = _bind_problem(spec, evaluators, supplied)
+        binding = _bind_problem(spec, implementations, supplied)
         for stage in supplied:  # read by an evaluator, given the other supplied stages
             if stage not in plan_stages(*binding.targets, provided=supplied.keys() - {stage}):
                 raise RunError(f"input {stage}: no evaluator of the problem reads that stage")
@@ -484,11 +494,15 @@ class EvaluationSession:
         externals = freeze(spec._source.external_files(spec._catalog), "geometry", RunError)
         assert isinstance(externals, Mapping)
         taken = {}
-        for evaluator in evaluators:
-            data = {"source": evaluator_source(evaluator), "metrics": _declared(evaluator)}
-            frozen = freeze(data, f"evaluator {evaluator.name}", RunError)
+        for bound in binding.evaluators:  # what the first instances declared
+            declaration = bound.declaration
+            data = {
+                "source": evaluator_source(declaration.cls),
+                "metrics": _declared(declaration.metrics),
+            }
+            frozen = freeze(data, f"evaluator {declaration.name}", RunError)
             assert isinstance(frozen, Mapping)
-            taken[evaluator.name] = frozen
+            taken[declaration.name] = frozen
         # before anything runs, so that an edit to the checkout during a long run is not
         # recorded as the code that ran, nor a later change of the environment as the session's
         environment = {name: os.environ.get(name) for name in ("KEY4HEP_STACK", "K4GEO")}
@@ -500,7 +514,7 @@ class EvaluationSession:
         return cls(
             path.absolute(),
             spec,
-            tuple(evaluators),
+            binding,
             supplied,
             files,
             externals,
@@ -654,8 +668,8 @@ class EvaluationSession:
         """Check ``candidate`` as :meth:`evaluate` does before it creates anything, and stop there.
 
         ``candidate`` maps each canonical parameter reference to its value. Raises
-        :class:`~k4opt.problem.CandidateError` for a value outside its domain, what an
-        evaluator's ``check()`` raises for the request this candidate gives it, and
+        :class:`~k4opt.problem.CandidateError` for a value outside its domain, what creating an
+        evaluator or its ``check()`` raises for the request this candidate gives it, and
         :class:`~k4opt.problem.RunError` for a file the stages or the geometry read, the
         environment or k4opt's code that changed since the session opened.
         """
@@ -767,10 +781,11 @@ class EvaluationSession:
     def _prepare(
         self, candidate: Mapping[str, Scalar]
     ) -> tuple[dict[str, Scalar], CandidateKey, _Plan, list[Override]]:
-        """The checked candidate, its key, its plan (requests made for it) and its overrides."""
+        """The checked candidate, its key, its plan (its own evaluator instances and the requests
+        made for it) and its overrides."""
         values, key = _validate_candidate(self._spec, candidate)
         self._verify()  # first: a file that is gone changed, more than it is missing
-        plan = _preflight(self._spec, values, self._evaluators, provided=self._inputs)
+        plan = _preflight(self._binding, values)
         overrides = _overrides(self._spec, values)
         return values, key, plan, overrides
 
@@ -794,7 +809,7 @@ def run_candidate(
     assignments: Sequence[str],
     output: str | os.PathLike[str],
     *,
-    evaluators: Sequence[EvaluatorProtocol],
+    implementations: Sequence[EvaluatorFactory],
     inputs: Sequence[str] = (),
     timeout: float | None = None,
     warn: Callable[[str], None] | None = None,
@@ -807,7 +822,7 @@ def run_candidate(
     the warnings are also kept in the summary.
     """
     session = EvaluationSession.open(
-        problem_path, evaluators, inputs=_parse_inputs(inputs), timeout=timeout
+        problem_path, implementations, inputs=_parse_inputs(inputs), timeout=timeout
     )
     values = _parse_candidate(session.spec, assignments)
     _validate_candidate(session.spec, values)  # a wrong candidate is reported before the warnings

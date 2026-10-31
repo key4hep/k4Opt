@@ -20,30 +20,35 @@ from k4opt.revision import tracked_revision
 # by class, not module: importlib.reload() runs new code in the same module object, and the
 # classes it creates must not inherit the identity of the code they replace
 _SOURCES: WeakKeyDictionary[type, FrozenMap[str, Json]] = WeakKeyDictionary()
+# the reference each class was last loaded by, the file as an absolute path
+_REFERENCES: WeakKeyDictionary[type, str] = WeakKeyDictionary()
 
 
-def evaluator_source(evaluator: EvaluatorProtocol) -> dict[str, Json]:
-    """Identify the source of an evaluator without hashing a file that may have changed.
+def evaluator_source(cls: type) -> dict[str, Json]:
+    """Identify the source of an evaluator class without hashing a file that may have changed.
 
-    The identity is taken when :func:`load_evaluator` imports the file that defines the class
-    and is shared by cached instances: for ``FILE.py:Class`` the exact bytes executed, for a
-    module that call imported its file read right after the import (Python may have executed
-    a cached ``.pyc`` instead). ``revision`` is the commit and dirty flag of the git checkout
-    that tracks the file, taken at the same time, ``None`` if no checkout tracks it; it labels
-    the helper modules of the same checkout, which the hash does not cover. For a class whose
-    module was imported before, or reloaded since, only the path is known: the current file
-    cannot establish which bytes Python executed.
+    The identity is taken when :func:`load_evaluator` imports the file that defines the class:
+    for ``FILE.py:Class`` the exact bytes executed, for a module that call imported its file
+    read right after the import (Python may have executed a cached ``.pyc`` instead).
+    ``revision`` is the commit and dirty flag of the git checkout that tracks the file, taken at
+    the same time, ``None`` if no checkout tracks it; it labels the helper modules of the same
+    checkout, which the hash does not cover. For a class whose module was imported before, or
+    reloaded since, only the path is known: the current file cannot establish which bytes
+    Python executed. ``reference`` is what loads the class again (``/abs/path/file.py:Class``
+    or ``package.module:Class``), ``None`` for a class :func:`load_evaluator` did not load.
     """
-    identity = _SOURCES.get(type(evaluator))
+    identity = _SOURCES.get(cls)
+    source: dict[str, Json]
     if identity is not None:
         copy = thaw(identity)  # a plain copy all through: the revision is a mapping too
         assert isinstance(copy, dict)
-        return copy
-    try:
-        path = inspect.getsourcefile(type(evaluator))
-    except TypeError:
-        path = None
-    return {"path": path}
+        source = copy
+    else:
+        try:
+            source = {"path": inspect.getsourcefile(cls)}
+        except TypeError:
+            source = {"path": None}
+    return source | {"reference": _REFERENCES.get(cls)}
 
 
 def _identity(path: str, data: bytes, *, executed: bool) -> FrozenMap[str, Json]:
@@ -79,8 +84,8 @@ def _identify_import(cls: type) -> None:
 
 
 def _load_file(path: Path) -> ModuleType:
-    """Import ``path`` once under a name derived from its location, so repeats share a module."""
-    path = path.expanduser().resolve()
+    """Import ``path`` (absolute) once under a name derived from its location, so repeats share a
+    module."""
     if not path.is_file():
         raise EvaluatorLoadError(f"evaluator file {path} does not exist")
     digest = hashlib.sha256(str(path).encode()).hexdigest()[:12]
@@ -118,17 +123,18 @@ def _load_file(path: Path) -> ModuleType:
     return module
 
 
-def load_evaluator(reference: str) -> EvaluatorProtocol:
-    """Create the evaluator that ``reference`` names, ``FILE.py:Class`` or ``module:Class``.
+def load_evaluator(reference: str) -> type[EvaluatorProtocol]:
+    """The evaluator class that ``reference`` names, ``FILE.py:Class`` or ``module:Class``.
 
     ``FILE.py`` is a path (a leading ``~`` is expanded) and its directory is added to
     ``sys.path``, so the file can import modules next to it; anything else is an importable
     module name. Modules are cached by name for the process, so helpers of different evaluator
     files need unique names (or one installed package, ``package.module:Class``).
 
-    The class is created without arguments and must provide ``name``, ``version`` and
-    ``evaluate``. The file is executed as ordinary code: only name evaluators you trust. Raises
-    :class:`EvaluatorLoadError`.
+    The class must have an ``evaluate`` method; it is not created here. Whoever evaluates with
+    it creates an instance (without arguments) whenever it needs one, which must have ``name``
+    and ``version`` too. The file is executed as ordinary code: only name evaluators you trust.
+    Raises :class:`EvaluatorLoadError`.
     """
     where, separator, attribute = reference.rpartition(":")
     if not separator or not where or not attribute.isidentifier():
@@ -137,8 +143,11 @@ def load_evaluator(reference: str) -> EvaluatorProtocol:
         )
     imported_before = set(sys.modules)
     if where.endswith(".py") or "/" in where:
-        module = _load_file(Path(where))
+        path = Path(where).expanduser().resolve()
+        module = _load_file(path)
+        canonical = f"{path}:{attribute}"
     else:
+        canonical = reference
         try:
             module = importlib.import_module(where)
         except Exception as exc:
@@ -148,21 +157,11 @@ def load_evaluator(reference: str) -> EvaluatorProtocol:
     cls = getattr(module, attribute, None)
     if cls is None:
         raise EvaluatorLoadError(f"{where} has no {attribute!r}")
-    try:
-        evaluator = cls()
-    except Exception as exc:
-        raise EvaluatorLoadError(
-            f"creating {attribute}() failed: {type(exc).__name__}: {exc}"
-        ) from exc
-    missing = [
-        member for member in ("name", "version", "evaluate") if not hasattr(evaluator, member)
-    ]
-    if missing or not callable(evaluator.evaluate):
-        raise EvaluatorLoadError(
-            f"{attribute} is not an evaluator: needs name, version and an evaluate() method"
-            + (f" (missing {', '.join(missing)})" if missing else "")
-        )
-    if type(evaluator).__module__ not in imported_before:
-        _identify_import(type(evaluator))
-    result: EvaluatorProtocol = evaluator
-    return result
+    if not isinstance(cls, type):
+        raise EvaluatorLoadError(f"{attribute} is not a class: name the class of an evaluator")
+    if not callable(getattr(cls, "evaluate", None)):
+        raise EvaluatorLoadError(f"{attribute} is not an evaluator: it has no evaluate() method")
+    if cls.__module__ not in imported_before:
+        _identify_import(cls)
+    _REFERENCES[cls] = canonical
+    return cls

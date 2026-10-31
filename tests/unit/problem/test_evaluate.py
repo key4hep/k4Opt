@@ -24,6 +24,7 @@ from k4opt.evaluation import (
 )
 from k4opt.problem import CandidateError, ProblemSpec, parse_problem
 from k4opt.problem._evaluate import _evaluate_candidate
+from tests.support.evaluators import implementations
 
 CELL = "constants.ECal_cell_size"
 
@@ -52,8 +53,8 @@ class Toy:
 def evaluate_one(
     spec: ProblemSpec, candidate: Any, evaluator: Any, **kwargs: Any
 ) -> EvaluationRecord:
-    """The record of ``evaluator``, the problem's only evaluator."""
-    (record,) = _evaluate_candidate(spec, candidate, [evaluator], **kwargs).records
+    """The record of ``evaluator``, the instance of the problem's only evaluator."""
+    (record,) = _evaluate_candidate(spec, candidate, implementations(evaluator), **kwargs).records
     return record
 
 
