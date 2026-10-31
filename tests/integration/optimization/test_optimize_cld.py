@@ -38,7 +38,7 @@ def problem(tmp_path_factory: pytest.TempPathFactory) -> Path:
         pytest.skip("ddsim and podio from the Key4hep stack are required")
     pytest.importorskip("optuna")
     document = yaml.safe_load(EXAMPLE.read_text())
-    document["stages"]["simulation"]["events"] = 4
+    document["samples"]["gamma_10gev"]["simulation"]["events"] = 4
     path = tmp_path_factory.mktemp("problem") / "cld-ecal-granularity.yaml"
     path.write_text(yaml.safe_dump(document))
     return path
@@ -73,7 +73,8 @@ def test_a_study_of_the_example_runs_resumes_and_tells_the_optimizer_its_records
     sizes = []
     for trial in study.trials:
         summary = json.loads((output / f"trial-{trial.number:06d}" / "summary.json").read_text())
-        assert summary["status"] == "valid" and summary["events"]["observed"] == 4
+        simulated = summary["samples"]["gamma_10gev"]["stages"]["simulation"]
+        assert summary["status"] == "valid" and simulated["events_read"] == 4
         assessment = Assessment.from_summary(spec, summary)
         assert trial.values == [float(m.value) for m in assessment.objectives or ()]
         (size,) = trial.params.values()
@@ -87,7 +88,8 @@ def test_a_study_of_the_example_runs_resumes_and_tells_the_optimizer_its_records
     assert main(["study", "show", str(output)], stdout=shown, stderr=io.StringIO()) == 0
     assert "trials:     3: 3 valid" in shown.getvalue()
     assert (
-        "calo.photon/simulation/ecal_barrel.angular_residual  minimize  (mrad)" in shown.getvalue()
+        "gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual  minimize  (mrad)"
+        in shown.getvalue()
     )
     command = ["study", "export", str(output), "--format", "json"]
     assert main(command, stdout=exported, stderr=io.StringIO()) == 0
@@ -95,7 +97,7 @@ def test_a_study_of_the_example_runs_resumes_and_tells_the_optimizer_its_records
         summary = json.loads((output / entry["record"]["path"]).read_text())
         assert entry["assessment"] == summary["assessment"]
         assert (
-            entry["stage_seconds"]["simulation"]
-            == summary["stages"]["simulation"]["elapsed_seconds"]
+            entry["stage_seconds"]["gamma_10gev/simulation"]
+            == summary["samples"]["gamma_10gev"]["stages"]["simulation"]["elapsed_seconds"]
         )
     assert [m["uncertainty"] is not None for m in entry["assessment"]["objectives"]] == [True, True]

@@ -1,8 +1,9 @@
 """Internal: the work of one candidate as tasks, each run at most once and only after what it reads.
 
 A task is the smallest step with a meaning of its own: the candidate's ``geometry`` (materialized
-once, read by every simulation and every evaluator), one pipeline stage (``generation``,
-``simulation``) or one evaluator, named by its binding. Each task names the tasks it reads, its
+once, read by every simulation and every evaluator), one pipeline stage of one sample
+(``gamma/simulation``), or one evaluation: an evaluator, named by its binding, on one sample
+(``gamma/calo.photon``) or on the candidate (``readout``). Each task names the tasks it reads, its
 ``needs``, and nothing else orders it. Three seams keep what runs apart from how it runs:
 
 * :func:`plan_tasks` resolves the dependencies from the problem alone, once per session, so that
@@ -16,7 +17,8 @@ once, read by every simulation and every evaluator), one pipeline stage (``gener
   :func:`candidate_message`).
 
 A stage given as a file, in the problem or by the caller, is a task too: it reads that file and
-no task, so the stages before it are planned only if something else needs them.
+no task, so the stages before it are planned only if something else needs them. The samples
+share nothing but the geometry: a stage of one sample is never read by a task of another.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from typing import Literal
 from k4opt.evaluation import EvaluationContractError, EvaluationRecord, Status
 from k4opt.frozen import FrozenMap, Json, freeze
 from k4opt.problem._stages import STAGE_TYPES, graph, reads_geometry, writes_files
-from k4opt.problem.models import Stage
+from k4opt.problem.models import EvaluatorSpec, Sample
 
 
 class Kind(StrEnum):
@@ -43,17 +45,20 @@ class Kind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TaskId:
-    """A task of a candidate: its kind and its name (``geometry``, a stage type, the binding of an
-    evaluator)."""
+    """A task of a candidate: its kind, its name (``geometry``, a stage type, the binding of an
+    evaluator) and the sample it works on, ``None`` for the geometry and an evaluator that
+    measures the candidate."""
 
     kind: Kind
     name: str
+    sample: str | None = None
 
     @property
     def label(self) -> str:
-        """How records name the task; unambiguous, since no binding may be named after the
-        geometry or a stage type (:data:`RESERVED_NAMES`)."""
-        return self.name
+        """How records name the task: ``sample/name``, or ``name`` without a sample. Unambiguous,
+        since no binding may be named after the geometry or a stage type
+        (:data:`RESERVED_NAMES`), and neither a sample nor a binding name holds ``/``."""
+        return self.name if self.sample is None else f"{self.sample}/{self.name}"
 
 
 GEOMETRY = TaskId(Kind.GEOMETRY, "geometry")
@@ -67,12 +72,27 @@ DONE = "done"
 _SUCCEEDED = frozenset({DONE, Status.VALID})
 
 
-def stage_task(name: str) -> TaskId:
-    return TaskId(Kind.STAGE, name)
+def stage_task(name: str, sample: str) -> TaskId:
+    return TaskId(Kind.STAGE, name, sample)
 
 
-def evaluator_task(name: str) -> TaskId:
-    return TaskId(Kind.EVALUATOR, name)
+def evaluator_task(name: str, sample: str | None = None) -> TaskId:
+    return TaskId(Kind.EVALUATOR, name, sample)
+
+
+def evaluations(
+    samples: Collection[str], evaluators: Sequence[EvaluatorSpec]
+) -> list[tuple[TaskId, EvaluatorSpec]]:
+    """Each evaluation of a problem with ``samples`` and ``evaluators``, with the entry that binds
+    it, in plan order: those of each sample in the order of ``samples``, each in problem order,
+    then those of the candidate."""
+    found = [
+        (evaluator_task(entry.binding, sample), entry)
+        for sample in samples
+        for entry in evaluators
+        if sample in entry.samples
+    ]
+    return found + [(evaluator_task(e.binding), e) for e in evaluators if e.stage is None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,10 +114,11 @@ class Task:
 class Plan:
     """The tasks of every candidate of a problem, each after the tasks it reads.
 
-    The order of ``tasks`` is the order :func:`run_tasks` runs them in: the geometry, the stages
-    in pipeline order, the evaluators in problem order. It is one of the orders in which every
-    task comes after its needs, and nothing may depend on which one: another executor may run any
-    of them, or several tasks at once.
+    The order of ``tasks`` is the order :func:`run_tasks` runs them in: the geometry, then for
+    each sample its stages in pipeline order and its evaluations in problem order, then the
+    evaluations of the candidate. It is one of the orders in which every task comes after its
+    needs, and nothing may depend on which one: another executor may run any of them, or several
+    tasks at once.
     """
 
     tasks: tuple[Task, ...]
@@ -127,39 +148,52 @@ class Plan:
 
 
 def plan_tasks(
-    stages: Mapping[str, Stage],
-    evaluators: Sequence[tuple[str, str | None]],
-    supplied: Collection[str] = (),
+    samples: Mapping[str, Sample],
+    evaluators: Sequence[EvaluatorSpec],
+    supplied: Collection[TaskId] = (),
 ) -> Plan:
-    """The plan of a problem with ``stages`` and ``evaluators`` (``(binding, stage it reads)`` in
-    problem order), the stages in ``supplied`` given by the caller.
+    """The plan of a problem with ``samples`` and ``evaluators`` (in problem order), the stages
+    in ``supplied`` given by the caller.
 
-    The stages planned are those the evaluators read and the stages these read, except that a
-    stage given as a file reads nothing. A stage that runs reads the geometry if it is made from
-    it; every evaluator reads the geometry, and its stage with every stage that one reads.
+    The stages planned of a sample are those its evaluators read and the stages these read,
+    except that a stage given as a file reads nothing. A stage that runs reads the geometry if it
+    is made from it; every evaluation reads the geometry, and one of a sample the stage its
+    evaluator reads, with every stage that one reads. A stage of sample ``s`` writes in
+    ``samples/s/<stage>``, an evaluation in ``samples/s/evaluators/<binding>``, or in
+    ``evaluators/<binding>`` for one of the candidate.
     """
-    files = {name for name, stage in stages.items() if stage.file is not None}
-    given = {*supplied, *files}
-    targets = [stage for _, stage in evaluators if stage is not None]
     tasks = [Task(GEOMETRY, directory=GEOMETRY.name)]
-    for name, reads in graph(targets, given):
-        if name in supplied:
-            tasks.append(Task(stage_task(name), given="supplied"))
-        elif name in files:
-            tasks.append(Task(stage_task(name), given="file"))
-        else:
-            needs = tuple(map(stage_task, reads))
-            tasks.append(
-                Task(
-                    stage_task(name),
-                    (GEOMETRY, *needs) if reads_geometry(name) else needs,
-                    name if writes_files(name) else None,
+    planned = evaluations(samples, evaluators)
+    for sample, spec in samples.items():
+        files = {name for name, stage in spec.stages.items() if stage.file is not None}
+        handed = {task.name for task in supplied if task.sample == sample}
+        given = {*handed, *files}
+        own = [(task, entry) for task, entry in planned if task.sample == sample]
+        targets = [entry.stage for _, entry in own if entry.stage is not None]
+        for name, reads in graph(targets, given):
+            task = stage_task(name, sample)
+            if name in handed:
+                tasks.append(Task(task, given="supplied"))
+            elif name in files:
+                tasks.append(Task(task, given="file"))
+            else:
+                needs = tuple(stage_task(need, sample) for need in reads)
+                tasks.append(
+                    Task(
+                        task,
+                        (GEOMETRY, *needs) if reads_geometry(name) else needs,
+                        f"samples/{sample}/{name}" if writes_files(name) else None,
+                    )
                 )
+        for task, entry in own:
+            assert entry.stage is not None  # an evaluation of a sample reads one of its stages
+            chain = [stage_task(node, sample) for node, _ in graph([entry.stage], given)]
+            tasks.append(
+                Task(task, (GEOMETRY, *chain), f"samples/{sample}/evaluators/{entry.binding}")
             )
-    for name, stage in evaluators:
-        chain = [] if stage is None else [node for node, _ in graph([stage], given)]
-        needs = (GEOMETRY, *map(stage_task, chain))
-        tasks.append(Task(evaluator_task(name), needs, f"evaluators/{name}"))
+    for task, entry in planned:
+        if task.sample is None:
+            tasks.append(Task(task, (GEOMETRY,), f"evaluators/{entry.binding}"))
     return Plan(tuple(tasks))
 
 

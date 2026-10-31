@@ -57,16 +57,21 @@ def test_loads_the_checked_in_example() -> None:
     ]
     assert problem.evaluators[0].collections == {"hits": "ECalBarrelCollection"}
     assert problem.evaluators[0].settings == {"threshold": {"value": 70, "unit": "keV"}}
-    generation, simulation = problem.stages.values()
+    assert problem.evaluators[0].samples == ("gamma_10gev",)  # the problem's only sample
+    (sample,) = problem.samples.values()
+    assert sample.name == "gamma_10gev"
+    generation, simulation = sample.stages.values()
     assert (generation.type, generation.executor) == ("generation", "gun")
     generator: Any = generation.options
     assert generator["particle"] == "gamma"
     assert generator["direction"]["theta"] == (80, 100)
     assert (simulation.executor, simulation.events, simulation.seed) == ("ddsim", 1000, 42)
     assert simulation.options == {"physics.list": "FTFP_BERT"}
-    assert [(o.stage, o.metric, o.direction) for o in problem.objectives] == [
-        ("simulation", "ecal_barrel.angular_residual", "minimize"),
-        ("simulation", "ecal_barrel.fired_cells", "minimize"),
+    assert [
+        (o.sample, o.evaluator, o.stage, o.metric, o.direction) for o in problem.objectives
+    ] == [
+        ("gamma_10gev", "calo.photon", "simulation", "ecal_barrel.angular_residual", "minimize"),
+        ("gamma_10gev", "calo.photon", "simulation", "ecal_barrel.fired_cells", "minimize"),
     ]
     assert problem.constraints == ()
     assert parse_problem(problem.to_dict()) == problem
@@ -89,15 +94,17 @@ def test_accepts_both_channels(doc: dict[str, Any], channel: str) -> None:
 
 
 def test_minimal_document(doc: dict[str, Any]) -> None:
-    # an evaluator that reads no stage needs no stages
-    for key in ("name", "constraints", "stages"):
+    # an evaluator that reads no stage measures the candidate, and needs no samples
+    for key in ("name", "constraints", "samples"):
         del doc[key]
     del doc["evaluators"][0]["settings"], doc["evaluators"][0]["stage"]
     problem = parse_problem(doc)
-    assert problem.stages == {}
+    assert problem.samples == {}
     assert not problem.evaluators[0].settings and problem.evaluators[0].stage is None
+    assert problem.evaluators[0].samples == () and problem.objectives[0].sample is None
     assert problem.constraints == ()
-    assert "stages" not in problem.to_dict()
+    assert "samples" not in problem.to_dict()
+    assert "samples" not in problem.to_dict()["evaluators"][0]  # type: ignore[index]
 
 
 def test_integer_and_categorical_parameters(doc: dict[str, Any]) -> None:
@@ -143,12 +150,13 @@ def test_several_objectives_keep_their_order(doc: dict[str, Any]) -> None:
 
 
 def test_stages_are_kept_in_pipeline_order_and_round_trip(doc: dict[str, Any]) -> None:
-    doc["stages"] = dict(reversed(list(doc["stages"].items())))
+    doc["samples"]["gamma"] = dict(reversed(list(doc["samples"]["gamma"].items())))
     problem = parse_problem(doc)
-    assert list(problem.stages) == ["generation", "simulation"]
-    generation = problem.stages["generation"]
+    stages = problem.samples["gamma"].stages
+    assert list(stages) == ["generation", "simulation"]
+    generation = stages["generation"]
     assert (generation.events, generation.seed, generation.file) == (None, None, None)
-    assert problem.to_dict()["stages"]["simulation"] == {
+    assert problem.to_dict()["samples"]["gamma"]["simulation"] == {  # type: ignore[index]
         "executor": "ddsim",
         "events": 1000,
         "seed": 42,
@@ -164,29 +172,30 @@ def test_ddsim_options_keep_their_order_and_values(doc: dict[str, Any]) -> None:
         "action.run": ["A", "B"],
         "printLevel": 3,
     }
-    doc["stages"]["simulation"].update(options)
-    simulation = parse_problem(doc).stages["simulation"]
+    doc["samples"]["gamma"]["simulation"].update(options)
+    simulation = parse_problem(doc).samples["gamma"].stages["simulation"]
     assert list(simulation.options) == list(options)
     assert simulation.options["action.run"] == ("A", "B")
 
 
 def test_a_generation_file_replaces_the_gun(doc: dict[str, Any]) -> None:
-    doc["stages"]["generation"] = {"file": "events/zh.hepmc"}
+    doc["samples"]["gamma"]["generation"] = {"file": "events/zh.hepmc"}
     problem = parse_problem(doc)
-    generation = problem.stages["generation"]
+    generation = problem.samples["gamma"].stages["generation"]
     assert (generation.executor, generation.file, generation.options) == (
         None,
         "events/zh.hepmc",
         {},
     )
-    assert problem.to_dict()["stages"]["generation"] == {"file": "events/zh.hepmc"}
+    generation_dict = problem.to_dict()["samples"]["gamma"]["generation"]  # type: ignore[index]
+    assert generation_dict == {"file": "events/zh.hepmc"}
     assert parse_problem(problem.to_dict()) == problem
 
 
 def test_an_evaluator_may_read_only_the_generation(doc: dict[str, Any]) -> None:
-    del doc["stages"]["simulation"]
+    del doc["samples"]["gamma"]["simulation"]
     doc["evaluators"][0]["stage"] = "generation"
-    assert list(parse_problem(doc).stages) == ["generation"]
+    assert list(parse_problem(doc).samples["gamma"].stages) == ["generation"]
 
 
 def test_parsing_never_runs_a_subprocess(
@@ -197,7 +206,9 @@ def test_parsing_never_runs_a_subprocess(
 
     monkeypatch.setattr("subprocess.Popen", boom)
     monkeypatch.setattr("os.system", boom)
-    doc["stages"]["simulation"].update({"physics.list": "; rm -rf /", "printLevel": "$(whoami)"})
+    doc["samples"]["gamma"]["simulation"].update(
+        {"physics.list": "; rm -rf /", "printLevel": "$(whoami)"}
+    )
     parse_problem(doc)
 
 
@@ -206,35 +217,46 @@ def test_parsing_never_runs_a_subprocess(
     [
         (
             lambda s: s.update(reconstruction={"executor": "k4run"}),
-            "stages: unknown key(s) ['reconstruction']; allowed: ['generation', 'simulation']",
+            "samples.gamma: unknown key(s) ['reconstruction']; allowed: ['generation', "
+            "'simulation']",
         ),
-        (lambda s: s.update(simulation="ddsim"), "stages.simulation: must be a mapping, got str"),
+        (
+            lambda s: s.update(simulation="ddsim"),
+            "samples.gamma.simulation: must be a mapping, got str",
+        ),
         (
             lambda s: s["simulation"].pop("executor"),
-            "stages.simulation: needs exactly one of 'executor' (k4opt runs it) and 'file'",
+            "samples.gamma.simulation: needs exactly one of 'executor' (k4opt runs it) and 'file'",
         ),
-        (lambda s: s["generation"].update(file="zh.hepmc"), "stages.generation: needs exactly one"),
+        (
+            lambda s: s["generation"].update(file="zh.hepmc"),
+            "samples.gamma.generation: needs exactly one",
+        ),
         (
             lambda s: s.update(generation={"file": "zh.hepmc", "particle": "e-"}),
-            "stages.generation: a stage given as a file is not run, so it takes no ['particle']",
+            "samples.gamma.generation: a stage given as a file is not run, so it takes no "
+            "['particle']",
         ),
         (
             lambda s: s.update(generation={"file": ""}),
-            "stages.generation.file: must be a non-empty",
+            "samples.gamma.generation.file: must be a non-empty",
         ),
         (
             lambda s: s["simulation"].update(executor="geant4"),
-            "stages.simulation.executor: must be one of ['ddsim'], got 'geant4'",
+            "samples.gamma.simulation.executor: must be one of ['ddsim'], got 'geant4'",
         ),
         (
             lambda s: s["generation"].update(executor="ddsim"),
-            "stages.generation.executor: must be one of ['gun'], got 'ddsim'",
+            "samples.gamma.generation.executor: must be one of ['gun'], got 'ddsim'",
         ),
         (
             lambda s: s["simulation"].pop("events"),
-            "stages.simulation: missing required key 'events': how many events ddsim runs",
+            "samples.gamma.simulation: missing required key 'events': how many events ddsim runs",
         ),
-        (lambda s: s["simulation"].update(events=0), "stages.simulation.events: must be >= 1"),
+        (
+            lambda s: s["simulation"].update(events=0),
+            "samples.gamma.simulation.events: must be >= 1",
+        ),
         (lambda s: s["simulation"].update(events=True), "events: must be an integer, got bool"),
         (lambda s: s["simulation"].update(events=1.5), "events: must be an integer, got float"),
         (
@@ -244,51 +266,54 @@ def test_parsing_never_runs_a_subprocess(
         (lambda s: s["simulation"].update(seed="42"), "seed: must be an integer, got str"),
         (
             lambda s: s["generation"].update(events=10),
-            "stages.generation.events: gun runs inside stages.simulation, which sets the events; "
-            "set stages.simulation.events instead",
+            "samples.gamma.generation.events: gun runs inside samples.gamma.simulation, which sets "
+            "the events; "
+            "set samples.gamma.simulation.events instead",
         ),
         (
             lambda s: s["generation"].update(seed=1),
-            "stages.generation.seed: gun runs inside stages.simulation, which sets the seed",
+            "samples.gamma.generation.seed: gun runs inside samples.gamma.simulation, which sets "
+            "the seed",
         ),
         (
             lambda s: s["generation"].update(charge=-1),
-            "stages.generation: unknown key(s) ['charge']",
+            "samples.gamma.generation: unknown key(s) ['charge']",
         ),
         (
             lambda s: s["generation"].pop("particle"),
-            "stages.generation: missing required key(s) ['particle']",
+            "samples.gamma.generation: missing required key(s) ['particle']",
         ),
         (
             lambda s: s["generation"]["energy"].update(unit="keV"),
-            "stages.generation.energy.unit: unit must be one of",
+            "samples.gamma.generation.energy.unit: unit must be one of",
         ),
         (
             lambda s: s["simulation"].update({"random.seed": 1}),
-            "stages.simulation.random.seed: is an option that k4opt sets itself: set seed instead",
+            "samples.gamma.simulation.random.seed: is an option that k4opt sets itself: set seed "
+            "instead",
         ),
         (
             lambda s: s["simulation"].update(steeringFile="steer.py"),
-            "stages.simulation.steeringFile: --steeringFile is not supported",
+            "samples.gamma.simulation.steeringFile: --steeringFile is not supported",
         ),
         (
             lambda s: s["simulation"].update(physics={"list": "QGSP_BERT"}),
-            "stages.simulation.physics: write each option under its full ddsim name",
+            "samples.gamma.simulation.physics: write each option under its full ddsim name",
         ),
         (
             lambda s: s["simulation"].update(enableDetailedShowerMode=False),
-            "stages.simulation.enableDetailedShowerMode: ddsim cannot switch a flag off",
+            "samples.gamma.simulation.enableDetailedShowerMode: ddsim cannot switch a flag off",
         ),
         (
             lambda s: s["simulation"].update({"physics.list": {1, 2}}),
-            "stages.simulation.physics.list: unsupported value",
+            "samples.gamma.simulation.physics.list: unsupported value",
         ),
     ],
 )
 def test_stage_errors(
     doc: dict[str, Any], edit: Callable[[dict[str, Any]], object], message: str
 ) -> None:
-    edit(doc["stages"])
+    edit(doc["samples"]["gamma"])
     reject(doc, message)
 
 
@@ -301,34 +326,304 @@ def test_stage_errors(
             "got 'reconstruction'",
         ),
         (
-            lambda d: d["stages"].pop("simulation"),
-            "evaluators[0].stage: the problem defines no simulation stage; add stages.simulation",
+            lambda d: d["samples"]["gamma"].pop("simulation"),
+            "evaluators[0].stage: sample gamma defines no simulation stage; add "
+            "samples.gamma.simulation",
         ),
         (
-            lambda d: d["stages"].pop("generation"),
-            "stages.simulation: simulation reads generation: add stages.generation with executor: "
+            lambda d: d["samples"]["gamma"].pop("generation"),
+            "samples.gamma.simulation: simulation reads generation: add samples.gamma.generation "
+            "with executor: "
             "gun, or give its output as file:",
         ),
         (
-            lambda d: d["stages"].update(simulation={"file": "events.edm4hep.root"}),
-            "stages.simulation.file: the parameters vary the geometry, but this file was not made "
-            "with a candidate's geometry",
+            lambda d: d["samples"]["gamma"].update(simulation={"file": "events.edm4hep.root"}),
+            "samples.gamma.simulation.file: the parameters vary the geometry, but this file was "
+            "not made with a candidate's geometry",
         ),
         (
-            lambda d: d["stages"].update(simulation={"file": "events.edm4hep.root"}),
-            "use k4opt evaluate --input simulation=FILE",
+            lambda d: d["samples"]["gamma"].update(simulation={"file": "events.edm4hep.root"}),
+            "use k4opt evaluate --input gamma/simulation=FILE",
         ),
         (
             lambda d: d["evaluators"][0].update(stage="generation"),
-            "stages.simulation: is not used: no evaluator reads it, and no stage that runs does",
+            "samples.gamma.simulation: is not used: no evaluator of the sample reads it, and no "
+            "stage that runs does",
         ),
-        (lambda d: d["evaluators"][0].pop("stage"), "stages.generation: is not used"),
+        (
+            lambda d: d["evaluators"][0].pop("stage"),
+            "samples.gamma: is measured by no evaluator; list it in the samples of one, or "
+            "remove it",
+        ),
     ],
 )
 def test_the_stages_fit_together_and_fit_the_evaluators(
     doc: dict[str, Any], edit: Callable[[dict[str, Any]], object], message: str
 ) -> None:
     edit(doc)
+    reject(doc, message)
+
+
+# --- samples ---------------------------------------------------------------------------
+
+
+def two_samples(doc: dict[str, Any]) -> dict[str, Any]:
+    """``doc`` with a second sample, ``pion``, which the evaluator measures too."""
+    pion = copy.deepcopy(doc["samples"]["gamma"])
+    pion["generation"]["particle"] = "pi-"
+    pion["simulation"]["seed"] = 43
+    doc["samples"]["pion"] = pion
+    doc["evaluators"][0]["samples"] = ["gamma", "pion"]
+    for item in (*doc["objectives"], *doc["constraints"]):
+        item["sample"] = "gamma"
+    return doc
+
+
+def test_an_evaluator_measures_each_sample_it_lists(doc: dict[str, Any]) -> None:
+    doc = two_samples(doc)
+    doc["samples"] = dict(reversed(list(doc["samples"].items())))  # the document's order is kept
+    doc["objectives"].append({"sample": "pion", "stage": "simulation", "metric": "a.rms"})
+    doc["objectives"][-1]["direction"] = "maximize"
+    problem = parse_problem(doc)
+    assert list(problem.samples) == ["pion", "gamma"]
+    assert problem.samples["pion"].stages["generation"].options["particle"] == "pi-"
+    assert problem.evaluators[0].samples == ("gamma", "pion")
+    # the same metric of one evaluator on two samples: two objectives, not a duplicate
+    assert [o.label for o in problem.objectives] == [
+        "gamma/calo.single_particle_shower/simulation/a.rms",
+        "pion/calo.single_particle_shower/simulation/a.rms",
+    ]
+    assert parse_problem(problem.to_dict()) == problem
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("Gamma", "samples: sample name 'Gamma' must start with a lowercase letter"),
+        ("1gamma", "sample name '1gamma' must start"),
+        ("gamma-10", "hold only lowercase letters, digits and '_', at most 64 characters"),
+        ("gamma.10", "sample name 'gamma.10' must start"),
+        ("g/a", "sample name 'g/a' must start"),
+        ("a" * 65, "at most 64 characters"),
+    ],
+)
+def test_sample_names_are_lowercase_identifiers(
+    doc: dict[str, Any], name: str, message: str
+) -> None:
+    doc["samples"] = {name: doc["samples"]["gamma"]}
+    reject(doc, message)
+
+
+def test_a_sample_name_may_have_64_characters(doc: dict[str, Any]) -> None:
+    name = "g" + "0_" * 31 + "x"
+    doc["samples"] = {name: doc["samples"]["gamma"]}
+    assert list(parse_problem(doc).samples) == [name]
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (lambda d: d["samples"].update(gamma={}), "samples.gamma: must define its stages"),
+        (lambda d: d["samples"].update(gamma="ddsim"), "samples.gamma: must be a mapping"),
+        (
+            lambda d: d["evaluators"][0].update(samples=["pion"]),
+            "evaluators[0].samples[0]: the problem has no sample 'pion'; its samples are gamma",
+        ),
+        (
+            lambda d: d["evaluators"][0].update(samples=["gamma", "gamma"]),
+            "evaluators[0].samples[1]: 'gamma' is listed twice",
+        ),
+        (
+            lambda d: d["evaluators"][0].update(samples=[]),
+            "evaluators[0].samples: must list at least one sample",
+        ),
+        (
+            lambda d: d["evaluators"][0].update(samples="gamma"),
+            "evaluators[0].samples: must be a list, got str",
+        ),
+        (
+            lambda d: d["evaluators"].append(
+                {"name": "cost", "version": "1", "samples": ["gamma"]}
+            ),
+            "evaluators[1].samples: an evaluator measures samples at the stage it reads; add "
+            "that stage, or remove samples to measure the candidate",
+        ),
+        (
+            lambda d: d.pop("samples"),
+            "evaluators[0]: it reads the simulation stage of a sample, but the problem has no "
+            "samples",
+        ),
+    ],
+)
+def test_sample_errors(
+    doc: dict[str, Any], edit: Callable[[dict[str, Any]], object], message: str
+) -> None:
+    edit(doc)
+    reject(doc, message)
+
+
+def test_an_evaluator_of_several_samples_must_list_those_it_measures(doc: dict[str, Any]) -> None:
+    doc = two_samples(doc)
+    del doc["evaluators"][0]["samples"]
+    reject(
+        doc,
+        "evaluators[0]: the problem has the samples gamma, pion; add samples: with those this "
+        "evaluator measures",
+    )
+
+
+def test_every_sample_is_measured_and_has_the_stage_its_evaluators_read(
+    doc: dict[str, Any],
+) -> None:
+    doc = two_samples(doc)
+    doc["evaluators"][0]["samples"] = ["gamma"]
+    reject(doc, "samples.pion: is measured by no evaluator")
+    doc["evaluators"][0]["samples"] = ["gamma", "pion"]
+    del doc["samples"]["pion"]["simulation"]
+    reject(doc, "evaluators[0].stage: sample pion defines no simulation stage")
+
+
+def test_the_stages_of_each_sample_are_checked_on_their_own(doc: dict[str, Any]) -> None:
+    doc = two_samples(doc)
+    del doc["samples"]["pion"]["generation"]
+    reject(doc, "samples.pion.simulation: simulation reads generation: add samples.pion.generation")
+    doc = two_samples(doc)
+    doc["samples"]["pion"]["generation"] = {"executor": "gun", "particle": "pi-", "seed": 1}
+    reject(doc, "samples.pion.generation.seed: gun runs inside samples.pion.simulation")
+
+
+def test_one_binding_may_measure_samples_with_other_settings(doc: dict[str, Any]) -> None:
+    doc = two_samples(doc)
+    first = doc["evaluators"][0]
+    first["samples"] = ["gamma"]
+    doc["evaluators"].append(first | {"samples": ["pion"], "settings": {"collection": "Other"}})
+    doc["objectives"].append(
+        {"sample": "pion", "stage": "simulation", "metric": "a.rms", "direction": "maximize"}
+    )
+    problem = parse_problem(doc)
+    assert [(e.binding, e.samples) for e in problem.evaluators] == [
+        ("calo.single_particle_shower", ("gamma",)),
+        ("calo.single_particle_shower", ("pion",)),
+    ]
+    assert [o.sample for o in problem.objectives] == ["gamma", "pion"]
+    assert parse_problem(problem.to_dict()) == problem
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (
+            {"samples": ["pion", "gamma"]},
+            "evaluators[1]: 'calo.single_particle_shower' is already bound to gamma by "
+            "evaluators[0]; name this one with as:",
+        ),
+        (
+            {"version": "2"},
+            "evaluators[1]: 'calo.single_particle_shower' binds calo.single_particle_shower "
+            "version '1' at the simulation stage in evaluators[0], and one binding name binds "
+            "one implementation, version and stage; name this one with as:",
+        ),
+        ({"stage": "generation"}, "one binding name binds one implementation, version and stage"),
+        (
+            {"name": "calo.other", "as": "calo.single_particle_shower"},
+            "binds calo.single_particle_shower version '1'",
+        ),
+    ],
+)
+def test_a_binding_named_twice_binds_one_implementation_on_other_samples(
+    doc: dict[str, Any], change: dict[str, Any], message: str
+) -> None:
+    doc = two_samples(doc)
+    doc["evaluators"][0]["samples"] = ["gamma"]
+    doc["evaluators"].append(doc["evaluators"][0] | {"samples": ["pion"]} | change)
+    reject(doc, message)
+
+
+@pytest.mark.parametrize(
+    ("owner", "message"),
+    [
+        (
+            {"sample": "pion"},
+            "objectives[0].sample: evaluator 'calo.single_particle_shower' does not measure "
+            "'pion'; it measures gamma",
+        ),
+        (
+            {"evaluator": "cost", "sample": "gamma"},
+            "objectives[0].sample: evaluator 'cost' measures the candidate, not a sample; remove "
+            "sample:",
+        ),
+        ({"sample": ""}, "objectives[0].sample: must be a non-empty string"),
+    ],
+)
+def test_an_objective_names_a_sample_its_evaluator_measures(
+    doc: dict[str, Any], owner: dict[str, str], message: str
+) -> None:
+    doc = two_samples(doc)
+    doc["evaluators"][0]["samples"] = ["gamma"]
+    doc["evaluators"].append({"name": "cost", "version": "1"})
+    doc["evaluators"].append(
+        {"name": "calo.other", "version": "1", "stage": "simulation", "samples": ["pion"]}
+    )
+    doc["objectives"][0] = {"stage": "simulation", "metric": "a.rms", "direction": "minimize"}
+    doc["objectives"][0] |= {"evaluator": "calo.single_particle_shower"} | owner
+    reject(doc, message)
+
+
+def test_an_objective_may_leave_out_what_the_problem_leaves_one_choice_for(
+    doc: dict[str, Any],
+) -> None:
+    doc = two_samples(doc)
+    doc["evaluators"][0]["samples"] = ["gamma"]
+    doc["evaluators"].append(
+        {"name": "calo.other", "version": "1", "stage": "simulation", "samples": ["pion"]}
+    )
+    doc["evaluators"].append({"name": "cost", "version": "1"})
+    objective = {"stage": "simulation", "metric": "a.rms", "direction": "minimize"}
+    doc["objectives"] = [
+        objective | {"sample": "pion"},  # the sample's only evaluator
+        objective | {"evaluator": "calo.single_particle_shower"},  # the evaluator's only sample
+        objective | {"evaluator": "cost"},  # an evaluator of the candidate: no sample
+    ]
+    problem = parse_problem(doc)
+    assert [(o.sample, o.evaluator) for o in problem.objectives] == [
+        ("pion", "calo.other"),
+        ("gamma", "calo.single_particle_shower"),
+        (None, "cost"),
+    ]
+    assert [o.label for o in problem.objectives][2] == "cost/simulation/a.rms"
+    assert parse_problem(problem.to_dict()) == problem
+
+
+@pytest.mark.parametrize(
+    ("owner", "message"),
+    [
+        (
+            {"evaluator": "calo.single_particle_shower"},
+            "objectives[0]: evaluator 'calo.single_particle_shower' measures the samples gamma, "
+            "pion; add sample: with the one this metric is measured on",
+        ),
+        (
+            {"sample": "gamma"},
+            "objectives[0]: gamma is measured by the evaluators calo.single_particle_shower, "
+            "tight; add evaluator: with one of them",
+        ),
+        (
+            {},
+            "objectives[0]: the problem has the evaluations gamma/calo.single_particle_shower, "
+            "pion/calo.single_particle_shower, gamma/tight; add evaluator: (and sample:)",
+        ),
+        ({"sample": "neutron"}, "objectives[0].sample: no evaluator of the problem measures"),
+    ],
+)
+def test_an_ambiguous_objective_is_refused_with_the_choices(
+    doc: dict[str, Any], owner: dict[str, str], message: str
+) -> None:
+    doc = two_samples(doc)
+    tight = doc["evaluators"][0] | {"as": "tight", "samples": ["gamma"]}
+    doc["evaluators"].append(tight)
+    doc["constraints"][0]["evaluator"] = "tight"
+    doc["objectives"][0] = {"stage": "simulation", "metric": "a.rms", "direction": "minimize"}
+    doc["objectives"][0] |= owner
     reject(doc, message)
 
 
@@ -376,8 +671,8 @@ def test_missing_top_level_sections(doc: dict[str, Any], key: str) -> None:
         (("environment", "key4hep"), "environment.key4hep: unknown key(s) ['extra']"),
         (("parameters", 0), "parameters[0]: unknown key(s) ['extra']"),
         (("parameters", 0, "geometry"), "parameters[0].geometry: unknown key(s) ['extra']"),
-        (("stages",), "stages: unknown key(s) ['extra']"),
-        (("stages", "generation"), "stages.generation: unknown key(s) ['extra']"),
+        (("samples", "gamma"), "samples.gamma: unknown key(s) ['extra']"),
+        (("samples", "gamma", "generation"), "samples.gamma.generation: unknown key(s) ['extra']"),
         (("evaluators", 0), "evaluators[0]: unknown key(s) ['extra']"),
         (("objectives", 0), "objectives[0]: unknown key(s) ['extra']"),
         (("constraints", 0), "constraints[0]: unknown key(s) ['extra']"),
@@ -422,7 +717,7 @@ def test_collection_errors(doc: dict[str, Any], collections: object, message: st
 
 
 def test_collections_need_the_stage_they_are_read_from(doc: dict[str, Any]) -> None:
-    del doc["stages"], doc["evaluators"][0]["stage"]
+    del doc["samples"], doc["evaluators"][0]["stage"]
     doc["evaluators"][0]["collections"] = {"hits": "ECalBarrelCollection"}
     reject(doc, "evaluators[0].collections: collections are read from the file of the stage")
 
@@ -505,10 +800,11 @@ def test_one_implementation_can_be_bound_twice_under_two_names(doc: dict[str, An
     ]
     # the same metric of two bindings: two objectives, not a duplicate
     assert [o.label for o in problem.objectives] == [
-        "calo.single_particle_shower/simulation/a.rms",
-        "shower_tight/simulation/a.rms",
+        "gamma/calo.single_particle_shower/simulation/a.rms",
+        "gamma/shower_tight/simulation/a.rms",
     ]
-    assert problem.constraints[0].ref == MetricRef("shower_tight", "simulation", "a.cells")
+    ref = MetricRef("shower_tight", "simulation", "a.cells", "gamma")
+    assert problem.constraints[0].ref == ref
     data = problem.to_dict()
     assert "as" not in data["evaluators"][0]  # the binding is the name unless it is not
     assert data["evaluators"][1]["as"] == "shower_tight"
@@ -518,15 +814,24 @@ def test_one_implementation_can_be_bound_twice_under_two_names(doc: dict[str, An
 def test_an_objective_of_the_one_evaluator_may_leave_it_out(doc: dict[str, Any]) -> None:
     problem = parse_problem(doc)
     (objective,) = problem.objectives
-    assert objective.ref == MetricRef("calo.single_particle_shower", "simulation", "a.rms")
-    assert problem.constraints[0].evaluator == "calo.single_particle_shower"
-    # the normalized problem, as records and studies hold it, names it always
-    data = problem.to_dict()
-    assert data["objectives"][0]["evaluator"] == "calo.single_particle_shower"
-    assert data["constraints"][0]["evaluator"] == "calo.single_particle_shower"
+    ref = MetricRef("calo.single_particle_shower", "simulation", "a.rms", "gamma")
+    assert objective.ref == ref
+    assert objective.label == "gamma/calo.single_particle_shower/simulation/a.rms"
+    assert (problem.constraints[0].sample, problem.constraints[0].evaluator) == (
+        "gamma",
+        "calo.single_particle_shower",
+    )
+    # the normalized problem, as records and studies hold it, names them always
+    data: Any = problem.to_dict()
+    assert data["evaluators"][0]["samples"] == ["gamma"]
+    for section in ("objectives", "constraints"):
+        assert data[section][0]["sample"] == "gamma"
+        assert data[section][0]["evaluator"] == "calo.single_particle_shower"
     assert parse_problem(data) == problem
     named = copy.deepcopy(doc)
     named["objectives"][0]["evaluator"] = "calo.single_particle_shower"
+    named["constraints"][0]["sample"] = "gamma"
+    named["evaluators"][0]["samples"] = ["gamma"]
     assert parse_problem(named) == problem
 
 
@@ -539,8 +844,8 @@ def test_an_objective_or_constraint_of_several_evaluators_must_name_one(
     doc[other][0]["evaluator"] = "detector.cost"
     reject(
         doc,
-        f"{section}[0]: the problem has the evaluators calo.single_particle_shower, "
-        "detector.cost; add evaluator: with the one that measures this metric",
+        f"{section}[0]: the problem has the evaluations gamma/calo.single_particle_shower, "
+        "detector.cost; add evaluator: (and sample:) to say which one measures this metric",
     )
 
 
@@ -574,8 +879,9 @@ def test_an_objective_names_a_binding_not_an_implementation(doc: dict[str, Any])
         ("parameters", {}, "parameters: must be a list, got dict"),
         ("parameters", [], "parameters: must list at least one parameter"),
         ("parameters", ["x"], "parameters[0]: must be a mapping, got str"),
-        ("stages", "ddsim", "stages: must be a mapping"),
-        ("stages", ["generation"], "stages: must be a mapping"),
+        ("samples", "ddsim", "samples: must be a mapping"),
+        ("samples", ["gamma"], "samples: must be a mapping"),
+        ("samples", {}, "samples: must name at least one sample"),
         ("objectives", "min", "objectives: must be a list"),
         ("objectives", [], "objectives: must list at least one objective"),
         ("constraints", {}, "constraints: must be a list"),
@@ -848,7 +1154,9 @@ def test_constant_and_target_spellings_are_duplicates(doc: dict[str, Any]) -> No
 
 def test_duplicate_objectives(doc: dict[str, Any]) -> None:
     doc["objectives"].append({"stage": "simulation", "metric": "a.rms", "direction": "maximize"})
-    reject(doc, "objectives[1]: duplicates objectives[0] (calo.single_particle_shower/simulation")
+    reject(
+        doc, "objectives[1]: duplicates objectives[0] (gamma/calo.single_particle_shower/simulation"
+    )
 
 
 def test_an_objective_written_with_and_without_its_evaluator_is_a_duplicate(
@@ -970,7 +1278,7 @@ def test_duplicate_key_message_has_the_line(write: Write) -> None:
 
 
 def test_nested_duplicate_keys(write: Write) -> None:
-    text = good_yaml().replace("    seed: 42\n", "    seed: 42\n    seed: 43\n")
+    text = good_yaml().replace("      seed: 42\n", "      seed: 42\n      seed: 43\n")
     with pytest.raises(ProblemConfigError, match="duplicate key 'seed'"):
         load_problem(write(text))
 
@@ -1057,7 +1365,7 @@ objectives:
 def test_huge_integers_are_ordinary_numbers(doc: dict[str, Any], huge: int) -> None:
     doc["parameters"][0]["bounds"] = sorted([huge, 0])
     doc["constraints"] = [{"stage": "s", "metric": "m", "max": 10**400}]
-    doc["stages"]["simulation"]["seed"] = huge
+    doc["samples"]["gamma"]["simulation"]["seed"] = huge
     problem = parse_problem(doc)
     assert problem.constraints[0].max == 10**400
     assert parse_problem(problem.to_dict()) == problem

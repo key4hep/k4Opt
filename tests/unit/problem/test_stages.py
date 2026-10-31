@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import hashlib
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ from k4opt.evaluation import (
     edm4hep,
 )
 from k4opt.frozen import thaw
-from k4opt.problem import ProblemSpec, Stage, parse_problem
+from k4opt.problem import EvaluatorSpec, ProblemSpec, Sample, Stage, parse_problem
 from k4opt.problem import _stages as stages_module
 from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate, _request
 from k4opt.problem._stages import (
@@ -69,7 +70,7 @@ GENERATOR = {
 @pytest.fixture(autouse=True)
 def particle_gun(doc: dict[str, Any]) -> None:
     """The gun of these tests, whose provenance they compare."""
-    doc["stages"]["generation"] = {"executor": "gun", **copy.deepcopy(GENERATOR)}
+    doc["samples"]["gamma"]["generation"] = {"executor": "gun", **copy.deepcopy(GENERATOR)}
 
 
 @pytest.fixture
@@ -78,22 +79,24 @@ def spec(doc: dict[str, Any]) -> ProblemSpec:
 
 
 def context(spec: ProblemSpec) -> StageContext:
-    return StageContext.of(spec)
+    return StageContext.of(spec, "gamma")
 
 
 def with_stages(spec: ProblemSpec, **stages: Stage) -> StageContext:
     """The context of ``spec`` with some of its stages replaced."""
-    return dataclasses.replace(context(spec), stages={**spec.stages, **stages})
+    return dataclasses.replace(context(spec), stages={**spec.samples["gamma"].stages, **stages})
 
 
 def without_stages(doc: dict[str, Any], *, reads: str | None = None) -> ProblemSpec:
     """``doc`` whose evaluator reads ``reads`` (or nothing), with only the stages it needs."""
     doc = copy.deepcopy(doc)
     if reads is None:
-        del doc["stages"], doc["evaluators"][0]["stage"]
+        del doc["samples"], doc["evaluators"][0]["stage"]
     else:
         doc["evaluators"][0]["stage"] = reads
-        doc["stages"] = {name: doc["stages"][name] for name in ("generation", reads)}
+        doc["samples"]["gamma"] = {
+            name: doc["samples"]["gamma"][name] for name in ("generation", reads)
+        }
     return parse_problem(doc)
 
 
@@ -114,7 +117,8 @@ def evaluate_one(
 
 
 def record_task(record: EvaluationRecord) -> TaskId:
-    return TaskId(Kind.EVALUATOR, record.evaluator_name)
+    """The evaluation of ``record``, of the evaluator of that name on ``gamma``."""
+    return TaskId(Kind.EVALUATOR, record.evaluator_name, "gamma")
 
 
 def provenance(candidate: CandidateRecord) -> dict[str, Any]:
@@ -126,8 +130,8 @@ def provenance(candidate: CandidateRecord) -> dict[str, Any]:
 
 
 def stage(candidate: CandidateRecord, name: str) -> TaskResult:
-    """The result of the stage ``name``, which the candidate planned."""
-    result = candidate.stage(name)
+    """The result of the stage ``name`` of ``gamma``, which the candidate planned."""
+    result = candidate.stage(name, "gamma")
     assert result is not None
     return result
 
@@ -327,17 +331,25 @@ def test_a_stage_whose_file_cannot_be_read_fails_with_the_reason(
 def test_a_supplied_stage_reads_nothing_even_where_the_problem_gives_the_stage_before_it(
     spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    requested = spec.stages["simulation"].events
+    requested = spec.samples["gamma"].stages["simulation"].events
     assert requested is not None
     simulation.install(monkeypatch, events_with(*[[1]] * requested))
     events_file = tmp_path / "mine.root"
     events_file.write_bytes(b"fake")
     # another evaluator reads generation, a file; the supplied simulation never needs it
-    stages = {**spec.stages, "generation": Stage("generation", file="gone.hepmc")}
-    plan = plan_tasks(stages, [("a", "generation"), ("b", "simulation")], {"simulation"})
-    simulated = plan[stage_task("simulation")]
+    stages = {**spec.samples["gamma"].stages, "generation": Stage("generation", file="gone.hepmc")}
+    readers = [
+        EvaluatorSpec("a", "1", stage="generation", samples=("gamma",)),
+        EvaluatorSpec("b", "1", stage="simulation", samples=("gamma",)),
+    ]
+    plan = plan_tasks(
+        {"gamma": Sample("gamma", stages)}, readers, {stage_task("simulation", "gamma")}
+    )
+    simulated = plan[stage_task("simulation", "gamma")]
     assert (simulated.needs, simulated.given) == ((), "supplied")
-    assert plan[stage_task("generation")] == Task(stage_task("generation"), given="file")
+    assert plan[stage_task("generation", "gamma")] == Task(
+        stage_task("generation", "gamma"), given="file"
+    )
     outcome, events = make_stage(
         context(spec), "simulation", inputs={}, workdir=None, supplied=events_file
     )
@@ -378,25 +390,29 @@ def test_a_failed_stage_blocks_only_the_tasks_that_read_it(
         outcome, _ = make_stage(StageContext(), task.id.name, inputs={}, workdir=None)
         return TaskResult(task.id, "failed" if outcome.error else "done", outcome.error)
 
-    plan = plan_tasks({}, [("on_left", "last"), ("on_right", "after_right")])
+    readers = [
+        EvaluatorSpec("on_left", "1", stage="last", samples=("s",)),
+        EvaluatorSpec("on_right", "1", stage="after_right", samples=("s",)),
+    ]
+    plan = plan_tasks({"s": Sample("s")}, readers)
     results = run_tasks(plan, run)
     assert ran == ["left", "right", "after_right"]
     status = {task.label: (r.status, r.message) for task, r in results.items()}
     assert status == {
         "geometry": ("done", None),
-        "left": ("failed", "boom"),
-        "after_left": ("blocked", "not run: left failed"),
-        "last": ("blocked", "not run: left failed"),  # the stage that failed, not the next
-        "right": ("done", None),
-        "after_right": ("done", None),
-        "on_left": ("blocked", "not run: left failed"),
-        "on_right": ("valid", None),
+        "s/left": ("failed", "boom"),
+        "s/after_left": ("blocked", "not run: s/left failed"),
+        "s/last": ("blocked", "not run: s/left failed"),  # the stage that failed, not the next
+        "s/right": ("done", None),
+        "s/after_right": ("done", None),
+        "s/on_left": ("blocked", "not run: s/left failed"),
+        "s/on_right": ("valid", None),
     }
-    left = TaskId(Kind.STAGE, "left")
+    left = TaskId(Kind.STAGE, "left", "s")
     assert {task.label for task, r in results.items() if r.blocked_by == (left,)} == {
-        "after_left",
-        "last",
-        "on_left",
+        "s/after_left",
+        "s/last",
+        "s/on_left",
     }
 
 
@@ -413,7 +429,7 @@ def test_a_particle_gun_provides_no_file_but_is_recorded(spec: ProblemSpec, tmp_
 def file_spec(doc: dict[str, Any], tmp_path: Path) -> ProblemSpec:
     (tmp_path / "events").mkdir()
     (tmp_path / "events" / "zh.hepmc").write_bytes(b"HepMC::Version 3\nevents\n")
-    doc["stages"]["generation"] = {"file": "events/zh.hepmc"}
+    doc["samples"]["gamma"]["generation"] = {"file": "events/zh.hepmc"}
     # a loaded problem remembers the directory of its file; relative files are read from there
     return dataclasses.replace(parse_problem(doc), _directory=tmp_path)
 
@@ -431,8 +447,9 @@ def test_a_generation_file_is_given_hashed_and_resolved_from_the_problem_directo
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
     # given by the problem, not supplied by the caller: it reads nothing
-    plan = plan_tasks(file_spec.stages, [("reader", "generation")])
-    assert plan[stage_task("generation")].given == "file"
+    reader = EvaluatorSpec("reader", "1", stage="generation", samples=("gamma",))
+    plan = plan_tasks(file_spec.samples, [reader])
+    assert plan[stage_task("generation", "gamma")].given == "file"
 
 
 def test_a_missing_generation_file_is_refused_before_anything_runs(
@@ -441,15 +458,17 @@ def test_a_missing_generation_file_is_refused_before_anything_runs(
     fake = simulation.install(monkeypatch)
     (tmp_path / "events" / "zh.hepmc").unlink()
     with pytest.raises(
-        EvaluationContractError, match=r"stages\.generation\.file: .* is not a file"
+        EvaluationContractError, match=r"samples\.gamma\.generation\.file: .* is not a file"
     ):
         check_stages(context(file_spec), "simulation")
     assert fake.calls == []
 
 
 def test_a_context_without_generation_is_refused(spec: ProblemSpec) -> None:
-    alone = StageContext({"simulation": spec.stages["simulation"]})
-    with pytest.raises(EvaluationContractError, match=r"stages\.generation: the problem has no"):
+    alone = StageContext({"simulation": spec.samples["gamma"].stages["simulation"]}, sample="gamma")
+    with pytest.raises(
+        EvaluationContractError, match=r"samples\.gamma\.generation: the sample has no"
+    ):
         check_stages(alone, "simulation")
 
 
@@ -478,7 +497,7 @@ def test_simulation_reads_the_generation_file_instead_of_a_gun(
         (
             Stage("simulation", file="events.root"),
             EvaluationContractError,
-            r"stages\.simulation\.file: .*events\.root is not a file",
+            r"samples\.gamma\.simulation\.file: .*events\.root is not a file",
         ),
         (
             Stage("generation", executor="gun", options={**GENERATOR, "particle": ""}),
@@ -493,7 +512,7 @@ def test_simulation_reads_the_generation_file_instead_of_a_gun(
         (
             Stage("simulation", executor="ddsim", events=5, options={"physics.pdgfile": "no.tbl"}),
             EvaluationContractError,
-            r"stages\.simulation\.physics\.pdgfile: .*no\.tbl is not a file",
+            r"samples\.gamma\.simulation\.physics\.pdgfile: .*no\.tbl is not a file",
         ),
     ],
 )
@@ -570,14 +589,16 @@ def test_the_files_a_problem_names_are_those_its_stages_read(
         with_stages(spec, generation=generation, simulation=sim), directory=tmp_path
     )
     assert input_files(ctx, "simulation") == {
-        "stages.generation.file": tmp_path / "zh.hepmc",
-        "stages.simulation.physics.pdgfile": tmp_path / "particles.tbl",
+        "samples.gamma.generation.file": tmp_path / "zh.hepmc",
+        "samples.gamma.simulation.physics.pdgfile": tmp_path / "particles.tbl",
     }
-    assert input_files(ctx, "generation") == {"stages.generation.file": tmp_path / "zh.hepmc"}
+    assert input_files(ctx, "generation") == {
+        "samples.gamma.generation.file": tmp_path / "zh.hepmc"
+    }
     # a supplied simulation reads neither: it does not run, and nothing else needs the event file
     assert input_files(ctx, "simulation", provided={"simulation"}) == {}
     assert input_files(ctx, "simulation", provided={"generation"}) == {
-        "stages.simulation.physics.pdgfile": tmp_path / "particles.tbl"
+        "samples.gamma.simulation.physics.pdgfile": tmp_path / "particles.tbl"
     }
 
 
@@ -598,7 +619,7 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
         spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     assert len(fake.calls) == 1 and len(reader.calls) == 1
-    events_file = tmp_path / "run/simulation/events.edm4hep.root"
+    events_file = tmp_path / "run/samples/gamma/simulation/events.edm4hep.root"
     assert reader.calls[0].inputs["simulation"] == events_file
     (record,) = candidate.records
     assert record.request is reader.calls[0]
@@ -612,7 +633,13 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
     ran = simulated.provenance
     assert ran["returncode"] == 0 and ran["argv"][0] == simulation.DDSIM  # type: ignore[index]
     (read,) = candidate.plan.of(Kind.EVALUATOR)
-    assert [need.label for need in read.needs] == ["geometry", "generation", "simulation"]
+    assert [need.label for need in read.needs] == [
+        "geometry",
+        "gamma/generation",
+        "gamma/simulation",
+    ]
+    directory = "samples/gamma/evaluators/calo.single_particle_shower"
+    assert (read.id.sample, read.directory) == ("gamma", directory)
 
 
 def test_a_reader_cannot_change_the_candidate_or_its_stages(
@@ -647,7 +674,7 @@ def test_a_failed_stage_blocks_the_evaluator_which_never_runs(
     (record,) = candidate.records
     assert reader.calls == []
     assert record.result.status is Status.BLOCKED
-    assert record.result.message == "not run: simulation failed"
+    assert record.result.message == "not run: gamma/simulation failed"
     assert record.result.measurements == ()
     assert record.elapsed_seconds is None  # it was not called
     assert record.request.workdir is None and not (tmp_path / "run" / "evaluators").exists()
@@ -656,19 +683,55 @@ def test_a_failed_stage_blocks_the_evaluator_which_never_runs(
     assert {"stdout", "stderr"} <= set(simulated.artifacts)
     assert simulated.provenance["returncode"] == 3
     assert simulated.status == "failed" and "status 3" in (simulated.message or "")
-    assert candidate.results[record_task(record)].blocked_by == (stage_task("simulation"),)
+    assert candidate.results[record_task(record)].blocked_by == (stage_task("simulation", "gamma"),)
+
+
+@pytest.mark.parametrize(
+    ("label", "message"),
+    [
+        # a misspelled stage would name a task the plan never makes: the file would be dropped
+        ("gamma/simulaton", "input 'gamma/simulaton': expected SAMPLE/STAGE"),
+        ("pion/simulation", "input 'pion/simulation': expected SAMPLE/STAGE"),
+        ("simulation", "input 'simulation': expected SAMPLE/STAGE"),
+    ],
+)
+def test_an_input_that_names_no_stage_of_a_sample_is_refused(
+    spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, label: str, message: str
+) -> None:
+    fake = simulation.install(monkeypatch)
+    events_file = tmp_path / "mine.root"
+    events_file.write_bytes(b"fake")
+    with pytest.raises(EvaluationContractError, match=re.escape(message)):
+        evaluate(spec, {CELL: 6}, Reader(), inputs={label: events_file}, workdir=tmp_path / "run")
+    assert fake.calls == [] and not (tmp_path / "run").exists()
+
+
+def test_an_input_of_a_stage_no_evaluator_reads_is_refused(
+    spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+    events_file = tmp_path / "mine.root"
+    events_file.write_bytes(b"fake")
+    # the simulation, supplied too, reads no generation: a generation file would go unread
+    inputs = {"gamma/simulation": events_file, "gamma/generation": events_file}
+    with pytest.raises(
+        EvaluationContractError,
+        match="input 'gamma/generation': no evaluator of the problem reads that stage of gamma",
+    ):
+        evaluate(spec, {CELL: 6}, Reader(), inputs=inputs, workdir=tmp_path / "run")
+    assert fake.calls == [] and not (tmp_path / "run").exists()
 
 
 def test_an_input_supplied_by_the_caller_skips_the_stage(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    requested = spec.stages["simulation"].events
+    requested = spec.samples["gamma"].stages["simulation"].events
     assert requested is not None
     fake = simulation.install(monkeypatch, events_with(*[[1]] * requested))
     events_file = tmp_path / "mine.root"
     events_file.write_bytes(b"fake")
     reader = Reader()
-    candidate = evaluate(spec, {CELL: 6}, reader, inputs={"simulation": events_file})
+    candidate = evaluate(spec, {CELL: 6}, reader, inputs={"gamma/simulation": events_file})
     assert fake.calls == []
     assert reader.calls[0].inputs["simulation"] == events_file
     # not run, but identified: the file is recorded with its content hash, and generation,
@@ -682,7 +745,7 @@ def test_an_input_supplied_by_the_caller_skips_the_stage(
         }
     }
     # a simulation the caller supplied was not made with the candidate's geometry
-    assert candidate.supplied == {"simulation"}
+    assert candidate.supplied == {"gamma/simulation"}
     assert not candidate.represents_candidate
 
 
@@ -696,11 +759,11 @@ def test_a_supplied_generation_still_represents_the_candidate(
         spec,
         {CELL: 6},
         Reader(),
-        inputs={"geometry": geometry, "generation": hepmc},
+        inputs={"geometry": geometry, "gamma/generation": hepmc},
         workdir=tmp_path / "run",
     )
     # the candidate's geometry was simulated; the events do not depend on it
-    assert candidate.supplied == {"generation"} and candidate.represents_candidate
+    assert candidate.supplied == {"gamma/generation"} and candidate.represents_candidate
 
 
 @pytest.mark.parametrize("supplied", [False, True])
@@ -721,8 +784,8 @@ def test_a_simulation_output_without_the_requested_events_fails_before_the_evalu
     reader = Reader()
     inputs = {"geometry": geometry}
     if supplied:
-        inputs["simulation"] = tmp_path / "mine.root"
-        inputs["simulation"].write_bytes(b"fake")
+        inputs["gamma/simulation"] = tmp_path / "mine.root"
+        inputs["gamma/simulation"].write_bytes(b"fake")
     candidate = evaluate(spec, {CELL: 6}, reader, inputs=inputs, workdir=tmp_path / "run")
     (record,) = candidate.records
     assert reader.calls == []
@@ -958,14 +1021,16 @@ def test_a_failed_generation_stops_before_simulation(
     )
     (record,) = candidate.records
     assert record.result.status is Status.BLOCKED
-    assert record.result.message == "not run: generation failed"
+    assert record.result.message == "not run: gamma/generation failed"
     assert f"cannot read {hepmc}: denied" in (stage(candidate, "generation").message or "")
     assert fake.calls == [] and reader.calls == []
     # the simulation stage is recorded as not run, with the reason
     simulated = stage(candidate, "simulation")
-    assert (simulated.status, simulated.message) == ("blocked", "not run: generation failed")
+    assert (simulated.status, simulated.message) == ("blocked", "not run: gamma/generation failed")
     assert simulated.elapsed_seconds is None
-    assert (candidate.message or "").endswith("; blocked: simulation, calo.single_particle_shower")
+    assert (candidate.message or "").endswith(
+        "; blocked: gamma/simulation, gamma/calo.single_particle_shower"
+    )
 
 
 # --- a supplied generation file is authoritative (review finding) ---
@@ -984,7 +1049,7 @@ def test_a_supplied_generation_file_replaces_the_particle_gun(
         spec,
         {CELL: 6},
         reader,
-        inputs={"geometry": geometry, "generation": hepmc},
+        inputs={"geometry": geometry, "gamma/generation": hepmc},
         workdir=tmp_path / "run",
     )
     ((argv, _),) = fake.calls
@@ -999,7 +1064,7 @@ def test_a_supplied_generation_file_replaces_the_particle_gun(
 
 
 def test_a_supplied_generation_file_needs_no_generation_in_the_problem(spec: ProblemSpec) -> None:
-    alone = StageContext({"simulation": spec.stages["simulation"]})
+    alone = StageContext({"simulation": spec.samples["gamma"].stages["simulation"]})
     assert check_stages(alone, "simulation", provided={"generation"}) == ["simulation"]
 
 
@@ -1047,7 +1112,7 @@ def test_an_evaluator_may_read_only_generation(
     fake = simulation.install(monkeypatch)
     (tmp_path / "events").mkdir()
     (tmp_path / "events" / "zh.hepmc").write_bytes(b"HepMC::Version 3\nevents\n")
-    doc["stages"]["generation"] = {"file": "events/zh.hepmc"}
+    doc["samples"]["gamma"]["generation"] = {"file": "events/zh.hepmc"}
     file_spec = dataclasses.replace(without_stages(doc, reads="generation"), _directory=tmp_path)
 
     class NeedsGeneration(OwnWorkflow):
@@ -1139,7 +1204,7 @@ def test_an_evaluator_keeps_its_own_artifacts_and_provenance_whatever_their_name
     (record,) = candidate.records
     assert record.result.artifacts == {"simulation.edm4hep": mine}
     assert thaw(record.result.provenance) == claimed
-    events_file = tmp_path / "run/simulation/events.edm4hep.root"
+    events_file = tmp_path / "run/samples/gamma/simulation/events.edm4hep.root"
     simulated = stage(candidate, "simulation")
     assert simulated.artifacts["edm4hep"] == events_file
     assert simulated.provenance["argv"][0] == simulation.DDSIM  # type: ignore[index]

@@ -23,8 +23,9 @@ from k4opt.optimization import OptimizationError, optimize
 from k4opt.optimization._optuna import run as adapter
 from k4opt.optimization._optuna.space import search_space
 from k4opt.problem import load_problem
+from tests.support import simulation
 from tests.support.common import git, git_checkout, requires_git, tree_digest
-from tests.support.evaluators import TRADE_OFF, trade_off
+from tests.support.evaluators import TRADE_OFF, cell_count, trade_off
 from tests.support.geometry import MINI_GEO
 from tests.unit.optimization.conftest import (
     RADIUS,
@@ -575,7 +576,7 @@ def file_problem(tmp_path: Path, write_problem: Callable[..., Path]) -> Path:
         objectives=[("generation", "generation.bytes", "minimize")],
     )
     (tmp_path / "zh.hepmc").write_text("HepMC::Version 3\n")
-    _edit(problem, lambda d: d.update(stages={"generation": {"file": "zh.hepmc"}}))
+    _edit(problem, lambda d: d.update(samples={"gamma": {"generation": {"file": "zh.hepmc"}}}))
     return problem
 
 
@@ -586,7 +587,7 @@ def test_a_file_the_problem_names_that_changes_refuses_the_resume(
     run(file_problem, tmp_path / "s", 1, seed=1, evaluators=[sizes])
     (tmp_path / "zh.hepmc").write_text("HepMC::Version 3\nE 0\n")  # the same path
     with pytest.raises(
-        OptimizationError, match=r"stages\.generation\.file: .*zh\.hepmc is not the"
+        OptimizationError, match=r"samples\.gamma\.generation\.file: .*zh\.hepmc is not the"
     ):
         run(file_problem, tmp_path / "s", 1, resume=True, evaluators=[sizes])
 
@@ -606,3 +607,57 @@ def test_a_file_the_problem_names_that_changes_during_a_study_stops_it(
     first, stopped = optuna_study(tmp_path / "s").trials
     assert first.state == TrialState.COMPLETE and stopped.state == TrialState.FAIL
     assert not (tmp_path / "s" / "trial-000001").exists()
+
+
+SAMPLE_CHANGES: dict[str, tuple[Callable[[dict[str, Any]], None], str]] = {
+    "seed": (lambda d: d["samples"]["pion"]["simulation"].update(seed=3), "samples changed"),
+    "events": (lambda d: d["samples"]["pion"]["simulation"].update(events=3), "samples changed"),
+    "particle": (lambda d: d["samples"]["pion"]["generation"].update(particle="pi+"), "samples"),
+    "measured": (lambda d: d["evaluators"][0].update(samples=["pion", "gamma"]), "evaluators"),
+    "renamed": (
+        lambda d: d.update(
+            samples={"pions" if k == "pion" else k: v for k, v in d["samples"].items()},
+            evaluators=[d["evaluators"][0] | {"samples": ["gamma", "pions"]}],
+            objectives=[d["objectives"][0], d["objectives"][1] | {"sample": "pions"}],
+        ),
+        "samples, evaluators, objectives changed",
+    ),
+}
+
+
+def test_a_study_of_two_samples_resumes_and_refuses_another_sample(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    output = tmp_path / "s"
+    run(sampled_problem, output, 1, seed=1, evaluators=[cell_count()])
+    resumed = run(sampled_problem, output, 1, resume=True, evaluators=[cell_count()])
+    assert [t.status for t in resumed.trials] == ["valid", "valid"]
+    assert list(summary(output, 1)["samples"]) == ["gamma", "pion"]
+    before = tree_digest(output)
+    for change, (edit, message) in SAMPLE_CHANGES.items():
+        original = sampled_problem.read_text()
+        _edit(sampled_problem, edit)
+        with pytest.raises(OptimizationError, match=f"cannot resume trade-.*{message}"):
+            run(sampled_problem, output, 1, resume=True, evaluators=[cell_count()])
+        sampled_problem.write_text(original)
+        assert tree_digest(output) == before, change
+
+
+def test_a_study_whose_sample_reads_a_moved_file_resumes(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a file is compared by content: where it is does not identify the study
+    simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    (tmp_path / "zh.hepmc").write_text("HepMC::Version 3\n")
+    _edit(sampled_problem, lambda d: d["samples"]["pion"].update(generation={"file": "zh.hepmc"}))
+    output = tmp_path / "s"
+    run(sampled_problem, output, 1, seed=1, evaluators=[cell_count()])
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    for name in ("problem.yaml", "zh.hepmc"):  # the problem and the file it names, beside it
+        (tmp_path / name).rename(moved / name)
+    resumed = run(moved / "problem.yaml", output, 1, resume=True, evaluators=[cell_count()])
+    assert [t.status for t in resumed.trials] == ["valid", "valid"]
+    read = summary(output, 1)["samples"]["pion"]["stages"]["generation"]
+    assert read["file"] == str(moved / "zh.hepmc")

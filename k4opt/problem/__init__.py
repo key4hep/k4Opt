@@ -1,12 +1,13 @@
 """Problem component: the declarative definition of a detector optimization problem.
 
 Reads and strictly validates a ``k4opt.problem/v1alpha1`` YAML document into immutable,
-typed models: the parameters, the pipeline ``stages`` (each run by an executor or given as a
-file), the ``evaluators`` (named bindings of evaluator implementations) and the objectives and
-constraints, each on a metric of one of them (:class:`MetricRef`). ``load_problem`` also
-resolves the geometry and every parameter target in the active k4geo tree (``$K4GEO``);
-``parse_problem`` is the pure variant that needs no geometry. Evaluators and metrics are not
-checked. See ``docs/problem.md``.
+typed models: the parameters, the named ``samples`` a candidate is measured on (each with its
+pipeline stages, each stage run by an executor or given as a file), the ``evaluators`` (named
+bindings of evaluator implementations, each measuring its samples or the candidate) and the
+objectives and constraints, each on a metric of one evaluation (:class:`MetricRef`).
+``load_problem`` also resolves the geometry and every parameter target in the active k4geo tree
+(``$K4GEO``); ``parse_problem`` is the pure variant that needs no geometry. Evaluators and
+metrics are not checked. See ``docs/problem.md``.
 
 An :class:`EvaluationSession` evaluates candidates of a problem file with its evaluators, given
 as classes of which every candidate gets new instances, each candidate into a run directory with
@@ -42,6 +43,7 @@ from k4opt.problem.models import (
     Objective,
     Parameter,
     ProblemSpec,
+    Sample,
     Stage,
 )
 
@@ -66,6 +68,7 @@ __all__ = [
     "RecordError",
     "RunError",
     "RunOutcome",
+    "Sample",
     "Stage",
     "load_problem",
     "parse_problem",

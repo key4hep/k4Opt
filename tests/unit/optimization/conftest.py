@@ -73,6 +73,45 @@ def write_problem(tmp_path: Path) -> Callable[..., Path]:
     return write
 
 
+GUN = {
+    "executor": "gun",
+    "energy": {"value": 10, "unit": "GeV"},
+    "direction": {"distribution": "uniform", "theta": [80, 100], "phi": [0, 360], "unit": "deg"},
+}
+CELLS = ("simulation", "ecal_barrel.mean_hit_cells")
+
+
+@pytest.fixture
+def sampled_problem(write_problem: Callable[..., Path]) -> Path:
+    """``test.cell_count`` on two samples, ``gamma`` and ``pion``, of 2 events each, with an
+    objective on each; a test installs the fake ddsim (:mod:`tests.support.simulation`)."""
+    path = write_problem(
+        evaluators=[
+            {
+                "name": "test.cell_count",
+                "version": "1",
+                "stage": "simulation",
+                "samples": ["gamma", "pion"],
+                "collections": {"hits": "ECalBarrelCollection"},
+            }
+        ],
+        objectives=[("test.cell_count", *CELLS, "minimize")],
+    )
+    document = yaml.safe_load(path.read_text())
+    document["samples"] = {
+        name: {
+            "generation": GUN | {"particle": particle},
+            "simulation": {"executor": "ddsim", "events": 2, "seed": seed},
+        }
+        for name, particle, seed in (("gamma", "gamma", 1), ("pion", "pi-", 2))
+    }
+    objective = document["objectives"][0]
+    document["objectives"] = [objective | {"sample": "gamma"}, objective | {"sample": "pion"}]
+    document["objectives"][1]["direction"] = "maximize"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    return path
+
+
 TRADE = {"name": "test.trade_off", "version": "1"}
 # what each radius gives, with invalid_below 200, failed_below 150 and the limit a <= 400
 OUTCOME = {300: "feasible", 500: "infeasible", 170: "invalid", 120: "failed"}

@@ -467,7 +467,8 @@ def test_evaluators_that_read_the_simulation_share_one_ddsim_run_per_trial(
         ],
     )
     document = __import__("yaml").safe_load(problem.read_text())
-    document["stages"] = {
+    document["samples"] = {"gamma": {}}
+    document["samples"]["gamma"] = {
         "generation": {
             "executor": "gun",
             "particle": "gamma",
@@ -528,3 +529,31 @@ def test_metrics_whose_names_hold_a_slash_are_told_and_reported_apart(
         assert trial.objectives is not None
         (x,) = trial.candidate.values()
         assert list(trial.objectives.values()) == [x, -x]  # neither overwrites the other
+
+
+def test_a_trial_whose_sample_fails_is_failed_and_keeps_the_other_samples_values(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    simulated = 0
+
+    def second_pions_crash(argv: list[str], **kwargs: Any) -> Any:
+        nonlocal simulated
+        code = fake(argv, **kwargs)
+        simulated += 1
+        return 2 if simulated == 4 else code  # the pions of the second trial
+
+    monkeypatch.setattr(simulation.ddsim_run, "_execute", second_pions_crash)
+    report = study(sampled_problem, tmp_path / "s", trials=3, evaluators=[cell_count()])
+    assert len(fake.calls) == 6  # two samples, one simulation each, every trial
+    assert [t.status for t in report.trials] == ["valid", "failed", "valid"]
+    assert report.objectives == (
+        "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
+        "pion/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
+    )
+    states = [trial.state for trial in optuna_study(tmp_path / "s").trials]
+    assert states == [TrialState.COMPLETE, TrialState.FAIL, TrialState.COMPLETE]
+    record = summary(tmp_path / "s", 1)
+    assert record["message"].startswith("pion/simulation failed")
+    assert [m["value"] for m in record["metrics"]] == [1.5, None]  # gamma's is kept
+    assert record["samples"]["gamma"]["evaluations"]["test.cell_count"]["status"] == "valid"

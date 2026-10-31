@@ -67,7 +67,8 @@ class TrialResult:
     each is satisfied; feasibility) is that of the record, ``None`` without one, and also for an
     ``error`` trial whose record the optimizer never took. ``record`` and ``sha256`` identify the
     ``summary.json`` read; ``elapsed_seconds`` (the whole evaluation) and ``stage_seconds`` (each
-    stage that ran) are the wall-clock times it records, no estimate. ``recovered`` marks a trial
+    stage that ran, by label: ``gamma/simulation``) are the wall-clock times it records, no
+    estimate. ``recovered`` marks a trial
     a resume finished.
     """
 
@@ -281,13 +282,11 @@ def recorded(
         assessment = Assessment.from_summary(spec, summary)
     except RecordError as exc:
         raise OptimizationError(f"{where}: {exc}") from None
-    stages = summary.get("stages")
-    if not isinstance(stages, Mapping) or not all(isinstance(e, Mapping) for e in stages.values()):
-        raise OptimizationError(f"{where}: stages must map each stage to its record")
-    timed = {
-        stage: _seconds(entry.get("elapsed_seconds"), f"{where}: stages.{stage}.elapsed_seconds")
-        for stage, entry in stages.items()
-    }
+    timed = {}
+    for sample, part in summary["samples"].items():  # checked by from_summary
+        for stage, entry in part["stages"].items():
+            at = f"{where}: samples.{sample}.stages.{stage}.elapsed_seconds"
+            timed[f"{sample}/{stage}"] = _seconds(entry.get("elapsed_seconds"), at)
     references = [parameter.geometry.canonical_target for parameter in spec.parameters]
     result = TrialResult(
         number=number,

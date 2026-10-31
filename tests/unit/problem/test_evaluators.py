@@ -79,8 +79,10 @@ STAGES = {
 
 
 def measured(candidate: CandidateRecord, metric: tuple[str, str]) -> Any:
-    """The value of ``metric`` by the evaluator that measures it (:data:`OWNERS`)."""
-    return candidate.value(MetricRef(OWNERS[metric], *metric))
+    """The value of ``metric`` by the evaluator that measures it (:data:`OWNERS`), on ``gamma``
+    if it reads a stage."""
+    owner = OWNERS[metric]
+    return candidate.value(MetricRef(owner, *metric, "gamma" if owner in STAGES else None))
 
 
 def problem(
@@ -103,12 +105,14 @@ def problem(
         for name in names
     ]
     read = {STAGES[name] for name in names if name in STAGES}
-    doc["stages"] = {}
+    del doc["samples"]  # one sample, gamma, if an evaluator reads a stage
     if read:
         gun = {"executor": "gun", **GUN}
-        doc["stages"]["generation"] = gun if generation_file is None else {"file": generation_file}
+        doc["samples"] = {
+            "gamma": {"generation": gun if generation_file is None else {"file": generation_file}}
+        }
     if "simulation" in read:
-        doc["stages"]["simulation"] = {"executor": "ddsim", "events": 3}
+        doc["samples"]["gamma"]["simulation"] = {"executor": "ddsim", "events": 3}
 
     def owned(metric: tuple[str, ...]) -> dict[str, str]:
         if len(metric) == 3:
@@ -195,7 +199,7 @@ def test_two_simulation_readers_share_one_ddsim_run(
         "evaluate test.cell_count",
         "evaluate test.hit_energy",
     ]
-    events_file = tmp_path / "run" / "simulation" / "events.edm4hep.root"
+    events_file = tmp_path / "run" / "samples" / "gamma" / "simulation" / "events.edm4hep.root"
     assert cells.evaluated[0].inputs["simulation"] == events_file
     assert energy.evaluated[0].inputs["simulation"] == events_file
     assert candidate.status is Status.VALID
@@ -205,11 +209,15 @@ def test_two_simulation_readers_share_one_ddsim_run(
     assert measured(candidate, CELLS).value == 3.0  # distinct cells per event: 3, 2, 4
     assert measured(candidate, ENERGY).value == pytest.approx(10 / 3)  # 1 GeV per hit: 4, 2, 4
     assert [ref.label for ref in spec.references] == [
-        "test.cell_count/simulation/ecal_barrel.mean_hit_cells",
-        "test.hit_energy/simulation/ecal_barrel.mean_hit_energy",
+        "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
+        "gamma/test.hit_energy/simulation/ecal_barrel.mean_hit_energy",
     ]
     assert stages(candidate) == ["generation", "simulation"]
-    assert sorted(p.name for p in (tmp_path / "run").iterdir()) == ["evaluators", "simulation"]
+    assert sorted(p.name for p in (tmp_path / "run").iterdir()) == ["samples"]
+    assert sorted(p.name for p in (tmp_path / "run" / "samples" / "gamma").iterdir()) == [
+        "evaluators",
+        "simulation",
+    ]
 
 
 def test_evaluators_are_matched_by_name_and_kept_in_problem_order(
@@ -230,7 +238,7 @@ def test_an_evaluator_that_reads_no_stage_runs_no_simulation(
 ) -> None:
     # without a simulation, the problem needs no stages at all
     spec = problem(doc, "test.parameter_echo", objectives=(ECHO,))
-    assert spec.stages == {}
+    assert spec.samples == {}
     candidate = evaluate(spec, [parameter_echo()], tmp_path, geometry)
     assert log == [] and not (tmp_path / "run" / "simulation").exists()
     assert stages(candidate) == [] and reads(candidate) == {"test.parameter_echo": ("geometry",)}
@@ -280,8 +288,8 @@ def test_each_evaluator_reads_the_files_of_the_stages_it_needs_and_no_others(
     assert set(cells.evaluated[0].inputs) == {"geometry", "generation", "simulation"}
     assert set(size.seen[0].inputs) == {"geometry", "generation"}
     assert reads(candidate) == {
-        "test.cell_count": ("geometry", "generation", "simulation"),
-        "test.file_size": ("geometry", "generation"),
+        "test.cell_count": ("geometry", "gamma/generation", "gamma/simulation"),
+        "test.file_size": ("geometry", "gamma/generation"),
     }
 
 
@@ -320,7 +328,7 @@ def test_supplied_stage_files_only_reach_the_evaluators_that_read_them(
         in_directory(spec, tmp_path),
         {CELL: 6},
         implementations(cells, size, echo),
-        inputs={"geometry": geometry, "simulation": events_file},
+        inputs={"geometry": geometry, "gamma/simulation": events_file},
         workdir=tmp_path / "run",
     )
     assert result.status is Status.VALID and "ddsim" not in log
@@ -343,8 +351,8 @@ def test_an_independent_evaluator_keeps_its_result_when_the_simulation_fails(
     cells, echo = candidate.records
     # the stage carries the failure; its reader is blocked, never called
     assert cells.result.status is Status.BLOCKED and cells.elapsed_seconds is None
-    assert cells.result.message == "not run: simulation failed"
-    simulated = candidate.stage("simulation")
+    assert cells.result.message == "not run: gamma/simulation failed"
+    simulated = candidate.stage("simulation", "gamma")
     assert simulated is not None and simulated.status == "failed"
     assert "ddsim exited with status 2" in (simulated.message or "")
     assert echo.result.status is Status.VALID and echo.elapsed_seconds is not None
@@ -353,9 +361,9 @@ def test_an_independent_evaluator_keeps_its_result_when_the_simulation_fails(
     assert measured(candidate, CELLS) is None
     assert measured(candidate, ECHO).value == 6
     message = candidate.message or ""
-    assert message.startswith("simulation failed: ddsim exited")
-    assert message.endswith("; blocked: test.cell_count")
-    assert not (tmp_path / "run" / "evaluators" / "test.cell_count").exists()
+    assert message.startswith("gamma/simulation failed: ddsim exited")
+    assert message.endswith("; blocked: gamma/test.cell_count")
+    assert not (tmp_path / "run" / "samples" / "gamma" / "evaluators" / "test.cell_count").exists()
 
 
 def test_a_generation_reader_keeps_its_result_when_the_simulation_fails(
@@ -412,12 +420,12 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
         in_directory(spec, tmp_path),
         {CELL: 6},
         implementations(cells, FileSize()),
-        inputs={"simulation": events_file},
+        inputs={"gamma/simulation": events_file},
     )
     assert "ddsim" not in log
     assert set(cells.evaluated[0].inputs) == {"simulation"}
     # it reads the geometry task, which has no file to give without a geometry
-    assert reads(candidate)["test.cell_count"] == ("geometry", "simulation")
+    assert reads(candidate)["test.cell_count"] == ("geometry", "gamma/simulation")
     counted, sized = candidate.records
     assert counted.result.status is Status.VALID
     assert measured(candidate, CELLS).value == 3.0
@@ -425,8 +433,8 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
         assert sized.result.status is Status.VALID and candidate.status is Status.VALID
     else:
         assert sized.result.status is Status.BLOCKED
-        assert sized.result.message == "not run: generation failed"
-        assert f"generation failed: cannot read {hepmc}: denied" in (candidate.message or "")
+        assert sized.result.message == "not run: gamma/generation failed"
+        assert f"gamma/generation failed: cannot read {hepmc}: denied" in (candidate.message or "")
 
 
 # --- the candidate's status: incomplete is never reported as scientifically invalid ---
@@ -526,8 +534,8 @@ class Ahead(Evaluator):
             ("test.cell_count", "test.hit_energy"),
             (cell_count, hit_energy),
             {"constraints": ({"stage": ENERGY[0], "metric": ENERGY[1], "max": 1, "unit": "MeV"},)},
-            r"constraint on test\.hit_energy/simulation/ecal_barrel\.mean_hit_energy declares unit "
-            r"'MeV' but evaluator 'test\.hit_energy' measures it in 'GeV'",
+            r"constraint on gamma/test\.hit_energy/simulation/ecal_barrel\.mean_hit_energy "
+            r"declares unit 'MeV' but evaluator 'test\.hit_energy' measures it in 'GeV'",
         ),
         (
             ("test.cell_count", "test.ahead"),
@@ -650,7 +658,12 @@ def test_a_metric_two_evaluators_report_is_two_values_each_of_its_own_evaluator(
     candidate = evaluate(spec, [cell_count(), other], tmp_path, geometry)
     assert candidate.status is Status.VALID
     assert measured(candidate, CELLS).value == 3.0  # distinct cells per event: 3, 2, 4
-    assert candidate.value(MetricRef(other.name, *CELLS)).value == value
+    assert (
+        candidate.value(
+            MetricRef(other.name, *CELLS, "gamma" if other.name in STAGES else None)
+        ).value
+        == value
+    )
 
 
 # --- workdirs, artifacts and time stay with whoever made them ---
@@ -728,7 +741,8 @@ def test_every_second_is_counted_once(
         spec, [Slow(cell_count(), []), Slow(hit_energy(), [])], tmp_path, geometry
     )
     seconds = {
-        name: candidate.results[stage_task(name)].elapsed_seconds for name in stages(candidate)
+        name: candidate.results[stage_task(name, "gamma")].elapsed_seconds
+        for name in stages(candidate)
     }
     assert seconds == {"generation": 0.0, "simulation": 10.0}
     assert [record.elapsed_seconds for record in candidate.records] == [1.0, 1.0]
@@ -755,7 +769,9 @@ def test_analysis_metrics_need_no_analysis_stage(
     spec = problem(doc, "test.busiest", objectives=(("analysis", "ecal.max_hits"),))
     candidate = evaluate(spec, [Busiest()], tmp_path, geometry)
     assert stages(candidate) == ["generation", "simulation"]
-    assert candidate.value(MetricRef("test.busiest", "analysis", "ecal.max_hits")).value == 4
+    assert (
+        candidate.value(MetricRef("test.busiest", "analysis", "ecal.max_hits", "gamma")).value == 4
+    )
 
 
 # --- the collections an evaluator declares are checked in the file before it is called ---
@@ -809,7 +825,7 @@ def test_the_collections_of_a_file_are_listed_once_for_all_its_readers(
     spec = problem(doc, "test.cell_count", "test.hit_energy", objectives=(CELLS, ENERGY))
     candidate = evaluate(spec, [cell_count(), hit_energy()], tmp_path, geometry)
     assert candidate.status is Status.VALID
-    assert listed == [tmp_path / "run" / "simulation" / "events.edm4hep.root"]
+    assert listed == [tmp_path / "run" / "samples" / "gamma" / "simulation" / "events.edm4hep.root"]
 
 
 class Truth(Evaluator):
@@ -833,8 +849,9 @@ def test_collections_of_a_stage_that_makes_no_file_are_refused_before_anything_r
     spec = problem(doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH))
     with pytest.raises(
         EvaluationContractError,
-        match=r"'test\.truth' reads collections from the 'generation' stage, but executor 'gun' "
-        r"runs inside stages\.simulation and writes no file of its own",
+        match=r"'test\.truth' reads collections from the 'generation' stage of gamma, but executor "
+        r"'gun' "
+        r"runs inside samples\.gamma\.simulation and writes no file of its own",
     ):
         evaluate(spec, [cell_count(), Truth()], tmp_path, geometry)
     assert log == [] and not (tmp_path / "run").exists()
@@ -875,10 +892,10 @@ def test_collections_of_a_file_podio_cannot_read_are_refused_before_anything_run
     inputs = {"geometry": geometry}
     if supplied:  # k4opt evaluate --input generation=zh.hepmc, with the gun in the problem
         spec = problem(hepmc_doc, "test.cell_count", "test.truth", objectives=(CELLS, TRUTH))
-        inputs["generation"] = tmp_path / "zh.hepmc"
+        inputs["gamma/generation"] = tmp_path / "zh.hepmc"
     with pytest.raises(
         EvaluationContractError,
-        match=r"'test\.truth' reads collections from the 'generation' stage, but its file "
+        match=r"'test\.truth' reads collections from the 'generation' stage of gamma, but its file "
         r"zh\.hepmc is no EDM4hep file that podio reads \(\.root or \.sio\)",
     ):
         _evaluate_candidate(
@@ -943,7 +960,7 @@ def thresholds(doc: dict[str, Any], *settings: dict[str, Any], **extra: Any) -> 
     ..., with an objective on each binding's value."""
     doc = copy.deepcopy(doc)
     doc.pop("constraints", None)
-    doc["stages"] = {
+    doc["samples"]["gamma"] = {
         "generation": {"executor": "gun", **GUN},
         "simulation": {"executor": "ddsim", "events": 3},
     }
@@ -971,6 +988,7 @@ def test_two_bindings_of_one_implementation_read_one_simulation_with_their_own_s
         "as": "t1",
         "version": "1",
         "stage": "simulation",
+        "samples": ["gamma"],
         "collections": {"hits": COLLECTION},
         "settings": {"min_hits": 3},
     }
@@ -978,18 +996,20 @@ def test_two_bindings_of_one_implementation_read_one_simulation_with_their_own_s
     assert log == ["ddsim"]  # one simulation, read by both bindings
     assert candidate.status is Status.VALID
     # events with 4, 2 and 4 hits: all have one, two have three
-    assert candidate.value(MetricRef("test.threshold", *BUSY)).value == 3
-    assert candidate.value(MetricRef("t1", *BUSY)).value == 2
-    assert list(candidate.evaluations) == ["test.threshold", "t1"]
+    assert candidate.value(MetricRef("test.threshold", *BUSY, "gamma")).value == 3
+    assert candidate.value(MetricRef("t1", *BUSY, "gamma")).value == 2
+    assert list(candidate.evaluations) == ["gamma/test.threshold", "gamma/t1"]
     assert {r.evaluator_name for r in candidate.records} == {"test.threshold"}
     assert reads(candidate) == {
-        "test.threshold": ("geometry", "generation", "simulation"),
-        "t1": ("geometry", "generation", "simulation"),
+        "test.threshold": ("geometry", "gamma/generation", "gamma/simulation"),
+        "t1": ("geometry", "gamma/generation", "gamma/simulation"),
     }
     # the probe, then an instance of each binding of its own, each asked once
     probe, first, second = Threshold.created
     assert (probe.asked, first.asked, second.asked) == ([], [1], [3])
-    assert sorted(p.name for p in (tmp_path / "run" / "evaluators").iterdir()) == [
+    assert sorted(
+        p.name for p in (tmp_path / "run" / "samples" / "gamma" / "evaluators").iterdir()
+    ) == [
         "t1",
         "test.threshold",
     ]
@@ -1032,7 +1052,7 @@ def test_two_bindings_that_measure_the_same_are_a_warning(
     assert candidate.status is Status.VALID  # both are evaluated all the same
     expected = (
         "evaluators 'test.threshold' and 't1' bind test.threshold with the same settings and "
-        "collections; each is evaluated separately"
+        "collections on gamma; each is evaluated separately"
     )
     assert candidate.warnings == ((expected,) if warned else ())
 

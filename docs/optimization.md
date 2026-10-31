@@ -19,7 +19,7 @@ k4opt optimize examples/problem/cld-ecal-granularity.yaml \
 It prints each trial as it ends, and the study at the end (the values here are illustrative):
 
 ```text
-trial 0:   valid    feasible    constants.ECal_cell_size=9.79789  calo.photon/simulation/ecal_barrel.angular_residual=0.948  calo.photon/simulation/ecal_barrel.fired_cells=227
+trial 0:   valid    feasible    constants.ECal_cell_size=9.79789  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227
 trial 1:   failed   simulation failed: ddsim exited with status 1 (...); blocked: calo.photon  trial-000001/summary.json
 ...
 study:    cld-ecal-granularity-3f9c2a1b, 2 objective(s), 0 limit(s), runs/cld-ecal-study/study.json
@@ -50,7 +50,7 @@ color off.
 | `--evaluator FILE.py:Class` | an evaluator of the problem, as for `k4opt evaluate` (repeatable) |
 | `--trials N` | how many *new* trials this invocation runs; each counts, whatever its outcome |
 | `--output DIR` | the study directory: new or empty for a new study, the study's own with `--resume` |
-| `--seed S` | the sampler's seed, in [0, 2**32); one is drawn and recorded without it. It is not the simulation's seed, which stays `stages.simulation.seed` |
+| `--seed S` | the sampler's seed, in [0, 2**32); one is drawn and recorded without it. It is not the simulation's seed, which stays each sample's `simulation.seed` |
 | `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)) |
 | `--storage URL` | an Optuna database URL (SQLite on a local disk, PostgreSQL) in place of the journal file in `DIR`; it needs SQLAlchemy, and the same URL on every resume |
 | `--timeout SECONDS` | kill `ddsim` if a trial's simulation runs longer than that: the candidate is `failed`, the trial FAIL, and the study goes on. No limit without it. It is recorded in each trial's record and is not part of the study, so a resume may give another one |
@@ -77,15 +77,17 @@ values are written into the geometry as they are, with nothing rounded or snappe
 
 **Objectives.** The optimizer is told each objective's value, in the problem's order and with
 its `direction`. One objective and several take the same path. Each is named by its label,
-`evaluator/stage/metric`, with the binding that measures it
-(`calo.photon/simulation/ecal_barrel.fired_cells`; a `%` or `/` within a part is
-percent-escaped, so two objectives never share a label). The values are those of the run's
-[assessment](evaluation.md#assessment-objectives-limits-and-feasibility): that binding's
+`sample/evaluator/stage/metric`, with the sample and the binding that measures it
+(`gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells`; `evaluator/stage/metric` for an
+evaluator of the candidate; a `%` or `/` within a part is percent-escaped, so two objectives
+never share a label). The values are those of the run's
+[assessment](evaluation.md#assessment-objectives-limits-and-feasibility): that evaluation's
 measurement, as a float. A value that no float holds exactly (an integer beyond 2**53) stops
 the study rather than being told as another value.
 
-**Constraints.** Each bound of a constraint is a *limit*, named `evaluator/stage/metric:bound`
-(`calo.photon/simulation/ecal_barrel.angular_residual:max`). For each limit the optimizer is told its
+**Constraints.** Each bound of a constraint is a *limit*, named by its metric's label and its
+bound, `sample/evaluator/stage/metric:bound`
+(`gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual:max`). For each limit the optimizer is told its
 physical margin (`value - max`, `min - value`, in the metric's unit), which is zero or below
 when the limit is satisfied. `study.json` records this choice as `"constraint_values":
 "physical margins"`. A limit is judged on the central value of the measurement, and its
@@ -196,8 +198,9 @@ keeps its geometry and its EDM4hep file.
 
 - the study's `id` and creation time;
 - the problem's path and normalized definition;
-- the path, size and SHA-256 of every file the problem names (`stages.*.file`, the files ddsim
-  options name);
+- the path, size and SHA-256 of every file the problem names, by where it names it
+  (`samples.<sample>.<stage>.file`, `samples.<sample>.simulation.<option>` for a file a ddsim
+  option names);
 - `implementations`: each evaluator the problem binds, once however many entries bind it, by
   name: its version, the stage it reads, its source identity and declared metrics;
 - the compact file, source root and fingerprint of the unmodified geometry, and the path and
@@ -329,12 +332,12 @@ study:      cld-ecal-granularity-3f9c2a1b, created 2026-10-30T12:00:00+00:00
 id:         3f9c2a1b-5d0e-4f43-9a52-77c1d2e0b6a4
 directory:  /home/me/runs/cld-ecal-study (trials in study.journal)
 parameters: constants.ECal_cell_size  continuous [2.5, 20.0] mm
-objectives: calo.photon/simulation/ecal_barrel.angular_residual  minimize  (mrad)
-            calo.photon/simulation/ecal_barrel.fired_cells  minimize  (1)
+objectives: gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual  minimize  (mrad)
+            gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells  minimize  (1)
 limits:     none
 trials:     30: 28 valid (28 feasible, 0 infeasible), 1 invalid, 1 failed
 pareto:     0, 4, 7
-            trial 0:  constants.ECal_cell_size=9.79789 mm  calo.photon/simulation/ecal_barrel.angular_residual=0.948 mrad  calo.photon/simulation/ecal_barrel.fired_cells=227 1
+            trial 0:  constants.ECal_cell_size=9.79789 mm  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948 mrad  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227 1
             ...
 ```
 
@@ -405,9 +408,9 @@ JSON, never 0 or NaN, and a float keeps all its digits.
 | `feasible` | `true` or `false` for a valid trial, empty otherwise |
 | `pareto`, `recovered` | `true` for a trial on the front, for one a resume finished |
 | `parameter:<reference>` | the candidate's value (its unit is the problem's) |
-| `objective:<evaluator>/<stage>/<metric>`, `…:unit`, `…:uncertainty` | the measured value, its unit, its uncertainty |
-| `limit:<evaluator>/<stage>/<metric>:<bound>:value`, `…:margin`, `…:satisfied` | the value judged, its margin (zero or below when satisfied), the verdict |
-| `elapsed_seconds`, `stage:<stage>:elapsed_seconds` | the recorded wall-clock time of the evaluation, and of each stage that ran |
+| `objective:<sample>/<evaluator>/<stage>/<metric>`, `…:unit`, `…:uncertainty` | the measured value, its unit, its uncertainty (without `<sample>/` for an evaluator of the candidate) |
+| `limit:<sample>/<evaluator>/<stage>/<metric>:<bound>:value`, `…:margin`, `…:satisfied` | the value judged, its margin (zero or below when satisfied), the verdict |
+| `elapsed_seconds`, `stage:<sample>/<stage>:elapsed_seconds` | the recorded wall-clock time of the evaluation, and of each stage of each sample that ran (`stage:gamma_10gev/simulation:elapsed_seconds`) |
 | `record`, `record_sha256`, `record_path` | the record's id, SHA-256 and path in the study |
 | `message` | why the trial is invalid, failed or an error |
 
@@ -415,8 +418,9 @@ In a column name, a `%`, `/`, `:` or control character within a name from the pr
 parameter reference, a stage or metric name) is percent-escaped (`%25`, `%2F`, `%3A`, `%1B`), so
 each column names one thing and the header holds nothing a terminal would run:
 `objective:e/analysis/count%3Aunit` is the value of the metric `count:unit` of the evaluator
-`e`, and `objective:e/analysis/count:unit` the unit of `count`. Split such a name at its two `/`
-and unescape each part (`urllib.parse.unquote`) to get the evaluator, stage and metric back.
+`e`, and `objective:e/analysis/count:unit` the unit of `count`. Split such a name at its `/`
+and unescape each part (`urllib.parse.unquote`) to get the sample (when there are four parts),
+evaluator, stage and metric back; the last two are always stage and metric.
 Booleans are `true` and `false`; control characters in text are escaped (`\x1b`), tab and
 newline kept in quoted cells. The CSV cannot tell a categorical `""` or `"1"` from an empty cell
 or the number 1: the JSON export is the typed one.
@@ -440,7 +444,7 @@ or the number 1: the JSON export is the typed one.
       "candidate": {"constants.ECal_cell_size": 9.797885082295046},
       "assessment": {"feasible": true, "objectives": [], "limits": []},
       "elapsed_seconds": 291.3,
-      "stage_seconds": {"generation": 0.4, "simulation": 280.2},
+      "stage_seconds": {"gamma_10gev/generation": 0.4, "gamma_10gev/simulation": 280.2},
       "message": null,
       "record": {"id": "7a2aca36-...", "path": "trial-000000/summary.json", "sha256": "a22d51..."},
       "pareto": true
@@ -495,7 +499,7 @@ trial.status, trial.outcome, trial.candidate, trial.message, trial.recovered
 for m in trial.assessment.objectives:  # None for a trial without a valid result
     print(m.stage, m.metric, m.value, m.unit, m.uncertainty)
 trial.assessment.limits  # each Limit: value, limit, margin, satisfied
-trial.elapsed_seconds, trial.stage_seconds  # recorded times
+trial.elapsed_seconds, trial.stage_seconds  # recorded times, stages by label
 trial.record, trial.sha256, trial.summary_path  # the summary.json it was read from
 
 data = study.to_dict()  # the JSON export, plain data

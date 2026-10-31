@@ -6,11 +6,11 @@ then validates the candidate, creates a new instance of each evaluator and check
 for the candidate, checks that no such file changed (nothing is created before this succeeds),
 and runs the candidate's tasks in a new run directory through
 :func:`k4opt.problem._evaluate._execute_plan`: the geometry task materializes the candidate's
-geometry into it, each pipeline stage runs once and each evaluator measures the candidate with
-its new instance. It then assesses the candidate against the objectives and constraints
-(:mod:`k4opt.problem._assess`) and writes ``summary.json``, which :func:`assemble` makes from the
-task results alone. :func:`run_candidate` evaluates one candidate given as ``REFERENCE=VALUE``
-strings.
+geometry into it, each pipeline stage of each sample runs once and each evaluation measures its
+sample, or the candidate, with its new instance. It then assesses the candidate against the
+objectives and constraints (:mod:`k4opt.problem._assess`) and writes ``summary.json``, which
+:func:`assemble` makes from the task results alone. :func:`run_candidate` evaluates one candidate
+given as ``REFERENCE=VALUE`` strings.
 """
 
 from __future__ import annotations
@@ -49,7 +49,15 @@ from k4opt.problem._evaluate import (
     _validate_candidate,
 )
 from k4opt.problem._stages import STAGE_TYPES, file_identity, input_files, plan_stages
-from k4opt.problem._tasks import GEOMETRY, Kind, Task, TaskResult
+from k4opt.problem._tasks import (
+    GEOMETRY,
+    Kind,
+    Task,
+    TaskId,
+    TaskResult,
+    evaluations,
+    stage_task,
+)
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
@@ -81,16 +89,20 @@ class RunOutcome:
         return self.run_dir / SUMMARY_NAME
 
     @property
-    def events_read(self) -> object:
-        """The events found in the simulation output, ``None`` if it was not inspected."""
-        simulation = self.candidate.stage("simulation")
-        return None if simulation is None else simulation.provenance.get("events_read")
-
-    @property
-    def events_requested(self) -> object:
-        """The events the simulation stage asks for, ``None`` if it asks for none."""
-        events = self.summary.get("events")
-        return events.get("requested") if isinstance(events, Mapping) else None
+    def events(self) -> dict[str, tuple[object, object]]:
+        """``(found, requested)``: the events found in the simulation output of each sample whose
+        output was inspected, and those its simulation stage asks for (``None`` for none)."""
+        definition = self.summary["problem"]
+        assert isinstance(definition, Mapping)
+        samples = definition["definition"].get("samples", {})
+        events: dict[str, tuple[object, object]] = {}
+        for task in self.candidate.plan.of(Kind.STAGE):
+            found = self.candidate.results[task.id].provenance.get("events_read")
+            if task.id.name == "simulation" and found is not None:
+                assert task.id.sample is not None
+                requested = samples[task.id.sample]["simulation"].get("events")
+                events[task.id.sample] = (found, requested)
+        return events
 
 
 def _int(reference: str, text: str) -> int:
@@ -209,28 +221,41 @@ def _measurement(m: Measurement | None) -> dict[str, object]:
 
 
 def _parse_inputs(assignments: Sequence[str]) -> dict[str, str]:
-    """``STAGE=FILE`` strings as files by stage; the session checks the stages and files."""
+    """``SAMPLE/STAGE=FILE`` strings as files by stage label; the session checks the samples,
+    stages and files."""
     inputs: dict[str, str] = {}
     for assignment in assignments:
-        stage, separator, text = assignment.partition("=")
-        if not separator or not stage or not text:
-            raise RunError(f"--input {assignment!r}: expected STAGE=FILE")
-        if stage in inputs:
-            raise RunError(f"--input {stage} is given more than once")
-        inputs[stage] = text
+        label, separator, text = assignment.partition("=")
+        if not separator or not label or not text:
+            raise RunError(f"--input {assignment!r}: expected SAMPLE/STAGE=FILE")
+        if label in inputs:
+            raise RunError(f"--input {label} is given more than once")
+        inputs[label] = text
     return inputs
 
 
-def _supplied(inputs: Mapping[str, str | os.PathLike[str]]) -> dict[str, Path]:
-    """The files that stand in for stages, as absolute paths; each must name a stage and a file."""
-    supplied: dict[str, Path] = {}
-    for stage, given in inputs.items():
+def _supplied(
+    spec: ProblemSpec, inputs: Mapping[str, str | os.PathLike[str]]
+) -> dict[TaskId, Path]:
+    """The files that stand in for stages, by stage task, as absolute paths; each must be named
+    ``SAMPLE/STAGE`` after a sample of ``spec`` and a stage, and be a file."""
+    supplied: dict[TaskId, Path] = {}
+    samples = ", ".join(spec.samples) or "none"
+    for label, given in inputs.items():
+        sample, separator, stage = label.partition("/")
+        if not separator:
+            raise RunError(
+                f"input {label!r}: name the sample too, as SAMPLE/{label}; the problem's samples "
+                f"are {samples}"
+            )
+        if sample not in spec.samples:
+            raise RunError(f"input {label!r}: unknown sample {sample!r}; the samples are {samples}")
         if stage not in STAGE_TYPES:
-            raise RunError(f"input {stage!r}: unknown stage; use {', '.join(STAGE_TYPES)}")
+            raise RunError(f"input {label!r}: unknown stage; use {', '.join(STAGE_TYPES)}")
         path = Path(os.path.abspath(Path(given).expanduser()))
         if not path.is_file():
-            raise RunError(f"input {stage}={os.fspath(given)}: {path} is not a file")
-        supplied[stage] = path
+            raise RunError(f"input {label}={os.fspath(given)}: {path} is not a file")
+        supplied[stage_task(stage, sample)] = path
     return supplied
 
 
@@ -304,7 +329,7 @@ def _stage(task: Task, result: TaskResult) -> dict[str, object]:
 
 
 def _evaluation(task: Task, result: TaskResult, entry: EvaluatorSpec) -> dict[str, object]:
-    """One binding's own part of the summary: nothing of the stages it shares, nor of its
+    """One evaluation's own part of the summary: nothing of the stages it shares, nor of its
     implementation, which ``implementations`` records once."""
     record = result.record
     assert record is not None  # every binding has one, a blocked one too
@@ -341,22 +366,33 @@ def assemble(
 ) -> dict[str, object]:
     """The summary of a candidate, made from its task results and nothing else that ran.
 
-    Each task's part (``geometry``, each entry of ``stages`` and of ``evaluators``) is made from
-    that task's result alone; the candidate's ``status``, ``message``, ``metrics`` and
-    ``assessment`` derive from them, as :meth:`Assessment.from_summary` derives them again.
+    Each task's part (``geometry``; each sample's ``stages`` and ``evaluations``; the
+    ``evaluations`` of the candidate) is made from that task's result alone; the candidate's
+    ``status``, ``message``, ``metrics`` and ``assessment`` derive from them, as
+    :meth:`Assessment.from_summary` derives them again.
     ``record_id`` is the record's identity; the rest is what the session holds: the problem,
     what it recorded of each implementation (``taken``: its version, stage, source and metrics)
     and of the process (``process``).
     """
     plan, results = candidate.plan, candidate.results
-    simulation = candidate.stage("simulation")
-    observed = None if simulation is None else simulation.provenance
     environment = thaw(process["environment"])
     assert isinstance(environment, dict)
-    argv = None if observed is None else observed.get("argv")
-    simulate = spec.stages.get("simulation")
-    entries = {entry.binding: entry for entry in spec.evaluators}
+    started = [
+        argv
+        for task in plan.of(Kind.STAGE)
+        if isinstance(argv := results[task.id].provenance.get("argv"), (list, tuple)) and argv
+    ]
+    entries = dict(evaluations(spec.samples, spec.evaluators))
     geometry = results[GEOMETRY]
+
+    def measured(sample: str | None) -> dict[str, object]:
+        """The evaluations of ``sample``, or of the candidate, by binding."""
+        return {
+            task.id.name: _evaluation(task, results[task.id], entries[task.id])
+            for task in plan.of(Kind.EVALUATOR)
+            if task.id.sample == sample
+        }
+
     made = thaw(geometry.provenance)
     assert isinstance(made, dict)
     return {
@@ -374,8 +410,8 @@ def assemble(
         "warnings": list(candidate.warnings),
         # the objective and constraint metrics, each from the binding it names
         "metrics": [
-            {"evaluator": ref.evaluator, "stage": ref.stage, "metric": ref.metric}
-            | {"label": ref.label}
+            {"evaluator": ref.evaluator, "sample": ref.sample, "stage": ref.stage}
+            | {"metric": ref.metric, "label": ref.label}
             | _measurement(candidate.value(ref))
             for ref in spec.references
         ],
@@ -383,22 +419,27 @@ def assemble(
         "assessment": assessment.to_dict(),
         # each implementation once, however many bindings it has
         "implementations": {name: thaw(entry) for name, entry in taken.items()},
-        "evaluations": {
-            task.id.name: _evaluation(task, results[task.id], entries[task.id.name])
-            for task in plan.of(Kind.EVALUATOR)
+        # each sample's stages, each recorded once, and the evaluations of the sample
+        "samples": {
+            sample: {
+                "stages": {
+                    task.id.name: _stage(task, results[task.id])
+                    for task in plan.of(Kind.STAGE)
+                    if task.id.sample == sample
+                },
+                "evaluations": measured(sample),
+            }
+            for sample in spec.samples
         },
-        "stages": {task.id.name: _stage(task, results[task.id]) for task in plan.of(Kind.STAGE)},
-        "events": {
-            "requested": None if simulate is None else simulate.events,
-            "observed": None if observed is None else observed.get("events_read"),
-        },
+        # the evaluations of the candidate, of no sample
+        "evaluations": measured(None),
         "elapsed_seconds": candidate.elapsed_seconds,
         "geometry": {"status": geometry.status}
         | made
         | {"elapsed_seconds": geometry.elapsed_seconds},
         "paths": {"run_dir": str(run_dir)}
         | {
-            f"{task.id.name}.{role}": str(path)
+            f"{task.id.label}.{role}": str(path)
             for task in plan.of(Kind.STAGE)
             for role, path in results[task.id].artifacts.items()
         },
@@ -412,7 +453,7 @@ def assemble(
                 "k4opt_source": thaw(process["k4opt"]),
                 # the session's, which the process still had when this candidate started
                 **environment,
-                "ddsim": argv[0] if isinstance(argv, (list, tuple)) and argv else None,
+                "ddsim": started[0][0] if started else None,
             },
         },
     }
@@ -457,7 +498,7 @@ class EvaluationSession:
         path: Path,
         spec: ProblemSpec,
         binding: _Binding,
-        inputs: Mapping[str, Path],
+        inputs: Mapping[TaskId, Path],
         files: Mapping[str, tuple[Path, Mapping[str, Json] | None]],
         externals: Mapping[str, Json],
         taken: Mapping[str, Mapping[str, Json]],
@@ -493,10 +534,11 @@ class EvaluationSession:
 
         ``implementations`` (evaluator classes, as :func:`~k4opt.evaluation.load_evaluator`
         returns them) implement the problem's ``evaluators``, in any order; one instance of each
-        is created now to bind it to the problem, and a new one for every candidate. ``inputs``
-        maps a stage to a file that stands in for it (``k4opt evaluate --input``): that stage
-        does not run, nor do the stages only it needs, and a supplied stage that the parameters
-        change was not made from the candidate, which every outcome says
+        is created now to bind it to the problem, and a new one for every evaluation of every
+        candidate. ``inputs`` maps a stage of a sample, ``SAMPLE/STAGE``, to a file that stands
+        in for it (``k4opt evaluate --input``): that stage does not run, nor do the stages of the
+        sample only it needs, and a supplied stage that the parameters change was not made from
+        the candidate, which every outcome says
         (``represents_candidate``). ``timeout`` is how many seconds a stage that runs a program
         (ddsim) may take: one that runs longer is killed, and its candidate fails with the logs
         kept. Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
@@ -508,13 +550,20 @@ class EvaluationSession:
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         limit = _timeout(timeout)
         spec = load_problem(path)
-        supplied = _supplied(inputs or {})
+        supplied = _supplied(spec, inputs or {})
         binding = _bind_problem(spec, implementations, supplied)
-        for stage in supplied:  # read by an evaluator, given the other supplied stages
-            if stage not in plan_stages(*binding.targets, provided=supplied.keys() - {stage}):
-                raise RunError(f"input {stage}: no evaluator of the problem reads that stage")
-        named = input_files(binding.context, *binding.targets, provided=supplied)
-        named |= {f"supplied.{stage}": file for stage, file in supplied.items()}
+        named: dict[str, Path] = {}
+        for sample, context in binding.contexts.items():
+            given = {task.name for task in supplied if task.sample == sample}
+            targets = binding.targets[sample]
+            for stage in given:  # read by an evaluator, given the other supplied stages
+                if stage not in plan_stages(*targets, provided=given - {stage}):
+                    raise RunError(
+                        f"input {sample}/{stage}: no evaluator of the problem reads that stage of "
+                        f"{sample}"
+                    )
+            named |= input_files(context, *targets, provided=given)
+        named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
         # an unreadable file has no identity: its stage reports it, and a record still names it
         files = {label: (file, _readable_identity(file)) for label, file in named.items()}
         assert spec._source is not None
@@ -577,8 +626,9 @@ class EvaluationSession:
         """What this session evaluates with, as plain JSON-compatible data.
 
         ``problem``: the path and normalized definition; ``inputs``: the path, size and SHA-256
-        of each file the stages read, by where it is named (``stages.generation.file``) or
-        supplied (``supplied.simulation``), a file that could not be read with its path only;
+        of each file the stages read, by where it is named (``samples.gamma.generation.file``) or
+        supplied (``supplied.gamma.simulation``), a file that could not be read with its path
+        only; a file that several samples read is named for each, and hashed once;
         ``implementations``: the version, stage, source identity and declared metrics of each
         implementation the problem binds, by name, in the order it first binds them;
         ``geometry``: the compact file, the source root, the fingerprint of the unmodified
@@ -851,10 +901,10 @@ def run_candidate(
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
-    :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are ``STAGE=FILE``
-    strings, ``timeout`` that of :meth:`EvaluationSession.open`. ``warn`` is called with each of
-    the session's warnings once the candidate is known to be valid, before anything is created;
-    the warnings are also kept in the summary.
+    :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
+    ``SAMPLE/STAGE=FILE`` strings, ``timeout`` that of :meth:`EvaluationSession.open`. ``warn``
+    is called with each of the session's warnings once the candidate is known to be valid, before
+    anything is created; the warnings are also kept in the summary.
     """
     session = EvaluationSession.open(
         problem_path, implementations, inputs=_parse_inputs(inputs), timeout=timeout

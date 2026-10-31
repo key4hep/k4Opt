@@ -58,11 +58,12 @@ estimator, units, uncertainty convention.
 
 What the optional parts do:
 
-- `stage = "simulation"`: the framework makes that stage available as the problem's `stages` say
-  (runs it, or takes its file) and passes its file as `request.inputs["simulation"]`, along with
-  the files of the stages before it; the evaluator never builds a command, starts a tool or
-  handles its failures, and a stage that several evaluators read runs once (see
-  [Stages](#stages)). The evaluator's entry in the problem states the same `stage`, so the
+- `stage = "simulation"`: the framework makes that stage of each sample the evaluator measures
+  available as the problem's `samples` say (runs it, or takes its file) and passes its file as
+  `request.inputs["simulation"]`, along with the files of the stages before it; the evaluator is
+  called once per sample, each time with one sample's files, events and seed, and never builds a
+  command, starts a tool or handles its failures; a stage that several evaluators read runs once
+  (see [Stages](#stages)). The evaluator's entry in the problem states the same `stage`, so the
   problem file shows what each evaluator reads; a mismatch is an error before anything runs.
   Without `stage` the evaluator reads no stage and needs none: a cost model, say, works from the
   candidate's parameters alone.
@@ -239,13 +240,15 @@ workflow instruction, and the set of stages is not enumerated. One evaluator may
 
 ## Stages
 
-The stages of the pipeline are made available by the framework, not by an evaluator. The
-problem's `stages` say how: each is run by an `executor` or given as a `file` (see
-[problem](problem.md#stages)). A stage turns the stages before it (and the candidate's geometry)
-into a file, and an evaluator whose `stage` names it reads that file from `request.inputs`. Each
-stage runs at most once per candidate, however many evaluators read it, so several evaluators
-share one expensive simulation, and an evaluator can be tested with a small fixture file and no
-Key4hep stack.
+The stages of the pipeline are made available by the framework, not by an evaluator. Each sample
+of the problem says how its stages are made: each is run by an `executor` or given as a `file`
+(see [problem](problem.md#samples)). A stage turns the stages before it (and the candidate's
+geometry) into a file, and an evaluator whose `stage` names it reads that file from
+`request.inputs`. Each stage of a sample runs at most once per candidate, however many evaluators
+read it, so several evaluators share one expensive simulation, and an evaluator can be tested
+with a small fixture file and no Key4hep stack. The samples share nothing but the candidate's
+geometry: each is simulated on its own, and an evaluator that measures two samples is called
+twice, once with each sample's files.
 
 | Stage | Reads | Executor | Given as `file:` | Provides |
 | --- | --- | --- | --- | --- |
@@ -265,20 +268,25 @@ A stage asks only for what it uses: `simulation` needs `inputs["geometry"]` and 
 `generation` neither, and an evaluator that reads none runs no stage at all.
 
 The work of a candidate is a set of **tasks**, each run at most once: the candidate's
-`geometry`, every stage the evaluators read, and every evaluator. Each task names the tasks it
-reads, and nothing else orders it: a stage that runs reads the stages before it (and the
-geometry, if it is made from it), and every evaluator reads the geometry and its stage with the
-stages that one reads, even an evaluator that reads no stage. Each writes in a directory of its
-own (`simulation/`, `evaluators/<name>/`). A task runs only when every task it reads succeeded
-(a stage is `done`, an evaluator `valid`); otherwise it is **`blocked`** and not run, so the
-order in which the tasks run never changes a result. A stage that fails (a file it cannot read,
-the tool missing, a nonzero exit, no output, an output without the requested events) is `failed`
-with its message; every task that reads it is `blocked`, an evaluator too, without being called
-("not run: simulation failed"). A task is blocked by the tasks that failed, not by the blocked
-ones between them. Tasks that do not depend on it still run and keep their results.
+`geometry`, every stage of each sample that its evaluators read (`gamma_10gev/simulation`), and
+every **evaluation**: an evaluator on one of its samples (`gamma_10gev/calo.photon`), or on the
+candidate (`readout`), for one that reads no stage. Each task names the tasks it reads, and
+nothing else orders it: a stage that runs reads the stages of its sample before it (and the
+geometry, if it is made from it), and every evaluation reads the geometry and, of its sample,
+its evaluator's stage with the stages that one reads, even an evaluation that reads no stage.
+Each writes in a directory of its own (`samples/<sample>/simulation/`,
+`samples/<sample>/evaluators/<binding>/`, `evaluators/<binding>/` for one of the candidate). A
+task runs only when every task it reads succeeded (a stage is `done`, an evaluation `valid`);
+otherwise it is **`blocked`** and not run, so the order in which the tasks run never changes a
+result. A stage that fails (a file it cannot read, the tool missing, a nonzero exit, no output,
+an output without the requested events) is `failed` with its message; every task that reads it
+is `blocked`, an evaluation too, without being called ("not run: gamma_10gev/simulation
+failed"). A task is blocked by the tasks that failed, not by the blocked ones between them.
+Tasks that do not depend on it, the other samples' among them, still run and keep their results.
 
-An `inputs[stage]` supplied by the caller (`k4opt evaluate --input simulation=FILE`) replaces
-running that stage and the ones only it needs, and it is authoritative: a supplied `generation`
+An `inputs[stage]` supplied by the caller for a stage of a sample (`k4opt evaluate --input
+gamma_10gev/simulation=FILE`) replaces running that stage and the ones of the sample only it
+needs, and it is authoritative: a supplied `generation`
 file is simulated even if the problem describes a particle gun. The record identifies it (the
 path, size and SHA-256 under `provided`; a file that could not be hashed carries only its path,
 so a verified input is distinguishable from one identified by its name) and lists it as
@@ -290,13 +298,14 @@ per file version, not once per candidate: a file is told apart by size, mtime, c
 so one rewritten within a few milliseconds of being hashed is not, and files are assumed stable
 while a campaign runs.
 
-The stages are recorded once per candidate, apart from the evaluators' results: what ran (the
+The stages are recorded once per candidate, under their sample, apart from the evaluators'
+results: what ran (the
 command, exit code and time limit), what was given or supplied, the files a ddsim option names (with their
 hashes), the events found, its status (`done`, `failed`, `blocked`) and message, the tasks it
 reads and those that blocked it, the stage's files and the time spent on it. An
 evaluator's result holds only what it returned, so its artifact and provenance names cannot
-clash with the stages'. The stages take their conditions from the problem's `stages`, never from
-an evaluator, except a time limit, which is the caller's: a stage that runs a program (ddsim)
+clash with the stages'. The stages take their conditions from their sample, never from an
+evaluator, except a time limit, which is the caller's: a stage that runs a program (ddsim)
 longer than the `timeout` of the session kills it and fails. Stages are internal for now
 (`k4opt.problem._stages`).
 
@@ -362,7 +371,7 @@ anything of the candidate is created. Setup that is expensive and the same for e
 - **Evaluator**: user-written code that accepts an `EvaluationRequest` and returns an
   `EvaluationResult`; the documentation of its version defines what its metrics mean.
 - **`EvaluationRecord`**: the request and result of **one evaluator's attempt** at one
-  candidate, plus what the framework observed. It holds only that evaluator's own work; the
+  candidate, on one sample or on the candidate, plus what the framework observed. It holds only that evaluator's own work; the
   stages it read are recorded once for the candidate.
 
 | `EvaluationRecord` field | Source |
@@ -412,58 +421,64 @@ In order, it:
    order: each evaluator the problem names must be given exactly once, however many entries
    bind it, with the declared `version` and reading the declared `stage`, and no other
    (`EvaluationContractError` otherwise, and for a class that cannot be created). Each entry is
-   a binding, identified by its binding name (`as`, its `name` when not given); tasks, records,
-   run directories and the objectives and constraints use that identity;
-3. before anything runs, checks the stages the evaluators read and that each objective and
-   constraint names a metric its binding's evaluator declares, in the declared unit (see
-   [problem](problem.md#evaluators); `EvaluationContractError` otherwise), then creates a new
-   instance of each binding's evaluator for the candidate, resolves its settings and
-   collections and calls its `check()`. A collection ddsim is not expected to write, and two
-   bindings that measure the same twice, are warnings, kept with the candidate;
+   a binding, identified by its binding name (`as`, its `name` when not given), and each
+   evaluation by the binding and the sample it measures (`gamma_10gev/calo.photon`); tasks,
+   records, run directories and the objectives and constraints use that identity;
+3. before anything runs, checks the stages of each sample the evaluators read and that each
+   objective and constraint names a metric its evaluation's evaluator declares, in the declared
+   unit (see [problem](problem.md#evaluators); `EvaluationContractError` otherwise), then
+   creates a new instance of the evaluator of each evaluation for the candidate, resolves its
+   settings and collections and calls its `check()`. A collection ddsim is not expected to
+   write, two bindings that measure the same twice on a sample and two samples written alike are
+   warnings, kept with the candidate;
 4. runs the candidate's [tasks](#stages), each after the tasks it reads, in this order: the
-   geometry (`inputs["geometry"]`, already prepared), every stage the evaluators read, once
-   each, then the evaluators in problem order. A stage whose file `inputs` supplies is not run,
-   and a stage the problem gives as a `file` is read; another runs in `workdir`. The output of
+   geometry (`inputs["geometry"]`, already prepared), then for each sample every stage its
+   evaluators read, once each, and its evaluations in problem order, then the evaluations of the
+   candidate. A stage whose file `inputs` supplies (`inputs["gamma_10gev/simulation"]`) is not
+   run, and a stage the problem gives as a `file` is read; another runs in `workdir`. The output of
    the `simulation` stage, run or supplied, must hold exactly its `events` events (at least one
    when the problem gives the file), otherwise the stage fails ("incomplete simulation"); the
    number found is recorded as `events_read`;
 5. calls each evaluator's `evaluate()` once with a request built from the validated candidate,
    its own `settings` (defaults filled in, quantities converted) and `collections`, the
-   `events` and `seed` of the stage it reads and the files of the tasks it reads, in its own
-   `workdir/evaluators/<binding>`. An evaluator whose stage did not succeed is `blocked` instead,
+   `events` and `seed` of the stage it reads of its sample and the files of the tasks it reads,
+   in its own `workdir/samples/<sample>/evaluators/<binding>` (`workdir/evaluators/<binding>` for
+   an evaluation of the candidate). An evaluation whose stage did not succeed is `blocked` instead,
    and one whose stage's file lacks a collection it declares (see
    [Collections](#collections)) is `failed`; neither is called. `EvaluationFailed` and
    `EvaluationInvalid` become a `failed` or `invalid` result; other exceptions of an evaluator
    propagate;
 6. checks each result; a violation is an `EvaluationContractError`, an inconsistent evaluator
    rather than a violated constraint. A `valid` result must report every metric the objectives
-   and constraints name of its binding (extra metrics are fine) in the `unit` a constraint
+   and constraints name of its evaluation (extra metrics are fine) in the `unit` a constraint
    declares; and if the evaluator declares `metrics`, every
    measurement of one, whatever the status, must carry the declared unit. Whether a value
    satisfies `min`/`max` is not judged here but by the session's
    [assessment](#assessment-objectives-limits-and-feasibility).
 
 The `CandidateRecord` holds the plan of its tasks and the result of each: the geometry, the
-stages (each recorded once) and one `EvaluationRecord` per binding in problem order
-(`evaluations`, by binding; `records`), and the time of the whole evaluation. Like the records it holds, it cannot be changed once made. Its `status` is
+stages of each sample (each recorded once; `stage(name, sample)`) and one `EvaluationRecord` per
+evaluation in plan order (`evaluations`, by label, `gamma_10gev/calo.photon` or `readout`;
+`record(label)`; `records`), and the time of the whole evaluation. Like the records it holds, it cannot be changed once made. Its `status` is
 the candidate's:
 
 | Tasks | Candidate | Meaning |
 | --- | --- | --- |
-| every stage `done`, every evaluator `valid` | `valid` | complete and usable; every objective and constraint has a value |
+| every stage `done`, every evaluation `valid` | `valid` | complete and usable; every objective and constraint has a value |
 | at least one `failed` or `blocked` | `failed` | technically incomplete: a stage or an evaluator did not run to the end, or did not run |
 | none `failed` or `blocked`, at least one `invalid` | `invalid` | complete, and at least one evaluator found the result unusable |
 
 `failed` outranks `invalid`, so a candidate is `invalid` only after a complete evaluation, and an
 incomplete evaluation is never reported as a scientific verdict. Its `message` names every task
 that failed or is invalid, with its status and message, then the tasks they blocked
-(`simulation failed: ddsim exited with status 2 ...; blocked: calo.photon`), so a mixed outcome
-shows both. Every evaluator
-counts, also one that no objective names (a validity check, say). `value(MetricRef(evaluator,
-stage, metric))` gives an objective or constraint metric only from the `valid` result of the
-binding it names: a missing value is never made up, and the diagnostics of an `invalid` result
+(`gamma_10gev/simulation failed: ddsim exited with status 2 ...; blocked:
+gamma_10gev/calo.photon`), so a mixed outcome shows both. Every evaluation counts, also one that
+no objective names (a validity check, say), and every sample: one sample that fails makes the
+candidate `failed`, whatever the others measured. `value(MetricRef(evaluator, stage, metric,
+sample))` gives an objective or constraint metric only from the `valid` result of the evaluation
+it names: a missing value is never made up, and the diagnostics of an `invalid` result
 never stand in for it.
-The measurements of the other evaluators are kept whatever happened to one of them.
+The measurements of the other evaluations are kept whatever happened to one of them.
 
 Every second is counted once: a stage's time (running it and checking its output) is recorded
 with the stage, the geometry's with the geometry, an `EvaluationRecord`'s `elapsed_seconds` is
@@ -494,9 +509,9 @@ for size in (5.0, 7.0, 10.0):
 | Once, when the session opens | For every candidate, in `check()` and `evaluate()` |
 | --- | --- |
 | load the problem file (later edits to it do not reach the session) and discover the geometry | check the candidate against the parameter domains |
-| bind the evaluator classes through one instance of each, check the stages they read and their settings and collections, decide who measures each metric | create a new instance of each evaluator, which must declare what the first did, build its request for this candidate and call its `check()` |
-| collect the warnings about collections ddsim is not expected to write (`session.warnings`) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened |
-| record the size and SHA-256 of every file the stages read (a stage `file`, a file a ddsim option names, a file supplied with `inputs`), what the geometry's external references read ([`external_files`](geometry.md#fingerprint)), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, check again what the previous row checks, assess, write the summary |
+| bind the evaluator classes through one instance of each, check the stages of each sample they read and their settings and collections, decide who measures each metric | create a new instance of the evaluator of each evaluation, which must declare what the first did, build its request for this candidate and call its `check()` |
+| collect the warnings about collections ddsim is not expected to write, and about what is measured or simulated twice (`session.warnings`) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened |
+| record the size and SHA-256 of every file the stages read, by where the problem names it (a stage `file`, `samples.gamma_10gev.generation.file`; a file a ddsim option names; a file supplied with `inputs`, `supplied.gamma_10gev.simulation`; a file two samples read is hashed once and named for each), what the geometry's external references read ([`external_files`](geometry.md#fingerprint)), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, check again what the previous row checks, assess, write the summary |
 
 No request or evaluator instance outlives the candidate it was made for, so an evaluator's
 `check()` and `evaluate()` always see that candidate's values, and nothing an instance keeps
@@ -540,9 +555,10 @@ Each outcome carries an `Assessment` of the candidate, also written to the summa
 | `invalid` or `failed` | `null`, never a partial vector | each listed, `value`, `margin` and `satisfied` `null` | `null`: not assessed |
 | a supplied stage not made from the candidate (`--input`) | as measured | as measured | `null` |
 
-Each objective value (`ObjectiveValue`) and each limit names its metric: `evaluator`, `stage`,
-`metric` and their `label`, `evaluator/stage/metric`. A limit is one bound of a constraint
-(`calo.photon/simulation/ecal_barrel.angular_residual:max`), judged on
+Each objective value (`ObjectiveValue`) and each limit names its metric: `evaluator`, `sample`
+(`None` for an evaluator of the candidate), `stage`, `metric` and their `label`,
+`sample/evaluator/stage/metric`. A limit is one bound of a constraint
+(`gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual:max`), judged on
 the central value of the measurement: `max` is satisfied when the value is at most the limit,
 `min` when it is at least the limit, and equality satisfies both. The uncertainty is recorded
 next to the value but does not decide. `margin` is `value - max` or `min - value` in the
@@ -553,9 +569,10 @@ objective values; it is only outside the limits.
 
 `Assessment.from_summary(spec, summary)` recomputes the assessment of a `summary.json` as read
 back: the candidate's status from its tasks', each objective and constraint value from the own
-measurements of the binding it names. The record's `implementations` must be the evaluators the
-problem binds, with its versions and stages, and its `evaluations` its bindings, each of the
-evaluator the problem binds it to, with the `settings` (as `declared`) and `collections` the
+measurements of the evaluation it names. The record's `implementations` must be the evaluators
+the problem binds, with its versions and stages; its `samples` the problem's, each with the
+evaluations of the bindings that measure it, and its `evaluations` those of the bindings that
+measure the candidate, each of the evaluator the problem binds it to, with the `settings` (as `declared`) and `collections` the
 problem gives it. It checks again what a live evaluation enforces: the candidate is in the
 problem's domains and `candidate_key` is its key, an `invalid` or `failed` evaluator gives a
 message, each measurement of a metric its evaluator declares carries the declared unit, a
@@ -568,8 +585,8 @@ trusting it.
 
 ## Deliberately deferred
 
-An evaluator registry or lookup by name (evaluators are named on the command line), several
-samples per problem and evaluators that read more than one, branches of the stages,
+An evaluator registry or lookup by name (evaluators are named on the command line), evaluators
+that combine several samples, stage configuration shared by samples, branches of the stages,
 validating metric names, `k4run`, chaining artifacts between evaluators (callers do it by hand,
 as the tests show), execution cost, retries and scheduling, fingerprints and caching,
 persisting or serializing the `EvaluationRecord` apart from `summary.json`, and aggregation,

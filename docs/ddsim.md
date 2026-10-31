@@ -1,11 +1,12 @@
 # ddsim
 
 `k4opt.ddsim` runs Key4hep's `ddsim` once on a prepared geometry with a particle gun or an input
-event file: it builds the command from the problem's `stages` (the gun of `stages.generation`, or
-its `file`, and `events`, `seed` and the ddsim options of `stages.simulation`), runs the `ddsim`
-of the active Key4hep environment and keeps the command, exit code and logs. It does not read the
-output; an evaluator does (see [evaluators.md](evaluators.md)). `k4opt evaluate` runs it as the
-`simulation` [stage](evaluation.md#stages) once per candidate, so evaluators never call it.
+event file: it builds the command from the stages of a sample of the problem (the gun of its
+`generation`, or its `file`, and `events`, `seed` and the ddsim options of its `simulation`), runs
+the `ddsim` of the active Key4hep environment and keeps the command, exit code and logs. It does
+not read the output; an evaluator does (see [evaluators.md](evaluators.md)). `k4opt evaluate`
+runs it as the `simulation` [stage](evaluation.md#stages) of each sample once per candidate, so
+evaluators never call it.
 Checked against the `ddsim` of the nightly 2026-10-20 (its `--help` and its sources).
 
 ```python
@@ -16,7 +17,7 @@ run = simulate(
     workdir=new_dir,
     events=100,
     seed=42,
-    particle_gun=gun,  # the keys of stages.generation; or input_file=Path("events.hepmc")
+    particle_gun=gun,  # the keys of a sample's generation; or input_file=Path("events.hepmc")
     options={"physics.list": "FTFP_BERT"},
     timeout=3600,  # seconds; no limit without it
 )
@@ -38,11 +39,11 @@ problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsi
 An unwritable simulation directory or command record is also reported in `SimulationRun.error`.
 If the process already ran, its actual exit code and existing output and logs remain available.
 
-## Particle gun (`stages.generation`, `executor: gun`)
+## Particle gun (`generation`, `executor: gun`)
 
 The keys of a generation stage run by the `gun` describe the particle gun. Unknown keys are
 errors. The gun is fired inside `ddsim`, so it has no `events` or `seed` of its own: those of
-`stages.simulation` apply.
+the sample's `simulation` apply.
 
 | Key | Meaning |
 | --- | --- |
@@ -56,27 +57,28 @@ in solid angle) and phi, whereas `uniform` is flat in theta. Checked on the nigh
 events with theta in 10-170 degrees, 50.2 % fell in |cos(theta)| < 0.5 (flat in cos: 50.8 %)
 against 37 % for `uniform`. Another distribution is an error, never a fallback.
 
-## Event file (`stages.generation`, `file:`)
+## Event file (`generation`, `file:`)
 
 Instead of a gun, a generation stage given as a file simulates its events:
 
 ```yaml
-stages:
-  generation:
-    file: events/zh.hepmc
-  simulation:
-    executor: ddsim
-    events: 500
+samples:
+  zh:
+    generation:
+      file: events/zh.hepmc
+    simulation:
+      executor: ddsim
+      events: 500
 ```
 
 A relative path is read from the directory of the problem file. `ddsim` receives it as
 `--inputFiles`, chooses the reader from the file extension and validates the content, so k4opt
 accepts every format `ddsim` does. The file must exist before anything runs; its path, size and
 SHA-256 are recorded in the provenance, so a changed file is a different measurement.
-`stages.simulation.events` is the number of events to simulate; a file with fewer events gives
+The sample's `simulation.events` is the number of events to simulate; a file with fewer events gives
 an incomplete simulation, which the simulation stage reports as `failed`.
 
-## Options (`stages.simulation`)
+## Options (`simulation`)
 
 Every key of the simulation stage other than `executor`, `events` and `seed` is a ddsim option,
 named as `ddsim --help` names it without the leading `--`, and is passed on in the order of the

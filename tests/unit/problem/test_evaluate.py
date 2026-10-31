@@ -63,7 +63,7 @@ def make(doc: dict[str, Any], *parameters: dict[str, Any]) -> ProblemSpec:
     doc = copy.deepcopy(doc)
     if parameters:
         doc["parameters"] = list(parameters)
-    del doc["stages"], doc["evaluators"][0]["stage"]
+    del doc["samples"], doc["evaluators"][0]["stage"]
     return parse_problem(doc)
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import pickle
 from collections.abc import Mapping
 from typing import Any, cast
@@ -15,6 +16,7 @@ from k4opt.problem import (
     MetricRef,
     ProblemConfigError,
     ProblemSpec,
+    Sample,
     Stage,
     parse_problem,
 )
@@ -23,9 +25,16 @@ from k4opt.problem.models import freeze, thaw
 
 def test_to_dict_is_plain_json_data(doc: dict[str, Any]) -> None:
     data = parse_problem(doc).to_dict()
-    for item in (*doc["objectives"], *doc["constraints"]):  # left out of the one evaluator's
-        item["evaluator"] = "calo.single_particle_shower"
+    # left out where the problem has one sample and one evaluator, always in the normalized form
+    doc["evaluators"][0]["samples"] = ["gamma"]
+    for index, item in enumerate(doc["objectives"]):
+        doc["objectives"][index] = {"sample": "gamma", "evaluator": "calo.single_particle_shower"}
+        doc["objectives"][index] |= item
+    for index, item in enumerate(doc["constraints"]):
+        doc["constraints"][index] = {"sample": "gamma", "evaluator": "calo.single_particle_shower"}
+        doc["constraints"][index] |= item
     assert data == doc  # same content, same shape
+    assert list(data["objectives"][0]) == list(doc["objectives"][0])  # type: ignore[index]
     assert list(data) == list(doc)  # schema order
 
     def check(value: object) -> None:
@@ -50,8 +59,8 @@ def test_round_trip(doc: dict[str, Any]) -> None:
 def test_mutating_the_input_does_not_change_the_spec(doc: dict[str, Any]) -> None:
     problem = parse_problem(doc)
     before = problem.to_dict()
-    doc["stages"]["generation"]["particle"] = "e-"
-    doc["stages"]["generation"]["direction"]["theta"].append(1)
+    doc["samples"]["gamma"]["generation"]["particle"] = "e-"
+    doc["samples"]["gamma"]["generation"]["direction"]["theta"].append(1)
     doc["evaluators"][0]["settings"]["collection"] = "Other"
     doc["parameters"][0]["bounds"][0] = -1
     doc["objectives"].clear()
@@ -62,29 +71,44 @@ def test_mutating_to_dict_does_not_change_the_spec(doc: dict[str, Any]) -> None:
     problem = parse_problem(doc)
     before = problem.to_dict()
     data = cast(dict[str, Any], problem.to_dict())
-    data["stages"]["generation"]["particle"] = "e-"
-    data["stages"]["simulation"]["physics.list"] = "QGSP_BERT"
+    data["samples"]["gamma"]["generation"]["particle"] = "e-"
+    data["samples"]["gamma"]["simulation"]["physics.list"] = "QGSP_BERT"
     data["parameters"].clear()
     assert problem.to_dict() == before
 
 
 def test_stored_values_are_read_only(doc: dict[str, Any]) -> None:
     problem = parse_problem(doc)
-    generation = problem.stages["generation"]
+    stages = problem.samples["gamma"].stages
+    generation = stages["generation"]
     with pytest.raises(TypeError):
         generation.options["particle"] = 1  # type: ignore[index]
     with pytest.raises(TypeError):
-        problem.stages["other"] = generation  # type: ignore[index]
+        stages["other"] = generation  # type: ignore[index]
+    with pytest.raises(TypeError):
+        problem.samples["other"] = problem.samples["gamma"]  # type: ignore[index]
     with pytest.raises(AttributeError):
-        problem.stages["simulation"].events = 1  # type: ignore[misc]
+        stages["simulation"].events = 1  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        problem.evaluators[0].samples = ()  # type: ignore[misc]
     assert isinstance(generation.options["direction"]["theta"], tuple)  # type: ignore[index]
 
 
 def test_directly_constructed_models_copy_their_input(doc: dict[str, Any]) -> None:
     settings: dict[str, Any] = {"a": {"b": [1, 2]}}
     options: dict[str, Any] = {"action.run": ["A"]}
-    evaluators = [EvaluatorSpec("e", "1", settings=settings, stage="simulation")]
+    measured = ["gamma"]
+    evaluators = [
+        EvaluatorSpec(
+            "e",
+            "1",
+            settings=settings,
+            stage="simulation",
+            samples=measured,  # type: ignore[arg-type]
+        )
+    ]
     stages = {"simulation": Stage("simulation", executor="ddsim", events=1, options=options)}
+    samples = {"gamma": Sample("gamma", stages)}
     problem = parse_problem(doc)
     spec = ProblemSpec(
         problem.environment,
@@ -92,17 +116,27 @@ def test_directly_constructed_models_copy_their_input(doc: dict[str, Any]) -> No
         problem.parameters,
         evaluators,  # type: ignore[arg-type]
         problem.objectives,
-        stages=stages,
+        samples=samples,
     )
     settings["a"]["b"].append(3)
     options["action.run"].append("B")
     evaluators.append(EvaluatorSpec("f", "1"))
+    measured.append("pion")
     stages.clear()
-    data = spec.to_dict()
+    samples.clear()
+    data: Any = spec.to_dict()
     assert data["evaluators"] == [
-        {"name": "e", "version": "1", "stage": "simulation", "settings": {"a": {"b": [1, 2]}}}
+        {
+            "name": "e",
+            "version": "1",
+            "stage": "simulation",
+            "samples": ["gamma"],
+            "settings": {"a": {"b": [1, 2]}},
+        }
     ]
-    assert data["stages"] == {"simulation": {"executor": "ddsim", "events": 1, "action.run": ["A"]}}
+    assert data["samples"] == {
+        "gamma": {"simulation": {"executor": "ddsim", "events": 1, "action.run": ["A"]}}
+    }
     assert isinstance(spec.evaluators, tuple)
 
 
@@ -121,17 +155,17 @@ def test_spec_is_hashable_and_picklable(doc: dict[str, Any]) -> None:
 
 
 def test_optional_parts_are_omitted_from_to_dict(doc: dict[str, Any]) -> None:
-    for key in ("name", "constraints", "stages"):
+    for key in ("name", "constraints", "samples"):
         del doc[key]
     del doc["evaluators"][0]["settings"], doc["evaluators"][0]["stage"]
     data = parse_problem(doc).to_dict()
-    assert "name" not in data and "constraints" not in data and "stages" not in data
+    assert "name" not in data and "constraints" not in data and "samples" not in data
     assert data["evaluators"] == [{"name": "calo.single_particle_shower", "version": "1"}]
 
 
 def test_a_stage_without_seed_omits_it(doc: dict[str, Any]) -> None:
-    del doc["stages"]["simulation"]["seed"]
-    simulation = parse_problem(doc).to_dict()["stages"]["simulation"]  # type: ignore[index]
+    del doc["samples"]["gamma"]["simulation"]["seed"]
+    simulation = parse_problem(doc).to_dict()["samples"]["gamma"]["simulation"]  # type: ignore[index]
     assert simulation == {"executor": "ddsim", "events": 1000, "physics.list": "FTFP_BERT"}
 
 
@@ -233,9 +267,12 @@ def test_equal_specs_hash_equally_whatever_the_key_order(doc: dict[str, Any]) ->
 
 
 def test_different_specs_are_still_different(doc: dict[str, Any]) -> None:
-    other = {**doc, "stages": {**doc["stages"], "simulation": {**doc["stages"]["simulation"]}}}
-    other["stages"]["simulation"]["seed"] = 43
+    other = copy.deepcopy(doc)
+    other["samples"]["gamma"]["simulation"]["seed"] = 43
     assert parse_problem(doc) != parse_problem(other)
+    renamed = copy.deepcopy(doc)  # a name is a label, but objectives and records refer to it
+    renamed["samples"] = {"photon": renamed["samples"]["gamma"]}
+    assert parse_problem(doc) != parse_problem(renamed)
 
 
 def _nested(levels: int, leaf: object) -> object:
@@ -268,6 +305,8 @@ def test_shared_value_within_the_depth_limit_is_fine_in_any_order() -> None:
     [
         (MetricRef("cost", "analysis/x", "y"), MetricRef("cost", "analysis", "x/y")),
         (MetricRef("cost", "analysis", "x/y"), MetricRef("cost", "analysis", "x%2Fy")),
+        # four parts with a sample, three without: the last two are always stage and metric
+        (MetricRef("calo", "s", "m", "gamma"), MetricRef("gamma", "calo", "s/m")),
     ],
 )
 def test_two_metric_references_never_share_a_label(first: MetricRef, second: MetricRef) -> None:
@@ -275,10 +314,14 @@ def test_two_metric_references_never_share_a_label(first: MetricRef, second: Met
     assert first.label != second.label
     for ref in (first, second):  # and each part reads back
         parts = ref.label.split("/")
-        assert [unquote(part) for part in parts] == [ref.evaluator, ref.stage, ref.metric]
+        owner = [ref.evaluator] if ref.sample is None else [ref.sample, ref.evaluator]
+        assert [unquote(part) for part in parts] == [*owner, ref.stage, ref.metric]
 
 
 def test_a_label_of_plain_names_is_the_names_joined() -> None:
     ref = MetricRef("calo.photon", "simulation", "ecal_barrel.fired_cells")
     assert ref.label == "calo.photon/simulation/ecal_barrel.fired_cells"
     assert MetricRef("e", "analysis", "50%").label == "e/analysis/50%25"
+    measured = MetricRef("calo.photon", "simulation", "ecal_barrel.fired_cells", "gamma_10gev")
+    assert measured.label == "gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells"
+    assert (measured.invocation, ref.invocation) == ("gamma_10gev/calo.photon", "calo.photon")

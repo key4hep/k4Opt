@@ -33,9 +33,13 @@ def to_json(results: StudyResults) -> str:
 
 
 def _stages(results: StudyResults) -> list[str]:
-    """The stages with a time column: the problem's, in its order, then any other a record
-    times, by name."""
-    declared = list(results.problem.stages)
+    """The stages with a time column, by label (``gamma/simulation``): those of the problem's
+    samples, in its order, then any other a record times, by label."""
+    declared = [
+        f"{name}/{stage}"
+        for name, sample in results.problem.samples.items()
+        for stage in sample.stages
+    ]
     timed = {stage for trial in results.trials for stage in trial.stage_seconds}
     return declared + sorted(timed - set(declared))
 
@@ -51,9 +55,9 @@ def _escaped(name: str) -> str:
     )
 
 
-def _label(*parts: str) -> str:
-    """``evaluator/stage/metric``, each part escaped."""
-    return "/".join(map(_escaped, parts))
+def _label(sample: str | None, *parts: str) -> str:
+    """``[sample/]evaluator/stage/metric``, each part escaped."""
+    return "/".join(map(_escaped, parts if sample is None else (sample, *parts)))
 
 
 def columns(results: StudyResults) -> list[str]:
@@ -72,19 +76,19 @@ def _columns(results: StudyResults, stages: list[str]) -> list[str]:
         "recovered",
         *(f"parameter:{_escaped(p.geometry.canonical_target)}" for p in spec.parameters),
         *(
-            f"objective:{_label(o.evaluator, o.stage, o.metric)}{part}"
+            f"objective:{_label(o.sample, o.evaluator, o.stage, o.metric)}{part}"
             for o in spec.objectives
             for part in ("", ":unit", ":uncertainty")
         ),
         *(
-            f"limit:{_label(c.evaluator, c.stage, c.metric)}:{bound}:{part}"
+            f"limit:{_label(c.sample, c.evaluator, c.stage, c.metric)}:{bound}:{part}"
             for c in spec.constraints  # in the order of limit_names
             for bound in ("min", "max")
             if getattr(c, bound) is not None
             for part in ("value", "margin", "satisfied")
         ),
         "elapsed_seconds",
-        *(f"stage:{_escaped(stage)}:elapsed_seconds" for stage in stages),
+        *(f"stage:{_label(*stage.split('/', 1))}:elapsed_seconds" for stage in stages),
         "record",
         "record_sha256",
         "record_path",

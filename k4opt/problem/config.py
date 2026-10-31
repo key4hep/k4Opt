@@ -1,10 +1,10 @@
 """Loading and validation of the problem YAML document (``k4opt.problem/v1alpha1``).
 
 :func:`parse_problem` makes the checks that need no Key4hep: shape, types, ranges, syntactic
-duplicates, the executors and options of the stages and whether the stages fit together and
-fit the evaluators. :func:`load_problem` adds the resolution of the geometry targets; that an
-evaluator or metric is defined, or that the bounds are physically sensible, is deliberately not
-decided. See ``docs/problem.md``.
+duplicates, the executors and options of each sample's stages and whether they fit together and
+fit the evaluators that measure the sample. :func:`load_problem` adds the resolution of the
+geometry targets; that an evaluator or metric is defined, or that the bounds are physically
+sensible, is deliberately not decided. See ``docs/problem.md``.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from k4opt.problem.models import (
     Parameter,
     ParameterKind,
     ProblemSpec,
+    Sample,
     Stage,
     freeze,
 )
@@ -51,7 +52,7 @@ _TOP_KEYS = (
     "environment",
     "geometry",
     "parameters",
-    "stages",
+    "samples",
     "evaluators",
     "objectives",
     "constraints",
@@ -70,6 +71,8 @@ _DIRECTIONS = ("minimize", "maximize")
 _STAGE_KEYS = ("executor", "file", "events", "seed")  # the rest of a stage are executor options
 _SCHEMA_FAMILY = "k4opt.problem/"
 _EVALUATOR_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# lowercase, so that no two names differ only in case (run directories are named after them)
+_SAMPLE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
@@ -242,18 +245,17 @@ def _parse(data: object, source: Path | None) -> ProblemSpec:
     environment = _environment(top["environment"])
     geometry = _text(top["geometry"], "geometry")
     parameters = _parameters(top["parameters"])
-    stages = _stages(top["stages"]) if "stages" in top else {}
-    evaluators = _evaluators(top["evaluators"])
-    bindings = [evaluator.binding for evaluator in evaluators]
-    objectives = _objectives(top["objectives"], bindings)
-    constraints = _constraints(top["constraints"], bindings) if "constraints" in top else ()
-    _check_pipeline(stages, evaluators, parameters)
+    samples = _samples(top["samples"]) if "samples" in top else {}
+    evaluators = _evaluators(top["evaluators"], list(samples))
+    objectives = _objectives(top["objectives"], evaluators)
+    constraints = _constraints(top["constraints"], evaluators) if "constraints" in top else ()
+    _check_pipeline(samples, evaluators, parameters)
     return ProblemSpec(
         name=name,
         environment=environment,
         geometry=geometry,
         parameters=parameters,
-        stages=stages,
+        samples=samples,
         evaluators=evaluators,
         objectives=objectives,
         constraints=constraints,
@@ -375,14 +377,34 @@ def _choices(raw: object, path: str) -> tuple[str | bool | Number, ...]:
     return tuple(items)
 
 
-def _stages(raw: object) -> dict[str, Stage]:
-    """The ``stages`` mapping, in pipeline order whatever the order of the document."""
-    m = _mapping(raw, "stages", STAGE_TYPES)
-    return {name: _stage(name, m[name]) for name in STAGE_TYPES if name in m}
+def _samples(raw: object) -> dict[str, Sample]:
+    """The ``samples`` mapping in the document's order, each sample's stages in pipeline order
+    whatever the order of the document."""
+    m = _mapping(raw, "samples", tuple(raw) if isinstance(raw, Mapping) else ())
+    if not m:
+        raise _fail("samples", "must name at least one sample")
+    samples: dict[str, Sample] = {}
+    for name, value in m.items():
+        if not _SAMPLE_NAME.fullmatch(name):
+            raise _fail(
+                "samples",
+                f"sample name {_show(name)} must start with a lowercase letter and hold only "
+                "lowercase letters, digits and '_', at most 64 characters",
+            )
+        where = f"samples.{name}"
+        stages = _mapping(value, where, STAGE_TYPES)
+        if not stages:
+            raise _fail(where, f"must define its stages: {', '.join(STAGE_TYPES)}")
+        made = {
+            stage: _stage(where, stage, stages[stage]) for stage in STAGE_TYPES if stage in stages
+        }
+        samples[name] = Sample(name, made)
+    return samples
 
 
-def _stage(name: str, raw: object) -> Stage:
-    path = f"stages.{name}"
+def _stage(where: str, name: str, raw: object) -> Stage:
+    """The stage ``name`` of the sample at ``where`` (``samples.gamma``)."""
+    path = f"{where}.{name}"
     # any string keys: which ones the stage takes depends on its executor, checked below
     m = _mapping(raw, path, tuple(raw) if isinstance(raw, Mapping) else ())
     if ("executor" in m) == ("file" in m):
@@ -408,15 +430,15 @@ def _stage(name: str, raw: object) -> Stage:
             if key in m:
                 raise _fail(
                     f"{path}.{key}",
-                    f"{executor} runs inside stages.{spec.inside}, which sets the {key}; set "
-                    f"stages.{spec.inside}.{key} instead",
+                    f"{executor} runs inside {where}.{spec.inside}, which sets the {key}; set "
+                    f"{where}.{spec.inside}.{key} instead",
                 )
     options = freeze({key: value for key, value in m.items() if key not in _STAGE_KEYS}, path)
     assert isinstance(options, Mapping)
     try:
         spec.options(options)
     except DdsimError as exc:  # its message starts with the stage: generation.particle: ...
-        raise ProblemConfigError(f"stages.{exc}") from exc
+        raise ProblemConfigError(f"{where}.{exc}") from exc
     return Stage(name, executor=executor, events=events, seed=seed, options=options)
 
 
@@ -432,18 +454,23 @@ def _name(value: object, path: str) -> str:
     return name
 
 
-def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
+def _evaluators(raw: object, samples: list[str]) -> tuple[EvaluatorSpec, ...]:
+    """The ``evaluators``, each measuring the ``samples`` it lists (or the problem's only sample)
+    if it reads a stage, the candidate otherwise.
+
+    A binding may be named by several entries if each binds the same implementation, version and
+    stage on other samples (with other settings, say); otherwise it names one entry."""
     items = _sequence(raw, "evaluators")
     if not items:
         raise _fail("evaluators", "must list at least one evaluator")
     evaluators: list[EvaluatorSpec] = []
-    first: dict[str, int] = {}  # by binding, case folded
+    bound: dict[str, list[int]] = {}  # the entries of each binding, by binding case folded
     for index, item in enumerate(items):
         path = f"evaluators[{index}]"
         m = _mapping(
             item,
             path,
-            ("name", "as", "version", "stage", "collections", "settings"),
+            ("name", "as", "version", "stage", "samples", "collections", "settings"),
             ("name", "version"),
         )
         name = _name(m["name"], f"{path}.name")
@@ -454,18 +481,6 @@ def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
         if binding in RESERVED_NAMES:
             reserved = ", ".join(RESERVED_NAMES)
             raise _fail(where, f"{binding!r} names a step k4opt runs itself; reserved: {reserved}")
-        folded = binding.casefold()  # run directories may be on a file system that folds case
-        if folded in first:
-            other = evaluators[first[folded]].binding
-            if other == binding:
-                why = f"{binding!r} is already bound by evaluators[{first[folded]}]"
-            else:
-                why = (
-                    f"{binding!r} differs only in case from {other!r} of "
-                    f"evaluators[{first[folded]}], which run directories may not tell apart"
-                )
-            raise _fail(path, f"{why}; name this one with as:")
-        first[folded] = index
         settings: Mapping[str, Json] = {}
         if "settings" in m:
             if not isinstance(m["settings"], Mapping):
@@ -482,20 +497,88 @@ def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
             roles = _mapping(raw, where, tuple(raw) if isinstance(raw, Mapping) else ())
             collections = {role: _text(name, f"{where}.{role}") for role, name in roles.items()}
         version = _text(m["version"], f"{path}.version")
-        evaluators.append(EvaluatorSpec(name, version, settings, stage, collections, binding))
+        measured = _measured(m, path, stage, samples)
+        entry = EvaluatorSpec(name, version, settings, stage, collections, binding, measured)
+        folded = binding.casefold()  # run directories may be on a file system that folds case
+        for earlier in bound.get(folded, []):
+            _check_repeated(entry, evaluators[earlier], f"evaluators[{earlier}]", path)
+        bound.setdefault(folded, []).append(index)
+        evaluators.append(entry)
     return tuple(evaluators)
 
 
+def _measured(
+    m: Mapping[str, Any], path: str, stage: str | None, samples: list[str]
+) -> tuple[str, ...]:
+    """The samples an evaluator entry measures: those it lists, the problem's only sample if it
+    lists none, and none if it reads no stage (it measures the candidate)."""
+    if "samples" in m:
+        where = f"{path}.samples"
+        if stage is None:
+            raise _fail(
+                where,
+                "an evaluator measures samples at the stage it reads; add that stage, or remove "
+                "samples to measure the candidate",
+            )
+        items = _sequence(m["samples"], where)
+        if not items:
+            raise _fail(where, "must list at least one sample")
+        for index, item in enumerate(items):
+            at = f"{where}[{index}]"
+            sample = _text(item, at)
+            if sample not in samples:
+                known = f"its samples are {', '.join(samples)}" if samples else "it has none"
+                raise _fail(at, f"the problem has no sample {sample!r}; {known}")
+            if sample in items[:index]:
+                raise _fail(at, f"{sample!r} is listed twice")
+        return tuple(items)
+    if stage is None:
+        return ()
+    if len(samples) == 1:
+        return (samples[0],)
+    if not samples:
+        raise _fail(path, f"it reads the {stage} stage of a sample, but the problem has no samples")
+    raise _fail(
+        path,
+        f"the problem has the samples {', '.join(samples)}; add samples: with those this "
+        "evaluator measures",
+    )
+
+
+def _check_repeated(entry: EvaluatorSpec, other: EvaluatorSpec, at: str, path: str) -> None:
+    """``entry`` may share its binding name with the earlier entry ``other`` (at ``at``) only to
+    bind the same implementation, version and stage on other samples."""
+    binding = entry.binding
+    if other.binding != binding:
+        why = (
+            f"{binding!r} differs only in case from {other.binding!r} of {at}, which run "
+            "directories may not tell apart"
+        )
+    elif entry.stage is None or other.stage is None:
+        why = f"{binding!r} is already bound by {at}"
+    elif shared := [sample for sample in entry.samples if sample in other.samples]:
+        why = f"{binding!r} is already bound to {', '.join(shared)} by {at}"
+    elif (entry.name, entry.version, entry.stage) != (other.name, other.version, other.stage):
+        why = (
+            f"{binding!r} binds {other.name} version {other.version!r} at the {other.stage} stage "
+            f"in {at}, and one binding name binds one implementation, version and stage"
+        )
+    else:
+        return
+    raise _fail(path, f"{why}; name this one with as:")
+
+
 def _check_pipeline(
-    stages: Mapping[str, Stage],
+    samples: Mapping[str, Sample],
     evaluators: tuple[EvaluatorSpec, ...],
     parameters: tuple[Parameter, ...],
 ) -> None:
-    """The stages fit together and fit the evaluators.
+    """Each sample's stages fit together and fit the evaluators that measure it.
 
-    Every stage an evaluator reads is defined; a stage that runs has the stages it reads; no
-    file stands in for a stage the parameters change (it was not made from the candidate); and
-    every stage is used, by an evaluator or by a stage that runs.
+    Every stage an evaluator reads is defined in each sample it measures; a stage that runs has
+    the stages it reads; no file stands in for a stage the parameters change (it was not made
+    from the candidate); every sample is measured by an evaluator, and every stage of a sample
+    is used, by an evaluator that measures it or by a stage that runs.
     """
     for index, evaluator in enumerate(evaluators):
         if evaluator.collections and evaluator.stage is None:
@@ -504,11 +587,22 @@ def _check_pipeline(
                 "collections are read from the file of the stage the evaluator reads; add its "
                 "stage",
             )
-        if evaluator.stage is not None and evaluator.stage not in stages:
-            raise _fail(
-                f"evaluators[{index}].stage",
-                f"the problem defines no {evaluator.stage} stage; add stages.{evaluator.stage}",
-            )
+        for sample in evaluator.samples:
+            if evaluator.stage not in samples[sample].stages:
+                raise _fail(
+                    f"evaluators[{index}].stage",
+                    f"sample {sample} defines no {evaluator.stage} stage; add "
+                    f"samples.{sample}.{evaluator.stage}",
+                )
+    for spec in samples.values():
+        _check_sample(spec, [e for e in evaluators if spec.name in e.samples], parameters)
+
+
+def _check_sample(
+    sample: Sample, evaluators: list[EvaluatorSpec], parameters: tuple[Parameter, ...]
+) -> None:
+    """The stages of one sample fit together and fit the ``evaluators`` that measure it."""
+    where, stages = f"samples.{sample.name}", sample.stages
     for name, stage in stages.items():
         if stage.executor is None:
             continue
@@ -516,20 +610,24 @@ def _check_pipeline(
             if need not in stages:
                 choices = " or ".join(executors(need))
                 raise _fail(
-                    f"stages.{name}",
-                    f"{name} reads {need}: add stages.{need} with executor: {choices}, or give "
+                    f"{where}.{name}",
+                    f"{name} reads {need}: add {where}.{need} with executor: {choices}, or give "
                     "its output as file:",
                 )
     if parameters:  # every parameter varies the geometry
         for name, stage in stages.items():
             if stage.file is not None and changed_by_geometry(name):
                 raise _fail(
-                    f"stages.{name}.file",
+                    f"{where}.{name}.file",
                     "the parameters vary the geometry, but this file was not made with a "
                     "candidate's geometry, so every candidate would measure the same events; let "
                     f"an executor run the stage (to try an evaluator on an existing file, use "
-                    f"k4opt evaluate --input {name}=FILE)",
+                    f"k4opt evaluate --input {sample.name}/{name}=FILE)",
                 )
+    if not evaluators:
+        raise _fail(
+            where, "is measured by no evaluator; list it in the samples of one, or remove it"
+        )
     used: set[str] = set()
 
     def use(name: str) -> None:
@@ -540,37 +638,85 @@ def _check_pipeline(
                     use(need)
 
     for evaluator in evaluators:
-        if evaluator.stage is not None:
-            use(evaluator.stage)
+        assert evaluator.stage is not None  # an evaluator without a stage measures no sample
+        use(evaluator.stage)
     for name in stages:
         if name not in used:
             raise _fail(
-                f"stages.{name}", "is not used: no evaluator reads it, and no stage that runs does"
+                f"{where}.{name}",
+                "is not used: no evaluator of the sample reads it, and no stage that runs does",
             )
 
 
-def _owner(m: Mapping[str, Any], path: str, bindings: list[str]) -> str:
-    """The evaluator an objective or constraint names; it may be left out when the problem has
-    one."""
+def _owner(
+    m: Mapping[str, Any], path: str, evaluators: tuple[EvaluatorSpec, ...]
+) -> tuple[str | None, str]:
+    """``(sample, evaluator)``: the evaluation an objective or constraint takes its metric from.
+
+    Either may be left out when the problem leaves one choice: the sample of an evaluator that
+    measures only one, the evaluator of a sample that only one measures, or both when the
+    problem has only one evaluation. ``sample`` is ``None`` for an evaluator that measures the
+    candidate."""
+    measures: dict[str, list[str]] = {}  # the samples of each binding; none: the candidate
+    for entry in evaluators:
+        measures.setdefault(entry.binding, []).extend(entry.samples)
+    sample = _text(m["sample"], f"{path}.sample") if "sample" in m else None
     if "evaluator" in m:
         binding = _text(m["evaluator"], f"{path}.evaluator")
-        if binding not in bindings:
+        if binding not in measures:
             raise _fail(
                 f"{path}.evaluator",
                 f"the problem has no evaluator {binding!r}; its evaluators are "
-                f"{', '.join(bindings)}",
+                f"{', '.join(measures)}",
             )
-        return binding
-    if len(bindings) > 1:
+        measured = measures[binding]
+        if not measured:
+            if sample is not None:
+                raise _fail(
+                    f"{path}.sample",
+                    f"evaluator {binding!r} measures the candidate, not a sample; remove sample:",
+                )
+            return None, binding
+        if sample is None:
+            if len(measured) > 1:
+                raise _fail(
+                    path,
+                    f"evaluator {binding!r} measures the samples {', '.join(measured)}; add "
+                    "sample: with the one this metric is measured on",
+                )
+            return measured[0], binding
+        if sample not in measured:
+            raise _fail(
+                f"{path}.sample",
+                f"evaluator {binding!r} does not measure {sample!r}; it measures "
+                f"{', '.join(measured)}",
+            )
+        return sample, binding
+    evaluations: list[tuple[str | None, str]] = [
+        (s, b) for b, on in measures.items() for s in ([*on] if on else [None])
+    ]
+    if sample is not None:
+        held = [b for s, b in evaluations if s == sample]
+        if not held:
+            raise _fail(f"{path}.sample", f"no evaluator of the problem measures {sample!r}")
+        if len(held) > 1:
+            raise _fail(
+                path,
+                f"{sample} is measured by the evaluators {', '.join(held)}; add evaluator: with "
+                "one of them",
+            )
+        return sample, held[0]
+    if len(evaluations) > 1:
+        labels = [b if s is None else f"{s}/{b}" for s, b in evaluations]
         raise _fail(
             path,
-            f"the problem has the evaluators {', '.join(bindings)}; add evaluator: with the one "
-            "that measures this metric",
+            f"the problem has the evaluations {', '.join(labels)}; add evaluator: (and sample:) "
+            "to say which one measures this metric",
         )
-    return bindings[0]
+    return evaluations[0]
 
 
-def _objectives(raw: object, bindings: list[str]) -> tuple[Objective, ...]:
+def _objectives(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Objective, ...]:
     items = _sequence(raw, "objectives")
     if not items:
         raise _fail("objectives", "must list at least one objective")
@@ -581,14 +727,16 @@ def _objectives(raw: object, bindings: list[str]) -> tuple[Objective, ...]:
         m = _mapping(
             item,
             path,
-            ("evaluator", "stage", "metric", "direction"),
+            ("sample", "evaluator", "stage", "metric", "direction"),
             ("stage", "metric", "direction"),
         )
+        sample, evaluator = _owner(m, path, evaluators)
         objective = Objective(
-            evaluator=_owner(m, path, bindings),
+            evaluator=evaluator,
             stage=_text(m["stage"], f"{path}.stage"),
             metric=_text(m["metric"], f"{path}.metric"),
             direction=cast(Direction, _choice(m["direction"], f"{path}.direction", _DIRECTIONS)),
+            sample=sample,
         )
         if objective.ref in first:
             raise _fail(path, f"duplicates objectives[{first[objective.ref]}] ({objective.label})")
@@ -597,13 +745,16 @@ def _objectives(raw: object, bindings: list[str]) -> tuple[Objective, ...]:
     return tuple(objectives)
 
 
-def _constraints(raw: object, bindings: list[str]) -> tuple[Constraint, ...]:
+def _constraints(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Constraint, ...]:
     constraints: list[Constraint] = []
     first: dict[MetricRef, int] = {}
     for index, item in enumerate(_sequence(raw, "constraints")):
         path = f"constraints[{index}]"
         m = _mapping(
-            item, path, ("evaluator", "stage", "metric", "min", "max", "unit"), ("stage", "metric")
+            item,
+            path,
+            ("sample", "evaluator", "stage", "metric", "min", "max", "unit"),
+            ("stage", "metric"),
         )
         if "min" not in m and "max" not in m:
             raise _fail(path, "needs 'min' and/or 'max'")
@@ -611,13 +762,15 @@ def _constraints(raw: object, bindings: list[str]) -> tuple[Constraint, ...]:
         high = _number(m["max"], f"{path}.max") if "max" in m else None
         if low is not None and high is not None and low > high:
             raise _fail(path, f"min must not exceed max, got min={low}, max={high}")
+        sample, evaluator = _owner(m, path, evaluators)
         constraint = Constraint(
-            evaluator=_owner(m, path, bindings),
+            evaluator=evaluator,
             stage=_text(m["stage"], f"{path}.stage"),
             metric=_text(m["metric"], f"{path}.metric"),
             min=low,
             max=high,
             unit=_optional_text(m, "unit", path),
+            sample=sample,
         )
         if constraint.ref in first:
             raise _fail(
