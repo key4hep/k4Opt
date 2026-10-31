@@ -1351,9 +1351,33 @@ def test_a_new_instance_must_declare_what_the_first_did(
     assert not (tmp_path / "a").exists() and fake.calls == [] and "materialize" not in guard
 
 
-def test_an_instance_given_for_a_class_is_refused(problem_file: Path) -> None:
-    with pytest.raises(EvaluationContractError, match="got a CellCount object: give the evaluator"):
-        EvaluationSession.open(problem_file, [cell_count()()])
+def test_only_an_evaluator_class_is_accepted(problem_file: Path) -> None:
+    def build() -> Any:  # could set up the instance in ways the class's source does not say
+        return cell_count()()
+
+    for given, kind in ((cell_count()(), "CellCount"), (build, "function")):
+        with pytest.raises(
+            EvaluationContractError, match=f"got a {kind} object, not an evaluator class"
+        ):
+            EvaluationSession.open(problem_file, [given])
+
+
+def test_a_nested_default_an_evaluator_changes_stops_the_next_candidate(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
+) -> None:
+    class Mutating(Spy):
+        settings = {"cuts": {"min": 1}}  # a default: the problem sets no settings
+
+        def evaluate(self, request: Any) -> Any:
+            assert request.settings == {"cuts": {"min": 1}}
+            self.settings["cuts"]["min"] = 2  # the class's own dict, shared by every instance
+            return super().evaluate(request)
+
+    session = EvaluationSession.open(problem_file, [Mutating])
+    assert session.evaluate({RADIUS: 450.0}, tmp_path / "a").candidate.status == "valid"
+    with pytest.raises(EvaluationContractError, match=r"settings \{'cuts': \{'min': 2\}\}"):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and len(fake.calls) == 1
 
 
 def test_a_session_keeps_the_problem_it_loaded(

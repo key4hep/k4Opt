@@ -8,8 +8,8 @@ evaluators read available, running each once (:mod:`k4opt.problem._stages`), cal
 evaluator once with the files of the stages it reads, and checks that each ``valid`` result
 carries the metrics its evaluator owns. It neither locates evaluators nor materializes geometry.
 
-An implementation (:data:`~k4opt.evaluation.EvaluatorFactory`, a class say) is bound to its
-entry of ``evaluators`` once, through a probe instance that is used for nothing else. Every
+An implementation, an evaluator class, is bound to its entry of ``evaluators`` once, through a
+probe instance that is used for nothing else. Every
 candidate gets a new instance of each, whose ``check()`` and ``evaluate()`` it calls, so no
 state of an instance reaches another candidate. An entry is identified by its ``name`` today;
 records, run directories and metric owners use that identity.
@@ -21,6 +21,7 @@ import difflib
 import math
 import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
@@ -35,7 +36,6 @@ from k4opt.evaluation import (
     EvaluationRecord,
     EvaluationRequest,
     EvaluationResult,
-    EvaluatorFactory,
     EvaluatorProtocol,
     Measurement,
     Scalar,
@@ -175,21 +175,18 @@ def _stage(evaluator: EvaluatorProtocol) -> str | None:
     return stage
 
 
-def _label(implementation: EvaluatorFactory) -> str:
-    """An implementation as an error names it: its class or function."""
-    label: str = getattr(implementation, "__qualname__", None) or repr(implementation)
-    return label
-
-
-def _create(implementation: EvaluatorFactory) -> EvaluatorProtocol:
-    """A new instance of ``implementation``, which must have ``name``, ``version`` and
-    ``evaluate``; :class:`EvaluationContractError` if it cannot be created or lacks one."""
-    if not callable(implementation):
+def _create(implementation: type[EvaluatorProtocol]) -> EvaluatorProtocol:
+    """A new instance of the class ``implementation``, which must have ``name``, ``version`` and
+    ``evaluate``; :class:`EvaluationContractError` if it is no class, cannot be created or lacks
+    one."""
+    if not isinstance(implementation, type):
+        # a function that builds an instance could configure it in ways the class's source,
+        # which the records identify as the code that ran, does not say
         raise EvaluationContractError(
-            f"got a {type(implementation).__name__} object: give the evaluator class, of which "
-            "k4opt creates a new instance for each candidate"
+            f"got a {type(implementation).__name__} object, not an evaluator class: give the "
+            "class, whose source is recorded and of which k4opt creates an instance per candidate"
         )
-    label = _label(implementation)
+    label = implementation.__qualname__
     try:
         evaluator = implementation()
     except Exception as exc:
@@ -228,7 +225,9 @@ def _declaration(evaluator: EvaluatorProtocol) -> _Declaration:
         evaluator.name,
         evaluator.version,
         _stage(evaluator),
-        dict(getattr(evaluator, "settings", None) or {}),
+        # a copy all through: an instance that changes a nested default changes its class's, and
+        # the next instance would declare the changed one unnoticed
+        deepcopy(dict(getattr(evaluator, "settings", None) or {})),
         declared_collections(evaluator),
         metric_units(evaluator),
     )
@@ -240,7 +239,7 @@ class _Bound:
     instance that bound them declared."""
 
     entry: EvaluatorSpec
-    implementation: EvaluatorFactory
+    implementation: type[EvaluatorProtocol]
     declaration: _Declaration
 
 
@@ -256,15 +255,16 @@ def _instance(bound: _Bound) -> EvaluatorProtocol:
     ]
     if changed:
         raise EvaluationContractError(
-            f"evaluator {bound.entry.name!r}: a new instance of {_label(bound.implementation)} "
-            f"has {'; '.join(changed)}; every instance must declare what the first did"
+            f"evaluator {bound.entry.name!r}: a new instance of "
+            f"{bound.implementation.__qualname__} has {'; '.join(changed)}; every instance must "
+            "declare what the first did"
         )
     return evaluator
 
 
 def _bind(
-    spec: ProblemSpec, implementations: Sequence[EvaluatorFactory]
-) -> list[tuple[EvaluatorSpec, EvaluatorFactory, EvaluatorProtocol]]:
+    spec: ProblemSpec, implementations: Sequence[type[EvaluatorProtocol]]
+) -> list[tuple[EvaluatorSpec, type[EvaluatorProtocol], EvaluatorProtocol]]:
     """Pair every evaluator the problem declares with the implementation given for it, in problem
     order, each with the probe instance that decided it.
 
@@ -274,7 +274,7 @@ def _bind(
     implementation that cannot be created.
     """
     declared = {entry.name: entry for entry in spec.evaluators}
-    given: dict[str, tuple[EvaluatorFactory, EvaluatorProtocol]] = {}
+    given: dict[str, tuple[type[EvaluatorProtocol], EvaluatorProtocol]] = {}
     for implementation in implementations:
         evaluator = _create(implementation)
         name, version = evaluator.name, evaluator.version
@@ -497,7 +497,7 @@ class _Plan:
 
 def _bind_problem(
     spec: ProblemSpec,
-    implementations: Sequence[EvaluatorFactory],
+    implementations: Sequence[type[EvaluatorProtocol]],
     provided: Mapping[str, Path] | None = None,
 ) -> _Binding:
     """Check what does not depend on a candidate, before a file is created or a stage runs.
@@ -772,7 +772,7 @@ class CandidateRecord:
 def _evaluate_candidate(
     spec: ProblemSpec,
     candidate: Mapping[str, Scalar],
-    implementations: Sequence[EvaluatorFactory],
+    implementations: Sequence[type[EvaluatorProtocol]],
     *,
     inputs: Mapping[str, Path] | None = None,
     workdir: Path | None = None,

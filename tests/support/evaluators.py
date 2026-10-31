@@ -4,7 +4,6 @@ instances."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -49,8 +48,15 @@ def candidate_check() -> type[Evaluator]:
     return load_evaluator(CANDIDATE_CHECK)
 
 
-def implementations(*given: Any) -> list[Callable[[], Any]]:
-    """What a test evaluates with: a class as it is, and an instance as an implementation that
-    gives that very instance whenever k4opt creates one, so that the test can watch what it is
-    asked. k4opt itself never shares an instance between candidates."""
-    return [item if isinstance(item, type) else (lambda item=item: item) for item in given]
+def implementations(*given: Any) -> list[type[Any]]:
+    """What a test evaluates with: a class as it is, and an instance as a class each of whose new
+    instances is that very instance, so that the test can watch what it is asked. k4opt itself
+    creates a new instance for every candidate."""
+    return [item if isinstance(item, type) else _watched(item) for item in given]
+
+
+def _watched(instance: Any) -> type[Any]:
+    cls = type(instance)
+    # __new__ gives an object that is no instance of the subclass, so __init__ does not run again,
+    # and the class k4opt sees, type(instance), is the same for every "new" instance
+    return type(cls.__name__, (cls,), {"__new__": lambda subclass: instance})

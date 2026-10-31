@@ -32,7 +32,7 @@ import contextlib
 import os
 from collections.abc import Callable, Iterator, Sequence
 
-from k4opt.evaluation import EvaluatorFactory
+from k4opt.evaluation import EvaluatorProtocol
 from k4opt.optimization._results import StudyResults, TrialResult
 from k4opt.optimization._study import STUDY_NAME, StudyReport, TrialReport
 from k4opt.optimization.errors import OptimizationError
@@ -66,7 +66,7 @@ def _needs_optuna(what: str) -> Iterator[None]:
 
 def optimize(
     problem: str | os.PathLike[str],
-    implementations: Sequence[EvaluatorFactory],
+    implementations: Sequence[type[EvaluatorProtocol]],
     output: str | os.PathLike[str],
     *,
     trials: int,

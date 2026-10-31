@@ -29,7 +29,7 @@ from k4opt import __version__
 from k4opt.evaluation import (
     CandidateKey,
     EvaluationRecord,
-    EvaluatorFactory,
+    EvaluatorProtocol,
     Measurement,
     Scalar,
     evaluator_source,
@@ -457,7 +457,7 @@ class EvaluationSession:
     def open(
         cls,
         problem_path: str | os.PathLike[str],
-        implementations: Sequence[EvaluatorFactory],
+        implementations: Sequence[type[EvaluatorProtocol]],
         *,
         inputs: Mapping[str, str | os.PathLike[str]] | None = None,
         timeout: float | None = None,
@@ -810,7 +810,7 @@ def run_candidate(
     assignments: Sequence[str],
     output: str | os.PathLike[str],
     *,
-    implementations: Sequence[EvaluatorFactory],
+    implementations: Sequence[type[EvaluatorProtocol]],
     inputs: Sequence[str] = (),
     timeout: float | None = None,
     warn: Callable[[str], None] | None = None,

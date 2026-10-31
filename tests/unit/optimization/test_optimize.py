@@ -190,17 +190,13 @@ def test_check_and_evaluate_see_each_trials_own_candidate(
         evaluators=[{"name": "test.candidate_check", "version": "1"}],
         objectives=[("analysis", "seen", "minimize")],
     )
-    instances: list[Any] = []
-
-    def created() -> Any:  # the class, keeping every instance k4opt asks for
-        instances.append(candidate_check()())
-        return instances[-1]
-
-    report = study(problem, tmp_path / "s", trials=4, evaluators=[created])
+    checking = candidate_check()
+    checking.instances.clear()  # type: ignore[attr-defined]  # those of earlier tests
+    report = study(problem, tmp_path / "s", trials=4, evaluators=[checking])
     proposed = [dict(t.candidate) for t in report.trials]
     # one instance to bind the class when the study opens, used for nothing else, then a new one
     # for each trial, which is checked and evaluated with that trial's values only
-    probe, *trials = instances
+    probe, *trials = checking.instances  # type: ignore[attr-defined]
     assert (probe.checked, probe.evaluated) == ([], [])
     assert [(i.checked, i.evaluated) for i in trials] == [([c], [c]) for c in proposed]
     assert len(set(map(str, proposed))) == 4
