@@ -49,15 +49,18 @@ warning (`k4opt: warning: ...`, with the closest expected name) before anything 
 run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
 
 1. the candidate becomes `Override`s (`6.0` with unit `mm` is written `6.0*mm`; units are limited
-   to `um mm cm m mrad rad deg MeV GeV TeV`, expressions are not interpreted) and the geometry
-   is materialized into `<output>/geometry` from the catalog that `load_problem()` discovered;
+   to `um mm cm m mrad rad deg MeV GeV TeV`, expressions are not interpreted), and the geometry
+   task materializes the geometry into `<output>/geometry` from the catalog that
+   `load_problem()` discovered;
 2. the stages the evaluators read are made available once each: a generation `file` is checked
    and hashed, and the `simulation` stage runs `ddsim` on that snapshot in
    `<output>/simulation`. Then each evaluator, in the order of the problem, reads the files of
-   the stages it needs and may write in `<output>/evaluators/<name>`. If a stage fails or its
-   output lacks events, the evaluators that read it are `failed` and not called; the others
-   still are. So is an evaluator whose stage's file lacks a collection it declares, or holds it
-   with another type: the message lists what the file holds;
+   the stages it needs and may write in `<output>/evaluators/<name>`. Each of these is a
+   [task](evaluation.md#stages) that runs only when what it reads succeeded: if a stage fails
+   or its output lacks events, the stage is `failed` and the evaluators that read it are
+   `blocked`, not called; the others still are. An evaluator whose stage's file lacks a
+   collection it declares, or holds it with another type, is `failed` without being called: the
+   message lists what the file holds;
 3. the candidate is [assessed](evaluation.md#assessment-objectives-limits-and-feasibility)
    against the objectives and constraints, and `<output>/summary.json` (`k4opt.run/1`) is
    written:
@@ -65,7 +68,7 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      `k4opt evaluate`, a study and trial when an optimizer asks for it;
    - `problem`: the original path and name plus `definition`, the normalized problem loaded
      for this run, including parameter domains, objective directions and constraint limits;
-   - `status` and `message` of the candidate ([how they follow from the evaluators'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
+   - `status` and `message` of the candidate ([how they follow from its tasks'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
      the candidate and its key, whether the run `represents_candidate`, which stages were
      `supplied` with `--input`, and the `warnings` printed before the run;
    - `metrics`: every objective and constraint metric, the evaluator that owns it, and its
@@ -80,15 +83,18 @@ run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      it; [details](evaluation.md#loading-an-evaluator)), the metrics it declares with their
      units (`metrics`, `null` if it declares none), status, message,
      settings (`declared` as the problem wrote them, `used` as the evaluator received them, with
-     defaults and quantities in the declared unit), the collection of each role, the stages it
-     read, its measurements with uncertainty, the artifacts and
+     defaults and quantities in the declared unit), the collection of each role, the tasks it
+     `reads` (`geometry` and the stages) and those it was `blocked_by`, its measurements with
+     uncertainty, the artifacts and
      provenance it returned, its directory and the time of its `evaluate()` call (`null` if it
      was not called);
-   - `stages`, each once and in pipeline order: the particle gun, or the size and SHA-256 of a
-     given or supplied file; the exact `ddsim` command, directory and exit code, the files its
-     options name, with their hashes; the events found, the error if there was one, and the time
-     spent on it;
-   - the geometry fingerprint and manifest, the path and SHA-256 of each file its external
+   - `stages`, each once and in pipeline order: its `status` (`done`, `failed` or `blocked`) and
+     `message`; the particle gun, or the size and SHA-256 of a given or supplied file; the exact
+     `ddsim` command, directory and exit code, the files its options name, with their hashes;
+     the events found, the tasks it `reads` and those it was `blocked_by`, and the time spent on
+     it (`null` if it did not run);
+   - `geometry`: its `status` (always `done`: a geometry that cannot be made stops the run), the
+     time spent making it, the geometry fingerprint and manifest, the path and SHA-256 of each file its external
      references read (`externals`) and of each file only this candidate's values name
      (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), requested and
      observed events, the time of the whole

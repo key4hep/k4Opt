@@ -177,7 +177,8 @@ def test_two_evaluators_read_one_simulation(shared: dict[str, Any]) -> None:
     photon, cells = shared["evaluators"]
     assert (photon["name"], photon["status"]) == ("calo.photon", "valid")
     assert (cells["name"], cells["status"]) == ("test.cell_count", "valid")
-    assert photon["stages"] == cells["stages"] == ["generation", "simulation"]
+    assert photon["reads"] == cells["reads"] == ["geometry", "generation", "simulation"]
+    assert shared["stages"]["simulation"]["status"] == "done"
     # the test evaluator's value, recomputed from the one file both read
     per_event = [
         len({hit.getCellID() for hit in event.get(COLLECTION)})

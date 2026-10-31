@@ -461,6 +461,9 @@ def test_several_evaluators_keep_their_order_and_own_settings(doc: dict[str, Any
         ([{"name": "a/b", "version": "1"}], "evaluators[0].name: 'a/b' must start"),
         ([{"name": "..", "version": "1"}], "evaluators[0].name: '..' must start"),
         ([{"name": "-x", "version": "1"}], "must start with a letter or digit"),
+        # records name the geometry and the stages by name, beside the evaluators
+        ([{"name": "geometry", "version": "1"}], "evaluators[0].name: 'geometry' names a step"),
+        ([{"name": "simulation", "version": "1"}], "reserved: geometry, generation, simulation"),
         (
             [{"name": "x", "version": "1"}, {"name": "x", "version": "2"}],
             "evaluators[1]: duplicates evaluators[0] (name 'x')",

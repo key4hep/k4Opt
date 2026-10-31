@@ -20,7 +20,7 @@ It prints each trial as it ends, and the study at the end (the values here are i
 
 ```text
 trial 0:   valid    feasible    constants.ECal_cell_size=9.79789  simulation/ecal_barrel.angular_residual=0.948  simulation/ecal_barrel.fired_cells=227
-trial 1:   failed   calo.photon failed: ddsim exited with status 1 (...)  trial-000001/summary.json
+trial 1:   failed   simulation failed: ddsim exited with status 1 (...); blocked: calo.photon  trial-000001/summary.json
 ...
 study:    cld-ecal-granularity-3f9c2a1b, 2 objective(s), 0 limit(s), runs/cld-ecal-study/study.json
 trials:   30: 28 valid (28 feasible, 0 infeasible), 1 invalid, 1 failed

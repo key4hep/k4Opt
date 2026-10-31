@@ -38,9 +38,19 @@ from k4opt.problem._stages import (
     check_stages,
     file_identity,
     input_files,
+    make_stage,
     plan_stages,
     run_stage,
-    run_stages,
+)
+from k4opt.problem._tasks import (
+    GEOMETRY,
+    Kind,
+    Task,
+    TaskId,
+    TaskResult,
+    plan_tasks,
+    run_tasks,
+    stage_task,
 )
 from tests.support import simulation
 from tests.support.evaluators import implementations
@@ -103,6 +113,25 @@ def evaluate_one(
     return record
 
 
+def record_task(record: EvaluationRecord) -> TaskId:
+    return TaskId(Kind.EVALUATOR, record.evaluator_name)
+
+
+def provenance(candidate: CandidateRecord) -> dict[str, Any]:
+    """What each stage of the candidate recorded of how it ran, by stage, in plan order."""
+    return {
+        task.id.name: candidate.results[task.id].provenance
+        for task in candidate.plan.of(Kind.STAGE)
+    }
+
+
+def stage(candidate: CandidateRecord, name: str) -> TaskResult:
+    """The result of the stage ``name``, which the candidate planned."""
+    result = candidate.stage(name)
+    assert result is not None
+    return result
+
+
 @pytest.fixture
 def geometry(tmp_path: Path) -> Path:
     path = tmp_path / "compact.xml"
@@ -137,7 +166,10 @@ def test_the_simulation_stage_runs_ddsim_from_the_problem(
 ) -> None:
     fake = simulation.install(monkeypatch)
     outcome = run_stage(
-        context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        context(spec),
+        "simulation",
+        inputs={"geometry": geometry},
+        workdir=tmp_path / "run" / "simulation",
     )
 
     assert outcome.error is None
@@ -172,7 +204,10 @@ def test_a_failed_ddsim_is_an_error_outcome_that_keeps_the_logs(
 ) -> None:
     simulation.install(monkeypatch, **ddsim)
     outcome = run_stage(
-        context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        context(spec),
+        "simulation",
+        inputs={"geometry": geometry},
+        workdir=tmp_path / "run" / "simulation",
     )
     assert message in (outcome.error or "")
     assert outcome.outputs == {}
@@ -185,7 +220,10 @@ def test_ddsim_missing_from_the_environment_is_an_error_outcome(
     simulation.install(monkeypatch)
     monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: None)
     outcome = run_stage(
-        context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        context(spec),
+        "simulation",
+        inputs={"geometry": geometry},
+        workdir=tmp_path / "run" / "simulation",
     )
     assert "ddsim not found" in (outcome.error or "")
 
@@ -200,7 +238,10 @@ def test_ddsim_that_cannot_start_is_an_error_outcome(
 
     monkeypatch.setattr(ddsim_run, "_execute", refuse)
     outcome = run_stage(
-        context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        context(spec),
+        "simulation",
+        inputs={"geometry": geometry},
+        workdir=tmp_path / "run" / "simulation",
     )
     assert "denied" in (outcome.error or "")
 
@@ -212,7 +253,10 @@ def test_an_existing_simulation_directory_is_never_reused(
     (tmp_path / "run" / "simulation").mkdir(parents=True)
     with pytest.raises(DdsimError, match="already exists"):
         run_stage(
-            context(spec), "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run"
+            context(spec),
+            "simulation",
+            inputs={"geometry": geometry},
+            workdir=tmp_path / "run" / "simulation",
         )
     assert fake.calls == []
 
@@ -252,39 +296,35 @@ def test_the_stages_take_everything_from_their_context(
         generation=Stage("generation", executor="gun", options={**GENERATOR, "particle": "pi-"}),
         simulation=Stage("simulation", executor="ddsim", events=7, seed=3),
     )
-    first = run_stages(photons, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "a")
-    second = run_stages(pions, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "b")
+    first, first_events = make_stage(
+        photons, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "a"
+    )
+    second, second_events = make_stage(
+        pions, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "b"
+    )
     (photon_argv, _), (pion_argv, _) = fake.calls
     assert "--gun.particle=gamma" in photon_argv and "--numberOfEvents=1000" in photon_argv
     assert "--gun.particle=pi-" in pion_argv and "--numberOfEvents=7" in pion_argv
     assert "--random.seed=3" in pion_argv
-    assert first.inputs("simulation")["simulation"] == tmp_path / "a/simulation/events.edm4hep.root"
-    assert second.outputs["simulation"] == {"events": tmp_path / "b/simulation/events.edm4hep.root"}
-    assert (
-        first.provenance["simulation"]["events_read"],
-        second.provenance["simulation"]["events_read"],
-    ) == (1000, 7)
+    assert first_events == tmp_path / "a/events.edm4hep.root"
+    assert second.outputs == {"events": second_events} and second.error is None
+    assert (first.provenance["events_read"], second.provenance["events_read"]) == (1000, 7)
 
 
-def test_a_failed_stage_leaves_the_stages_after_it_unrun_with_the_reason(
+def test_a_stage_whose_file_cannot_be_read_fails_with_the_reason(
     spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
-    # a generation file that vanished after the preflight: it cannot be read, simulation never
-    # runs
+    # a generation file that vanished after the preflight: the stage fails, ddsim never runs
     missing = tmp_path / "gone.hepmc"
     broken = with_stages(spec, generation=Stage("generation", file=str(missing)))
-    records = run_stages(
-        broken, "simulation", inputs={"geometry": tmp_path / "c.xml"}, workdir=tmp_path / "run"
-    )
-    assert fake.calls == []
-    assert f"cannot read {missing}" in records.errors["generation"]
-    assert records.errors["simulation"] == "not run because the 'generation' stage failed"
-    assert records.error("simulation") == records.errors["generation"]  # the first along the chain
-    assert records.inputs("simulation") == {} and "simulation" not in records.seconds
+    outcome, events = make_stage(broken, "generation", inputs={}, workdir=None)
+    assert fake.calls == [] and events is None
+    assert f"cannot read {missing}" in (outcome.error or "")
+    assert outcome.provenance == {"file": str(missing)}
 
 
-def test_a_supplied_stage_does_not_inherit_the_failure_of_a_stage_before_it(
+def test_a_supplied_stage_reads_nothing_even_where_the_problem_gives_the_stage_before_it(
     spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     requested = spec.stages["simulation"].events
@@ -292,20 +332,20 @@ def test_a_supplied_stage_does_not_inherit_the_failure_of_a_stage_before_it(
     simulation.install(monkeypatch, events_with(*[[1]] * requested))
     events_file = tmp_path / "mine.root"
     events_file.write_bytes(b"fake")
-    # another evaluator reads generation, which fails; the supplied simulation never needed it
-    missing = tmp_path / "gone.hepmc"
-    broken = with_stages(spec, generation=Stage("generation", file=str(missing)))
-    records = run_stages(
-        broken, "generation", "simulation", inputs={"simulation": events_file}, workdir=None
+    # another evaluator reads generation, a file; the supplied simulation never needs it
+    stages = {**spec.stages, "generation": Stage("generation", file="gone.hepmc")}
+    plan = plan_tasks(stages, [("a", "generation"), ("b", "simulation")], {"simulation"})
+    simulated = plan[stage_task("simulation")]
+    assert (simulated.needs, simulated.given) == ((), "supplied")
+    assert plan[stage_task("generation")] == Task(stage_task("generation"), given="file")
+    outcome, events = make_stage(
+        context(spec), "simulation", inputs={}, workdir=None, supplied=events_file
     )
-    assert "cannot read" in (records.error("generation") or "")
-    assert records.chain("simulation") == ["simulation"]
-    assert records.error("simulation") is None
-    assert records.inputs("simulation") == {"simulation": events_file}
-    assert records.supplied == {"simulation"} and records.provided == {"generation", "simulation"}
+    assert outcome.error is None and events == events_file
+    assert outcome.provenance["provided"] == str(events_file)
 
 
-def test_a_failed_stage_blocks_only_the_stages_that_read_it(
+def test_a_failed_stage_blocks_only_the_tasks_that_read_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # stub stage types: two independent branches, the left one fails
@@ -331,14 +371,33 @@ def test_a_failed_stage_blocks_only_the_stages_that_read_it(
             "after_right": stub("after_right", ("right",)),
         },
     )
-    records = run_stages(StageContext(), "last", "after_right", inputs={}, workdir=None)
+
+    def run(task: Task, reads: Any) -> TaskResult:
+        if task.id.kind is not Kind.STAGE:
+            return TaskResult(task.id, "done" if task.id == GEOMETRY else "valid")
+        outcome, _ = make_stage(StageContext(), task.id.name, inputs={}, workdir=None)
+        return TaskResult(task.id, "failed" if outcome.error else "done", outcome.error)
+
+    plan = plan_tasks({}, [("on_left", "last"), ("on_right", "after_right")])
+    results = run_tasks(plan, run)
     assert ran == ["left", "right", "after_right"]
-    assert records.errors == {
-        "left": "boom",
-        "after_left": "not run because the 'left' stage failed",
-        "last": "not run because the 'left' stage failed",  # the stage that failed, not the next
+    status = {task.label: (r.status, r.message) for task, r in results.items()}
+    assert status == {
+        "geometry": ("done", None),
+        "left": ("failed", "boom"),
+        "after_left": ("blocked", "not run: left failed"),
+        "last": ("blocked", "not run: left failed"),  # the stage that failed, not the next
+        "right": ("done", None),
+        "after_right": ("done", None),
+        "on_left": ("blocked", "not run: left failed"),
+        "on_right": ("valid", None),
     }
-    assert records.error("after_right") is None and records.error("last") == "boom"
+    left = TaskId(Kind.STAGE, "left")
+    assert {task.label for task, r in results.items() if r.blocked_by == (left,)} == {
+        "after_left",
+        "last",
+        "on_left",
+    }
 
 
 # --- generation: a particle gun or an event file ---
@@ -362,19 +421,18 @@ def file_spec(doc: dict[str, Any], tmp_path: Path) -> ProblemSpec:
 def test_a_generation_file_is_given_hashed_and_resolved_from_the_problem_directory(
     file_spec: ProblemSpec, tmp_path: Path
 ) -> None:
-    records = run_stages(context(file_spec), "generation", inputs={}, workdir=None)
+    outcome, events = make_stage(context(file_spec), "generation", inputs={}, workdir=None)
     path = tmp_path / "events" / "zh.hepmc"
-    assert records.errors == {}
-    assert records.outputs == {"generation": {"events": path}}
-    assert records.provenance == {
-        "generation": {
-            "file": str(path),
-            "bytes": path.stat().st_size,
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        }
+    assert outcome.error is None and events == path
+    assert outcome.outputs == {"events": path}
+    assert outcome.provenance == {
+        "file": str(path),
+        "bytes": path.stat().st_size,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
-    # given by the problem, not supplied by the caller
-    assert records.provided == {"generation"} and records.supplied == frozenset()
+    # given by the problem, not supplied by the caller: it reads nothing
+    plan = plan_tasks(file_spec.stages, [("reader", "generation")])
+    assert plan[stage_task("generation")].given == "file"
 
 
 def test_a_missing_generation_file_is_refused_before_anything_runs(
@@ -404,7 +462,7 @@ def test_simulation_reads_the_generation_file_instead_of_a_gun(
         context(file_spec),
         "simulation",
         inputs={"geometry": geometry, "generation": hepmc},
-        workdir=tmp_path / "run",
+        workdir=tmp_path / "run" / "simulation",
     )
     assert outcome.error is None
     ((argv, _),) = fake.calls
@@ -462,7 +520,9 @@ def test_a_file_named_in_a_ddsim_option_is_passed_absolute_and_recorded(
     sim = Stage("simulation", executor="ddsim", events=3, options=options)
     ctx = dataclasses.replace(with_stages(spec, simulation=sim), directory=tmp_path)
     check_stages(ctx, "simulation")
-    outcome = run_stage(ctx, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run")
+    outcome = run_stage(
+        ctx, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run" / "simulation"
+    )
     ((argv, _),) = fake.calls
     assert argv[-1] == f"--physics.pdgfile={tmp_path / 'particles.tbl'}"
     assert outcome.provenance["files"] == {
@@ -490,7 +550,9 @@ def test_a_ddsim_option_file_that_changes_during_the_run_fails_the_stage(
     monkeypatch.setattr(stages_module, "simulate", replacing)
     sim = Stage("simulation", executor="ddsim", events=3, options={"physics.pdgfile": table.name})
     ctx = dataclasses.replace(with_stages(spec, simulation=sim), directory=tmp_path)
-    outcome = run_stage(ctx, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run")
+    outcome = run_stage(
+        ctx, "simulation", inputs={"geometry": geometry}, workdir=tmp_path / "run" / "simulation"
+    )
     assert outcome.error is not None and "physics.pdgfile" in outcome.error
     assert "changed while ddsim ran" in outcome.error
     # the record keeps the content that was there when ddsim started
@@ -545,11 +607,12 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
     # the result is the evaluator's own; the stage's files and record are the candidate's
     assert result.artifacts == {"mine": events_file}
     assert result.provenance == {"read": events_file.name}
-    stages = candidate.stages
-    assert set(stages.artifacts["simulation"]) == {"stdout", "stderr", "command", "edm4hep"}
-    stage = stages.provenance["simulation"]
-    assert stage["returncode"] == 0 and stage["argv"][0] == simulation.DDSIM  # type: ignore[index]
-    assert candidate.reads == {"calo.single_particle_shower": ("generation", "simulation")}
+    simulated = stage(candidate, "simulation")
+    assert set(simulated.artifacts) == {"stdout", "stderr", "command", "edm4hep"}
+    ran = simulated.provenance
+    assert ran["returncode"] == 0 and ran["argv"][0] == simulation.DDSIM  # type: ignore[index]
+    (read,) = candidate.plan.of(Kind.EVALUATOR)
+    assert [need.label for need in read.needs] == ["geometry", "generation", "simulation"]
 
 
 def test_a_reader_cannot_change_the_candidate_or_its_stages(
@@ -561,26 +624,21 @@ def test_a_reader_cannot_change_the_candidate_or_its_stages(
     candidate = evaluate(
         spec, {CELL: 6}, Reader(), inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
-    stages = candidate.stages
+    simulated = stage(candidate, "simulation")
     assert candidate.owners
     mappings: list[Any] = [
         candidate.owners,
-        candidate.reads,
-        stages.provenance,
-        stages.provenance["simulation"],
-        stages.outputs,
-        stages.artifacts,
-        stages.artifacts["simulation"],
-        stages.errors,
-        stages.seconds,
+        candidate.results,
+        simulated.provenance,
+        simulated.artifacts,
     ]
     for mapping in mappings:
         with pytest.raises(TypeError):
             mapping[next(iter(mapping), "new")] = "changed"
-    assert isinstance(stages.provenance["simulation"]["argv"], tuple)  # type: ignore[index]
+    assert isinstance(simulated.provenance["argv"], tuple)
 
 
-def test_a_failed_stage_is_a_failed_record_and_the_evaluator_never_runs(
+def test_a_failed_stage_blocks_the_evaluator_which_never_runs(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     simulation.install(monkeypatch, returncode=3, stderr="boom")
@@ -590,14 +648,17 @@ def test_a_failed_stage_is_a_failed_record_and_the_evaluator_never_runs(
     )
     (record,) = candidate.records
     assert reader.calls == []
-    assert record.result.status is Status.FAILED
-    assert "status 3" in (record.result.message or "")
+    assert record.result.status is Status.BLOCKED
+    assert record.result.message == "not run: simulation failed"
     assert record.result.measurements == ()
     assert record.elapsed_seconds is None  # it was not called
     assert record.request.workdir is None and not (tmp_path / "run" / "evaluators").exists()
-    assert {"stdout", "stderr"} <= set(candidate.stages.artifacts["simulation"])
-    assert candidate.stages.provenance["simulation"]["returncode"] == 3
-    assert "status 3" in candidate.stages.errors["simulation"]
+    # the stage carries the failure, with its logs
+    simulated = stage(candidate, "simulation")
+    assert {"stdout", "stderr"} <= set(simulated.artifacts)
+    assert simulated.provenance["returncode"] == 3
+    assert simulated.status == "failed" and "status 3" in (simulated.message or "")
+    assert candidate.results[record_task(record)].blocked_by == (stage_task("simulation"),)
 
 
 def test_an_input_supplied_by_the_caller_skips_the_stage(
@@ -614,7 +675,7 @@ def test_an_input_supplied_by_the_caller_skips_the_stage(
     assert reader.calls[0].inputs["simulation"] == events_file
     # not run, but identified: the file is recorded with its content hash, and generation,
     # which only the supplied simulation would have needed, does not appear
-    assert candidate.stages.provenance == {
+    assert provenance(candidate) == {
         "simulation": {
             "provided": str(events_file),
             "bytes": 4,
@@ -623,7 +684,7 @@ def test_an_input_supplied_by_the_caller_skips_the_stage(
         }
     }
     # a simulation the caller supplied was not made with the candidate's geometry
-    assert candidate.stages.supplied == {"simulation"}
+    assert candidate.supplied == {"simulation"}
     assert not candidate.represents_candidate
 
 
@@ -641,7 +702,7 @@ def test_a_supplied_generation_still_represents_the_candidate(
         workdir=tmp_path / "run",
     )
     # the candidate's geometry was simulated; the events do not depend on it
-    assert candidate.stages.supplied == {"generation"} and candidate.represents_candidate
+    assert candidate.supplied == {"generation"} and candidate.represents_candidate
 
 
 @pytest.mark.parametrize("supplied", [False, True])
@@ -667,9 +728,10 @@ def test_a_simulation_output_without_the_requested_events_fails_before_the_evalu
     candidate = evaluate(spec, {CELL: 6}, reader, inputs=inputs, workdir=tmp_path / "run")
     (record,) = candidate.records
     assert reader.calls == []
-    assert record.result.status is Status.FAILED
-    assert message in (record.result.message or "")
-    assert candidate.stages.provenance["simulation"]["events_read"] == found
+    assert record.result.status is Status.BLOCKED
+    simulated = stage(candidate, "simulation")
+    assert simulated.status == "failed" and message in (simulated.message or "")
+    assert simulated.provenance["events_read"] == found
 
 
 def test_an_unreadable_simulation_output_fails_before_the_evaluator(
@@ -681,14 +743,27 @@ def test_an_unreadable_simulation_output_fails_before_the_evaluator(
     simulation.install(monkeypatch)
     monkeypatch.setattr(edm4hep, "_frames", broken)
     reader = Reader()
-    record = evaluate_one(
+    candidate = evaluate(
         spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     assert reader.calls == []
-    assert record.result.status is Status.FAILED
+    assert candidate.records[0].result.status is Status.BLOCKED
     assert "cannot read events.edm4hep.root: RuntimeError: truncated file" in (
-        record.result.message or ""
+        stage(candidate, "simulation").message or ""
     )
+
+
+def test_an_evaluator_never_returns_blocked(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+
+    class Claiming(Reader):
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            return EvaluationResult(Status.BLOCKED, message="not my fault")
+
+    with pytest.raises(EvaluationContractError, match="never returns a blocked result"):
+        evaluate(spec, {CELL: 6}, Claiming(), inputs={"geometry": geometry}, workdir=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -720,7 +795,7 @@ def test_an_evaluator_that_raises_an_outcome_gets_that_result(
     assert record.result.message == str(error)
     assert record.result.measurements == ()
     assert record.elapsed_seconds is not None  # it was called
-    assert "simulation" in candidate.stages.provenance
+    assert stage(candidate, "simulation").status == "done"
 
 
 def test_an_evaluator_may_return_plain_values(
@@ -861,7 +936,7 @@ def test_a_generation_file_problem_runs_generation_then_simulation_and_records_t
     # an evaluator reads the files of every stage it needs, not only of the one it reads
     assert candidate.records[0].request.inputs["generation"] == hepmc
     assert reader.calls[0].inputs["simulation"].name == "events.edm4hep.root"
-    stages = candidate.stages.provenance
+    stages = provenance(candidate)
     assert list(stages) == ["generation", "simulation"]
     assert stages["generation"]["sha256"] == hashlib.sha256(hepmc.read_bytes()).hexdigest()
 
@@ -884,11 +959,15 @@ def test_a_failed_generation_stops_before_simulation(
         file_spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
     )
     (record,) = candidate.records
-    assert record.result.status is Status.FAILED
-    assert f"cannot read {hepmc}: denied" in (record.result.message or "")
+    assert record.result.status is Status.BLOCKED
+    assert record.result.message == "not run: generation failed"
+    assert f"cannot read {hepmc}: denied" in (stage(candidate, "generation").message or "")
     assert fake.calls == [] and reader.calls == []
     # the simulation stage is recorded as not run, with the reason
-    assert candidate.stages.errors["simulation"] == "not run because the 'generation' stage failed"
+    simulated = stage(candidate, "simulation")
+    assert (simulated.status, simulated.message) == ("blocked", "not run: generation failed")
+    assert simulated.elapsed_seconds is None
+    assert (candidate.message or "").endswith("; blocked: simulation, calo.single_particle_shower")
 
 
 # --- a supplied generation file is authoritative (review finding) ---
@@ -914,7 +993,7 @@ def test_a_supplied_generation_file_replaces_the_particle_gun(
     assert f"--inputFiles={hepmc}" in argv
     assert not any(a.startswith(("--gun", "--enableGun")) for a in argv)
     assert candidate.records[0].result.status is Status.VALID
-    stages = candidate.stages.provenance
+    stages = provenance(candidate)
     assert list(stages) == ["generation", "simulation"]
     assert stages["generation"]["provided"] == str(hepmc)
     assert stages["generation"]["sha256"] == hashlib.sha256(hepmc.read_bytes()).hexdigest()
@@ -960,7 +1039,7 @@ def test_an_evaluator_without_a_stage_runs_none(
     fake = simulation.install(monkeypatch)
     own = OwnWorkflow()
     candidate = evaluate(without_stages(doc), {CELL: 6}, own, workdir=tmp_path)
-    assert fake.calls == [] and candidate.stages.provenance == {}
+    assert fake.calls == [] and provenance(candidate) == {}
     assert own.seen is not None and (own.seen.events, own.seen.inputs) == (None, {})
 
 
@@ -980,7 +1059,7 @@ def test_an_evaluator_may_read_only_generation(
     # a file only has to be found and hashed: no geometry and no workdir are needed
     candidate = evaluate(file_spec, {CELL: 6}, own)
     assert fake.calls == []  # no simulation
-    assert list(candidate.stages.provenance) == ["generation"]
+    assert list(provenance(candidate)) == ["generation"]
     assert own.seen is not None
     assert own.seen.inputs["generation"] == tmp_path / "events" / "zh.hepmc"  # resolved
 
@@ -1063,8 +1142,9 @@ def test_an_evaluator_keeps_its_own_artifacts_and_provenance_whatever_their_name
     assert record.result.artifacts == {"simulation.edm4hep": mine}
     assert thaw(record.result.provenance) == claimed
     events_file = tmp_path / "run/simulation/events.edm4hep.root"
-    assert candidate.stages.artifacts["simulation"]["edm4hep"] == events_file
-    assert candidate.stages.provenance["simulation"]["argv"][0] == simulation.DDSIM  # type: ignore[index]
+    simulated = stage(candidate, "simulation")
+    assert simulated.artifacts["edm4hep"] == events_file
+    assert simulated.provenance["argv"][0] == simulation.DDSIM  # type: ignore[index]
 
 
 def test_an_evaluator_without_stages_keeps_its_own_provenance_and_artifacts(
@@ -1072,7 +1152,7 @@ def test_an_evaluator_without_stages_keeps_its_own_provenance_and_artifacts(
 ) -> None:
     evaluator = OwnWorkflow()
     candidate = evaluate(without_stages(doc), {CELL: 6}, evaluator, workdir=tmp_path)
-    assert candidate.records[0].result.provenance == {} and candidate.stages.provenance == {}
+    assert candidate.records[0].result.provenance == {} and provenance(candidate) == {}
 
 
 def test_a_particle_gun_generation_needs_nothing_either(doc: dict[str, Any]) -> None:
@@ -1082,7 +1162,7 @@ def test_a_particle_gun_generation_needs_nothing_either(doc: dict[str, Any]) -> 
     own = NeedsGeneration()
     candidate = evaluate(without_stages(doc, reads="generation"), {CELL: 6}, own)
     assert "generation" not in own.seen.inputs  # type: ignore[union-attr]
-    gun = candidate.stages.provenance["generation"]["particle_gun"]
+    gun = stage(candidate, "generation").provenance["particle_gun"]
     assert gun["particle"] == "gamma"  # type: ignore[index]
 
 

@@ -4,11 +4,12 @@
 implementations and records the identity of every file the problem names. For each candidate it
 then validates the candidate, creates a new instance of each evaluator and checks its request
 for the candidate, checks that no such file changed (nothing is created before this succeeds),
-creates the new run directory, materializes the candidate's geometry into it, measures the
-candidate with those instances through
-:func:`k4opt.problem._evaluate._execute_plan`, which runs each pipeline stage once, assesses it
-against the objectives and constraints (:mod:`k4opt.problem._assess`) and writes
-``summary.json``. :func:`run_candidate` evaluates one candidate given as ``REFERENCE=VALUE``
+and runs the candidate's tasks in a new run directory through
+:func:`k4opt.problem._evaluate._execute_plan`: the geometry task materializes the candidate's
+geometry into it, each pipeline stage runs once and each evaluator measures the candidate with
+its new instance. It then assesses the candidate against the objectives and constraints
+(:mod:`k4opt.problem._assess`) and writes ``summary.json``, which :func:`assemble` makes from the
+task results alone. :func:`run_candidate` evaluates one candidate given as ``REFERENCE=VALUE``
 strings.
 """
 
@@ -28,7 +29,6 @@ from pathlib import Path
 from k4opt import __version__
 from k4opt.evaluation import (
     CandidateKey,
-    EvaluationRecord,
     EvaluatorProtocol,
     Measurement,
     Scalar,
@@ -44,11 +44,12 @@ from k4opt.problem._evaluate import (
     _bind_problem,
     _Binding,
     _execute_plan,
-    _Plan,
     _preflight,
+    _Prepared,
     _validate_candidate,
 )
 from k4opt.problem._stages import STAGE_TYPES, file_identity, input_files, plan_stages
+from k4opt.problem._tasks import GEOMETRY, Kind, Task, TaskResult
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
@@ -82,7 +83,8 @@ class RunOutcome:
     @property
     def events_read(self) -> object:
         """The events found in the simulation output, ``None`` if it was not inspected."""
-        return self.candidate.stages.provenance.get("simulation", {}).get("events_read")
+        simulation = self.candidate.stage("simulation")
+        return None if simulation is None else simulation.provenance.get("events_read")
 
     @property
     def events_requested(self) -> object:
@@ -275,12 +277,40 @@ def _declared(units: Mapping[MetricKey, str] | None) -> list[dict[str, str]] | N
     return [{"stage": s, "metric": m, "unit": unit} for (s, m), unit in units.items()]
 
 
+def _fragment(result: TaskResult) -> dict[str, object]:
+    """What every task's part of the summary says first: how it ended, and why."""
+    return {"status": result.status, "message": result.message}
+
+
+def _reads(task: Task, result: TaskResult) -> dict[str, object]:
+    """What every task's part of the summary says of the tasks before it: those it reads, and
+    those of them that kept it from running."""
+    return {
+        "reads": [need.label for need in task.needs],
+        "blocked_by": [cause.label for cause in result.blocked_by],
+    }
+
+
+def _stage(task: Task, result: TaskResult) -> dict[str, object]:
+    """One stage's part of the summary: how it ended, how it ran and what its output holds."""
+    provenance = thaw(result.provenance)
+    assert isinstance(provenance, dict)
+    return (
+        _fragment(result)
+        | provenance
+        | _reads(task, result)
+        | {"elapsed_seconds": result.elapsed_seconds}
+    )
+
+
 def _evaluator(
-    record: EvaluationRecord, reads: Sequence[str], entry: EvaluatorSpec, taken: Mapping[str, Json]
+    task: Task, result: TaskResult, entry: EvaluatorSpec, taken: Mapping[str, Json]
 ) -> dict[str, object]:
     """One evaluator's own part of the summary: nothing of the stages it shares. ``taken`` is
     what the session recorded of the evaluator when it opened: its source and its metrics."""
-    result, request = record.result, record.request
+    record = result.record
+    assert record is not None  # every evaluator has one, a blocked one too
+    outcome, request = record.result, record.request
     return {
         "name": record.evaluator_name,
         "version": record.evaluator_version,
@@ -288,54 +318,56 @@ def _evaluator(
         "source": thaw(taken["source"]),
         # each with the unit every measurement of it carries, whatever the status
         "metrics": thaw(taken["metrics"]),
-        "status": result.status,
-        "message": result.message,
+        **_fragment(result),
         # as the problem wrote them, and as the evaluator received them (defaults filled in,
         # quantities in the declared unit)
         "settings": {"declared": thaw(entry.settings), "used": thaw(request.settings)},
         "collections": dict(request.collections),
-        "stages": list(reads),
+        **_reads(task, result),
         "measurements": [
-            {"stage": m.stage, "metric": m.metric} | _measurement(m) for m in result.measurements
+            {"stage": m.stage, "metric": m.metric} | _measurement(m) for m in outcome.measurements
         ],
-        "artifacts": {role: str(path) for role, path in result.artifacts.items()},
-        "provenance": thaw(result.provenance),
+        "artifacts": {role: str(path) for role, path in outcome.artifacts.items()},
+        "provenance": thaw(outcome.provenance),
         "workdir": None if request.workdir is None else str(request.workdir),
         "elapsed_seconds": record.elapsed_seconds,
     }
 
 
-def _summary(
+def assemble(
+    record_id: str,
     problem_path: Path,
     spec: ProblemSpec,
     values: Mapping[str, Scalar],
     candidate: CandidateRecord,
     assessment: Assessment,
     run_dir: Path,
-    geometry: object,
     taken: Mapping[str, Mapping[str, Json]],
     run: object,
     process: Mapping[str, Json],
 ) -> dict[str, object]:
-    stages = candidate.stages
-    simulation = stages.provenance.get("simulation", {})
+    """The summary of a candidate, made from its task results and nothing else that ran.
+
+    Each task's part (``geometry``, each entry of ``stages`` and of ``evaluators``) is made from
+    that task's result alone; the candidate's ``status``, ``message``, ``metrics`` and
+    ``assessment`` derive from them, as :meth:`Assessment.from_summary` derives them again.
+    ``record_id`` is the record's identity; the rest is what the session holds: the problem,
+    what it recorded of each evaluator (``taken``) and of the process (``process``).
+    """
+    plan, results = candidate.plan, candidate.results
+    simulation = candidate.stage("simulation")
+    observed = None if simulation is None else simulation.provenance
     environment = thaw(process["environment"])
     assert isinstance(environment, dict)
-    argv = simulation.get("argv")
+    argv = None if observed is None else observed.get("argv")
     simulate = spec.stages.get("simulation")
     entries = {entry.name: entry for entry in spec.evaluators}
-    stage_records: dict[str, object] = {}
-    for stage, provenance in stages.provenance.items():  # pipeline order
-        entry = thaw(provenance)
-        assert isinstance(entry, dict)
-        if stage in stages.errors:
-            entry["error"] = stages.errors[stage]
-        if stage in stages.seconds:
-            entry["elapsed_seconds"] = stages.seconds[stage]
-        stage_records[stage] = entry
+    geometry = results[GEOMETRY]
+    made = thaw(geometry.provenance)
+    assert isinstance(made, dict)
     return {
         "schema": SUMMARY_SCHEMA,
-        "id": str(uuid.uuid4()),  # the record's identity, wherever it is copied to
+        "id": record_id,  # the record's identity, wherever it is copied to
         "run": run,  # what the caller evaluates it for (a study and trial, say), null if nothing
         "problem": {"path": str(problem_path), "name": spec.name, "definition": spec.to_dict()},
         "candidate": dict(values),
@@ -344,7 +376,7 @@ def _summary(
         "message": candidate.message,
         # False if a supplied stage file was not made from this candidate (--input)
         "represents_candidate": candidate.represents_candidate,
-        "supplied": sorted(stages.supplied),
+        "supplied": sorted(candidate.supplied),
         "warnings": list(candidate.warnings),
         # the objective and constraint metrics, each from the evaluator that owns it
         "metrics": [
@@ -355,26 +387,23 @@ def _summary(
         # the objectives and the constraints judged, from those metrics
         "assessment": assessment.to_dict(),
         "evaluators": [
-            _evaluator(
-                record,
-                candidate.reads[record.evaluator_name],
-                entries[record.evaluator_name],
-                taken[record.evaluator_name],
-            )
-            for record in candidate.records
+            _evaluator(task, results[task.id], entries[task.id.name], taken[task.id.name])
+            for task in plan.of(Kind.EVALUATOR)
         ],
-        "stages": stage_records,
+        "stages": {task.id.name: _stage(task, results[task.id]) for task in plan.of(Kind.STAGE)},
         "events": {
             "requested": None if simulate is None else simulate.events,
-            "observed": simulation.get("events_read"),
+            "observed": None if observed is None else observed.get("events_read"),
         },
         "elapsed_seconds": candidate.elapsed_seconds,
-        "geometry": geometry,
+        "geometry": {"status": geometry.status}
+        | made
+        | {"elapsed_seconds": geometry.elapsed_seconds},
         "paths": {"run_dir": str(run_dir)}
         | {
-            f"{stage}.{role}": str(path)
-            for stage, files in stages.artifacts.items()
-            for role, path in files.items()
+            f"{task.id.name}.{role}": str(path)
+            for task in plan.of(Kind.STAGE)
+            for role, path in results[task.id].artifacts.items()
         },
         "environment": {
             # declared by the problem: a pin, not a check of what ran
@@ -701,38 +730,56 @@ class EvaluationSession:
         assert spec._catalog is not None
         reference = _run_reference(run)
         started = time.perf_counter()
-        values, key, plan, overrides = self._prepare(candidate)
-        # the checks are part of the candidate's time; materializing is not
+        values, key, prepared, overrides = self._prepare(candidate)
+        # the checks are part of the candidate's time, as its tasks are, the geometry's too
         checked = time.perf_counter() - started
 
         run_dir = Path(os.path.abspath(output))
         if run_dir.exists() or run_dir.is_symlink():
             raise RunError(f"output {run_dir} already exists; choose a new directory")
-        # materialize() validates the location (not inside the geometry source) before it creates
-        # run_dir, so a rejected location leaves nothing behind
-        try:
-            snapshot = spec._source.materialize(
-                overrides, run_dir / "geometry", catalog=spec._catalog
-            )
-        except BaseException:
-            with contextlib.suppress(OSError):
-                run_dir.rmdir()  # created by the failed attempt; only removed while empty
-            raise
-        try:
-            externals = self._candidate_externals(snapshot)
-            self._check_read(externals)
-        except RunError as exc:
-            raise RunError(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
+        source, catalog = spec._source, spec._catalog
+        made: list[tuple[MaterializationResult, dict[str, dict[str, Json]]]] = []
+
+        def geometry() -> tuple[Path, Mapping[str, Json]]:
+            """The work of the geometry task: the candidate's geometry, in ``run_dir``."""
+            # materialize() validates the location (not inside the geometry source) before it
+            # creates run_dir, so a rejected location leaves nothing behind
+            try:
+                snapshot = source.materialize(overrides, run_dir / "geometry", catalog=catalog)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    run_dir.rmdir()  # created by the failed attempt; only removed while empty
+                raise
+            try:
+                externals = self._candidate_externals(snapshot)
+                self._check_read(externals)
+            except RunError as exc:
+                raise RunError(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
+            made.append((snapshot, externals))
+            return snapshot.compact_path, {
+                "fingerprint": snapshot.fingerprint,
+                "compact": str(snapshot.compact_path),
+                "manifest": str(snapshot.manifest_path),
+                "source_root": str(snapshot.source_root),
+                "changes": tuple(
+                    {"target": c.target, "old_value": c.old_value, "new_value": c.new_value}
+                    for c in snapshot.changes
+                ),
+                "externals": self._externals,
+                "candidate_externals": externals,
+            }
 
         record = _execute_plan(
             spec,
-            plan,
+            prepared,
             key,
-            inputs={"geometry": snapshot.compact_path, **self._inputs},
+            supplied=self._inputs,
+            geometry=geometry,
             workdir=run_dir,
             checked_seconds=checked,
             timeout=self._timeout,
         )
+        ((snapshot, externals),) = made  # the geometry task runs once
         try:
             self._verify()  # the record names what the stages and evaluators read
             now = self._candidate_externals(snapshot)
@@ -749,26 +796,14 @@ class EvaluationSession:
             ) from None
         self._read |= {ref: _content(entry) for ref, entry in externals.items()}
         assessment = assess(spec, record)
-        geometry = {
-            "fingerprint": snapshot.fingerprint,
-            "compact": str(snapshot.compact_path),
-            "manifest": str(snapshot.manifest_path),
-            "source_root": str(snapshot.source_root),
-            "changes": [
-                {"target": c.target, "old_value": c.old_value, "new_value": c.new_value}
-                for c in snapshot.changes
-            ],
-            "externals": thaw(self._externals),
-            "candidate_externals": externals,
-        }
-        summary = _summary(
+        summary = assemble(
+            str(uuid.uuid4()),
             self._path,
             spec,
             values,
             record,
             assessment,
             run_dir,
-            geometry,
             self._taken,
             reference,
             self._process,
@@ -781,14 +816,14 @@ class EvaluationSession:
 
     def _prepare(
         self, candidate: Mapping[str, Scalar]
-    ) -> tuple[dict[str, Scalar], CandidateKey, _Plan, list[Override]]:
-        """The checked candidate, its key, its plan (its own evaluator instances and the requests
-        made for it) and its overrides."""
+    ) -> tuple[dict[str, Scalar], CandidateKey, _Prepared, list[Override]]:
+        """The checked candidate, its key, what its preflight prepared (its own evaluator
+        instances and the requests made for it) and its overrides."""
         values, key = _validate_candidate(self._spec, candidate)
         self._verify()  # first: a file that is gone changed, more than it is missing
-        plan = _preflight(self._binding, values)
+        prepared = _preflight(self._binding, values)
         overrides = _overrides(self._spec, values)
-        return values, key, plan, overrides
+        return values, key, prepared, overrides
 
 
 def _content(entry: object) -> Json:

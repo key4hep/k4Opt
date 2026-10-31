@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import re
 import shutil
 import sys
 import uuid
@@ -36,13 +37,15 @@ from k4opt.problem import (
     CandidateError,
     EvaluationSession,
     ProblemConfigError,
+    RecordError,
     RunError,
     RunOutcome,
     load_problem,
     parse_problem,
 )
-from k4opt.problem._run import _parse_candidate, _xml_value
+from k4opt.problem._run import _parse_candidate, _xml_value, assemble
 from k4opt.problem._run import run_candidate as _run_candidate
+from k4opt.problem._tasks import Plan, RunTask, TaskId, TaskResult, blocked
 from k4opt.revision import code_fingerprint, code_identity
 from tests.support import simulation
 from tests.support.common import tree_digest
@@ -199,6 +202,7 @@ def test_summary_is_written_and_truthful(
     ]
     assert on_disk["events"] == {"requested": 3, "observed": 3}
     assert on_disk["geometry"]["fingerprint"] == outcome.fingerprint
+    assert on_disk["geometry"]["status"] == "done"
     assert Path(on_disk["geometry"]["manifest"]).is_file()
     assert on_disk["geometry"]["changes"] == [
         {"target": RADIUS, "old_value": "400*mm", "new_value": "450.0*mm"}
@@ -208,7 +212,10 @@ def test_summary_is_written_and_truthful(
     simulated = on_disk["stages"]["simulation"]
     assert simulated["argv"][0] == "/stack/bin/ddsim"
     assert (simulated["returncode"], simulated["events_read"]) == (0, 3)
-    assert "error" not in simulated
+    # each a task: how it ended, and the tasks it read
+    assert (simulated["status"], simulated["message"]) == ("done", None)
+    assert (simulated["reads"], simulated["blocked_by"]) == (["geometry", "generation"], [])
+    assert on_disk["stages"]["generation"]["reads"] == []
     assert evaluator["settings"] == {"declared": {}, "used": {}}
     assert evaluator["collections"] == {"hits": COLLECTION}
     (warning,) = on_disk["warnings"]
@@ -220,11 +227,13 @@ def test_summary_is_written_and_truthful(
     assert evaluator["source"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert evaluator["source"]["executed"] is True  # loaded as FILE.py:Class
     assert evaluator["provenance"] == {} and evaluator["artifacts"] == {}  # none of its own
-    assert evaluator["stages"] == ["generation", "simulation"]
+    assert evaluator["reads"] == ["geometry", "generation", "simulation"]
+    assert evaluator["blocked_by"] == []
     assert evaluator["workdir"] == str(tmp_path / "a" / "evaluators" / "test.cell_count")
-    # every second once: each stage, the evaluator's own call, and the candidate around them
+    # every second once: the geometry, each stage, the evaluator's own call, and the candidate
+    # around them
     seconds = [stage["elapsed_seconds"] for stage in on_disk["stages"].values()]
-    seconds.append(evaluator["elapsed_seconds"])
+    seconds += [on_disk["geometry"]["elapsed_seconds"], evaluator["elapsed_seconds"]]
     assert min(seconds) >= 0 and sum(seconds) <= on_disk["elapsed_seconds"]
     # the files of the stages, named <stage>.<role>: what the real-ddsim test reads back
     paths = on_disk["paths"]
@@ -540,14 +549,18 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
     outcome = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
     summary = json.loads(outcome.summary_path.read_text())
     assert summary["status"] == "failed"
-    assert summary["message"].startswith("test.cell_count failed: ddsim exited with status 2")
-    assert "G4Exception: bad volume" in summary["message"]
+    # the stage that failed, then what it kept from running
+    assert summary["message"].startswith("simulation failed: ddsim exited with status 2")
+    assert summary["message"].endswith("G4Exception: bad volume; blocked: test.cell_count")
     (evaluator,) = summary["evaluators"]
+    assert (evaluator["status"], evaluator["message"]) == ("blocked", "not run: simulation failed")
+    assert evaluator["blocked_by"] == ["simulation"]
     assert evaluator["measurements"] == [] and evaluator["elapsed_seconds"] is None
     assert evaluator["workdir"] is None  # not called, so no directory was made for it
     assert summary["metrics"][0]["value"] is None  # never a made-up number
     assert summary["stages"]["simulation"]["returncode"] == 2
-    assert "bad volume" in summary["stages"]["simulation"]["error"]
+    assert summary["stages"]["simulation"]["status"] == "failed"
+    assert "bad volume" in summary["stages"]["simulation"]["message"]
     assert "bad volume" in Path(summary["paths"]["simulation.stderr"]).read_text()
 
 
@@ -662,7 +675,8 @@ def test_command_exits_nonzero_for_a_failed_run(
     assert "status:      failed" in out
     assert "feasible:    not assessed" in out
     assert "events:" not in out  # ddsim wrote no file, so no events were counted
-    assert "k4opt: evaluation failed: test.cell_count failed: ddsim exited with status 1" in err
+    assert "k4opt: evaluation failed: simulation failed: ddsim exited with status 1" in err
+    assert "evaluator:   test.cell_count 1: blocked" in out
 
 
 def test_command_exits_nonzero_for_an_invalid_run(
@@ -754,10 +768,14 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
     assert (summary["represents_candidate"], summary["supplied"]) == (False, ["simulation"])
     assert summary["stages"] == {
         "simulation": {
+            "status": "done",
+            "message": None,
             "provided": str(events_file),
             "bytes": 4,
             "sha256": hashlib.sha256(b"fake").hexdigest(),
             "events_read": 3,
+            "reads": [],  # it is given, so it reads nothing
+            "blocked_by": [],
             "elapsed_seconds": summary["stages"]["simulation"]["elapsed_seconds"],
         }
     }
@@ -957,13 +975,13 @@ def test_summary_write_failure_is_a_controlled_error(
     assert not (tmp_path / "a" / SUMMARY_NAME).exists()
 
 
-def test_the_candidate_time_counts_the_checks_but_not_the_materialization(
+def test_the_candidate_time_counts_the_checks_and_every_task_the_geometry_too(
     tmp_path: Path,
     problem_file: Path,
     fake: simulation.FakeDdsim,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from k4opt.problem import _evaluate, _run, _stages
+    from k4opt.problem import _evaluate, _run
 
     class Clock:
         now = 0.0
@@ -972,7 +990,7 @@ def test_the_candidate_time_counts_the_checks_but_not_the_materialization(
             return self.now
 
     clock = Clock()
-    for module in (_evaluate, _run, _stages):
+    for module in (_evaluate, _run):
         monkeypatch.setattr(module, "time", clock)
     materialize = GeometrySource.materialize
 
@@ -989,7 +1007,8 @@ def test_the_candidate_time_counts_the_checks_but_not_the_materialization(
     outcome = run_candidate(
         problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[Checking()]
     )
-    assert outcome.summary["elapsed_seconds"] == 0.5
+    assert outcome.summary["elapsed_seconds"] == 100.5
+    assert outcome.summary["geometry"]["elapsed_seconds"] == 100.0  # type: ignore[index]
 
 
 def test_an_unwritable_evaluator_directory_is_a_recorded_failure(
@@ -1093,16 +1112,16 @@ def test_a_failed_simulation_keeps_the_result_of_an_evaluator_that_needs_none(
         str(output),
     )
     assert code == 1
-    assert errors(err).startswith("k4opt: evaluation failed: test.cell_count failed: ddsim exited")
+    assert errors(err).startswith("k4opt: evaluation failed: simulation failed: ddsim exited")
     assert "evaluator:   test.parameter_echo 1: valid" in out
     summary = json.loads((output / SUMMARY_NAME).read_text())
     assert summary["status"] == "failed"
     cells, echo = summary["evaluators"]
-    assert (cells["status"], cells["elapsed_seconds"], cells["workdir"]) == ("failed", None, None)
+    assert (cells["status"], cells["elapsed_seconds"], cells["workdir"]) == ("blocked", None, None)
     assert echo["status"] == "valid" and echo["measurements"][0]["value"] == 450.0
     # the measurement that was made is kept; the missing one is missing, not made up
     assert [m["value"] for m in summary["metrics"]] == [None, 450.0]
-    assert summary["stages"]["simulation"]["error"].startswith("ddsim exited with status 2")
+    assert summary["stages"]["simulation"]["message"].startswith("ddsim exited with status 2")
 
 
 @pytest.mark.parametrize(
@@ -1676,7 +1695,7 @@ def test_a_simulation_that_runs_out_of_time_fails_its_candidate(
     assert kwargs["timeout"] == 90.0
     simulated = outcome.summary["stages"]["simulation"]  # type: ignore[index]
     assert (simulated["timeout"], simulated["returncode"]) == (90.0, None)
-    assert "ran longer than 90 s" in simulated["error"]
+    assert "ran longer than 90 s" in simulated["message"]
     assert (tmp_path / "a" / "simulation" / "ddsim.stderr.log").is_file()
 
 
@@ -1807,3 +1826,175 @@ def test_a_supplied_file_that_changes_stops_the_session_before_its_next_candidat
     with pytest.raises(RunError, match=r"supplied\.simulation: .* changed after the session"):
         session.evaluate({RADIUS: 500.0}, tmp_path / "b")
     assert not (tmp_path / "b").exists() and fake.calls == []
+
+
+# --- a candidate's work is tasks: ordered by what they read, recorded by their results ---
+
+
+def latest_ready(plan: Plan, run: RunTask, order: list[str]) -> dict[TaskId, TaskResult]:
+    """An executor that runs, of the tasks whose needs all have results, always the last in plan
+    order: another order in which every task comes after what it reads. ``order`` receives it."""
+    results: dict[TaskId, TaskResult] = {}
+    pending = list(plan.tasks)
+    while pending:
+        task = [t for t in pending if all(need in results for need in t.needs)][-1]
+        pending.remove(task)
+        order.append(task.id.label)
+        reads = {need: results[need] for need in task.needs}
+        results[task.id] = blocked(task, results) or run(task, reads)
+    return results
+
+
+def comparable(summary: Any, run_dir: Path) -> Any:
+    """``summary`` without what differs from one evaluation of a candidate to the next: its id,
+    the times and where it ran."""
+
+    def strip(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: strip(v) for k, v in value.items() if k not in ("id", "elapsed_seconds")}
+        if isinstance(value, list):
+            return [strip(item) for item in value]
+        return value
+
+    return strip(json.loads(json.dumps(summary).replace(str(run_dir), "RUN")))
+
+
+@pytest.mark.parametrize("ddsim", [{}, {"returncode": 2, "stderr": "G4Exception: bad volume"}])
+def test_the_record_does_not_depend_on_the_order_the_tasks_ran_in(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch, ddsim: dict[str, Any]
+) -> None:
+    from k4opt.problem import _evaluate
+
+    simulation.install(monkeypatch, **ddsim)
+    declare(problem_file, ["test.cell_count", "test.parameter_echo"], [CELLS, ECHO])
+    seen: list[bool] = []
+
+    class Echo(parameter_echo()):  # type: ignore[misc]
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            # every evaluator reads the geometry task, so the geometry is there in any order
+            seen.append(request.inputs["geometry"].is_file())
+            return super().evaluate(request)
+
+    session = EvaluationSession.open(problem_file, [cell_count(), Echo])
+    first = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    order: list[str] = []
+    monkeypatch.setattr(_evaluate, "run_tasks", lambda plan, run: latest_ready(plan, run, order))
+    second = session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    planned = [task.id.label for task in second.candidate.plan.tasks]
+    assert order != planned and sorted(order) == sorted(planned)
+    assert order[:2] == ["generation", "geometry"]  # the gun first: it reads no geometry
+    assert seen == [True, True]
+    assert comparable(second.summary, tmp_path / "b") == comparable(first.summary, tmp_path / "a")
+    assert second.summary["status"] == ("valid" if not ddsim else "failed")
+
+
+def test_the_record_is_assembled_from_the_task_results_alone(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a", run={"label": "golden"})
+    written = json.loads(outcome.summary_path.read_text())
+    shutil.rmtree(tmp_path / "a")  # nothing it makes the record from is read from disk
+    again = assemble(
+        written["id"],
+        session.problem_path,
+        session.spec,
+        {RADIUS: 450.0},
+        outcome.candidate,
+        outcome.assessment,
+        tmp_path / "a",
+        session._taken,
+        {"label": "golden"},
+        session._process,
+    )
+    assert json.loads(json.dumps(again)) == written
+    tasks = [written["geometry"], *written["stages"].values(), *written["evaluators"]]
+    assert all(task["status"] in ("done", "valid") for task in tasks)
+
+
+def change(data: dict[str, Any], path: str, value: Any) -> None:
+    """Set the entry at the dotted ``path`` of ``data`` (list items by index) to ``value``."""
+    *parents, last = path.split(".")
+    for key in parents:
+        data = data[int(key)] if isinstance(data, list) else data[key]
+    if isinstance(data, list):
+        data[int(last)] = value
+    else:
+        data[last] = value
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        # what is blocked, by what, and why: re-derived from what each task reads
+        (
+            "evaluators.0.status",
+            "failed",
+            "evaluator 'test.cell_count' is failed (blocked by ['simulation'], message 'not run: "
+            "simulation failed'), but what it reads makes it blocked by ['simulation']",
+        ),
+        ("evaluators.0.blocked_by", [], "is blocked (blocked by [], message"),
+        ("evaluators.0.blocked_by", ["generation"], "is blocked (blocked by ['generation']"),
+        ("evaluators.0.message", "not run: generation failed", "but what it reads makes it"),
+        (
+            "stages.simulation.status",
+            "done",
+            "evaluator 'test.cell_count' is blocked, but every task it reads succeeded",
+        ),
+        (
+            "stages.simulation.status",
+            "blocked",
+            "stage 'simulation' is blocked, but every task it reads succeeded",
+        ),
+        ("stages.simulation.message", None, "stage 'simulation': a task that is failed needs a"),
+        ("stages.simulation.status", "crashed", "status 'crashed' is none of done, failed"),
+        ("evaluators.1.blocked_by", ["simulation"], "is blocked, but every task it reads"),
+        # what each task reads is the problem's, not the record's to say
+        (
+            "evaluators.0.reads",
+            ["geometry", "simulation"],
+            "evaluator 'test.cell_count' reads ['geometry', 'simulation'], but the problem has it "
+            "read ['geometry', 'generation', 'simulation']",
+        ),
+        ("stages.simulation.reads", ["geometry"], "stage 'simulation' reads ['geometry'], but"),
+        ("stages.generation", None, "stages.generation must be a mapping"),
+        ("geometry.status", "failed", "geometry: status 'failed', but it is always done"),
+        ("supplied", ["simulation"], "but the problem makes ['simulation']"),
+        ("supplied", ["geometry"], "supplied ['geometry'] must list stages"),
+        ("supplied", ["simulation", "simulation"], "must list each stage once"),
+        ("message", "simulation failed: boom", "but its tasks make it"),
+        ("status", "valid", "status is 'valid', but its tasks make it 'failed'"),
+    ],
+)
+def test_a_record_whose_tasks_disagree_with_its_plan_is_refused(
+    tmp_path: Path,
+    problem_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    value: Any,
+    message: str,
+) -> None:
+    simulation.install(monkeypatch, returncode=2, stderr="G4Exception: bad volume")
+    declare(problem_file, ["test.cell_count", "test.parameter_echo"], [CELLS, ECHO])
+    session = EvaluationSession.open(problem_file, [cell_count(), parameter_echo()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    data = json.loads(outcome.summary_path.read_text())
+    Assessment.from_summary(session.spec, data)  # as written, it holds up
+    assert [e["status"] for e in data["evaluators"]] == ["blocked", "valid"]
+    change(data, path, value)
+    with pytest.raises(RecordError, match=re.escape(message)):
+        Assessment.from_summary(session.spec, data)
+
+
+def test_a_blocked_evaluator_that_measured_is_refused(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, returncode=2)
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    data = json.loads(session.evaluate({RADIUS: 450.0}, tmp_path / "a").summary_path.read_text())
+    data["evaluators"][0]["measurements"] = [
+        {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells", "value": 3.0}
+        | {"unit": "1", "uncertainty": None}
+    ]
+    with pytest.raises(RecordError, match="it is blocked, so it was never called, yet it measured"):
+        Assessment.from_summary(session.spec, data)
