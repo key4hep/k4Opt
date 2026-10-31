@@ -180,13 +180,16 @@ def _validate_candidate(
     return values, tuple(key)
 
 
-def _check_units(evaluator: EvaluatorProtocol, result: EvaluationResult) -> None:
-    """Every measurement of a metric the evaluator declares must carry the declared unit.
+def _check_units(
+    evaluator: EvaluatorProtocol,
+    declared: Mapping[MetricKey, str] | None,
+    result: EvaluationResult,
+) -> None:
+    """Every measurement of a metric the evaluator ``declared`` must carry the declared unit.
 
     Whatever the status: diagnostic values of an ``invalid`` result are recorded too. An
     evaluator that declares no ``metrics``, and metrics it does not declare, are not checked.
     """
-    declared = metric_units(evaluator)
     if declared is None:
         return
     for m in result.measurements:
@@ -703,21 +706,23 @@ def _measure(
     call fails it too: the record could not say what it read.
     """
     entry, evaluator = prepared.evaluators[task]
+    # what it declared when bound, which the record holds, not what it declares now
+    declared = dict(prepared.binding.evaluations)[task].declaration
     request = replace(prepared.requests[task], inputs=_inputs(reads))
     changed = changed_files(reads.values())
     if changed:
         result = EvaluationResult.failed(_changed_before(changed))
-        return _record(spec, task, entry, evaluator, key, request, result), {}
+        return _record(spec, task, entry, evaluator, declared, key, request, result), {}
     error = _collection_error(evaluator, request, seen)
     if error is not None:
         result = EvaluationResult.failed(error)
-        return _record(spec, task, entry, evaluator, key, request, result), {}
+        return _record(spec, task, entry, evaluator, declared, key, request, result), {}
     if workdir is not None:
         try:
             workdir.mkdir(parents=True)
         except OSError as exc:  # not called, so its request has no directory
             result = EvaluationResult.failed(f"cannot create evaluator directory {workdir}: {exc}")
-            return _record(spec, task, entry, evaluator, key, request, result), {}
+            return _record(spec, task, entry, evaluator, declared, key, request, result), {}
     request = replace(request, workdir=workdir)
     started = time.perf_counter()
     try:
@@ -727,10 +732,8 @@ def _measure(
     except EvaluationInvalid as exc:
         result = EvaluationResult.invalid(str(exc))
     elapsed = time.perf_counter() - started
-    record = _record(spec, task, entry, evaluator, key, request, result, elapsed)
-    # what it declared when bound, which the record holds, not what it declares now
-    declared = dict(prepared.binding.evaluations)[task].declaration.artifacts
-    made = _artifacts(task, declared, result, workdir)
+    record = _record(spec, task, entry, evaluator, declared, key, request, result, elapsed)
+    made = _artifacts(task, declared.artifacts, result, workdir)
     changed = changed_files(reads.values())
     if changed:  # what it returned stays, as diagnostics of a failed result
         result = EvaluationResult.failed(
@@ -804,12 +807,13 @@ def _record(
     task: TaskId,
     entry: EvaluatorSpec,
     evaluator: EvaluatorProtocol,
+    declared: _Declaration,
     key: CandidateKey,
     request: EvaluationRequest,
     result: EvaluationResult,
     elapsed: float | None = None,
 ) -> EvaluationRecord:
-    _check_units(evaluator, result)
+    _check_units(evaluator, declared.metrics, result)
     _check_result(spec, task, result)
     return EvaluationRecord(request, result, entry.name, entry.version, key, elapsed)
 

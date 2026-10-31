@@ -507,6 +507,8 @@ def _files(
     files: dict[str, Artifact] = {}
     for name, entry in _mapping(value, where).items():
         at = f"{where}.{name}"
+        if not ARTIFACT_NAME.fullmatch(name):  # the reference alone would split at its last '#'
+            raise RecordError(f"{at}: {name!r} is no artifact name")
         item = _mapping(entry, at)
         ref = f"{task.label}#{name}"
         if item.get("ref") != ref:
@@ -588,6 +590,10 @@ def _evaluations(
         workdir = entry.get("workdir")
         if workdir not in (None, directory):
             raise RecordError(f"{where}: workdir {workdir!r}, but its directory is {directory!r}")
+        if workdir is None and fragment.status in (Status.VALID, Status.INVALID):
+            raise RecordError(
+                f"{where}: it is {fragment.status}, so it was called, yet has no workdir"
+            )
         files = _files(entry.get("artifacts"), task, workdir, f"{where}: artifacts", hashed=True)
         if names is not None:
             unknown = [name for name in files if name not in names]

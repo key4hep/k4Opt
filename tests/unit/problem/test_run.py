@@ -2547,6 +2547,7 @@ OUTPUT = "samples/gamma/stages/simulation/outputs/events"
         ("geometry/compact", "/abs/compact.xml", "geometry: compact: '/abs/compact.xml' is not a"),
         ("samples/gamma/stages/simulation/directory", "elsewhere", "directory 'elsewhere', but"),
         (f"{VALID}/workdir", "evaluators/x", "workdir 'evaluators/x', but its directory is"),
+        (f"{VALID}/workdir", None, "it is valid, so it was called, yet has no workdir"),
         ("run_dir", None, "run_dir must be a nonblank string"),
         # what a stage that is done made, and what an evaluator declares, the record holds
         ("samples/gamma/stages/simulation/outputs", {}, "outputs [], but a stage that is done"),
@@ -2569,6 +2570,24 @@ def test_a_record_whose_files_are_not_as_made_is_refused(
     Assessment.from_summary(session.spec, data)  # as written, it holds up
     change(data, path, value)
     with pytest.raises(RecordError, match=re.escape(message)):
+        Assessment.from_summary(session.spec, data)
+
+
+def test_a_record_with_an_artifact_name_its_reference_would_split_is_refused(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    # declaring none, the evaluator's names are checked by the record alone
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    data = json.loads(session.evaluate({RADIUS: 450.0}, tmp_path / "a").summary_path.read_text())
+    Assessment.from_summary(session.spec, data)  # as written, it holds up
+    plot = {
+        "ref": "gamma/test.cell_count#plot#other",
+        "path": "samples/gamma/evaluators/test.cell_count/plot.json",
+        "bytes": 12,
+        "sha256": "0" * 64,
+    }
+    change(data, f"{VALID}/artifacts", {"plot#other": plot})
+    with pytest.raises(RecordError, match="'plot#other' is no artifact name"):
         Assessment.from_summary(session.spec, data)
 
 

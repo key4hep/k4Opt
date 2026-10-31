@@ -1338,6 +1338,30 @@ def test_artifacts_are_checked_against_what_the_evaluator_declared_when_bound(
         )
 
 
+def test_units_are_checked_against_what_the_evaluator_declared_when_bound(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the record holds the declaration of the binding, so a later one cannot pass for it
+    simulation.install(monkeypatch)
+
+    class Redeclaring(Reader):
+        metrics = {"a.rms": "mm", "a.cells": "1"}
+
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            self.metrics = {"a.rms": "cm", "a.cells": "1"}
+            return EvaluationResult.valid(
+                [
+                    Measurement("simulation", "a.rms", 0.1, unit="cm"),
+                    Measurement("simulation", "a.cells", 5),
+                ]
+            )
+
+    with pytest.raises(EvaluationContractError, match=r"has unit 'cm' but (.*) declares 'mm'"):
+        evaluate(
+            spec, {CELL: 6}, Redeclaring, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
+
+
 def test_a_failed_result_need_not_return_its_declared_artifacts(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
