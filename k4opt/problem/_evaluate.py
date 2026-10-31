@@ -540,7 +540,7 @@ def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Plan:
     instances and requests made for these ``values``, so it serves one candidate only.
     """
     evaluators = tuple((bound.entry, _instance(bound)) for bound in binding.evaluators)
-    for entry, evaluator in evaluators:  # what needs no candidate first: a check() may need it
+    for entry, evaluator in evaluators:  # before any check(), which may depend on the candidate
         check_settings(evaluator, with_defaults(evaluator, entry.settings))
         collection_names(evaluator, entry.collections)
     requests = {}
@@ -779,15 +779,15 @@ def _evaluate_candidate(
     runs, raises :class:`CandidateError` for a candidate outside the declared domains and
     :class:`EvaluationContractError` for implementations that cannot be created or do not match
     the problem (missing, undeclared, given twice, another version), settings an evaluator's
-    ``check()`` rejects, a
-    stage that cannot run, or an objective or constraint metric that no evaluator, or two,
-    declare. The stages the evaluators read and ``inputs`` does not supply then run once each
-    (on ``inputs["geometry"]``, in ``workdir``); any other entry of ``inputs`` supplies the file
-    of the stage it is named after. An evaluator whose stage failed, or whose stage
-    output lacks the requested events, gets a ``failed`` result without being called; the others
-    are still called. An evaluator that raises :class:`EvaluationFailed` or
-    :class:`EvaluationInvalid` gets that result; any other exception propagates, and so does an
-    :class:`EvaluationContractError` for a result that breaks the contract.
+    ``check()`` rejects, a stage that cannot run, or an objective or constraint metric that no
+    evaluator, or two, declare. The stages the evaluators read and ``inputs`` does not supply
+    then run once each (on ``inputs["geometry"]``, in ``workdir``); any other entry of
+    ``inputs`` supplies the file of the stage it is named after. An evaluator whose stage
+    failed, or whose stage output lacks the requested events, gets a ``failed`` result without
+    being called; the others are still called. An evaluator that raises
+    :class:`EvaluationFailed` or :class:`EvaluationInvalid` gets that result; any other
+    exception propagates, and so does an :class:`EvaluationContractError` for a result that
+    breaks the contract.
     """
     started = time.perf_counter()
     values, key = _validate_candidate(spec, candidate)
