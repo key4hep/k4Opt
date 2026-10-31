@@ -739,7 +739,7 @@ trusting it.
 ## Deliberately deferred
 
 An evaluator registry or lookup by name (evaluators are named on the command line), chained
-combined evaluators, stage configuration shared by samples, branches of the stages, validating
+combined evaluators, branches of the stages, validating
 metric names, `k4run`, hashing stage outputs, a store of artifacts, execution cost, retries and scheduling, fingerprints and caching,
 persisting or serializing the `EvaluationRecord` apart from `summary.json`, and aggregation,
 significance or constraints judged with their uncertainty.

@@ -286,8 +286,7 @@ def test_pi0_example_combines_hashed_histograms_from_two_real_samples(
 
     example = EXAMPLE.with_name("cld-ecal-pi0-rejection.yaml")
     doc = yaml.safe_load(example.read_text())
-    for sample in doc["samples"].values():
-        sample["simulation"]["events"] = EVENTS
+    doc["stages"]["simulation"]["events"] = EVENTS  # shared by both samples
     path = tmp_path / "pi0.yaml"
     path.write_text(yaml.safe_dump(doc, sort_keys=False))
     sources = example.parent.parent / "evaluators"
