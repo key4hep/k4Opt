@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import shutil
 from collections import Counter
 from collections.abc import Callable
@@ -19,12 +20,12 @@ import optuna
 from optuna.exceptions import StorageInternalError
 from optuna.trial import TrialState
 
-from k4opt.evaluation import load_evaluator
-from k4opt.optimization import OptimizationError, StudyResults, load_study, optimize
+from k4opt.evaluation import Measurement, load_evaluator
+from k4opt.optimization import OptimizationError, StudyResults, TrialResult, load_study, optimize
 from k4opt.optimization._optuna.space import search_space
-from k4opt.optimization._results import OUTCOMES, recorded, recorded_problem
+from k4opt.optimization._results import OUTCOMES, pareto_front, recorded, recorded_problem
 from k4opt.optimization._study import read_study
-from k4opt.problem import load_problem
+from k4opt.problem import Assessment, load_problem, parse_problem
 from tests.support import simulation
 from tests.support.common import tree_digest
 from tests.support.evaluators import TRADE_OFF, cell_count, hit_energy, trade_off
@@ -36,6 +37,7 @@ from tests.unit.optimization.conftest import (
     evaluator_from,
     left_running,
     optuna_study,
+    problem_document,
     summary,
 )
 
@@ -123,6 +125,57 @@ def test_one_objective_has_all_its_best_trials_on_the_front(
     best = tuple(t.number for t in study.trials if t.candidate[RADIUS] == 500)
     assert len(best) > 1 and study.pareto == best
     assert study.pareto == tuple(sorted(t.number for t in optuna_study(tmp_path / "s").best_trials))
+
+
+def _trial(number: int, values: list[int], feasible: bool) -> TrialResult:
+    """A valid trial with these objective values, ``analysis/m0``, ``analysis/m1``, ..."""
+    measured = tuple(Measurement("analysis", f"m{i}", v, unit="1") for i, v in enumerate(values))
+    return TrialResult(
+        number, "valid", {RADIUS: 1.0}, Path("t"), Assessment(measured, (), feasible)
+    )
+
+
+@pytest.mark.parametrize(
+    "directions",
+    [
+        ("minimize",),
+        ("maximize",),
+        ("minimize", "maximize"),
+        ("maximize", "maximize"),
+        ("maximize", "minimize", "minimize"),
+    ],
+)
+def test_the_front_is_every_feasible_trial_no_other_dominates(directions: tuple[str, ...]) -> None:
+    objectives = [("analysis", f"m{i}", d) for i, d in enumerate(directions)]
+    spec = parse_problem(problem_document(objectives=objectives))
+    rng = random.Random(len(directions))
+    trials = [  # few distinct values, so many ties, and some infeasible trials that would win
+        _trial(n, [rng.randrange(5) for _ in directions], rng.random() > 0.2) for n in range(400)
+    ]
+    signs = [1 if d == "minimize" else -1 for d in directions]
+    points = {
+        t.number: [s * m.value for s, m in zip(signs, t.assessment.objectives, strict=True)]
+        for t in trials
+        if t.feasible
+    }
+
+    def dominates(a: list[int], b: list[int]) -> bool:
+        return all(x <= y for x, y in zip(a, b, strict=True)) and a != b
+
+    expected = tuple(
+        n for n, p in points.items() if not any(dominates(q, p) for q in points.values())
+    )
+    assert len(expected) > 1  # ties stay
+    assert pareto_front(trials, spec) == expected
+
+
+def test_a_large_front_takes_a_sort_and_one_pass_not_a_comparison_of_every_pair() -> None:
+    objectives = [("analysis", "m0", "minimize"), ("analysis", "m1", "minimize")]
+    spec = parse_problem(problem_document(objectives=objectives))
+    trials = [_trial(n, [n, -n], True) for n in range(20_000)]  # none dominates another
+    assert pareto_front(trials, spec) == tuple(range(20_000))  # all 2e8 pairs would take minutes
+    tied = [_trial(n, [1, 1], True) for n in range(20_000)]
+    assert pareto_front(tied, spec) == tuple(range(20_000))
 
 
 def test_values_keep_their_units_and_uncertainties_and_trials_their_recorded_times(

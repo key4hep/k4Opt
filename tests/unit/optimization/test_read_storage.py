@@ -58,12 +58,30 @@ def test_a_study_in_a_database_reads_back_without_a_write(
 ) -> None:
     output, url = database_study
     database = tmp_path / "studies.db"
+    assert database.read_bytes()[18:20] == b"\x01\x01"  # Optuna's: a rollback journal, not WAL
     before = (tree_digest(output), database.read_bytes())
     study = load_study(output, storage=url)
     assert [t.status for t in study.trials] == ["valid"] * 3
     assert study.pareto  # read from the database as from a journal
     assert (tree_digest(output), database.read_bytes()) == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["problem.yaml", "s", "studies.db"]
+
+
+def test_a_database_in_wal_mode_is_refused_and_no_file_is_made_beside_it(
+    tmp_path: Path, database_study: tuple[Path, str]
+) -> None:
+    output, url = database_study
+    database = tmp_path / "studies.db"
+    connection = sqlite3.connect(database)
+    assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+    connection.close()  # the last connection: its -wal and -shm files go
+    held = ["problem.yaml", "s", "studies.db"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == held
+    before = database.read_bytes()
+    with pytest.raises(OptimizationError, match=r"studies\.db is in SQLite's WAL mode"):
+        load_study(output, storage=url)
+    assert sorted(p.name for p in tmp_path.iterdir()) == held  # no -wal, no -shm
+    assert database.read_bytes() == before
 
 
 def test_without_its_url_a_database_study_is_refused_and_no_journal_is_made(

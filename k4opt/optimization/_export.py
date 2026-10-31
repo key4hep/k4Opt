@@ -41,6 +41,10 @@ def _stages(results: StudyResults) -> list[str]:
 
 def columns(results: StudyResults) -> list[str]:
     """The CSV header: the same for every export of a study with the same stages."""
+    return _columns(results, _stages(results))
+
+
+def _columns(results: StudyResults, stages: list[str]) -> list[str]:
     spec = results.problem
     return [
         "study",
@@ -61,7 +65,7 @@ def columns(results: StudyResults) -> list[str]:
             for part in ("value", "margin", "satisfied")
         ),
         "elapsed_seconds",
-        *(f"stage:{stage}:elapsed_seconds" for stage in _stages(results)),
+        *(f"stage:{stage}:elapsed_seconds" for stage in stages),
         "record",
         "record_sha256",
         "record_path",
@@ -91,9 +95,10 @@ def _cell(value: object) -> str:
 
 def to_csv(results: StudyResults) -> str:
     spec, front = results.problem, set(results.pareto)
+    stages, names = _stages(results), limit_names(spec)  # once, for the header and every row
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(columns(results))
+    writer.writerow(_columns(results, stages))
     for trial in results.trials:
         assessment = trial.assessment
         measured = assessment.objectives if assessment is not None else None
@@ -110,19 +115,11 @@ def to_csv(results: StudyResults) -> str:
         for index in range(len(spec.objectives)):
             m = None if measured is None else measured[index]
             row += [None, None, None] if m is None else [m.value, m.unit, m.uncertainty]
-        for name in limit_names(spec):
+        for name in names:
             limit = limits.get(name)
-            row += (
-                [None, None, None]
-                if limit is None
-                else [
-                    limit.value,
-                    limit.margin,
-                    limit.satisfied,
-                ]
-            )
+            row += [None] * 3 if limit is None else [limit.value, limit.margin, limit.satisfied]
         row.append(trial.elapsed_seconds)
-        row += [trial.stage_seconds.get(stage) for stage in _stages(results)]
+        row += [trial.stage_seconds.get(stage) for stage in stages]
         path = None if trial.record is None else f"{trial_directory(trial.number)}/{SUMMARY_NAME}"
         row += [trial.record, trial.sha256, path, trial.message]
         writer.writerow([_cell(value) for value in row])

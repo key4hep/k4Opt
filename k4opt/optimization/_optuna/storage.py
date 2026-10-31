@@ -107,7 +107,8 @@ def _read_only(url: str) -> dict[str, Any]:
     """The engine options that open the database ``url`` names so that it refuses every write.
 
     SQLite is opened in its read-only mode, which also refuses a file that does not exist instead
-    of creating it; PostgreSQL over libpq (``psycopg2``, ``psycopg``) with
+    of creating it; a database in WAL mode is refused, since a reader writes files beside it
+    there. PostgreSQL over libpq (``psycopg2``, ``psycopg``) with
     ``default_transaction_read_only``, added to the URL's own ``options``. Any other database is
     refused: nothing would keep it from being written.
     """
@@ -132,6 +133,12 @@ def _read_only(url: str) -> dict[str, Any]:
             raise OptimizationError(
                 f"--storage {redacted(url)}: {path} does not exist, so it holds no study"
             )
+        if _write_ahead(path):
+            raise OptimizationError(
+                f"--storage {redacted(url)}: {path} is in SQLite's WAL mode, in which even a "
+                "read-only connection writes -wal and -shm files beside it; k4opt optimize makes "
+                "no such database, and reading opens none"
+            )
         uri = f"file:{urllib.parse.quote(str(path))}?mode=ro"  # codespell:ignore ro
         return {"creator": lambda: sqlite3.connect(uri, uri=True, check_same_thread=False)}
     if backend == "postgresql" and driver in ("psycopg2", "psycopg"):
@@ -143,6 +150,14 @@ def _read_only(url: str) -> dict[str, Any]:
         f"(psycopg2, psycopg) database, which can be opened so that it refuses every write; "
         f"this is {backend}+{driver}"
     )
+
+
+def _write_ahead(path: Path) -> bool:
+    """Whether the SQLite database ``path`` is in WAL mode: the file format versions in its
+    header (bytes 18 and 19) are 2 rather than 1."""
+    with path.open("rb") as handle:
+        header = handle.read(20)
+    return 2 in header[18:20]
 
 
 def _check_set_up(url: str, options: Mapping[str, Any]) -> None:

@@ -149,6 +149,10 @@ class StudyResults:
     trials: tuple[TrialResult, ...]
     pareto: tuple[int, ...]
     warnings: tuple[str, ...] = ()
+    _numbered: Mapping[int, TrialResult] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_numbered", FrozenMap({t.number: t for t in self.trials}))
 
     @property
     def study_path(self) -> Path:
@@ -161,9 +165,9 @@ class StudyResults:
 
     def trial(self, number: int) -> TrialResult:
         """The trial numbered ``number``; :class:`OptimizationError` if the study has none."""
-        for trial in self.trials:
-            if trial.number == number:
-                return trial
+        found = self._numbered.get(number)
+        if found is not None:
+            return found
         if self.trials:
             held = f"trials {self.trials[0].number} to {self.trials[-1].number}"
         else:
@@ -321,26 +325,27 @@ def pareto_front(trials: Sequence[TrialResult], spec: ProblemSpec) -> tuple[int,
     objective's direction, and better in one; trials with equal values do not dominate each
     other, so all of them stay on the front. The values compared are the recorded ones,
     uncertainties play no part.
+
+    Each distinct point (the values, each to be minimized) is judged once, in sorted order: a
+    point can only be dominated by one before it, and if it is, then by one on the front found
+    so far. With two objectives that is the last one on the front, so the front takes a sort
+    and one pass; with one, the first point alone is on it.
     """
     signs = [1 if o.direction == "minimize" else -1 for o in spec.objectives]
-    points = [
-        (t.number, [sign * m.value for sign, m in zip(signs, t.assessment.objectives, strict=True)])
-        for t in trials
-        if t.status == "valid"
-        and t.feasible is True
-        and t.assessment is not None
-        and t.assessment.objectives is not None
-    ]
-
-    def dominates(a: list[int | float], b: list[int | float]) -> bool:
-        return all(x <= y for x, y in zip(a, b, strict=True)) and any(
-            x < y for x, y in zip(a, b, strict=True)
-        )
-
-    return tuple(
-        sorted(
-            number
-            for number, values in points
-            if not any(dominates(other, values) for _, other in points)
-        )
-    )
+    points: dict[tuple[int | float, ...], list[int]] = {}
+    for t in trials:
+        if t.status != "valid" or t.feasible is not True or t.assessment is None:
+            continue
+        measured = t.assessment.objectives
+        if measured is not None:
+            point = tuple(sign * m.value for sign, m in zip(signs, measured, strict=True))
+            points.setdefault(point, []).append(t.number)
+    front: list[tuple[int | float, ...]] = []
+    for point in sorted(points):
+        if len(point) == 2:  # the front so far has falling second values: the last is least
+            dominated = bool(front) and front[-1][1] <= point[1]
+        else:
+            dominated = any(all(x <= y for x, y in zip(o, point, strict=True)) for o in front)
+        if not dominated:
+            front.append(point)
+    return tuple(sorted(number for point in front for number in points[point]))

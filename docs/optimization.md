@@ -377,8 +377,9 @@ Optuna reports for the study.
 `--storage URL` needs the URL again (`study.json` keeps it without its password); without it,
 or with another, it is refused, and no journal is made in its place. The database itself refuses
 every write: SQLite is opened in its read-only mode, and PostgreSQL over `psycopg2` or `psycopg`
-in read-only transactions. Any other database is refused, since nothing would keep it from being
-written. A database that Optuna would set up or repair as it opens it (its tables, version row
+in read-only transactions. A SQLite database in WAL mode is refused, since even a read-only
+connection writes `-wal` and `-shm` files beside it there (`k4opt optimize` makes none in that
+mode), and so is any other database, since nothing would keep it from being written. A database that Optuna would set up or repair as it opens it (its tables, version row
 or schema revision missing) is refused rather than repaired. The URL's secrets are never shown.
 
 ### Export formats
