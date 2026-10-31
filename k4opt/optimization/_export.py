@@ -39,6 +39,12 @@ def _stages(results: StudyResults) -> list[str]:
     return declared + sorted(timed - set(declared))
 
 
+def _escaped(name: str) -> str:
+    """A stage or metric name as a column name holds it: ``%``, ``/`` and ``:`` percent-escaped,
+    so that neither the ``/`` between stage and metric nor a ``:`` suffix can be part of it."""
+    return name.replace("%", "%25").replace("/", "%2F").replace(":", "%3A")
+
+
 def columns(results: StudyResults) -> list[str]:
     """The CSV header: the same for every export of a study with the same stages."""
     return _columns(results, _stages(results))
@@ -46,7 +52,7 @@ def columns(results: StudyResults) -> list[str]:
 
 def _columns(results: StudyResults, stages: list[str]) -> list[str]:
     spec = results.problem
-    return [
+    header = [
         "study",
         "trial",
         "status",
@@ -55,22 +61,26 @@ def _columns(results: StudyResults, stages: list[str]) -> list[str]:
         "recovered",
         *(f"parameter:{p.geometry.canonical_target}" for p in spec.parameters),
         *(
-            f"objective:{o.stage}/{o.metric}{part}"
+            f"objective:{_escaped(o.stage)}/{_escaped(o.metric)}{part}"
             for o in spec.objectives
             for part in ("", ":unit", ":uncertainty")
         ),
         *(
-            f"limit:{name}:{part}"
-            for name in limit_names(spec)
+            f"limit:{_escaped(c.stage)}/{_escaped(c.metric)}:{bound}:{part}"
+            for c in spec.constraints  # in the order of limit_names
+            for bound in ("min", "max")
+            if getattr(c, bound) is not None
             for part in ("value", "margin", "satisfied")
         ),
         "elapsed_seconds",
-        *(f"stage:{stage}:elapsed_seconds" for stage in stages),
+        *(f"stage:{_escaped(stage)}:elapsed_seconds" for stage in stages),
         "record",
         "record_sha256",
         "record_path",
         "message",
     ]
+    assert len(set(header)) == len(header)  # each column names one thing
+    return header
 
 
 def _cell(value: object) -> str:

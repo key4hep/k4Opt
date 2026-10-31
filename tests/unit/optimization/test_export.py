@@ -8,6 +8,7 @@ import csv
 import hashlib
 import io
 import json
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,11 +18,20 @@ import pytest
 pytest.importorskip("optuna")
 
 from k4opt import jsonio
-from k4opt.optimization import OptimizationError, load_study, optimize
+from k4opt.evaluation import Measurement
+from k4opt.frozen import FrozenMap
+from k4opt.optimization import (
+    OptimizationError,
+    StudyResults,
+    TrialResult,
+    load_study,
+    optimize,
+)
 from k4opt.optimization._export import columns, export, to_csv, to_json
+from k4opt.problem import Assessment, parse_problem
 from tests.support.common import tree_digest
 from tests.support.evaluators import trade_off
-from tests.unit.optimization.conftest import RADIUS, evaluator_from, summary
+from tests.unit.optimization.conftest import RADIUS, evaluator_from, problem_document, summary
 
 
 def run(problem: Path, output: Path, trials: int, evaluators: list[Any] | None = None) -> None:
@@ -87,6 +97,24 @@ def test_the_csv_holds_one_row_per_trial_with_every_value_as_recorded(
         else:  # missing, never 0
             missing = [key for key in row if key.startswith(("objective:", "limit:"))]
             assert [row[key] for key in [*missing, "feasible"]] == [""] * (len(missing) + 1)
+
+
+def test_column_names_stay_distinct_whatever_the_stages_and_metrics_are_called() -> None:
+    named = [("analysis", "count"), ("analysis", "count:unit"), ("analysis/x", "y")]
+    named += [("analysis", "x/y"), ("analysis", "50%")]  # all valid, all distinct objectives
+    spec = parse_problem(problem_document(objectives=[(s, m, "minimize") for s, m in named]))
+    measured = tuple(Measurement(s, m, float(i), unit=f"u{i}") for i, (s, m) in enumerate(named))
+    trial = TrialResult(0, "valid", {RADIUS: 300.0}, Path("t"), Assessment(measured, (), True))
+    study = StudyResults("s", "id", "now", Path("s"), spec, FrozenMap({}), (trial,), (0,))
+    header = columns(study)
+    assert len(set(header)) == len(header)
+    escaped = ["analysis/count", "analysis/count%3Aunit", "analysis%2Fx/y", "analysis/x%2Fy"]
+    escaped += ["analysis/50%25"]
+    (row,) = csv.DictReader(io.StringIO(to_csv(study)))
+    assert [row[f"objective:{name}"] for name in escaped] == ["0.0", "1.0", "2.0", "3.0", "4.0"]
+    assert [row[f"objective:{name}:unit"] for name in escaped] == ["u0", "u1", "u2", "u3", "u4"]
+    # the stage and the metric read back: split at the one "/" left, then unescape each
+    assert [tuple(map(urllib.parse.unquote, n.split("/"))) for n in escaped] == named
 
 
 def test_the_json_export_holds_the_study_and_each_record_as_it_is(

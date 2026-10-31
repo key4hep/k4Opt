@@ -2,9 +2,10 @@
 
 ``show`` says what the study optimizes, how its trials ended and which are on the Pareto front,
 those with their values to 6 significant digits; ``trial`` shows one trial with every value as
-recorded. On an interactive terminal the labels and outcomes are colored. Text from a record or
-the optimizer (a message from ddsim, say) is printed with its control characters escaped, so it
-cannot move the cursor or change colors.
+recorded. On an interactive terminal the labels and outcomes are colored. Every text that comes
+from the study (its name and times, parameter, stage and metric names, units, paths, ids and
+messages) is printed with its control characters escaped, so that a study cannot move the cursor
+or change colors: only the labels and colors are k4opt's own.
 """
 
 from __future__ import annotations
@@ -20,9 +21,13 @@ from k4opt.terminal import Style
 LABEL = 12  # the width of a line's label
 
 
-def _printable(text: str) -> str:
+def _printable(text: object) -> str:
     """``text`` with its control characters escaped (``\\x1b``, ``\\n``)."""
-    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode() for c in text)
+    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode() for c in str(text))
+
+
+def _metric(stage: str, metric: str) -> str:
+    return _printable(f"{stage}/{metric}")
 
 
 def _measured(value: object, unit: str | None, uncertainty: object = None, *, exact: bool) -> str:
@@ -31,7 +36,7 @@ def _measured(value: object, unit: str | None, uncertainty: object = None, *, ex
     text = shown(value)
     if uncertainty is not None:
         text += f" ± {shown(uncertainty)}"
-    return f"{text} {unit}" if unit else text
+    return _printable(f"{text} {unit}" if unit else text)
 
 
 def _domain(parameter: Parameter) -> str:
@@ -41,7 +46,7 @@ def _domain(parameter: Parameter) -> str:
         assert parameter.bounds is not None
         low, high = parameter.bounds
         text = f"{parameter.kind} [{low!r}, {high!r}]"
-    return f"{text} {parameter.unit}" if parameter.unit else text
+    return _printable(f"{text} {parameter.unit}" if parameter.unit else text)
 
 
 def _units(results: StudyResults) -> dict[tuple[str, str], str]:
@@ -58,15 +63,15 @@ def _units(results: StudyResults) -> dict[tuple[str, str], str]:
     return units
 
 
-def _limits(results: StudyResults) -> list[tuple[str, str]]:
-    """Each limit of the problem as its name and its bound, ``<= 450 mm``."""
+def _limits(results: StudyResults) -> list[str]:
+    """Each limit of the problem: its name and its bound, ``analysis/a:max  <= 450 mm``."""
     limits = []
     for c in results.problem.constraints:
         for bound, sign in (("min", ">="), ("max", "<=")):
             limit = getattr(c, bound)
             if limit is not None:
-                bounded = f"{sign} {_measured(limit, c.unit, exact=True)}"
-                limits.append((f"{c.stage}/{c.metric}:{bound}", bounded))
+                name = _printable(f"{c.stage}/{c.metric}:{bound}")
+                limits.append(f"{name}  {sign} {_measured(limit, c.unit, exact=True)}")
     return limits
 
 
@@ -99,14 +104,13 @@ def _front_line(trial: TrialResult, results: StudyResults, style: Style) -> str:
     assert trial.assessment is not None
     assert trial.assessment.objectives is not None
     candidate = [
-        style.dim(f"{p.geometry.canonical_target}=")
-        + style.cyan(
-            _printable(_measured(trial.candidate[p.geometry.canonical_target], p.unit, exact=False))
-        )
+        style.dim(f"{_printable(p.geometry.canonical_target)}=")
+        + style.cyan(_measured(trial.candidate[p.geometry.canonical_target], p.unit, exact=False))
         for p in results.problem.parameters
     ]
     objectives = [
-        style.dim(f"{m.stage}/{m.metric}=") + style.bold(_measured(m.value, m.unit, exact=False))
+        style.dim(f"{_metric(m.stage, m.metric)}=")
+        + style.bold(_measured(m.value, m.unit, exact=False))
         for m in trial.assessment.objectives
     ]
     return f"trial {trial.number}:  " + "  ".join(candidate + objectives)
@@ -119,18 +123,22 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
     storage = results.document.get("optimizer")
     kept = storage.get("storage") if isinstance(storage, Mapping) else None
     where = next(iter(kept.values()), None) if isinstance(kept, Mapping) else None
-    _print(out, style, "study", [f"{style.bold(results.name)}, created {results.created}"])
-    _print(out, style, "id", [results.id])
-    _print(out, style, "directory", [f"{results.directory} (trials in {where})"])
-    parameters = [f"{p.geometry.canonical_target}  {_domain(p)}" for p in spec.parameters]
+    name, created = _printable(results.name), _printable(results.created)
+    _print(out, style, "study", [f"{style.bold(name)}, created {created}"])
+    _print(out, style, "id", [_printable(results.id)])
+    directory = f"{_printable(results.directory)} (trials in {_printable(where)})"
+    _print(out, style, "directory", [directory])
+    parameters = [
+        f"{_printable(p.geometry.canonical_target)}  {_domain(p)}" for p in spec.parameters
+    ]
     _print(out, style, "parameters", parameters)
     objectives = [
-        f"{o.stage}/{o.metric}  {o.direction}"
-        + (f"  ({units[(o.stage, o.metric)]})" if (o.stage, o.metric) in units else "")
+        f"{_metric(o.stage, o.metric)}  {o.direction}"
+        + (f"  ({_printable(units[(o.stage, o.metric)])})" if (o.stage, o.metric) in units else "")
         for o in spec.objectives
     ]
     _print(out, style, "objectives", objectives)
-    _print(out, style, "limits", [f"{name}  {bound}" for name, bound in _limits(results)])
+    _print(out, style, "limits", _limits(results))
     _print(out, style, "trials", [_counts(results, style)])
     if results.pareto:
         front = [results.trial(number) for number in results.pareto]
@@ -162,11 +170,11 @@ def render_trial(
     if trial.recovered:
         state.append(style.dim("recovered by a resume"))
     _print(out, style, "trial", [f"{style.bold(str(trial.number))}: {', '.join(state)}"])
-    _print(out, style, "study", [f"{results.name}, {results.study_path}"])
+    _print(out, style, "study", [_printable(f"{results.name}, {results.study_path}")])
     candidate = [
-        f"{p.geometry.canonical_target} = "
+        f"{_printable(p.geometry.canonical_target)} = "
         + (
-            _printable(_measured(trial.candidate[p.geometry.canonical_target], p.unit, exact=True))
+            _measured(trial.candidate[p.geometry.canonical_target], p.unit, exact=True)
             if p.geometry.canonical_target in trial.candidate
             else "not proposed yet"
         )
@@ -178,7 +186,7 @@ def render_trial(
         _print(out, style, "objectives", ["none: the trial has no result"])
     else:
         objectives = [
-            f"{m.stage}/{m.metric} = "
+            f"{_metric(m.stage, m.metric)} = "
             + style.bold(_measured(m.value, m.unit, m.uncertainty, exact=True))
             + f", {o.direction}"
             for m, o in zip(assessment.objectives, spec.objectives, strict=True)
@@ -193,7 +201,8 @@ def render_trial(
             verdict = "satisfied" if limit.satisfied else "violated"
             painted = _paint(style, "feasible" if limit.satisfied else "infeasible", verdict)
             limits.append(
-                f"{limit.name}  {value} {sign} {bound}: {painted}, margin {limit.margin!r}"
+                f"{_printable(limit.name)}  {value} {sign} {bound}: {painted}, "
+                f"margin {limit.margin!r}"
             )
         _print(out, style, "limits", limits)
     elif spec.constraints:
@@ -202,14 +211,17 @@ def render_trial(
         times = "not recorded"
     else:
         stages = ", ".join(
-            f"{stage} {seconds!r} s" for stage, seconds in trial.stage_seconds.items()
+            f"{_printable(stage)} {seconds!r} s" for stage, seconds in trial.stage_seconds.items()
         )
         times = f"{trial.elapsed_seconds!r} s in all" + (f"; {stages}" if stages else "")
     _print(out, style, "time", [times])
     if trial.record is None:
         _print(out, style, "record", [_NO_RECORD.get(trial.status, "none")])
     else:
-        record = [str(trial.summary_path), f"id {trial.record}, sha256 {trial.sha256}"]
+        record = [
+            _printable(trial.summary_path),
+            _printable(f"id {trial.record}, sha256 {trial.sha256}"),
+        ]
         if trial.status == "error":
             record.append("not taken: its values never reached the optimizer")
         _print(out, style, "record", record)
