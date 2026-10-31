@@ -29,13 +29,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 K4GEO_ENV = "K4GEO"
 
 
-def _is_within(root: Path, path: Path) -> bool:
-    try:
-        return os.path.commonpath([str(root), str(path)]) == str(root)
-    except ValueError:  # pragma: no cover - different drives on Windows
-        return False
-
-
 def _expand(text: str) -> str:
     expanded = os.path.expandvars(os.path.expanduser(text))
     if "$" in expanded:
