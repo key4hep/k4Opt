@@ -95,6 +95,18 @@ def runs(
     return {size: evaluate(problem, size, base / size) for size in ("4.0", "8.0")}
 
 
+def stage_file(run: dict[str, Any], sample: str, role: str) -> Path:
+    """The file of the simulation of ``sample`` a record names: its output (``events``) or a log,
+    by its path relative to the run directory."""
+    stage = run["samples"][sample]["stages"]["simulation"]
+    path = stage["outputs"]["events"]["path"] if role == "events" else stage["logs"][role]
+    return Path(run["run_dir"]) / path
+
+
+def compact(run: dict[str, Any]) -> Path:
+    return Path(run["run_dir"]) / run["geometry"]["compact"]
+
+
 def test_target_is_present_in_the_installed_geometry(stack: None) -> None:
     root = Path(os.environ["K4GEO"]) / Path(CLD_COMPACT).parent
     assert any('name="ECal_cell_size"' in f.read_text() for f in root.glob("ECalBarrel*.xml"))
@@ -107,7 +119,7 @@ def test_two_candidates_give_distinct_modified_geometries(
     for size, run in runs.items():
         (change,) = run["geometry"]["changes"]
         assert change["new_value"] == f"{size}*mm"
-        snapshots = Path(run["geometry"]["compact"]).parent.glob("ECalBarrel*.xml")
+        snapshots = compact(run).parent.glob("ECalBarrel*.xml")
         assert any(f'name="ECal_cell_size" value="{size}*mm"' in f.read_text() for f in snapshots)
 
 
@@ -119,8 +131,8 @@ def test_the_installed_geometry_is_untouched(
 
 def test_ddsim_simulated_the_materialized_geometry(runs: dict[str, dict[str, Any]]) -> None:
     for run in runs.values():
-        log = Path(run["paths"][f"{SAMPLE}/simulation.stdout"]).read_text()
-        assert run["geometry"]["compact"] in log
+        log = stage_file(run, SAMPLE, "stdout").read_text()
+        assert str(compact(run)) in log
         assert run["geometry"]["source_root"] not in log  # nothing loaded from the original
 
 
@@ -135,7 +147,7 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
         assert evaluator["settings"]["used"] == {"threshold": 70e-6}  # 70 keV, in GeV
         assert run["warnings"] == []  # CLD has the ECAL barrel readout the evaluator reads
         counts = []
-        for event in get_reader(run["paths"][f"{SAMPLE}/simulation.edm4hep"]).get("events"):
+        for event in get_reader(str(stage_file(run, SAMPLE, "events"))).get("events"):
             (photon,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
             if not photon.isDecayedInTracker():
                 counts.append(sum(hit.getEnergy() >= 70e-6 for hit in event.get(collection)))
@@ -148,7 +160,8 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
         assert cells["unit"] == "1"
         assert residual["unit"] == "mrad"
         assert 0 < residual["value"] < 20  # a 10 GeV photon: about a mrad
-        assert Path(run["paths"][f"{SAMPLE}/simulation.stderr"]).is_file()
+        assert stage_file(run, SAMPLE, "stderr").is_file()
+        assert run["samples"][SAMPLE]["stages"]["simulation"]["outputs"]["events"]["sha256"] is None
         assert run["environment"]["declared"]["version"] == "2026-10-20"
         assert run["samples"]["gamma_10gev"]["stages"]["simulation"]["returncode"] == 0
 
@@ -176,7 +189,7 @@ def shared(problem: Path, tmp_path_factory: pytest.TempPathFactory) -> dict[str,
 def test_two_evaluators_read_one_simulation(shared: dict[str, Any]) -> None:
     from podio.reading import get_reader
 
-    run_dir = Path(shared["paths"]["run_dir"])
+    run_dir = Path(shared["run_dir"])
     assert len(list(run_dir.glob("**/ddsim.json"))) == 1  # ddsim ran once
     photon, cells = shared["samples"][SAMPLE]["evaluations"].values()
     assert (photon["implementation"], photon["status"]) == ("calo.photon", "valid")
@@ -187,7 +200,7 @@ def test_two_evaluators_read_one_simulation(shared: dict[str, Any]) -> None:
     # the test evaluator's value, recomputed from the one file both read
     per_event = [
         len({hit.getCellID() for hit in event.get(COLLECTION)})
-        for event in get_reader(shared["paths"][f"{SAMPLE}/simulation.edm4hep"]).get("events")
+        for event in get_reader(str(stage_file(shared, SAMPLE, "events"))).get("events")
     ]
     (measurement,) = cells["measurements"]
     assert measurement["value"] == pytest.approx(statistics.fmean(per_event))
@@ -237,7 +250,7 @@ def test_two_samples_are_simulated_on_one_geometry_and_measured_each_on_its_own(
 ) -> None:
     from podio.reading import get_reader
 
-    run_dir = Path(two_samples["paths"]["run_dir"])
+    run_dir = Path(two_samples["run_dir"])
     assert sorted(
         p.parent.parent.name for p in run_dir.glob("samples/*/simulation/ddsim.json")
     ) == [
@@ -252,7 +265,7 @@ def test_two_samples_are_simulated_on_one_geometry_and_measured_each_on_its_own(
         assert evaluator["status"] == "valid"
         assert evaluator["reads"] == ["geometry", f"{sample}/generation", f"{sample}/simulation"]
         # each sample's file holds its own photons
-        for event in get_reader(two_samples["paths"][f"{sample}/simulation.edm4hep"]).get("events"):
+        for event in get_reader(str(stage_file(two_samples, sample, "events"))).get("events"):
             (photon,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
             assert photon.getEnergy() == pytest.approx(energy, rel=1e-4)  # stored as floats
     assert [m["label"] for m in two_samples["metrics"]][:4] == [

@@ -379,6 +379,25 @@ def test_a_moved_study_reads_without_its_problem_evaluators_geometry_or_stack(
     assert after.to_dict() == before | {"directory": str(tmp_path / "moved")}
 
 
+def test_the_files_of_a_moved_study_are_found_where_its_records_now_are(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    run(sampled_problem, tmp_path / "s", 2, seed=1, evaluators=[cell_count()])
+    before = load_study(tmp_path / "s").to_dict()
+    shutil.move(tmp_path / "s", tmp_path / "moved")
+    after = load_study(tmp_path / "moved")
+    assert after.to_dict() == before | {"directory": str(tmp_path / "moved")}
+    for trial in after.trials:
+        assert trial.summary_path is not None
+        record = json.loads(trial.summary_path.read_text())
+        assert record["run_dir"] == str(tmp_path / "s" / trial.directory.name)  # where it was made
+        for sample in ("gamma", "pion"):
+            stage = record["samples"][sample]["stages"]["simulation"]
+            for path in (stage["outputs"]["events"]["path"], *stage["logs"].values()):
+                assert (trial.directory / path).is_file()  # and where it is now
+
+
 # --- what is refused -------------------------------------------------------------------------
 
 

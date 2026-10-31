@@ -258,6 +258,41 @@ def test_a_study_does_not_resume_with_metrics_in_other_units(
         run(problem, output, 1, resume=True, evaluators=[other])
 
 
+ARTIFACTS = """
+    import os
+    from k4opt.evaluation import EvaluationResult, Evaluator, Measurement
+
+    class Probe(Evaluator):
+        name, version = "test.trade_off", "1"
+        metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
+
+        def __init__(self):  # the same code, configured to name its file otherwise
+            self.artifacts = {os.environ.get("K4OPT_TEST_ARTIFACT", "plot"): "a and b"}
+
+        def evaluate(self, request):
+            x, *_ = request.candidate.values()
+            (name,) = self.artifacts
+            path = request.workdir / "plot.txt"
+            path.write_text(f"{x} {1 / x}")
+            a = Measurement("analysis", "a", x, "mm")
+            b = Measurement("analysis", "b", 1 / x, "1/mm")
+            return EvaluationResult.valid([a, b], artifacts={name: path})
+"""
+
+
+def test_a_study_does_not_resume_with_other_artifacts_declared(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    source = ARTIFACTS
+    run(problem, output, 1, seed=1, evaluators=[evaluator_from(tmp_path / "e", "named", source)])
+    assert summary(output, 0)["implementations"]["test.trade_off"]["artifacts"] == ["plot"]
+    monkeypatch.setenv("K4OPT_TEST_ARTIFACT", "figure")
+    other = evaluator_from(tmp_path / "e", "named", source)  # the same bytes, another instance
+    with pytest.raises(OptimizationError, match=r"declares other artifacts: \['figure'\]"):
+        run(problem, output, 1, resume=True, evaluators=[other])
+
+
 def test_location_is_not_identity(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

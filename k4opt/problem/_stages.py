@@ -107,8 +107,8 @@ class StageOutcome:
     """What a stage left behind: its named outputs, its files and how it ran.
 
     ``outputs`` holds what later stages and evaluators read (``events``); ``artifacts`` the other
-    files (logs, the command). ``error`` is ``None`` only if the stage did what it should;
-    otherwise it says what failed.
+    files (logs, the command), never an output. ``error`` is ``None`` only if the stage did what
+    it should; otherwise it says what failed.
     """
 
     outputs: Mapping[str, Path] = field(default_factory=dict)
@@ -232,9 +232,9 @@ def _run_simulation(
         options={key: str(files[key]) if key in files else v for key, v in stage.options.items()},
         timeout=context.timeout,
     )
+    # it ran in workdir, the stage's own directory, which the record names relative to the run
     provenance: dict[str, Json] = {
         "argv": run.argv,
-        "cwd": str(run.cwd),
         "returncode": run.returncode,
         "timeout": context.timeout,
     }
@@ -248,9 +248,10 @@ def _run_simulation(
                 changed = f"{key}: {path} changed while ddsim ran; the record cannot say which"
                 error = changed if error is None else f"{error}\n{changed}"
         provenance["files"] = recorded
+    logs = {role: path for role, path in run.files.items() if role != "edm4hep"}
     if error is not None:
-        return StageOutcome(artifacts=run.files, provenance=provenance, error=error)
-    return StageOutcome({"events": run.output}, run.files, provenance)
+        return StageOutcome(artifacts=logs, provenance=provenance, error=error)
+    return StageOutcome({"events": run.output}, logs, provenance)
 
 
 def _identity_if_readable(path: Path) -> dict[str, Json] | None:
@@ -333,6 +334,11 @@ def reads_geometry(stage: str) -> bool:
 def writes_files(stage: str) -> bool:
     """Whether ``stage``, when it runs, writes files, and so needs a directory of its own."""
     return _STAGES[stage].writes
+
+
+def stage_output(stage: str) -> str:
+    """The name of the main output of ``stage`` (``events``)."""
+    return _STAGES[stage].output
 
 
 def executors(stage: str) -> Mapping[str, _Executor]:

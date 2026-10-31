@@ -32,6 +32,7 @@ from k4opt.evaluation.base import (
     Quantity,
     check_settings,
     collection_names,
+    declared_artifacts,
     declared_collections,
     metric_units,
     result_from,
@@ -53,6 +54,8 @@ from k4opt.evaluation.errors import (
 )
 from k4opt.evaluation.loader import evaluator_source, load_evaluator
 from k4opt.evaluation.models import (
+    ARTIFACT_NAME,
+    Artifact,
     CandidateKey,
     EvaluationRecord,
     EvaluationRequest,
@@ -64,6 +67,8 @@ from k4opt.evaluation.models import (
 from k4opt.evaluation.protocol import EvaluatorProtocol
 
 __all__ = [
+    "ARTIFACT_NAME",
+    "Artifact",
     "CandidateKey",
     "Collection",
     "EvaluationContractError",
@@ -85,6 +90,7 @@ __all__ = [
     "collection_names",
     "collection_types",
     "count_events",
+    "declared_artifacts",
     "declared_collections",
     "evaluator_source",
     "load_evaluator",

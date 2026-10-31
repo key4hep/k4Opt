@@ -144,7 +144,8 @@ def geometry(tmp_path: Path) -> Path:
 
 
 class Reader:
-    """Evaluator that only reads the file of the stage it reads."""
+    """Evaluator that only reads the file of the stage it reads, and notes its name in a file of
+    its own, ``mine``, when it has a directory."""
 
     name = "calo.single_particle_shower"
     version = "1"
@@ -155,13 +156,18 @@ class Reader:
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
         self.calls.append(request)
+        read = request.inputs["simulation"].name
+        artifacts = {}
+        if request.workdir is not None:
+            artifacts["mine"] = request.workdir / "read.txt"
+            artifacts["mine"].write_text(read)
         return EvaluationResult.valid(
             [
                 Measurement("simulation", "a.rms", 1.0, unit="mm"),
                 Measurement("simulation", "a.cells", 5),
             ],
-            artifacts={"mine": request.inputs["simulation"]},
-            provenance={"read": request.inputs["simulation"].name},
+            artifacts=artifacts,
+            provenance={"read": read},
         )
 
 
@@ -178,7 +184,7 @@ def test_the_simulation_stage_runs_ddsim_from_the_problem(
 
     assert outcome.error is None
     assert outcome.outputs == {"events": tmp_path / "run/simulation/events.edm4hep.root"}
-    assert set(outcome.artifacts) == {"stdout", "stderr", "command", "edm4hep"}
+    assert set(outcome.artifacts) == {"stdout", "stderr", "command"}  # the logs, not the output
     assert outcome.provenance["returncode"] == 0
     ((argv, kwargs),) = fake.calls
     assert argv[0] == simulation.DDSIM
@@ -626,10 +632,13 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
     result = record.result
     assert result.status is Status.VALID
     # the result is the evaluator's own; the stage's files and record are the candidate's
-    assert result.artifacts == {"mine": events_file}
+    own = tmp_path / "run/samples/gamma/evaluators/calo.single_particle_shower"
+    assert result.artifacts == {"mine": own / "read.txt"}
     assert result.provenance == {"read": events_file.name}
     simulated = stage(candidate, "simulation")
-    assert set(simulated.artifacts) == {"stdout", "stderr", "command", "edm4hep"}
+    assert set(simulated.artifacts) == {"stdout", "stderr", "command"}  # its logs
+    (events,) = simulated.made.values()
+    assert (events.artifact.ref, events.artifact.path) == ("gamma/simulation#events", events_file)
     ran = simulated.provenance
     assert ran["returncode"] == 0 and ran["argv"][0] == simulation.DDSIM  # type: ignore[index]
     (read,) = candidate.plan.of(Kind.EVALUATOR)
@@ -1177,6 +1186,8 @@ class Colliding(Reader):
         self.own_artifacts, self.own_provenance = artifacts, provenance
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        for path in self.own_artifacts.values():
+            path.write_text("its own")
         return EvaluationResult.valid(
             [
                 Measurement("simulation", "a.rms", 1.0, unit="mm"),
@@ -1192,7 +1203,8 @@ def test_an_evaluator_keeps_its_own_artifacts_and_provenance_whatever_their_name
 ) -> None:
     # stages are recorded apart from the results, so no name of an evaluator can clash with them
     simulation.install(monkeypatch)
-    mine = tmp_path / "other.root"
+    own = tmp_path / "run/samples/gamma/evaluators/calo.single_particle_shower"
+    mine = own / "other.root"
     claimed = {"stages": {"simulation": {"returncode": 0}}}
     candidate = evaluate(
         spec,
@@ -1206,8 +1218,204 @@ def test_an_evaluator_keeps_its_own_artifacts_and_provenance_whatever_their_name
     assert thaw(record.result.provenance) == claimed
     events_file = tmp_path / "run/samples/gamma/simulation/events.edm4hep.root"
     simulated = stage(candidate, "simulation")
-    assert simulated.artifacts["edm4hep"] == events_file
+    assert simulated.made["events"].artifact.path == events_file
     assert simulated.provenance["argv"][0] == simulation.DDSIM  # type: ignore[index]
+
+
+class Returning(Reader):
+    """A reader that returns the artifacts ``write`` makes in its directory, declaring
+    ``declared``."""
+
+    write: Any = None
+    artifacts: Any = None
+
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        result = super().evaluate(request)
+        assert request.workdir is not None
+        return dataclasses.replace(result, artifacts=self.write(request.workdir))
+
+
+def returning(write: Any, declared: dict[str, str] | None = None) -> type[Returning]:
+    return type("Returning", (Returning,), {"write": staticmethod(write), "artifacts": declared})
+
+
+def written(path: Path, text: str = "x") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def outside(workdir: Path) -> dict[str, Path]:
+    return {"plot": written(workdir.parent / "plot.txt")}
+
+
+def linked(workdir: Path) -> dict[str, Path]:
+    link = workdir / "plot.txt"
+    link.symlink_to(written(workdir.parent / "elsewhere.txt"))
+    return {"plot": link}
+
+
+@pytest.mark.parametrize(
+    ("write", "declared", "message"),
+    [
+        (outside, None, "artifact 'plot' (.*) is not in its own directory"),
+        (linked, None, "artifact 'plot' (.*) is not in its own directory"),  # nor a link out
+        (lambda w: {"plot": w}, None, "artifact 'plot' (.*) is not in its own directory"),
+        (lambda w: {"plot": w / "gone.txt"}, None, "artifact 'plot' (.*) is no file it can read"),
+        (lambda w: {"plot": w / "a"}, None, "no file it can read"),  # w / "a" is a directory
+        (
+            lambda w: {"plot": written(w / "plot.txt")},
+            {"histogram": "counts"},
+            "returned the artifact\\(s\\) plot, which it does not declare; it declares histogram",
+        ),
+        (
+            lambda w: {},
+            {"histogram": "counts"},
+            "returned a valid result without its declared artifact\\(s\\) histogram",
+        ),
+    ],
+)
+def test_an_artifact_must_be_a_file_of_the_evaluation_and_as_declared(
+    spec: ProblemSpec,
+    geometry: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write: Any,
+    declared: dict[str, str] | None,
+    message: str,
+) -> None:
+    simulation.install(monkeypatch)
+
+    def making(workdir: Path) -> dict[str, Path]:
+        (workdir / "a").mkdir()
+        return dict(write(workdir))
+
+    with pytest.raises(EvaluationContractError, match=message):
+        evaluate(
+            spec,
+            {CELL: 6},
+            returning(making, declared),
+            inputs={"geometry": geometry},
+            workdir=tmp_path / "run",
+        )
+
+
+def test_an_artifact_needs_a_directory_of_the_evaluation(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requested = spec.samples["gamma"].stages["simulation"].events
+    assert requested is not None
+    simulation.install(monkeypatch, events_with(*[[1]] * requested))
+
+    class Without(Reader):
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            result = super().evaluate(request)
+            return dataclasses.replace(result, artifacts={"plot": written(tmp_path / "p.txt")})
+
+    events = tmp_path / "events.root"
+    events.write_bytes(b"x")
+    with pytest.raises(EvaluationContractError, match="has no directory of its own to write it"):
+        evaluate(spec, {CELL: 6}, Without, inputs={"gamma/simulation": events})
+
+
+def test_artifacts_are_checked_against_what_the_evaluator_declared_when_bound(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the record holds the declaration of the binding, so a later one cannot pass for it
+    simulation.install(monkeypatch)
+
+    def redeclaring(workdir: Path) -> dict[str, Path]:
+        return {"histogram": written(workdir / "histogram.txt")}
+
+    class Redeclaring(returning(redeclaring, {"plot": "a plot"})):  # type: ignore[misc]
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            self.artifacts = {"histogram": "counts"}
+            return super().evaluate(request)
+
+    with pytest.raises(EvaluationContractError, match="histogram, which it does not declare"):
+        evaluate(
+            spec, {CELL: 6}, Redeclaring, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
+
+
+def test_units_are_checked_against_what_the_evaluator_declared_when_bound(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the record holds the declaration of the binding, so a later one cannot pass for it
+    simulation.install(monkeypatch)
+
+    class Redeclaring(Reader):
+        metrics = {"a.rms": "mm", "a.cells": "1"}
+
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            self.metrics = {"a.rms": "cm", "a.cells": "1"}
+            return EvaluationResult.valid(
+                [
+                    Measurement("simulation", "a.rms", 0.1, unit="cm"),
+                    Measurement("simulation", "a.cells", 5),
+                ]
+            )
+
+    with pytest.raises(EvaluationContractError, match=r"has unit 'cm' but (.*) declares 'mm'"):
+        evaluate(
+            spec, {CELL: 6}, Redeclaring, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        )
+
+
+def test_a_failed_result_need_not_return_its_declared_artifacts(
+    spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+
+    class Failing(Reader):
+        artifacts = {"histogram": "counts"}
+
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            return EvaluationResult.failed("nothing to count")
+
+    candidate = evaluate(
+        spec, {CELL: 6}, Failing, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+    )
+    assert candidate.records[0].result.status is Status.FAILED
+
+
+def test_a_file_that_changes_fails_the_tasks_that_read_it(
+    doc: dict[str, Any], geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    entry = doc["evaluators"][0]
+    doc["evaluators"].append(entry | {"as": "later"})
+    for target in (*doc["objectives"], *doc["constraints"]):
+        target["evaluator"] = entry["name"]
+    calls: list[str] = []
+
+    class Appending(Reader):
+        """Changes the file it reads, the first time it is called."""
+
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            result = super().evaluate(request)
+            calls.append("called")
+            if len(calls) == 1:
+                with request.inputs["simulation"].open("ab") as handle:
+                    handle.write(b"more")
+            return result
+
+    candidate = evaluate(
+        parse_problem(doc), {CELL: 6}, Appending, inputs={"geometry": geometry}, workdir=tmp_path
+    )
+    first, later = candidate.records
+    # the record could not say which bytes the first read, nor the later one what it would read
+    assert first.result.status is Status.FAILED
+    assert first.result.message == (
+        "gamma/simulation#events changed while it ran, so the record cannot say what it read"
+    )
+    assert [m.metric for m in first.result.measurements] == ["a.rms", "a.cells"]  # diagnostics
+    assert (later.result.status, later.result.message) == (
+        Status.FAILED,
+        "not run: gamma/simulation#events changed after it was made",
+    )
+    assert calls == ["called"] and later.elapsed_seconds is None
+    assert candidate.changed() == ["gamma/simulation#events"]
 
 
 def test_an_evaluator_without_stages_keeps_its_own_provenance_and_artifacts(

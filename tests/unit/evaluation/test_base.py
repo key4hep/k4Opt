@@ -4,6 +4,7 @@ values."""
 from __future__ import annotations
 
 import decimal
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from k4opt.evaluation import (
     Quantity,
     Status,
     collection_names,
+    declared_artifacts,
     declared_collections,
     metric_units,
     result_from,
@@ -519,3 +521,37 @@ def test_an_empty_per_event_list_points_to_invalid() -> None:
 
     with pytest.raises(EvaluationContractError, match=r"no per-event values .* self\.invalid"):
         result_from(Empty(), {"cells": []})
+
+
+# --- artifacts: the files a valid result returns, each with what it holds ---
+
+
+def test_artifacts_are_declared_by_name_with_what_each_holds() -> None:
+    class Plotting(Evaluator):
+        name, version = "plot", "1"
+        artifacts = {"histogram": "shower widths, JSON {edges, counts}"}
+
+    assert declared_artifacts(Plotting()) == {"histogram": "shower widths, JSON {edges, counts}"}
+    assert declared_artifacts(Plotting) is not Plotting.artifacts  # a copy
+    assert declared_artifacts(object()) is None  # none declared: anything goes
+    assert Evaluator.artifacts is None
+
+
+@pytest.mark.parametrize(
+    ("declared", "message"),
+    [
+        (["histogram"], "declare a mapping of name to what the file holds"),
+        ({"a#b": "x"}, "name 'a#b' must start with a letter or digit"),
+        ({1: "x"}, "name 1 must start with a letter or digit"),
+        ({"histogram": ""}, "artifacts.histogram: say what the file holds"),
+        ({"histogram": None}, "artifacts.histogram: say what the file holds"),
+    ],
+)
+def test_an_unreadable_artifact_declaration_is_a_contract_error(
+    declared: Any, message: str
+) -> None:
+    class Plotting:
+        artifacts = declared
+
+    with pytest.raises(EvaluationContractError, match=re.escape(message)):
+        declared_artifacts(Plotting())

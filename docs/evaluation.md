@@ -106,6 +106,10 @@ What the optional parts do:
   declaring one metric twice (`"rms"` and `("simulation", "rms")`) is an error, and so is a unit
   that is not a nonblank string (`"1"` for a dimensionless metric). Both are checked before
   anything runs.
+- `artifacts`: the files a `valid` result returns besides its measurements, each name with what
+  the file holds (`{"histogram": "shower widths, JSON {edges, counts}"}`). A `valid` result must
+  return every one, and no result another; an evaluator that declares none may return any (see
+  [Artifacts and the files of a run](#artifacts-and-the-files-of-a-run)).
 - the return value: a mapping of metric to a number or to per-event numbers (a list, a numpy
   array, ...; `Measurement.from_values`) becomes a `valid` result, with the unit from `metrics`.
   A metric is written `"name"` (classified under `stage`) or as a pair `(stage, name)`. Return an
@@ -142,7 +146,7 @@ class CellCount:
 | `settings` | the evaluator-defined `settings` of its entry in `evaluators`, with the declared defaults and each quantity as a float in its declared unit; nested data, copied and read-only |
 | `collections` | role to the name of the collection it reads: the one the problem's entry names, or the declared default |
 | `inputs` | role name to local `Path` of an already prepared artifact: the main output of each stage it reads, by stage (`inputs["simulation"]`, an EDM4hep file), and the compact XML snapshot as `inputs["geometry"]`. The evaluator documents the roles it accepts |
-| `workdir` | where the evaluator may write. `k4opt evaluate` gives each evaluator its own, `<output>/evaluators/<name>`, created for the call; the request never creates or checks it |
+| `workdir` | where the evaluator may write, and where its artifacts must be. `k4opt evaluate` gives each evaluation its own, `<output>/samples/<sample>/evaluators/<binding>` (`<output>/evaluators/<binding>` for one of the candidate), created for the call; the request never creates or checks it |
 | `events`, `seed` | those of the stage the evaluator reads, where that stage has them (a ddsim simulation); `None` otherwise. `events` is positive |
 
 The request holds no `ProblemSpec`, geometry or stage object; the framework builds it from
@@ -156,7 +160,7 @@ those.
 | --- | --- |
 | `status` | a `Status`, a `StrEnum` whose values are `"valid"`, `"invalid"`, `"failed"` and `"blocked"`. `valid`: ran, result scientifically usable. `invalid`: ran, but the result is not usable (the evaluator's own checks failed). `failed`: the execution failed. `blocked` is k4opt's alone, for an evaluator it did not call because something it reads did not succeed; an evaluator that returns it breaks the contract |
 | `measurements` | tuple of `Measurement`, mixing stages if needed. Independent of the status: an `invalid` result may keep diagnostic values (they are never objectives), and a `valid` one may have none if it only produced artifacts; a problem that asks for a metric still requires it from a `valid` result |
-| `artifacts` | role name to local output `Path`, possibly empty; a later evaluator can take them as `inputs`. Existence is not checked at construction |
+| `artifacts` | name to local output `Path`, possibly empty. A name starts with a letter or digit and holds only letters, digits, `.`, `_` and `-`, since it is part of the artifact's reference (`gamma_10gev/calo.photon#histogram`). Existence is not checked at construction; k4opt checks each file and hashes it when the evaluation returns |
 | `message` | explanation; required for `invalid`, `failed` and `blocked` |
 | `provenance` | optional JSON-compatible metadata the evaluator chose to supply |
 
@@ -188,6 +192,59 @@ An evaluator can also stop at the first problem by raising `EvaluationInvalid(".
 `EvaluationFailed("...")`. `k4opt` turns the exception into the matching result with the text as
 its message; anything else an evaluator raises propagates. The exceptions carry no
 measurements: build the result by hand to keep diagnostics.
+
+### Artifacts and the files of a run
+
+An evaluator writes its files in `request.workdir` and returns those it wants recorded as
+`artifacts`:
+
+```python
+class ShowerShape(Evaluator):
+    name, version, stage = "calo.shower_shape", "1", "simulation"
+    collections = {"hits": Collection("SimCalorimeterHit")}
+    metrics = {"ecal_barrel.shower_width": "mm"}
+    artifacts = {"histogram": "shower width per event, JSON {edges, counts}"}
+
+    def evaluate(self, request):
+        widths = [...]
+        path = request.workdir / "histogram.json"
+        path.write_text(json.dumps({"edges": edges, "counts": counts}))
+        return EvaluationResult.valid(
+            [Measurement.from_values("simulation", "ecal_barrel.shower_width", widths, "mm")],
+            artifacts={"histogram": path},
+        )
+```
+
+When the evaluation returns, k4opt checks each artifact, whatever the status: it is a file in
+the evaluation's own directory (a link is followed, so one that leads out of the directory is
+refused), it is declared if the evaluator declares `artifacts`, and a `valid` result returns
+every declared one. A violation is an `EvaluationContractError`. Each artifact is then hashed,
+once, and recorded as an `Artifact`: its reference `<task>#<name>`
+(`gamma_10gev/calo.shower_shape#histogram`), which stays the same wherever the run directory is
+moved, its path, its size and its SHA-256.
+
+The output of a stage that ran is recorded the same way (`gamma_10gev/simulation#events`), but is
+never hashed: an EDM4hep file can be gigabytes, so its `sha256` is `null`. A record claims a
+content identity only where it computed one; nothing can later prove that the bytes of an
+unhashed output are unchanged. While the candidate runs, each file a task made is watched by its
+size, times and inode, kept in memory and never recorded: a task whose input file changed after
+it was made fails without running, one whose input changes while it runs fails with what it
+returned kept as diagnostics, and if any file a task made changed by the end of the candidate,
+no `summary.json` is written. The files of the candidate's geometry are watched the same way,
+as a whole: every simulation and every evaluation reads the geometry, so a file of the snapshot
+that changes, goes or is added fails the tasks that read it after the change, and leaves no record
+(the fingerprint describes the snapshot as materialized; the samples simulated after an edit would
+not have the geometry it describes). A hashed file whose stat changed is hashed again, and only
+other bytes count as a change. A file rewritten with the same size within one tick of the kernel's
+clock (milliseconds) keeps its stat, so it is not told apart.
+
+Every path a record holds of a file in its run directory is relative to that directory
+(`samples/gamma_10gev/simulation/events.edm4hep.root`); the directory is recorded once, as
+`run_dir`, where it was made. A record, or a study of them, therefore stays true when it is moved
+or archived: its files are found relative to the `summary.json` that names them. Files outside
+the run directory (a generation file of the problem, a supplied one, the geometry's source) keep
+their absolute path with their SHA-256, and the `argv` of a stage is the command exactly as it
+ran.
 
 ### Reading EDM4hep files
 
@@ -262,7 +319,7 @@ evaluators need, so its request does not depend on which other evaluators the pr
 Reconstruction and analysis will follow the same pattern. Pipeline stages are steps; the `stage`
 of a metric only classifies it, so an evaluator may report `analysis` metrics without an analysis
 stage. A stage has named outputs; `inputs[stage]` is its main one (`events`), and its other files
-(logs, the command) are its artifacts.
+(logs, the command) are its logs.
 
 A stage asks only for what it uses: `simulation` needs `inputs["geometry"]` and a `workdir`,
 `generation` neither, and an evaluator that reads none runs no stage at all.
@@ -302,7 +359,9 @@ The stages are recorded once per candidate, under their sample, apart from the e
 results: what ran (the
 command, exit code and time limit), what was given or supplied, the files a ddsim option names (with their
 hashes), the events found, its status (`done`, `failed`, `blocked`) and message, the tasks it
-reads and those that blocked it, the stage's files and the time spent on it. An
+reads and those that blocked it, its `directory`, its `outputs` (the main output of a stage that
+ran and is `done`, [unhashed](#artifacts-and-the-files-of-a-run)) and `logs`, and the time spent
+on it. An
 evaluator's result holds only what it returned, so its artifact and provenance names cannot
 clash with the stages'. The stages take their conditions from their sample, never from an
 evaluator, except a time limit, which is the caller's: a stage that runs a program (ddsim)
@@ -445,15 +504,18 @@ In order, it:
    in its own `workdir/samples/<sample>/evaluators/<binding>` (`workdir/evaluators/<binding>` for
    an evaluation of the candidate). An evaluation whose stage did not succeed is `blocked` instead,
    and one whose stage's file lacks a collection it declares (see
-   [Collections](#collections)) is `failed`; neither is called. `EvaluationFailed` and
+   [Collections](#collections)), or reads a file that changed after its task made it, is
+   `failed`; neither is called. `EvaluationFailed` and
    `EvaluationInvalid` become a `failed` or `invalid` result; other exceptions of an evaluator
    propagate;
 6. checks each result; a violation is an `EvaluationContractError`, an inconsistent evaluator
    rather than a violated constraint. A `valid` result must report every metric the objectives
    and constraints name of its evaluation (extra metrics are fine) in the `unit` a constraint
    declares; and if the evaluator declares `metrics`, every
-   measurement of one, whatever the status, must carry the declared unit. Whether a value
-   satisfies `min`/`max` is not judged here but by the session's
+   measurement of one, whatever the status, must carry the declared unit. Each artifact must be
+   a file in the evaluation's own directory and as the evaluator declares them; it is hashed then
+   ([Artifacts](#artifacts-and-the-files-of-a-run)). Whether a value satisfies `min`/`max` is not
+   judged here but by the session's
    [assessment](#assessment-objectives-limits-and-feasibility).
 
 The `CandidateRecord` holds the plan of its tasks and the result of each: the geometry, the
@@ -577,7 +639,10 @@ problem gives it. It checks again what a live evaluation enforces: the candidate
 problem's domains and `candidate_key` is its key, an `invalid` or `failed` evaluator gives a
 message, each measurement of a metric its evaluator declares carries the declared unit, a
 binding whose evaluator declares metrics declares those named of it, and a constraint that
-declares a unit is in the unit of its metric. It raises
+declares a unit is in the unit of its metric. Each file a task made is named by its reference
+and by a path relative to the run directory, in the task's own directory: the output of a stage
+that ran and is `done`, with `sha256` `null`, and the artifacts of an evaluation, each with its
+SHA-256, those its evaluator declares and, for a `valid` one, every one of them. It raises
 `RecordError` if the record is malformed or breaks one of those rules, was made for another
 problem (its definition differs, other than in `name`), or if its `status`, `message`, `metrics`
 or `assessment` disagree with that recomputation, so any reader can check a record before
@@ -588,6 +653,6 @@ trusting it.
 An evaluator registry or lookup by name (evaluators are named on the command line), evaluators
 that combine several samples, stage configuration shared by samples, branches of the stages,
 validating metric names, `k4run`, chaining artifacts between evaluators (callers do it by hand,
-as the tests show), execution cost, retries and scheduling, fingerprints and caching,
+as the tests show), hashing stage outputs, a store of artifacts, execution cost, retries and scheduling, fingerprints and caching,
 persisting or serializing the `EvaluationRecord` apart from `summary.json`, and aggregation,
 significance or constraints judged with their uncertainty.

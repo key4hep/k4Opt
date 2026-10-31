@@ -9,7 +9,9 @@ and runs the candidate's tasks in a new run directory through
 geometry into it, each pipeline stage of each sample runs once and each evaluation measures its
 sample, or the candidate, with its new instance. It then assesses the candidate against the
 objectives and constraints (:mod:`k4opt.problem._assess`) and writes ``summary.json``, which
-:func:`assemble` makes from the task results alone. :func:`run_candidate` evaluates one candidate
+:func:`assemble` makes from the task results alone. Every path the record holds of a file in the
+run directory is relative to it, so a record stays true wherever the directory is moved; the
+run directory itself is recorded once, as ``run_dir``. :func:`run_candidate` evaluates one candidate
 given as ``REFERENCE=VALUE`` strings.
 """
 
@@ -52,6 +54,7 @@ from k4opt.problem._stages import STAGE_TYPES, file_identity, input_files, plan_
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
+    Made,
     Task,
     TaskId,
     TaskResult,
@@ -302,6 +305,22 @@ def _declared(units: Mapping[MetricKey, str] | None) -> list[dict[str, str]] | N
     return [{"stage": s, "metric": m, "unit": unit} for (s, m), unit in units.items()]
 
 
+def _relative(path: Path, run_dir: Path) -> str:
+    """How the record names ``path``, a file in the run directory ``run_dir``: relative to it."""
+    return path.resolve().relative_to(run_dir.resolve()).as_posix()
+
+
+def _artifact(made: Made, run_dir: Path) -> dict[str, object]:
+    """A file a task made, as the record names it; ``sha256`` is ``null`` unless it was hashed."""
+    artifact = made.artifact
+    return {
+        "ref": artifact.ref,
+        "path": _relative(artifact.path, run_dir),
+        "bytes": artifact.bytes,
+        "sha256": artifact.sha256,
+    }
+
+
 def _fragment(result: TaskResult) -> dict[str, object]:
     """What every task's part of the summary says first: how it ended, and why."""
     return {"status": result.status, "message": result.message}
@@ -316,19 +335,26 @@ def _reads(task: Task, result: TaskResult) -> dict[str, object]:
     }
 
 
-def _stage(task: Task, result: TaskResult) -> dict[str, object]:
-    """One stage's part of the summary: how it ended, how it ran and what its output holds."""
+def _stage(task: Task, result: TaskResult, run_dir: Path) -> dict[str, object]:
+    """One stage's part of the summary: how it ended, how it ran, where, and what it made."""
     provenance = thaw(result.provenance)
     assert isinstance(provenance, dict)
     return (
         _fragment(result)
         | provenance
+        | {
+            "directory": task.directory,
+            "outputs": {name: _artifact(made, run_dir) for name, made in result.made.items()},
+            "logs": {role: _relative(path, run_dir) for role, path in result.artifacts.items()},
+        }
         | _reads(task, result)
         | {"elapsed_seconds": result.elapsed_seconds}
     )
 
 
-def _evaluation(task: Task, result: TaskResult, entry: EvaluatorSpec) -> dict[str, object]:
+def _evaluation(
+    task: Task, result: TaskResult, entry: EvaluatorSpec, run_dir: Path
+) -> dict[str, object]:
     """One evaluation's own part of the summary: nothing of the stages it shares, nor of its
     implementation, which ``implementations`` records once."""
     record = result.record
@@ -345,9 +371,10 @@ def _evaluation(task: Task, result: TaskResult, entry: EvaluatorSpec) -> dict[st
         "measurements": [
             {"stage": m.stage, "metric": m.metric} | _measurement(m) for m in outcome.measurements
         ],
-        "artifacts": {role: str(path) for role, path in outcome.artifacts.items()},
+        "artifacts": {name: _artifact(made, run_dir) for name, made in result.made.items()},
         "provenance": thaw(outcome.provenance),
-        "workdir": None if request.workdir is None else str(request.workdir),
+        # its own directory, made just before it was called; none if it was not
+        "workdir": None if request.workdir is None else task.directory,
         "elapsed_seconds": record.elapsed_seconds,
     }
 
@@ -388,7 +415,7 @@ def assemble(
     def measured(sample: str | None) -> dict[str, object]:
         """The evaluations of ``sample``, or of the candidate, by binding."""
         return {
-            task.id.name: _evaluation(task, results[task.id], entries[task.id])
+            task.id.name: _evaluation(task, results[task.id], entries[task.id], run_dir)
             for task in plan.of(Kind.EVALUATOR)
             if task.id.sample == sample
         }
@@ -399,6 +426,8 @@ def assemble(
         "schema": SUMMARY_SCHEMA,
         "id": record_id,  # the record's identity, wherever it is copied to
         "run": run,  # what the caller evaluates it for (a study and trial, say), null if nothing
+        # where it was made, which the paths of its files are relative to; it may move since
+        "run_dir": str(run_dir),
         "problem": {"path": str(problem_path), "name": spec.name, "definition": spec.to_dict()},
         "candidate": dict(values),
         "candidate_key": [list(part) for part in candidate.candidate_key],
@@ -423,7 +452,7 @@ def assemble(
         "samples": {
             sample: {
                 "stages": {
-                    task.id.name: _stage(task, results[task.id])
+                    task.id.name: _stage(task, results[task.id], run_dir)
                     for task in plan.of(Kind.STAGE)
                     if task.id.sample == sample
                 },
@@ -437,12 +466,6 @@ def assemble(
         "geometry": {"status": geometry.status}
         | made
         | {"elapsed_seconds": geometry.elapsed_seconds},
-        "paths": {"run_dir": str(run_dir)}
-        | {
-            f"{task.id.label}.{role}": str(path)
-            for task in plan.of(Kind.STAGE)
-            for role, path in results[task.id].artifacts.items()
-        },
         "environment": {
             # declared by the problem: a pin, not a check of what ran
             "declared": spec.environment.to_dict()["key4hep"],
@@ -580,6 +603,8 @@ class EvaluationSession:
                 "source": evaluator_source(declaration.cls),
                 # each with the unit every measurement of it carries, whatever the status
                 "metrics": _declared(declaration.metrics),
+                # the names of the files a valid result of it returns; null if it declares none
+                "artifacts": None if declaration.artifacts is None else list(declaration.artifacts),
             }
             frozen = freeze(data, f"evaluator {declaration.name}", RunError)
             assert isinstance(frozen, Mapping)
@@ -807,8 +832,8 @@ class EvaluationSession:
             made.append((snapshot, externals))
             return snapshot.compact_path, {
                 "fingerprint": snapshot.fingerprint,
-                "compact": str(snapshot.compact_path),
-                "manifest": str(snapshot.manifest_path),
+                "compact": _relative(snapshot.compact_path, run_dir),
+                "manifest": _relative(snapshot.manifest_path, run_dir),
                 "source_root": str(snapshot.source_root),
                 "changes": tuple(
                     {"target": c.target, "old_value": c.old_value, "new_value": c.new_value}
@@ -831,6 +856,12 @@ class EvaluationSession:
         ((snapshot, externals),) = made  # the geometry task runs once
         try:
             self._verify()  # the record names what the stages and evaluators read
+            changed = record.changed()
+            if changed:
+                raise RunError(
+                    f"{', '.join(changed)} changed after it was made, so the record could not "
+                    "say what it holds"
+                )
             now = self._candidate_externals(snapshot)
             if now != externals:
                 refs = dict.fromkeys([*externals, *now])
