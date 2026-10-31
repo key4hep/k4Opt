@@ -215,27 +215,59 @@ def test_a_record_that_does_not_represent_the_candidate_is_measured_but_not_judg
     assert assessment.feasible is None  # whatever its limits say
 
 
-def test_a_valid_owner_does_not_make_an_invalid_candidate_assessable() -> None:
-    class Owner(Fixed):
-        name = "test.owner"
-        metrics = {("analysis", "a"): "mrad"}
+class _Owner(Fixed):
+    name = "test.owner"
+    metrics = {("analysis", "a"): "mrad"}
 
-    class Check(Fixed):
-        name = "test.check"
-        metrics = {("analysis", "check.ok"): "1"}
 
-    spec = problem(
-        {"evaluator": "test.owner", "metric": "a", "max": 1.0},
-        objectives=(("test.owner", "analysis", "a"),),
-        evaluators=("test.owner", "test.check"),
+class _Check(Fixed):
+    name = "test.check"
+    metrics = {("analysis", "check.ok"): "1"}
+
+
+def _checked(*, required: bool) -> ProblemSpec:
+    """A problem whose objective and constraint ``test.owner`` measures, and which binds the
+    validity check ``test.check`` too, ``required`` or as a diagnostic."""
+    data = document(
+        [{"evaluator": "test.owner", "metric": "a", "max": 1.0}],
+        [("test.owner", "analysis", "a")],
+        ["test.owner", "test.check"],
     )
-    owner = Owner(EvaluationResult.valid([a(0.5)]))
-    check = Check(EvaluationResult.invalid("the candidate fails a validity check"))
+    if required:
+        data["evaluators"][1]["required"] = True
+    return parse_problem(data)
+
+
+def test_a_valid_owner_does_not_make_a_candidate_a_required_check_finds_invalid_assessable() -> (
+    None
+):
+    spec = _checked(required=True)
+    owner = _Owner(EvaluationResult.valid([a(0.5)]))
+    check = _Check(EvaluationResult.invalid("the candidate fails a validity check"))
     record = _evaluate_candidate(spec, {CELL: 5.0}, implementations(owner, check))
     assert record.status == "invalid"
+    assert record.message == "test.check invalid: the candidate fails a validity check"
+    assert record.diagnostics == ()
     assessment = assess(spec, record)
     assert (assessment.objectives, assessment.feasible) == (None, None)
     assert assessment.limits[0].value is None
+
+
+@pytest.mark.parametrize("check", ["invalid", "failed"])
+def test_a_diagnostic_that_does_not_succeed_leaves_the_candidate_valid_and_assessed(
+    check: str,
+) -> None:
+    spec = _checked(required=False)
+    owner = _Owner(EvaluationResult.valid([a(0.5)]))
+    result = EvaluationResult(check, message="the check says no")  # type: ignore[arg-type]
+    record = _evaluate_candidate(spec, {CELL: 5.0}, implementations(owner, _Check(result)))
+    assert (record.status, record.message) == ("valid", None)
+    assert [(d.id.label, d.status, d.message) for d in record.diagnostics] == [
+        ("test.check", check, "the check says no")
+    ]
+    assessment = assess(spec, record)
+    assert assessment.feasible is True
+    assert assessment.objectives == (objective(a(0.5), "test.owner"),)
 
 
 def test_the_assessment_is_plain_json() -> None:
@@ -420,6 +452,14 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_failed_with_reason, "status is 'valid', but its tasks make it 'failed'"),
         (_set(f"{ECHOED}/message", 3), "message must be a string, got 3"),
         (_set("message", "test.echo valid: fine"), "message is 'test.echo valid: fine', but"),
+        # which tasks decide the status, and what it leaves out, follow from the problem
+        (_set("required", []), "required is [], but its objectives, constraints and required"),
+        (_set("required", None), "required is None, but its objectives"),
+        (
+            _set("diagnostics", [{"task": "test.echo", "status": "failed", "message": "no"}]),
+            "diagnostics are [{'task': 'test.echo'",
+        ),
+        (_set("diagnostics", None), "diagnostics are None, but its tasks make them []"),
         (_set(f"{ECHOED}/status", "great"), "status 'great' is none of"),
         (
             _set(f"{ECHOED}/implementation", "test.other"),
@@ -458,7 +498,10 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_set("assessment/feasible", False), "its assessment is not the one"),
         (_set("assessment/limits/0/margin", -1.0), "its assessment is not the one"),
         (_set("assessment", None), "its assessment is not the one"),
-        (_set("represents_candidate", "yes"), "represents_candidate is 'yes', but its supplied"),
+        (
+            _set("represents_candidate", "yes"),
+            "represents_candidate is 'yes', but its required supplied",
+        ),
         (
             _set("supplied", ["simulation"]),
             "supplied ['simulation'] must list stages of the problem's samples, as SAMPLE/STAGE",
@@ -466,7 +509,10 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_set("supplied", ["gamma/simulation"]), "must list stages of the problem's samples"),
         (_set("samples", {"gamma": {}}), "its samples are ['gamma'], but the problem's are []"),
         (_set("samples", []), "samples must be a mapping"),
-        (_set("represents_candidate", False), "represents_candidate is False, but its supplied"),
+        (
+            _set("represents_candidate", False),
+            "represents_candidate is False, but its required supplied",
+        ),
         (_set("problem/definition/parameters/0/bounds", [100.0, 700.0]), "parameters differ"),
         (_set("problem/definition/constraints/0/max", 600), "another problem: its constraints"),
     ],

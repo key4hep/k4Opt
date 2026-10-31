@@ -423,9 +423,10 @@ file is simulated even if the problem describes a particle gun. The record ident
 path, size and SHA-256 under `provided`; a file that could not be hashed carries only its path,
 so a verified input is distinguishable from one identified by its name) and lists it as
 `supplied`. A supplied stage that the parameters change (a simulation, when they vary the
-geometry) was not made from the candidate: the candidate record says so,
-`represents_candidate = False`, and must never count as an evaluation of that candidate,
-whatever its status. A file the problem gives (`file:`) or the caller supplies is hashed once
+geometry) was not made from the candidate: if a required evaluation reads it, the candidate
+record says so, `represents_candidate = False`, and must never count as an evaluation of that
+candidate, whatever its status. One that only diagnostics read leaves the record
+representative. A file the problem gives (`file:`) or the caller supplies is hashed once
 per file version, not once per candidate: a file is told apart by size, mtime, ctime and inode,
 so one rewritten within a few milliseconds of being hashed is not, and files are assumed stable
 while a campaign runs.
@@ -596,22 +597,32 @@ In order, it:
 The `CandidateRecord` holds the plan of its tasks and the result of each: the geometry, the
 stages of each sample (each recorded once; `stage(name, sample)`) and one `EvaluationRecord` per
 evaluation in plan order (`evaluations`, by label, `gamma_10gev/calo.photon` or `readout`;
-`record(label)`; `records`), and the time of the whole evaluation. Like the records it holds, it cannot be changed once made. Its `status` is
-the candidate's:
+`record(label)`; `records`), and the time of the whole evaluation. Like the records it holds, it cannot be changed once made.
 
-| Tasks | Candidate | Meaning |
+Each task of the plan is *required* or a *diagnostic*. The required tasks are the evaluations
+whose metrics an objective or a constraint names, those of a binding marked `required: true`
+([problem](problem.md#evaluators)), and every task these read, transitively: the stages of their
+samples, the evaluations a required combined evaluator reads, the geometry. Its `status` is the
+candidate's, decided by the required tasks alone:
+
+| Required tasks | Candidate | Meaning |
 | --- | --- | --- |
 | every stage `done`, every evaluation `valid` | `valid` | complete and usable; every objective and constraint has a value |
-| at least one `failed` or `blocked` | `failed` | technically incomplete: a stage or an evaluator did not run to the end, or did not run |
-| none `failed` or `blocked`, at least one `invalid` | `invalid` | complete, and at least one evaluator found the result unusable |
+| at least one `failed` | `failed` | technically incomplete: a stage or an evaluator did not run to the end |
+| none `failed`, at least one `invalid` (and what it blocked) | `invalid` | at least one evaluator found the result unusable |
 
-`failed` outranks `invalid`, so a candidate is `invalid` only after a complete evaluation, and an
-incomplete evaluation is never reported as a scientific verdict. Its `message` names every task
-that failed or is invalid, with its status and message, then the tasks they blocked
+`failed` outranks `invalid`, so an incomplete evaluation is never reported as a scientific
+verdict. A required task is only ever blocked by another required one, so one that is blocked
+without a failure was blocked by an `invalid` result: the candidate is `invalid`, and what read
+that result was not run. Its `message` names every required task that failed or is invalid,
+with its status and message, then the required tasks they blocked
 (`gamma_10gev/simulation failed: ddsim exited with status 2 ...; blocked:
-gamma_10gev/calo.photon`), so a mixed outcome shows both. Every evaluation counts, also one that
-no objective names (a validity check, say), and every sample: one sample that fails makes the
-candidate `failed`, whatever the others measured. `value(MetricRef(evaluator, stage, metric,
+gamma_10gev/calo.photon`), so a mixed outcome shows both. Every sample a required evaluation
+measures counts: one that fails makes the candidate `failed`, whatever the others measured.
+
+A diagnostic runs and is recorded like any other task, but changes neither the status nor the
+message. `diagnostics` holds the result of each diagnostic that did not succeed, in plan order;
+the summary lists them (`task`, `status`, `message`) beside the `required` task labels. `value(MetricRef(evaluator, stage, metric,
 sample))` gives an objective or constraint metric only from the `valid` result of the evaluation
 it names: a missing value is never made up, and the diagnostics of an `invalid` result
 never stand in for it.
@@ -647,7 +658,7 @@ for size in (5.0, 7.0, 10.0):
 | --- | --- |
 | load the problem file (later edits to it do not reach the session) and discover the geometry | check the candidate against the parameter domains |
 | bind the evaluator classes through one instance of each, check the stages of each sample they read and their settings and collections, decide who measures each metric | create a new instance of the evaluator of each evaluation, which must declare what the first did, build its request for this candidate and call its `check()` |
-| collect the warnings about collections ddsim is not expected to write, and about what is measured or simulated twice (`session.warnings`) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened |
+| collect the warnings about collections ddsim is not expected to write, and about what is measured or simulated twice (`session.warnings`); list the diagnostics (`session.diagnostics`, and `session.notice` to tell whoever starts it) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened |
 | record the size and SHA-256 of every file the stages read, by where the problem names it (a stage `file`, `samples.gamma_10gev.generation.file`; a file a ddsim option names; a file supplied with `inputs`, `supplied.gamma_10gev.simulation`; a file two samples read is hashed once and named for each), what the geometry's external references read ([`external_files`](geometry.md#fingerprint)), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, check again what the previous row checks, assess, write the summary |
 
 No request or evaluator instance outlives the candidate it was made for, so an evaluator's
@@ -705,8 +716,9 @@ float (the verdict stays exact). An infeasible candidate is a complete evaluatio
 objective values; it is only outside the limits.
 
 `Assessment.from_summary(spec, summary)` recomputes the assessment of a `summary.json` as read
-back: the candidate's status from its tasks', each objective and constraint value from the own
-measurements of the evaluation it names. The record's `implementations` must be the evaluators
+back: which tasks are required, from the problem; the candidate's status and message from its
+required tasks', and its diagnostics from the others; each objective and constraint value from
+the own measurements of the evaluation it names. The record's `implementations` must be the evaluators
 the problem binds, with its versions and stages; its `samples` the problem's, each with the
 evaluations of the bindings that measure it, and its `evaluations` those of the bindings that
 measure the candidate, each of the evaluator the problem binds it to, with the `settings` (as `declared`) and `collections` the
@@ -719,8 +731,9 @@ and by a path relative to the run directory, in the task's own directory: the ou
 that ran and is `done`, with `sha256` `null`, and the artifacts of an evaluation, each with its
 SHA-256, those its evaluator declares and, for a `valid` one, every one of them. It raises
 `RecordError` if the record is malformed or breaks one of those rules, was made for another
-problem (its definition differs, other than in `name`), or if its `status`, `message`, `metrics`
-or `assessment` disagree with that recomputation, so any reader can check a record before
+problem (its definition differs, other than in `name`), or if its `status`, `message`,
+`required`, `diagnostics`, `represents_candidate`, `metrics` or `assessment` disagree with that
+recomputation, so any reader can check a record before
 trusting it.
 
 ## Deliberately deferred

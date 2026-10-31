@@ -68,7 +68,8 @@ class TrialResult:
     ``error`` trial whose record the optimizer never took. ``record`` and ``sha256`` identify the
     ``summary.json`` read; ``elapsed_seconds`` (the whole evaluation) and ``stage_seconds`` (each
     stage that ran, by label: ``gamma/simulation``) are the wall-clock times it records, no
-    estimate. ``recovered`` marks a trial
+    estimate. ``diagnostics`` holds, as the record does, each diagnostic that did not succeed
+    (``task``, ``status``, ``message``): what the status leaves out. ``recovered`` marks a trial
     a resume finished.
     """
 
@@ -83,10 +84,13 @@ class TrialResult:
     elapsed_seconds: float | None = None
     stage_seconds: Mapping[str, float] = field(default_factory=lambda: FrozenMap({}))
     recovered: bool = False
+    diagnostics: tuple[Mapping[str, str | None], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate", FrozenMap(self.candidate))
         object.__setattr__(self, "stage_seconds", FrozenMap(self.stage_seconds))
+        diagnostics = tuple(FrozenMap(entry) for entry in self.diagnostics)
+        object.__setattr__(self, "diagnostics", diagnostics)
 
     @property
     def feasible(self) -> bool | None:
@@ -117,6 +121,7 @@ class TrialResult:
             "elapsed_seconds": self.elapsed_seconds,
             "stage_seconds": dict(self.stage_seconds),
             "message": self.message,
+            "diagnostics": [dict(entry) for entry in self.diagnostics],
             "record": None
             if self.record is None
             else {
@@ -299,6 +304,7 @@ def recorded(
         message=summary.get("message"),
         elapsed_seconds=_seconds(summary.get("elapsed_seconds"), f"{where}: elapsed_seconds"),
         stage_seconds={stage: seconds for stage, seconds in timed.items() if seconds is not None},
+        diagnostics=summary["diagnostics"],  # checked by from_summary
     )
     return result, warnings
 

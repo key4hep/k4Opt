@@ -451,8 +451,9 @@ class TrialReport:
     trial that ended without a record, or ``error`` for one that stopped the study (its
     ``message`` says why). ``feasible`` and ``objectives`` (by ``evaluator/stage/metric``, in the
     problem's order) are those of a ``valid`` trial; ``record`` is the ``id`` of its
-    ``summary.json``. ``recovered`` marks a trial an interrupted session left running and a
-    resume finished.
+    ``summary.json``, and ``diagnostics`` the number of its diagnostics that did not succeed,
+    which its status leaves out. ``recovered`` marks a trial an interrupted session left running
+    and a resume finished.
     """
 
     number: int
@@ -464,6 +465,7 @@ class TrialReport:
     record: str | None = None
     message: str | None = None
     recovered: bool = False
+    diagnostics: int = 0
 
 
 @dataclass(frozen=True, slots=True)

@@ -40,6 +40,7 @@ from k4opt.problem._tasks import (
     blocked,
     candidate_message,
     candidate_status,
+    diagnostics,
     evaluations,
     evaluator_task,
     plan_tasks,
@@ -187,32 +188,34 @@ class Assessment:
         the record against it.
 
         The record's ``implementations`` must be those the problem binds, with its versions and
-        stages, and roles that fit what the problem gives each combined evaluator (every role
-        and no other, one item unless it reads many, of evaluators that declare what it reads);
-        its ``samples`` the problem's, each with the evaluations of the bindings that
-        measure it, and its ``evaluations`` those of the bindings that measure the candidate, each
-        of the implementation the problem binds it to, with the settings (``declared``) and
-        collections the problem gives it, and for a combined evaluator the items each of its roles
-        reads; a ``valid`` evaluation a role reads carries the metrics that role reads. The
-        candidate's tasks are planned again from the problem
-        and the stages the record says were ``supplied``: each must read what the plan says, be
-        ``blocked`` exactly when a task it reads did not succeed (by the tasks the plan makes it
-        blocked by, with their message) and otherwise have run. Each file a task made is named by
-        its reference (``gamma/simulation#events``) and by a path relative to the run directory, in
-        the task's own directory: the output of a stage that ran and is ``done``, never hashed, and
-        the artifacts of an evaluation, each hashed, those its implementation declares and, for a
-        ``valid`` one, every one of them. The candidate's status and message are recomputed from its
-        tasks' (``failed`` before ``invalid`` before ``valid``), and so is whether it represents its
-        candidate; each objective and constraint value is taken from the own measurements of the
-        evaluation it names, if that evaluation is ``valid``. The rules a live evaluation enforces
-        are checked again: the candidate is in the problem's domains and ``candidate_key`` is its
-        key, an ``invalid`` or ``failed`` task has a message, a blocked evaluator measured nothing,
-        a measurement of a metric its implementation declares carries the declared unit, a binding
+        stages, and roles that fit what the problem gives each combined evaluator (every role and no
+        other, one item unless it reads many, of evaluators that declare what it reads); its
+        ``samples`` the problem's, each with the evaluations of the bindings that measure it, and
+        its ``evaluations`` those of the bindings that measure the candidate, each of the
+        implementation the problem binds it to, with the settings (``declared``) and collections the
+        problem gives it, and for a combined evaluator the items each of its roles reads; a
+        ``valid`` evaluation a role reads carries the metrics that role reads. The candidate's tasks
+        are planned again from the problem and the stages the record says were ``supplied``: each
+        must read what the plan says, be ``blocked`` exactly when a task it reads did not succeed
+        (by the tasks the plan makes it blocked by, with their message) and otherwise have run. Each
+        file a task made is named by its reference (``gamma/simulation#events``) and by a path
+        relative to the run directory, in the task's own directory: the output of a stage that ran
+        and is ``done``, never hashed, and the artifacts of an evaluation, each hashed, those its
+        implementation declares and, for a ``valid`` one, every one of them. Which tasks are
+        ``required`` is recomputed from the problem's objectives, constraints and required
+        evaluators; the candidate's status and message from its required tasks' (``failed`` before
+        ``invalid`` before ``valid``), its ``diagnostics`` from the other tasks that did not
+        succeed, and whether it represents its candidate from the required stages supplied. Each
+        objective and constraint value is taken from the own measurements of the evaluation it
+        names, if that evaluation is ``valid``. The rules a live evaluation enforces are checked
+        again: the candidate is in the problem's domains and ``candidate_key`` is its key, an
+        ``invalid`` or ``failed`` task has a message, a blocked evaluator measured nothing, a
+        measurement of a metric its implementation declares carries the declared unit, a binding
         whose implementation declares metrics declares those named of it, and a constraint's unit is
         that of its metric. Raises :class:`~k4opt.problem.RecordError` if the record is malformed or
         breaks one of those rules, was made for another problem (its definition differs other than
-        in ``name``), or if its ``status``, ``message``, ``represents_candidate``, ``metrics`` or
-        ``assessment`` disagree with the recomputation.
+        in ``name``), or if its ``status``, ``message``, ``required``, ``diagnostics``,
+        ``represents_candidate``, ``metrics`` or ``assessment`` disagree with the recomputation.
         """
         record = _mapping(summary, "record")
         if record.get("schema") != SUMMARY_SCHEMA:
@@ -223,24 +226,40 @@ class Assessment:
         declared = _implementations(spec, record)
         samples = _samples(spec, record)
         supplied = _supplied(spec, record)
-        plan = plan_tasks(spec.samples, spec.evaluators, supplied)
+        plan = plan_tasks(spec.samples, spec.evaluators, supplied, references=spec.references)
         evaluators = _evaluations(spec, record, samples, declared, plan)
         results = _results(record, samples, supplied, evaluators, plan)
-        status = candidate_status(result.status for result in results)
+        required = [task.id.label for task in plan.tasks if task.required]
+        if record.get("required") != required:
+            raise RecordError(
+                f"required is {record.get('required')!r}, but its objectives, constraints and "
+                f"required evaluators make it {required!r}"
+            )
+        status = candidate_status(plan, results)
         if record.get("status") != status:
             raise RecordError(
                 f"status is {record.get('status')!r}, but its tasks make it {status.value!r}"
             )
-        message = candidate_message(results)
+        message = candidate_message(plan, results)
         if record.get("message") != message:
             raise RecordError(
                 f"message is {record.get('message')!r}, but its tasks make it {message!r}"
             )
-        represents = not any(changed_by_geometry(task.name) for task in supplied)
+        listed = [
+            {"task": result.id.label, "status": result.status, "message": result.message}
+            for result in diagnostics(plan, results)
+        ]
+        if record.get("diagnostics") != listed:
+            raise RecordError(
+                f"diagnostics are {record.get('diagnostics')!r}, but its tasks make them {listed!r}"
+            )
+        represents = not any(
+            changed_by_geometry(task.name) for task in supplied if plan[task].required
+        )
         if record.get("represents_candidate") is not represents:
             raise RecordError(
                 f"represents_candidate is {record.get('represents_candidate')!r}, but its "
-                f"supplied stages make it {represents}"
+                f"required supplied stages make it {represents}"
             )
         for ref in spec.references:
             metrics = evaluators[_task(ref)].declared
@@ -754,7 +773,7 @@ def _results(
     supplied: Collection[TaskId],
     evaluators: Mapping[TaskId, _Evaluator],
     plan: Plan,
-) -> list[TaskResult]:
+) -> dict[TaskId, TaskResult]:
     """The status of each task of the record, in plan order, checked against the plan of the
     problem: what each task reads, which are blocked and by what, and the files each stage made
     in its directory."""
@@ -826,7 +845,7 @@ def _results(
                 f"({expected.message!r})"
             )
         results[task.id] = expected
-    return list(results.values())
+    return results
 
 
 def _text(value: object, where: str) -> str:

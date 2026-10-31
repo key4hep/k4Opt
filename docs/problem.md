@@ -297,6 +297,29 @@ Who measures a candidate: one or more evaluators. Each entry:
 | `collections` | The collection of the stage's file that each role the evaluator declares reads, such as `hits: ECalBarrelCollection`. Roles with a default (`particles`, read from `MCParticles`) may be left out. Only with a `stage`. |
 | `roles` | For a combined evaluator: named references to evaluations or stage files of samples. Mutually exclusive with `stage`, `samples` and `collections`; see below. |
 | `settings` | Optional. Evaluator-defined, semantically meaningful inputs (a threshold, a cut, ...). |
+| `required` | Optional, and only `true`. Makes the candidate's status depend on this binding on each of its samples, as it does on one an objective or constraint names; see below. |
+
+**Required evaluations and diagnostics.** The candidate's status is decided by its required
+evaluations alone: those whose metrics an objective or a constraint names, those of an entry
+marked `required: true`, and everything they read (the stages of their samples, the evaluations
+a combined evaluator reads, the geometry). Every other evaluation is a *diagnostic*: it runs once
+per candidate like any other, and its result is recorded, but a diagnostic that fails, is
+invalid or is blocked leaves the candidate's status, its objectives and its feasibility as they
+are. So does a stage that only diagnostics read, such as the simulation of a sample measured by
+a diagnostic alone, and a file supplied for it with `--input`. A check meant to veto candidates
+without an objective or constraint of its own, an overlap check say, therefore needs
+`required: true`:
+
+```yaml
+- name: geometry.overlaps
+  version: "1"
+  required: true        # no objective reads it, but an invalid result must make the candidate invalid
+```
+
+`required: false` is refused: an evaluation is already optional unless something needs it.
+`k4opt evaluate` and `k4opt optimize` list the diagnostics when they start, and the record of
+each candidate lists its `required` tasks and each diagnostic that did not succeed
+(`diagnostics`).
 
 **One set of stages per sample, several evaluators.** The stages of a sample run once per
 candidate, however many evaluators read them (see [Stages](evaluation.md#stages)). An evaluator's
@@ -420,8 +443,10 @@ stage that produces a file; gun generation runs inside simulation and has no fil
 An item cannot appear twice within a role; it may fill several roles or feed several combined
 evaluators. Every producer runs once per candidate. The implementation declares which roles
 accept several items and what metrics or artifacts they need; session opening checks these
-contracts. A failed, invalid or blocked input blocks the combined evaluator. All evaluations
-still gate candidate validity in this increment.
+contracts. A failed, invalid or blocked input blocks the combined evaluator, which is never
+called with an incomplete set of inputs. When the combined evaluator is required, what it reads
+is required too: an input that failed makes the candidate `failed`, and one that is only invalid
+makes it `invalid`.
 
 A combined result belongs to its binding, with no sample, for example
 `pi0_rejection/analysis/background_rejection`. The full
@@ -508,6 +533,10 @@ Three outcomes are distinguished and are never collapsed into a number:
 - **invalid**: the evaluation ran, but the result is not scientifically valid (for
   example, the evaluator's own checks failed);
 - **failed**: execution failed (crash, missing output).
+
+Only required evaluations and the tasks they read decide the candidate's outcome; a diagnostic
+is recorded with its own outcome
+([required evaluations and diagnostics](#evaluators)).
 
 Failures are never encoded as zero, infinity or another objective value. Successful
 execution alone does not show that a detector variation makes sense; k4Opt does not

@@ -129,7 +129,9 @@ class EvaluatorSpec:
     candidate once, and has no samples. ``collections`` names the collection of that stage's file
     for each role the evaluator declares; ``settings`` is owned by that evaluator's contract.
     A combined evaluator reads no stage either, but ``roles``: the items each of its roles reads,
-    by role, in the order the problem gives them.
+    by role, in the order the problem gives them. ``required`` makes the candidate's status
+    depend on each of its evaluations, as on one an objective or a constraint names; an
+    evaluation that none of them needs is a diagnostic, recorded but not deciding the status.
     """
 
     name: str
@@ -140,6 +142,7 @@ class EvaluatorSpec:
     binding: str = ""
     samples: tuple[str, ...] = ()
     roles: Mapping[str, tuple[Reference, ...]] = field(default_factory=lambda: FrozenMap({}))
+    required: bool = False
 
     def __post_init__(self) -> None:
         # Direct construction gets the same defensive copy as parsing does.
@@ -175,6 +178,8 @@ class EvaluatorSpec:
             }
         if self.settings:
             data["settings"] = thaw(self.settings)
+        if self.required:
+            data["required"] = True
         return data
 
 

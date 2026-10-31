@@ -2638,6 +2638,130 @@ def test_a_geometry_changed_between_two_samples_simulates_no_further_and_leaves_
     assert not (run_dir / SUMMARY_NAME).exists()
 
 
+# --- diagnostics: evaluations no objective, constraint or required evaluator reads ----------
+
+
+def diagnosed(problem_file: Path, **binding: Any) -> dict[str, Any]:
+    """:func:`two_samples` with the objective on ``gamma`` alone, so that the evaluation of
+    ``pion`` (with the stages only it reads) is a diagnostic unless ``binding`` says otherwise."""
+    doc = two_samples(problem_file)
+    doc["objectives"] = doc["objectives"][:1]
+    doc["evaluators"][0] |= binding
+    problem_file.write_text(yaml.safe_dump(doc))
+    return doc
+
+
+def crash_pions(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = simulation.install(monkeypatch, events_with([1, 1, 2, 3], [4, 5], [6, 7, 8, 9]))
+
+    def pions_crash(argv: list[str], **kwargs: Any) -> Any:
+        code = fake(argv, **kwargs)
+        return 2 if particle(argv) == "pi-" else code
+
+    monkeypatch.setattr(ddsim_run, "_execute", pions_crash)
+
+
+def test_a_diagnostic_that_does_not_succeed_is_recorded_and_leaves_the_candidate_valid(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    crash_pions(monkeypatch)
+    diagnosed(problem_file)
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    assert session.diagnostics == ("pion/test.cell_count",)
+    assert session.notice == (
+        "diagnostics (recorded, do not affect the result): pion/test.cell_count; mark an "
+        "evaluator required: true if its result must count"
+    )
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    record = outcome.candidate
+    assert (record.status, record.message) == ("valid", None)
+    assert record.record("pion/test.cell_count").result.status == "blocked"
+    assert outcome.assessment.feasible is True
+    assert [o.value for o in outcome.assessment.objectives or ()] == [3.0]
+    written = json.loads(outcome.summary_path.read_text())
+    assert written["required"] == [
+        "geometry",
+        "gamma/generation",
+        "gamma/simulation",
+        "gamma/test.cell_count",
+    ]
+    (crashed, held) = written["diagnostics"]
+    assert (crashed["task"], crashed["status"]) == ("pion/simulation", "failed")
+    assert crashed["message"].startswith("ddsim exited with status 2")
+    assert held == {
+        "task": "pion/test.cell_count",
+        "status": "blocked",
+        "message": "not run: pion/simulation failed",
+    }
+    assert Assessment.from_summary(session.spec, written) == outcome.assessment
+
+
+def test_the_command_exits_zero_and_warns_of_each_diagnostic_that_did_not_succeed(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    crash_pions(monkeypatch)
+    diagnosed(problem_file)
+    code, out, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
+    )
+    assert code == 0, err
+    assert "status:      valid" in out
+    assert "evaluator:   test.cell_count 1 on gamma: valid\n" in out
+    assert "evaluator:   test.cell_count 1 on pion: blocked (diagnostic)" in out
+    # told before anything runs, then what each that did not succeed gave
+    notice = err.index("k4opt: warning: diagnostics (recorded, do not affect the result)")
+    assert notice < err.index("k4opt: warning: diagnostic pion/simulation failed: ddsim exited")
+    assert (
+        "k4opt: warning: diagnostic pion/test.cell_count blocked: not run: pion/simulation failed"
+        in err
+    )
+    assert "k4opt: evaluation" not in err
+
+
+def test_an_evaluator_marked_required_decides_the_status_on_every_sample_it_measures(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    crash_pions(monkeypatch)
+    diagnosed(problem_file, required=True)
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    assert (session.diagnostics, session.notice) == ((), None)
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    record = outcome.candidate
+    assert record.status == "failed" and record.diagnostics == ()
+    assert (record.message or "").endswith("; blocked: pion/test.cell_count")
+    assert outcome.assessment.objectives is None
+    written = json.loads(outcome.summary_path.read_text())
+    assert written["diagnostics"] == [] and "pion/simulation" in written["required"]
+    Assessment.from_summary(session.spec, written)
+    code, _, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "b")
+    )
+    assert code == 1 and "k4opt: evaluation failed: pion/simulation failed" in err
+
+
+def test_a_stage_supplied_for_a_diagnostic_alone_leaves_the_record_representative(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    diagnosed(problem_file)
+    events_file = tmp_path / "earlier.edm4hep.root"
+    events_file.write_bytes(b"fake")
+    outcome = run_candidate(
+        problem_file, [f"{RADIUS}=450"], tmp_path / "a", inputs=[f"pion/simulation={events_file}"]
+    )
+    summary = outcome.summary
+    assert (summary["represents_candidate"], summary["supplied"]) == (True, ["pion/simulation"])
+    assert outcome.assessment.feasible is True  # judged: the objective's events are its own
+    written = json.loads(outcome.summary_path.read_text())
+    Assessment.from_summary(load_problem(problem_file), written)
+    # the same file read by a required evaluation is no evaluation of the candidate
+    diagnosed(problem_file, required=True)
+    outcome = run_candidate(
+        problem_file, [f"{RADIUS}=450"], tmp_path / "b", inputs=[f"pion/simulation={events_file}"]
+    )
+    assert outcome.summary["represents_candidate"] is False
+    assert outcome.assessment.feasible is None
+
+
 # --- combined evaluators: the evaluations of several samples, read by role -------------------
 
 SIGNIFICANCE = ("analysis", "expected_significance")
@@ -2868,8 +2992,11 @@ def test_an_invalid_input_blocks_a_combined_evaluator_and_an_empty_background_is
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "b")
     held = outcome.candidate.record("significance").result
     assert (held.status, held.message) == ("blocked", "not run: ww/test.yields invalid")
-    # a background that ran but is unusable makes the evaluation incomplete, not invalid
-    assert outcome.candidate.status == "failed"
+    # a background that ran but is unusable: nothing failed, and the candidate is invalid
+    assert outcome.candidate.status == "invalid"
+    assert outcome.candidate.message == (
+        "ww/test.yields invalid: too few events selected; blocked: significance"
+    )
     Assessment.from_summary(session.spec, json.loads(outcome.summary_path.read_text()))
 
 

@@ -166,6 +166,17 @@ def mixed_problem(write_problem: Callable[..., Path]) -> Path:
     )
 
 
+@pytest.fixture
+def diagnosed_problem(write_problem: Callable[..., Path]) -> Path:
+    """``test.trade_off``, whose metrics are the objectives, and a diagnostic: the same
+    implementation bound ``as: check``, which no objective or constraint reads and which fails
+    below 350 mm."""
+    return write_problem(
+        evaluators=[TRADE, TRADE | {"as": "check", "settings": {"failed_below": 350}}],
+        objectives=[("test.trade_off", *A, "minimize"), ("test.trade_off", *B, "minimize")],
+    )
+
+
 @dataclass
 class Log:
     """What a study reported while it ran."""

@@ -127,6 +127,12 @@ An invalid or failed trial never gets made-up values (0, infinity) or constraint
 ignores FAIL trials, so a region that is always invalid can be proposed again. Treating
 invalidity as a constraint would be a scientific choice, and it is not made.
 
+The record's status is decided by its required evaluations: those an objective or constraint
+reads, those marked `required: true`, and what they read
+([problem](problem.md#evaluators)). A diagnostic that fails, is invalid or is blocked leaves a
+`valid` trial COMPLETE with its values; the study lists the diagnostics when it starts, the
+trial's line ends with `(1 diagnostic did not succeed)`, and `study trial` shows each one.
+
 Each Optuna trial carries `k4opt.*` user attributes:
 
 - `k4opt.dir`, its directory;
@@ -134,6 +140,7 @@ Each Optuna trial carries `k4opt.*` user attributes:
   relative to the study;
 - `k4opt.status`, `k4opt.feasible`, `k4opt.message` (cut to 1000 characters; the record has
   all of it) and `k4opt.fingerprint` of its geometry;
+- `k4opt.diagnostics`, the number of its diagnostics that did not succeed;
 - `k4opt.sampler_seed`, the seed of the session that proposed it;
 - `k4opt.error` when it stopped the study, and `k4opt.recovered` when a resume finished it.
 
@@ -221,8 +228,8 @@ Combined objectives use `binding/stage/metric` without a sample prefix. Two comb
 reporting the same metric have separate objective columns. `study show` and `study trial`
 include the role wiring. Changing sample properties, role wiring or declared role requirements
 refuses resume, just as changing evaluator settings does. A failed or invalid upstream input
-blocks the combined evaluation and produces a failed trial (the evaluation is incomplete), with no
-partial objective vector.
+blocks the combined evaluation; when an objective or constraint reads it, the trial is FAIL (the
+candidate `failed` or `invalid`), with no partial objective vector.
 
 ## Resuming a study
 
@@ -359,8 +366,9 @@ pareto:     0, 4, 7
 `trial` prints one trial, chosen by its number, with every value as recorded: its status, its
 candidate with units, each objective with its uncertainty and unit, each limit with the value it
 judges, its bound, its margin and whether it is satisfied, the wall-clock time of the whole
-evaluation and of each stage that ran, its record (path, id, SHA-256) and the message of an
-invalid, failed or error trial. Every text from the study (names, units, paths, ids, messages)
+evaluation and of each stage that ran, its record (path, id, SHA-256), the message of an
+invalid, failed or error trial, and each diagnostic that did not succeed, with its status and
+message. Every text from the study (names, units, paths, ids, messages)
 is shown with its control characters escaped (`\x1b`), so neither a colored log in a message
 nor anything else a study holds can change the terminal. Times are those the record
 holds; nothing is estimated.
@@ -428,6 +436,7 @@ JSON, never 0 or NaN, and a float keeps all its digits.
 | `elapsed_seconds`, `stage:<sample>/<stage>:elapsed_seconds` | the recorded wall-clock time of the evaluation, and of each stage of each sample that ran (`stage:gamma_10gev/simulation:elapsed_seconds`) |
 | `record`, `record_sha256`, `record_path` | the record's id, SHA-256 and path in the study |
 | `message` | why the trial is invalid, failed or an error |
+| `diagnostics` | how many of its diagnostics did not succeed; empty without a record |
 
 In a column name, a `%`, `/`, `:` or control character within a name from the problem (a
 parameter reference, a stage or metric name) is percent-escaped (`%25`, `%2F`, `%3A`, `%1B`), so
@@ -461,6 +470,7 @@ or the number 1: the JSON export is the typed one.
       "elapsed_seconds": 291.3,
       "stage_seconds": {"gamma_10gev/generation": 0.4, "gamma_10gev/simulation": 280.2},
       "message": null,
+      "diagnostics": [],
       "record": {"id": "7a2aca36-...", "path": "trial-000000/summary.json", "sha256": "a22d51..."},
       "pareto": true
     }
@@ -470,7 +480,9 @@ or the number 1: the JSON export is the typed one.
 
 A trial's `assessment` is the one its `summary.json` holds (`null` without a record): each
 objective as `stage`, `metric`, `value`, `unit` and `uncertainty`, and each limit as `stage`,
-`metric`, `bound`, `limit`, `unit`, `value`, `uncertainty`, `margin` and `satisfied`.
+`metric`, `bound`, `limit`, `unit`, `value`, `uncertainty`, `margin` and `satisfied`. Its
+`diagnostics` are those of the record: each diagnostic that did not succeed, as `task`, `status`
+and `message`.
 
 ## Python API
 

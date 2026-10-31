@@ -27,7 +27,7 @@ from k4opt.optimization import (
     optimize,
 )
 from k4opt.optimization._export import columns, export, to_csv, to_json
-from k4opt.optimization._show import render_results
+from k4opt.optimization._show import LABEL, render_results, render_trial
 from k4opt.problem import Assessment, ObjectiveValue, parse_problem
 from tests.support import simulation
 from tests.support.common import tree_digest
@@ -69,6 +69,7 @@ def test_the_csv_holds_one_row_per_trial_with_every_value_as_recorded(
         "record_sha256",
         "record_path",
         "message",
+        "diagnostics",
     ]
     assert [row["trial"] for row in rows] == [str(n) for n in range(8)]
     assert {row["status"] for row in rows} == {"valid", "invalid", "failed"}  # to mean much
@@ -87,6 +88,7 @@ def test_the_csv_holds_one_row_per_trial_with_every_value_as_recorded(
             row["objective:test.trade_off/analysis/a:uncertainty"] == ""
         )  # none recorded, none made up
         assert row["message"] == (record["message"] or "")
+        assert row["diagnostics"] == "0"  # every evaluation is an objective's
         if trial.status == "valid":
             b = next(m for m in record["metrics"] if m["metric"] == "b")
             assert (
@@ -309,7 +311,6 @@ def test_combined_bindings_keep_distinct_columns_roles_and_relocatable_records(
 
     import yaml
 
-    from k4opt.optimization._show import render_trial
     from tests.support.evaluators import toy_significance, yields
 
     fake = simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
@@ -338,3 +339,28 @@ def test_combined_bindings_keep_distinct_columns_roles_and_relocatable_records(
             assert f"{name}:" in out.getvalue()
         assert "signal sig/test.yields" in out.getvalue()
         assert "backgrounds bkg/test.yields" in out.getvalue()
+
+
+def test_the_exports_and_the_trial_view_list_what_the_diagnostics_left_out(
+    tmp_path: Path, diagnosed_problem: Path
+) -> None:
+    output = tmp_path / "s"
+    run(diagnosed_problem, output, 6)
+    study = load_study(output)
+    rows = list(csv.DictReader(io.StringIO(to_csv(study))))
+    exported = json.loads(to_json(study))["trials"]
+    for trial, row, data in zip(study.trials, rows, exported, strict=True):
+        assert trial.status == "valid"
+        assert [dict(d) for d in trial.diagnostics] == summary(output, trial.number)["diagnostics"]
+        assert data["diagnostics"] == [dict(d) for d in trial.diagnostics]
+        assert row["diagnostics"] == str(len(trial.diagnostics))
+        out = io.StringIO()
+        render_trial(study, trial, out)
+        shown = [line for line in out.getvalue().splitlines() if line.startswith("diagnostics:")]
+        if trial.diagnostics:
+            (entry,) = trial.diagnostics
+            assert entry["task"] == "check" and entry["status"] == "failed"
+            assert shown == [f"{'diagnostics:':{LABEL}}check failed: {entry['message']}"]
+        else:
+            assert shown == []
+    assert {row["diagnostics"] for row in rows} == {"0", "1"}  # both ways, to mean much
