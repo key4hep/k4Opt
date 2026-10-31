@@ -34,6 +34,7 @@ from k4opt.problem.models import (
     EvaluatorSpec,
     GeometrySelector,
     Key4hepStack,
+    MetricRef,
     Number,
     Objective,
     Parameter,
@@ -243,8 +244,9 @@ def _parse(data: object, source: Path | None) -> ProblemSpec:
     parameters = _parameters(top["parameters"])
     stages = _stages(top["stages"]) if "stages" in top else {}
     evaluators = _evaluators(top["evaluators"])
-    objectives = _objectives(top["objectives"])
-    constraints = _constraints(top["constraints"]) if "constraints" in top else ()
+    bindings = [evaluator.binding for evaluator in evaluators]
+    objectives = _objectives(top["objectives"], bindings)
+    constraints = _constraints(top["constraints"], bindings) if "constraints" in top else ()
     _check_pipeline(stages, evaluators, parameters)
     return ProblemSpec(
         name=name,
@@ -418,34 +420,52 @@ def _stage(name: str, raw: object) -> Stage:
     return Stage(name, executor=executor, events=events, seed=seed, options=options)
 
 
+def _name(value: object, path: str) -> str:
+    """An evaluator's ``name`` or ``as``: letters, digits, ``.``, ``_`` and ``-``."""
+    name = _text(value, path)
+    if not _EVALUATOR_NAME.fullmatch(name):
+        raise _fail(
+            path,
+            f"{_show(name)} must start with a letter or digit and hold only letters, digits, '.', "
+            "'_' and '-'",
+        )
+    return name
+
+
 def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
     items = _sequence(raw, "evaluators")
     if not items:
         raise _fail("evaluators", "must list at least one evaluator")
     evaluators: list[EvaluatorSpec] = []
-    first: dict[str, int] = {}
+    first: dict[str, int] = {}  # by binding, case folded
     for index, item in enumerate(items):
         path = f"evaluators[{index}]"
         m = _mapping(
-            item, path, ("name", "version", "stage", "collections", "settings"), ("name", "version")
+            item,
+            path,
+            ("name", "as", "version", "stage", "collections", "settings"),
+            ("name", "version"),
         )
-        name = _text(m["name"], f"{path}.name")
-        # the name also names the evaluator's directory in a run
-        if not _EVALUATOR_NAME.fullmatch(name):
-            raise _fail(
-                f"{path}.name",
-                f"{_show(name)} must start with a letter or digit and hold only letters, "
-                "digits, '.', '_' and '-'",
-            )
+        name = _name(m["name"], f"{path}.name")
+        # the binding names the evaluator's task, its directory in a run and its metrics
+        where = f"{path}.as" if "as" in m else f"{path}.name"
+        binding = _name(m["as"], where) if "as" in m else name
         # records name the work of a candidate, its geometry, stages and evaluators, by name alone
-        if name in RESERVED_NAMES:
-            raise _fail(
-                f"{path}.name",
-                f"{name!r} names a step k4opt runs itself; reserved: {', '.join(RESERVED_NAMES)}",
-            )
-        if name in first:
-            raise _fail(path, f"duplicates evaluators[{first[name]}] (name {name!r})")
-        first[name] = index
+        if binding in RESERVED_NAMES:
+            reserved = ", ".join(RESERVED_NAMES)
+            raise _fail(where, f"{binding!r} names a step k4opt runs itself; reserved: {reserved}")
+        folded = binding.casefold()  # run directories may be on a file system that folds case
+        if folded in first:
+            other = evaluators[first[folded]].binding
+            if other == binding:
+                why = f"{binding!r} is already bound by evaluators[{first[folded]}]"
+            else:
+                why = (
+                    f"{binding!r} differs only in case from {other!r} of "
+                    f"evaluators[{first[folded]}], which run directories may not tell apart"
+                )
+            raise _fail(path, f"{why}; name this one with as:")
+        first[folded] = index
         settings: Mapping[str, Json] = {}
         if "settings" in m:
             if not isinstance(m["settings"], Mapping):
@@ -462,7 +482,7 @@ def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
             roles = _mapping(raw, where, tuple(raw) if isinstance(raw, Mapping) else ())
             collections = {role: _text(name, f"{where}.{role}") for role, name in roles.items()}
         version = _text(m["version"], f"{path}.version")
-        evaluators.append(EvaluatorSpec(name, version, settings, stage, collections))
+        evaluators.append(EvaluatorSpec(name, version, settings, stage, collections, binding))
     return tuple(evaluators)
 
 
@@ -529,34 +549,62 @@ def _check_pipeline(
             )
 
 
-def _objectives(raw: object) -> tuple[Objective, ...]:
+def _owner(m: Mapping[str, Any], path: str, bindings: list[str]) -> str:
+    """The evaluator an objective or constraint names; it may be left out when the problem has
+    one."""
+    if "evaluator" in m:
+        binding = _text(m["evaluator"], f"{path}.evaluator")
+        if binding not in bindings:
+            raise _fail(
+                f"{path}.evaluator",
+                f"the problem has no evaluator {binding!r}; its evaluators are "
+                f"{', '.join(bindings)}",
+            )
+        return binding
+    if len(bindings) > 1:
+        raise _fail(
+            path,
+            f"the problem has the evaluators {', '.join(bindings)}; add evaluator: with the one "
+            "that measures this metric",
+        )
+    return bindings[0]
+
+
+def _objectives(raw: object, bindings: list[str]) -> tuple[Objective, ...]:
     items = _sequence(raw, "objectives")
     if not items:
         raise _fail("objectives", "must list at least one objective")
     objectives: list[Objective] = []
-    first: dict[tuple[str, str], int] = {}
+    first: dict[MetricRef, int] = {}
     for index, item in enumerate(items):
         path = f"objectives[{index}]"
-        m = _mapping(item, path, ("stage", "metric", "direction"), ("stage", "metric", "direction"))
+        m = _mapping(
+            item,
+            path,
+            ("evaluator", "stage", "metric", "direction"),
+            ("stage", "metric", "direction"),
+        )
         objective = Objective(
+            evaluator=_owner(m, path, bindings),
             stage=_text(m["stage"], f"{path}.stage"),
             metric=_text(m["metric"], f"{path}.metric"),
             direction=cast(Direction, _choice(m["direction"], f"{path}.direction", _DIRECTIONS)),
         )
-        key = (objective.stage, objective.metric)
-        if key in first:
-            raise _fail(path, f"duplicates objectives[{first[key]}] (stage/metric {key})")
-        first[key] = index
+        if objective.ref in first:
+            raise _fail(path, f"duplicates objectives[{first[objective.ref]}] ({objective.label})")
+        first[objective.ref] = index
         objectives.append(objective)
     return tuple(objectives)
 
 
-def _constraints(raw: object) -> tuple[Constraint, ...]:
+def _constraints(raw: object, bindings: list[str]) -> tuple[Constraint, ...]:
     constraints: list[Constraint] = []
-    first: dict[tuple[str, str], int] = {}
+    first: dict[MetricRef, int] = {}
     for index, item in enumerate(_sequence(raw, "constraints")):
         path = f"constraints[{index}]"
-        m = _mapping(item, path, ("stage", "metric", "min", "max", "unit"), ("stage", "metric"))
+        m = _mapping(
+            item, path, ("evaluator", "stage", "metric", "min", "max", "unit"), ("stage", "metric")
+        )
         if "min" not in m and "max" not in m:
             raise _fail(path, "needs 'min' and/or 'max'")
         low = _number(m["min"], f"{path}.min") if "min" in m else None
@@ -564,15 +612,17 @@ def _constraints(raw: object) -> tuple[Constraint, ...]:
         if low is not None and high is not None and low > high:
             raise _fail(path, f"min must not exceed max, got min={low}, max={high}")
         constraint = Constraint(
+            evaluator=_owner(m, path, bindings),
             stage=_text(m["stage"], f"{path}.stage"),
             metric=_text(m["metric"], f"{path}.metric"),
             min=low,
             max=high,
             unit=_optional_text(m, "unit", path),
         )
-        key = (constraint.stage, constraint.metric)
-        if key in first:
-            raise _fail(path, f"duplicates constraints[{first[key]}] (stage/metric {key})")
-        first[key] = index
+        if constraint.ref in first:
+            raise _fail(
+                path, f"duplicates constraints[{first[constraint.ref]}] ({constraint.label})"
+            )
+        first[constraint.ref] = index
         constraints.append(constraint)
     return tuple(constraints)

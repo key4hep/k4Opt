@@ -43,7 +43,10 @@ def test_the_command_prints_each_trial_and_the_study(
         ["trial", "2:"],
     ]
     assert all("constants.InnerTracker_Barrel_radius_1=" in line for line in lines[:3])
-    assert all("analysis/a=" in line and "analysis/b=" in line for line in lines[:3])
+    assert all(
+        "test.trade_off/analysis/a=" in line and "test.trade_off/analysis/b=" in line
+        for line in lines[:3]
+    )
     assert lines[3].startswith("study:    trade-") and lines[3].endswith(f"{output}/study.json")
     assert "2 objective(s), 1 limit(s)" in lines[3]
     assert lines[4].startswith("trials:   3: 3 valid (")
@@ -203,10 +206,10 @@ def test_study_show_trial_and_export_read_a_study_and_change_nothing(
     assert lines[2] == f"directory:  {output} (trials in study.journal)"
     assert lines[3] == f"parameters: {RADIUS}  continuous [100.0, 600.0] mm"
     assert lines[4:6] == [
-        "objectives: analysis/a  minimize  (mm)",
-        "            analysis/b  minimize  (1/mm)",
+        "objectives: test.trade_off/analysis/a  minimize  (mm)",
+        "            test.trade_off/analysis/b  minimize  (1/mm)",
     ]
-    assert lines[6] == "limits:     analysis/a:max  <= 400 mm"
+    assert lines[6] == "limits:     test.trade_off/analysis/a:max  <= 400 mm"
     assert lines[7].startswith("trials:     6: ") and "invalid" in lines[7]
     assert lines[8].startswith("pareto:     ")
     assert all(line.startswith("            trial ") for line in lines[9:])

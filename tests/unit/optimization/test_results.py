@@ -189,8 +189,8 @@ def test_values_keep_their_units_and_uncertainties_and_trials_their_recorded_tim
             {"name": "test.hit_energy", "version": "1"} | reads,
         ],
         objectives=[
-            ("simulation", "ecal_barrel.mean_hit_cells", "minimize"),
-            ("simulation", "ecal_barrel.mean_hit_energy", "maximize"),
+            ("test.cell_count", "simulation", "ecal_barrel.mean_hit_cells", "minimize"),
+            ("test.hit_energy", "simulation", "ecal_barrel.mean_hit_energy", "maximize"),
         ],
     )
     document = __import__("yaml").safe_load(problem.read_text())

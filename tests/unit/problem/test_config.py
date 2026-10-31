@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import os
 import re
@@ -13,7 +14,7 @@ import pytest
 import yaml
 
 from k4opt import ConfigError, K4OptError
-from k4opt.problem import ProblemConfigError, load_problem, parse_problem
+from k4opt.problem import MetricRef, ProblemConfigError, load_problem, parse_problem
 
 Write = Callable[..., Path]
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-granularity.yaml"
@@ -435,6 +436,8 @@ def test_unknown_keys_inside_settings_are_allowed(doc: dict[str, Any]) -> None:
 
 def test_several_evaluators_keep_their_order_and_own_settings(doc: dict[str, Any]) -> None:
     doc["evaluators"].append({"name": "detector.cost", "version": "2"})
+    for item in (*doc["objectives"], *doc["constraints"]):
+        item["evaluator"] = "calo.single_particle_shower"
     problem = parse_problem(doc)
     first, second = problem.evaluators
     assert (first.name, first.version, second.name, second.version) == (
@@ -466,13 +469,100 @@ def test_several_evaluators_keep_their_order_and_own_settings(doc: dict[str, Any
         ([{"name": "simulation", "version": "1"}], "reserved: geometry, generation, simulation"),
         (
             [{"name": "x", "version": "1"}, {"name": "x", "version": "2"}],
-            "evaluators[1]: duplicates evaluators[0] (name 'x')",
+            "evaluators[1]: 'x' is already bound by evaluators[0]; name this one with as:",
         ),
+        (
+            [{"name": "x", "version": "1"}, {"name": "y", "as": "x", "version": "1"}],
+            "evaluators[1]: 'x' is already bound by evaluators[0]",
+        ),
+        # a run directory per binding: a file system that folds case would hold one for both
+        (
+            [{"name": "x", "version": "1"}, {"name": "x", "as": "X", "version": "1"}],
+            "evaluators[1]: 'X' differs only in case from 'x' of evaluators[0], which run "
+            "directories may not tell apart; name this one with as:",
+        ),
+        ([{"name": "x", "as": "", "version": "1"}], "evaluators[0].as: must be a non-empty"),
+        ([{"name": "x", "as": "a/b", "version": "1"}], "evaluators[0].as: 'a/b' must start"),
+        ([{"name": "x", "as": 3, "version": "1"}], "evaluators[0].as: must be a non-empty"),
+        ([{"name": "x", "as": "geometry", "version": "1"}], "evaluators[0].as: 'geometry' names"),
     ],
 )
 def test_evaluator_list_errors(doc: dict[str, Any], evaluators: object, message: str) -> None:
     doc["evaluators"] = evaluators
     reject(doc, message)
+
+
+def test_one_implementation_can_be_bound_twice_under_two_names(doc: dict[str, Any]) -> None:
+    first = doc["evaluators"][0]
+    doc["evaluators"].append(first | {"as": "shower_tight", "settings": {"collection": "Other"}})
+    doc["objectives"][0]["evaluator"] = "calo.single_particle_shower"
+    doc["objectives"].append(doc["objectives"][0] | {"evaluator": "shower_tight"})
+    doc["constraints"][0]["evaluator"] = "shower_tight"
+    problem = parse_problem(doc)
+    assert [(e.name, e.binding) for e in problem.evaluators] == [
+        ("calo.single_particle_shower", "calo.single_particle_shower"),
+        ("calo.single_particle_shower", "shower_tight"),
+    ]
+    # the same metric of two bindings: two objectives, not a duplicate
+    assert [o.label for o in problem.objectives] == [
+        "calo.single_particle_shower/simulation/a.rms",
+        "shower_tight/simulation/a.rms",
+    ]
+    assert problem.constraints[0].ref == MetricRef("shower_tight", "simulation", "a.cells")
+    data = problem.to_dict()
+    assert "as" not in data["evaluators"][0]  # the binding is the name unless it is not
+    assert data["evaluators"][1]["as"] == "shower_tight"
+    assert parse_problem(data) == problem
+
+
+def test_an_objective_of_the_one_evaluator_may_leave_it_out(doc: dict[str, Any]) -> None:
+    problem = parse_problem(doc)
+    (objective,) = problem.objectives
+    assert objective.ref == MetricRef("calo.single_particle_shower", "simulation", "a.rms")
+    assert problem.constraints[0].evaluator == "calo.single_particle_shower"
+    # the normalized problem, as records and studies hold it, names it always
+    data = problem.to_dict()
+    assert data["objectives"][0]["evaluator"] == "calo.single_particle_shower"
+    assert data["constraints"][0]["evaluator"] == "calo.single_particle_shower"
+    assert parse_problem(data) == problem
+    named = copy.deepcopy(doc)
+    named["objectives"][0]["evaluator"] = "calo.single_particle_shower"
+    assert parse_problem(named) == problem
+
+
+@pytest.mark.parametrize("section", ["objectives", "constraints"])
+def test_an_objective_or_constraint_of_several_evaluators_must_name_one(
+    doc: dict[str, Any], section: str
+) -> None:
+    doc["evaluators"].append({"name": "detector.cost", "version": "1"})
+    other = "constraints" if section == "objectives" else "objectives"
+    doc[other][0]["evaluator"] = "detector.cost"
+    reject(
+        doc,
+        f"{section}[0]: the problem has the evaluators calo.single_particle_shower, "
+        "detector.cost; add evaluator: with the one that measures this metric",
+    )
+
+
+@pytest.mark.parametrize(
+    ("evaluator", "message"),
+    [
+        ("detector.cost", "the problem has no evaluator 'detector.cost'; its evaluators are calo."),
+        ("", "objectives[0].evaluator: must be a non-empty string"),
+    ],
+)
+def test_an_objective_must_name_an_evaluator_of_the_problem(
+    doc: dict[str, Any], evaluator: str, message: str
+) -> None:
+    doc["objectives"][0]["evaluator"] = evaluator
+    reject(doc, message)
+
+
+def test_an_objective_names_a_binding_not_an_implementation(doc: dict[str, Any]) -> None:
+    doc["evaluators"][0]["as"] = "shower"
+    doc["constraints"][0]["evaluator"] = "shower"
+    doc["objectives"][0]["evaluator"] = "calo.single_particle_shower"
+    reject(doc, "objectives[0].evaluator: the problem has no evaluator 'calo.single_particle")
 
 
 @pytest.mark.parametrize(
@@ -758,6 +848,14 @@ def test_constant_and_target_spellings_are_duplicates(doc: dict[str, Any]) -> No
 
 def test_duplicate_objectives(doc: dict[str, Any]) -> None:
     doc["objectives"].append({"stage": "simulation", "metric": "a.rms", "direction": "maximize"})
+    reject(doc, "objectives[1]: duplicates objectives[0] (calo.single_particle_shower/simulation")
+
+
+def test_an_objective_written_with_and_without_its_evaluator_is_a_duplicate(
+    doc: dict[str, Any],
+) -> None:
+    named = doc["objectives"][0] | {"evaluator": "calo.single_particle_shower"}
+    doc["objectives"].append(named)
     reject(doc, "objectives[1]: duplicates objectives[0]")
 
 

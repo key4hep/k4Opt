@@ -5,14 +5,14 @@ optimizer's storage, a ``.lock`` while a process works on the study, and a ``tri
 directory for each trial that got as far as its evaluation, laid out as ``k4opt evaluate``
 lays out its output.
 
-Whether a study may be resumed, and whether the record of a trial belongs to its study, are
-decided by one comparison (:func:`compared`) of what must be equal: the problem's definition
-(but not its name), the content of every file it names, each evaluator's name, version and
-source hash, the unmodified geometry's fingerprint and the content of the files its external
-references read, ``KEY4HEP_STACK`` and the hash of k4opt's code. Locations are recorded and
-never compared, so a study whose files moved resumes. A file that only candidates name (a
-``ref`` parameter) is not known before they do: each record must read it as every earlier
-record of the study did (:func:`check_candidate_files`).
+Whether a study may be resumed, and whether the record of a trial belongs to its study, are decided
+by one comparison (:func:`compared`) of what must be equal: the problem's definition (but not its
+name), the content of every file it names, each evaluator implementation's name, version, source
+hash and declared metrics, the unmodified geometry's fingerprint and the content of the files its
+external references read, ``KEY4HEP_STACK`` and the hash of k4opt's code. Locations are recorded and
+never compared, so a study whose files moved resumes. A file that only candidates name (a ``ref``
+parameter) is not known before they do: each record must read it as every earlier record of the
+study did (:func:`check_candidate_files`).
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import json
 import os
 import re
 import socket
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -196,16 +196,15 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
                 label: {"bytes": entry.get("bytes"), "sha256": entry.get("sha256")}
                 for label, entry in identity["inputs"].items()
             },
-            "evaluators": [
-                {
-                    "name": entry["name"],
+            "implementations": {
+                name: {
                     "version": entry["version"],
                     "sha256": entry["source"].get("sha256"),
                     # the units its values are in: an instance can declare them otherwise
                     "metrics": entry.get("metrics"),
                 }
-                for entry in identity["evaluators"]
-            ],
+                for name, entry in identity["implementations"].items()
+            },
             "geometry": {
                 "fingerprint": identity["geometry"]["fingerprint"],
                 "externals": _contents(identity["geometry"]["externals"]),
@@ -227,9 +226,9 @@ def unhashed(identity: Mapping[str, Any]) -> list[str]:
     """Why an identity cannot identify a study: evaluators without a source hash, or a file the
     problem names that could not be read."""
     reasons = [
-        f"evaluator {entry['name']!r} has no source hash: its module was imported before "
+        f"evaluator {name!r} has no source hash: its module was imported before "
         "load_evaluator could hash it, so load it with load_evaluator in a new process"
-        for entry in identity["evaluators"]
+        for name, entry in identity["implementations"].items()
         if not entry["source"].get("sha256")
     ]
     reasons += [
@@ -256,18 +255,18 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
         elif then["inputs"][label] != now_["inputs"][label]:
             path = current["inputs"][label]["path"]
             found.append(f"{label}: {path} is not the file the study read (other bytes)")
-    named = [(e["name"], e["version"]) for e in then["evaluators"]]
-    if named != [(e["name"], e["version"]) for e in now_["evaluators"]]:
+    old_implementations, new_implementations = then["implementations"], now_["implementations"]
+    named = [(name, e["version"]) for name, e in old_implementations.items()]
+    if named != [(name, e["version"]) for name, e in new_implementations.items()]:
         found.append(f"the evaluators are not {named}")
     else:
-        for old, new, entry in zip(
-            then["evaluators"], now_["evaluators"], current["evaluators"], strict=True
-        ):
+        for name, old in old_implementations.items():
+            new, entry = new_implementations[name], current["implementations"][name]
             if old["sha256"] != new["sha256"]:
-                found.append(f"evaluator {old['name']!r}: {entry['source'].get('path')} changed")
+                found.append(f"evaluator {name!r}: {entry['source'].get('path')} changed")
             elif old["metrics"] != new["metrics"]:
                 found.append(
-                    f"evaluator {old['name']!r} declares other metrics or units: "
+                    f"evaluator {name!r} declares other metrics or units: "
                     f"{new['metrics']}, not {old['metrics']}"
                 )
     if then["geometry"]["fingerprint"] != now_["geometry"]["fingerprint"]:
@@ -290,26 +289,28 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
     return found
 
 
-def dirty_checkouts(evaluators: Sequence[Mapping[str, Any]]) -> list[str]:
-    """The evaluators whose git checkout has uncommitted changes: helper modules beside their
-    file are then identified by neither its hash nor a commit."""
+def dirty_checkouts(implementations: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """The implementations whose git checkout has uncommitted changes: helper modules beside
+    their file are then identified by neither its hash nor a commit."""
     return [
-        f"evaluator {entry['name']!r}: the checkout of {entry['source'].get('path')} has "
+        f"evaluator {name!r}: the checkout of {entry['source'].get('path')} has "
         "uncommitted changes, so the helper modules beside it are not identified"
-        for entry in evaluators
+        for name, entry in implementations.items()
         if (entry["source"].get("revision") or {}).get("dirty")
     ]
 
 
-def revision_warnings(study: Sequence[Mapping[str, Any]], current: Sequence[Any]) -> list[str]:
-    """The evaluators whose git checkout is at another commit, or clean or dirty otherwise, than
-    when the study was made: their own file is unchanged, but helpers beside it may not be."""
+def revision_warnings(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
+    """The implementations whose git checkout is at another commit, or clean or dirty otherwise,
+    than when the study was made: their own file is unchanged, but helpers beside it may not
+    be. ``study`` and ``current`` hold the same implementations, by name."""
     warnings = []
-    for old, new in zip(study, current, strict=True):
+    for name, old in study.items():
+        new = current[name]
         then, now_ = old["source"].get("revision"), new["source"].get("revision")
         if then != now_:
             warnings.append(
-                f"evaluator {new['name']!r}: the checkout of {new['source'].get('path')} is at "
+                f"evaluator {name!r}: the checkout of {new['source'].get('path')} is at "
                 f"{now_} now, at {then} when the study was made; its own file is unchanged, "
                 "helper modules beside it may not be"
             )
@@ -361,18 +362,18 @@ def check_record(
         raise OptimizationError(f"{where} holds candidate {candidate!r}, but the trial is {params}")
     if summary.get("represents_candidate") is not True or summary.get("supplied") != []:
         raise OptimizationError(f"{where} was not made from its candidate alone (a supplied stage)")
-    evaluators = summary.get("evaluators")
-    if not isinstance(evaluators, list) or len(evaluators) != len(study["evaluators"]):
+    implementations = summary.get("implementations")
+    if not isinstance(implementations, Mapping) or list(implementations) != list(
+        study["implementations"]
+    ):
         raise OptimizationError(f"{where} does not hold the study's evaluators")
-    for old, new in zip(study["evaluators"], evaluators, strict=True):
+    for name, old in study["implementations"].items():
+        new = implementations[name]
         if _get(new, "source", "sha256") != old["source"].get("sha256"):
-            raise OptimizationError(
-                f"{where}: evaluator {old['name']!r} ran other code than the study's"
-            )
+            raise OptimizationError(f"{where}: evaluator {name!r} ran other code than the study's")
         if _get(new, "metrics") != old.get("metrics"):
             raise OptimizationError(
-                f"{where}: evaluator {old['name']!r} declared other metrics or units than in the "
-                "study"
+                f"{where}: evaluator {name!r} declared other metrics or units than in the study"
             )
     observed = _get(summary, "environment", "observed")
     if _get(observed, "KEY4HEP_STACK") != study["environment"]["KEY4HEP_STACK"]:
@@ -391,7 +392,7 @@ def check_record(
             entry.get("sha256"),
         ):
             raise OptimizationError(f"{where} read another {label} than the study")
-    return revision_warnings(study["evaluators"], evaluators)
+    return revision_warnings(study["implementations"], implementations)
 
 
 def check_candidate_files(
@@ -424,7 +425,7 @@ class TrialReport:
 
     ``status`` is the candidate's (``valid``, ``invalid``, ``failed``), or ``interrupted`` for a
     trial that ended without a record, or ``error`` for one that stopped the study (its
-    ``message`` says why). ``feasible`` and ``objectives`` (by ``stage/metric``, in the
+    ``message`` says why). ``feasible`` and ``objectives`` (by ``evaluator/stage/metric``, in the
     problem's order) are those of a ``valid`` trial; ``record`` is the ``id`` of its
     ``summary.json``. ``recovered`` marks a trial an interrupted session left running and a
     resume finished.

@@ -29,7 +29,7 @@ from k4opt.optimization._study import (
     trial_directories,
 )
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import ProblemSpec
+from k4opt.problem import MetricRef, ProblemSpec
 
 STARTUP_TRIALS = 10  # random proposals before TPE models the trials
 
@@ -125,7 +125,7 @@ def check_resume(
             f"cannot resume {document['optimizer']['study']}: {'; '.join(found)}. Start a new "
             "study for this"
         )
-    for warning in revision_warnings(document["evaluators"], identity["evaluators"]):
+    for warning in revision_warnings(document["implementations"], identity["implementations"]):
         warn(warning)
 
 
@@ -168,7 +168,9 @@ def study_attributes(document: Mapping[str, Any]) -> dict[str, Any]:
         "k4opt.study": document["id"],
         "k4opt.identity": document["identity"],
         "k4opt.parameters": list(optimizer["parameters"]),
-        "k4opt.objectives": [f"{o['stage']}/{o['metric']}" for o in objectives],
+        "k4opt.objectives": [
+            MetricRef(o["evaluator"], o["stage"], o["metric"]).label for o in objectives
+        ],
         "k4opt.constraints": list(optimizer["constraints"]),
     }
 

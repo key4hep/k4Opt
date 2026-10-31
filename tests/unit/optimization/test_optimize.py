@@ -60,9 +60,9 @@ def test_two_objectives_are_told_in_the_problems_order_and_directions(
             m["metric"]: m["value"] for m in summary(tmp_path / "s", trial.number)["metrics"]
         }
         assert trial.values == [metrics["b"], metrics["a"]]
-    assert report.objectives == ("analysis/b", "analysis/a")
+    assert report.objectives == ("test.trade_off/analysis/b", "test.trade_off/analysis/a")
     (first, *_) = report.trials
-    assert list(first.objectives) == ["analysis/b", "analysis/a"]
+    assert list(first.objectives) == ["test.trade_off/analysis/b", "test.trade_off/analysis/a"]
 
 
 def test_one_objective_takes_the_same_path(
@@ -72,10 +72,12 @@ def test_one_objective_takes_the_same_path(
     optimizer = optuna_study(tmp_path / "s")
     assert optimizer.directions == [StudyDirection.MINIMIZE]
     assert [t.values for t in optimizer.trials] == [
-        [t.objectives["analysis/a"]] for t in report.trials
+        [t.objectives["test.trade_off/analysis/a"]] for t in report.trials
     ]
     # every candidate is feasible without constraints, and the best one is the front
-    assert report.pareto == (min(report.trials, key=lambda t: t.objectives["analysis/a"]).number,)
+    assert report.pareto == (
+        min(report.trials, key=lambda t: t.objectives["test.trade_off/analysis/a"]).number,
+    )
 
 
 def test_every_trial_has_a_directory_with_its_complete_record(
@@ -156,7 +158,7 @@ def test_without_a_feasible_candidate_the_front_is_empty(
     for trial in optuna_study(tmp_path / "s").trials:  # complete, with their real objectives
         assert trial.state == TrialState.COMPLETE
         (x,) = trial.params.values()
-        assert trial.constraints == {"analysis/a:max": x - 50}
+        assert trial.constraints == {"test.trade_off/analysis/a:max": x - 50}
 
 
 def test_limits_on_several_metrics_are_warned_about(
@@ -307,7 +309,9 @@ def test_a_record_that_does_not_hold_up_stops_the_study(
         return outcome
 
     monkeypatch.setattr(EvaluationSession, "evaluate", tampering)
-    with pytest.raises(OptimizationError, match=r"trial 0 stops the study.*metric analysis/a"):
+    with pytest.raises(
+        OptimizationError, match=r"trial 0 stops the study.*metric test\.trade_off/analysis/a"
+    ):
         study(write_problem(), tmp_path / "s")
     (trial,) = optuna_study(tmp_path / "s").trials
     assert trial.state == TrialState.FAIL and "k4opt.status" not in trial.user_attrs
@@ -458,8 +462,8 @@ def test_evaluators_that_read_the_simulation_share_one_ddsim_run_per_trial(
             {"name": "test.hit_energy", "version": "1"} | reads,
         ],
         objectives=[
-            ("simulation", "ecal_barrel.mean_hit_cells", "minimize"),
-            ("simulation", "ecal_barrel.mean_hit_energy", "maximize"),
+            ("test.cell_count", "simulation", "ecal_barrel.mean_hit_cells", "minimize"),
+            ("test.hit_energy", "simulation", "ecal_barrel.mean_hit_energy", "maximize"),
         ],
     )
     document = __import__("yaml").safe_load(problem.read_text())
@@ -486,3 +490,41 @@ def test_evaluators_that_read_the_simulation_share_one_ddsim_run_per_trial(
     assert [t.status for t in report.trials] == ["valid"] * 3
     # each unexpected collection is warned about once, not once per trial
     assert len([w for w in log.warnings if "is not expected to write" in w]) == 2
+
+
+SLASHED = """
+    from k4opt.evaluation import Evaluator
+
+    class Probe(Evaluator):
+        name, version = "test.slashed", "1"
+        metrics = {("analysis/x", "y"): "1", ("analysis", "x/y"): "1"}
+
+        def evaluate(self, request):
+            x, *_ = request.candidate.values()
+            return {("analysis/x", "y"): x, ("analysis", "x/y"): -x}
+"""
+
+
+def test_metrics_whose_names_hold_a_slash_are_told_and_reported_apart(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    # joined with "/" as they are, both would be test.slashed/analysis/x/y
+    problem = write_problem(
+        evaluators=[{"name": "test.slashed", "version": "1"}],
+        objectives=[("analysis/x", "y", "minimize"), ("analysis", "x/y", "minimize")],
+        constraints=[
+            {"stage": "analysis/x", "metric": "y", "max": 1000, "unit": "1"},
+            {"stage": "analysis", "metric": "x/y", "max": 1000, "unit": "1"},
+        ],
+    )
+    slashed = evaluator_from(tmp_path / "evaluators", "slashed", SLASHED)
+    report = optimize(problem, [slashed], tmp_path / "s", trials=2, seed=1)
+    assert report.objectives == ("test.slashed/analysis%2Fx/y", "test.slashed/analysis/x%2Fy")
+    assert report.constraints == (
+        "test.slashed/analysis%2Fx/y:max",
+        "test.slashed/analysis/x%2Fy:max",
+    )
+    for trial in report.trials:
+        assert trial.objectives is not None
+        (x,) = trial.candidate.values()
+        assert list(trial.objectives.values()) == [x, -x]  # neither overwrites the other

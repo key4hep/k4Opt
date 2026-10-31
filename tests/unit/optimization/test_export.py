@@ -18,7 +18,6 @@ import pytest
 pytest.importorskip("optuna")
 
 from k4opt import jsonio
-from k4opt.evaluation import Measurement
 from k4opt.frozen import FrozenMap
 from k4opt.optimization import (
     OptimizationError,
@@ -28,7 +27,8 @@ from k4opt.optimization import (
     optimize,
 )
 from k4opt.optimization._export import columns, export, to_csv, to_json
-from k4opt.problem import Assessment, parse_problem
+from k4opt.optimization._show import render_results
+from k4opt.problem import Assessment, ObjectiveValue, parse_problem
 from tests.support.common import tree_digest
 from tests.support.evaluators import trade_off
 from tests.unit.optimization.conftest import RADIUS, evaluator_from, problem_document, summary
@@ -54,15 +54,15 @@ def test_the_csv_holds_one_row_per_trial_with_every_value_as_recorded(
         "pareto",
         "recovered",
         f"parameter:{RADIUS}",
-        "objective:analysis/a",
-        "objective:analysis/a:unit",
-        "objective:analysis/a:uncertainty",
-        "objective:analysis/b",
-        "objective:analysis/b:unit",
-        "objective:analysis/b:uncertainty",
-        "limit:analysis/a:max:value",
-        "limit:analysis/a:max:margin",
-        "limit:analysis/a:max:satisfied",
+        "objective:test.trade_off/analysis/a",
+        "objective:test.trade_off/analysis/a:unit",
+        "objective:test.trade_off/analysis/a:uncertainty",
+        "objective:test.trade_off/analysis/b",
+        "objective:test.trade_off/analysis/b:unit",
+        "objective:test.trade_off/analysis/b:uncertainty",
+        "limit:test.trade_off/analysis/a:max:value",
+        "limit:test.trade_off/analysis/a:max:margin",
+        "limit:test.trade_off/analysis/a:max:satisfied",
         "elapsed_seconds",
         "record",
         "record_sha256",
@@ -82,28 +82,79 @@ def test_the_csv_holds_one_row_per_trial_with_every_value_as_recorded(
             f"trial-{trial.number:06d}/summary.json",
         )
         assert row["record_sha256"] == trial.sha256
-        assert row["objective:analysis/a:uncertainty"] == ""  # none recorded, none made up
+        assert (
+            row["objective:test.trade_off/analysis/a:uncertainty"] == ""
+        )  # none recorded, none made up
         assert row["message"] == (record["message"] or "")
         if trial.status == "valid":
             b = next(m for m in record["metrics"] if m["metric"] == "b")
-            assert (float(row["objective:analysis/b"]), row["objective:analysis/b:unit"]) == (
+            assert (
+                float(row["objective:test.trade_off/analysis/b"]),
+                row["objective:test.trade_off/analysis/b:unit"],
+            ) == (
                 b["value"],
                 "1/mm",
             )
             (limit,) = record["assessment"]["limits"]
-            assert float(row["limit:analysis/a:max:margin"]) == limit["margin"]
-            assert row["feasible"] == row["limit:analysis/a:max:satisfied"]
+            assert float(row["limit:test.trade_off/analysis/a:max:margin"]) == limit["margin"]
+            assert row["feasible"] == row["limit:test.trade_off/analysis/a:max:satisfied"]
             assert row["feasible"] == ("true" if record["assessment"]["feasible"] else "false")
         else:  # missing, never 0
             missing = [key for key in row if key.startswith(("objective:", "limit:"))]
             assert [row[key] for key in [*missing, "feasible"]] == [""] * (len(missing) + 1)
 
 
+def test_two_bindings_of_one_metric_are_two_columns_and_two_lines_of_show(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    strict = {"name": "test.trade_off", "as": "strict", "version": "1"}
+    problem = write_problem(
+        evaluators=[{"name": "test.trade_off", "version": "1"}, strict],
+        objectives=[
+            ("test.trade_off", "analysis", "a", "minimize"),
+            ("strict", "analysis", "a", "maximize"),
+        ],
+        constraints=[{"evaluator": "strict", "stage": "analysis", "metric": "b", "max": 1}],
+    )
+    output = tmp_path / "s"
+    run(problem, output, 2)
+    study = load_study(output)
+    assert [c for c in columns(study) if c.startswith(("objective:", "limit:"))] == [
+        "objective:test.trade_off/analysis/a",
+        "objective:test.trade_off/analysis/a:unit",
+        "objective:test.trade_off/analysis/a:uncertainty",
+        "objective:strict/analysis/a",
+        "objective:strict/analysis/a:unit",
+        "objective:strict/analysis/a:uncertainty",
+        "limit:strict/analysis/b:max:value",
+        "limit:strict/analysis/b:max:margin",
+        "limit:strict/analysis/b:max:satisfied",
+    ]
+    rows = list(csv.DictReader(io.StringIO(to_csv(study))))
+    for trial, row in zip(study.trials, rows, strict=True):
+        a = trial.candidate[RADIUS]
+        assert row["objective:test.trade_off/analysis/a"] == row["objective:strict/analysis/a"]
+        assert float(row["objective:strict/analysis/a"]) == a
+        assert float(row["limit:strict/analysis/b:max:value"]) == 1 / a
+    shown = io.StringIO()
+    render_results(study, shown)
+    lines = shown.getvalue().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("objectives:"))
+    assert lines[start : start + 3] == [
+        "objectives: test.trade_off/analysis/a  minimize  (mm)",
+        "            strict/analysis/a  maximize  (mm)",
+        "limits:     strict/analysis/b:max  <= 1",
+    ]
+
+
 def test_column_names_stay_distinct_whatever_the_stages_and_metrics_are_called() -> None:
     named = [("analysis", "count"), ("analysis", "count:unit"), ("analysis/x", "y")]
     named += [("analysis", "x/y"), ("analysis", "50%"), ("analysis", "cells\x1b[2J")]  # all valid
     spec = parse_problem(problem_document(objectives=[(s, m, "minimize") for s, m in named]))
-    measured = tuple(Measurement(s, m, float(i), unit=f"u{i}") for i, (s, m) in enumerate(named))
+    measured = tuple(
+        ObjectiveValue("test.trade_off", s, m, "minimize", float(i), unit=f"u{i}")
+        for i, (s, m) in enumerate(named)
+    )
     trial = TrialResult(0, "valid", {RADIUS: 300.0}, Path("t"), Assessment(measured, (), True))
     study = StudyResults("s", "id", "now", Path("s"), spec, FrozenMap({}), (trial,), (0,))
     header = columns(study)
@@ -112,11 +163,14 @@ def test_column_names_stay_distinct_whatever_the_stages_and_metrics_are_called()
     escaped += ["analysis/50%25"]
     (row,) = csv.DictReader(io.StringIO(to_csv(study)))
     escaped += ["analysis/cells%1B[2J"]  # a terminal showing the header runs nothing
+    escaped = [f"test.trade_off/{name}" for name in escaped]
     assert "\x1b" not in to_csv(study)
     assert [row[f"objective:{name}"] for name in escaped] == [f"{i}.0" for i in range(6)]
     assert [row[f"objective:{name}:unit"] for name in escaped] == [f"u{i}" for i in range(6)]
-    # the stage and the metric read back: split at the one "/" left, then unescape each
-    assert [tuple(map(urllib.parse.unquote, n.split("/"))) for n in escaped] == named
+    # the evaluator, stage and metric read back: split at the two "/" left, then unescape each
+    assert [tuple(map(urllib.parse.unquote, n.split("/"))) for n in escaped] == [
+        ("test.trade_off", *name) for name in named
+    ]
 
 
 def test_the_json_export_holds_the_study_and_each_record_as_it_is(

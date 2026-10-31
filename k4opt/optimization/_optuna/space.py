@@ -64,15 +64,15 @@ def objective_values(assessment: Assessment) -> list[float]:
     it would be told as another value."""
     assert assessment.objectives is not None
     values = []
-    for measurement in assessment.objectives:
+    for objective in assessment.objectives:
         try:
-            value = float(measurement.value)
+            value = float(objective.value)
         except OverflowError:
             value = None
-        if value is None or value != measurement.value:
+        if value is None or value != objective.value:
             raise OptimizationError(
-                f"{measurement.stage}/{measurement.metric}: no float holds {measurement.value} "
-                "exactly, so the optimizer cannot be told it"
+                f"{objective.label}: no float holds {objective.value} exactly, so the optimizer "
+                "cannot be told it"
             )
         values.append(value)
     return values

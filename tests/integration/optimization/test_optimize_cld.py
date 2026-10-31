@@ -86,7 +86,9 @@ def test_a_study_of_the_example_runs_resumes_and_tells_the_optimizer_its_records
     shown, exported = io.StringIO(), io.StringIO()
     assert main(["study", "show", str(output)], stdout=shown, stderr=io.StringIO()) == 0
     assert "trials:     3: 3 valid" in shown.getvalue()
-    assert "simulation/ecal_barrel.angular_residual  minimize  (mrad)" in shown.getvalue()
+    assert (
+        "calo.photon/simulation/ecal_barrel.angular_residual  minimize  (mrad)" in shown.getvalue()
+    )
     command = ["study", "export", str(output), "--format", "json"]
     assert main(command, stdout=exported, stderr=io.StringIO()) == 0
     for entry in json.loads(exported.getvalue())["trials"]:

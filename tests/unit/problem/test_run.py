@@ -185,18 +185,24 @@ def test_summary_is_written_and_truthful(
     # every stage was made from this candidate
     assert (on_disk["represents_candidate"], on_disk["supplied"]) == (True, [])
     assert on_disk["candidate"] == {RADIUS: 450.0}
-    (evaluator,) = on_disk["evaluators"]
-    assert (evaluator["name"], evaluator["version"]) == ("test.cell_count", "1")
+    # the implementation once, and its binding's work
+    (implementation,) = on_disk["implementations"].values()
+    assert list(on_disk["implementations"]) == ["test.cell_count"]
+    assert (implementation["version"], implementation["stage"]) == ("1", "simulation")
+    (evaluator,) = on_disk["evaluations"].values()
+    assert list(on_disk["evaluations"]) == ["test.cell_count"]
+    assert evaluator["implementation"] == "test.cell_count"
     assert (evaluator["status"], evaluator["message"]) == ("valid", None)
     (measurement,) = evaluator["measurements"]
     assert measurement["metric"] == "ecal_barrel.mean_hit_cells"
     assert measurement["value"] == 3.0  # distinct cells per event: 3, 2, 4
-    # the objective, from the evaluator that owns it
+    # the objective, from the evaluator it names
     assert on_disk["metrics"] == [
         {
+            "evaluator": "test.cell_count",
             "stage": "simulation",
             "metric": "ecal_barrel.mean_hit_cells",
-            "evaluator": "test.cell_count",
+            "label": "test.cell_count/simulation/ecal_barrel.mean_hit_cells",
         }
         | {k: measurement[k] for k in ("value", "unit", "uncertainty")}
     ]
@@ -220,12 +226,11 @@ def test_summary_is_written_and_truthful(
     assert evaluator["collections"] == {"hits": COLLECTION}
     (warning,) = on_disk["warnings"]
     assert warning.startswith(UNEXPECTED) and warning.endswith("The simulation's output decides.")
-    assert evaluator["stage"] == "simulation"
     # the code of the evaluator, which its name and version only label
-    source = Path(evaluator["source"]["path"])
+    source = Path(implementation["source"]["path"])
     assert source.name == "cell_count.py"
-    assert evaluator["source"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
-    assert evaluator["source"]["executed"] is True  # loaded as FILE.py:Class
+    assert implementation["source"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert implementation["source"]["executed"] is True  # loaded as FILE.py:Class
     assert evaluator["provenance"] == {} and evaluator["artifacts"] == {}  # none of its own
     assert evaluator["reads"] == ["geometry", "generation", "simulation"]
     assert evaluator["blocked_by"] == []
@@ -255,15 +260,20 @@ def test_summary_is_written_and_truthful(
     assert on_disk["assessment"] == {
         "feasible": True,  # no constraints
         "objectives": [
-            {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells"}
+            {
+                "evaluator": "test.cell_count",
+                "stage": "simulation",
+                "metric": "ecal_barrel.mean_hit_cells",
+                "direction": "minimize",
+            }
             | {k: measurement[k] for k in ("value", "unit", "uncertainty")}
         ],
         "limits": [],
     }
     assert Assessment.from_summary(load_problem(problem_file), on_disk) == outcome.assessment
-    assert "revision" in evaluator["source"]  # of the checkout that tracks it, if one does
+    assert "revision" in implementation["source"]  # of the checkout that tracks it, if one does
     # what it declares: every measurement of a metric it declares carries the declared unit
-    assert evaluator["metrics"] == [
+    assert implementation["metrics"] == [
         {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells", "unit": "1"}
     ]
 
@@ -552,7 +562,7 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
     # the stage that failed, then what it kept from running
     assert summary["message"].startswith("simulation failed: ddsim exited with status 2")
     assert summary["message"].endswith("G4Exception: bad volume; blocked: test.cell_count")
-    (evaluator,) = summary["evaluators"]
+    (evaluator,) = summary["evaluations"].values()
     assert (evaluator["status"], evaluator["message"]) == ("blocked", "not run: simulation failed")
     assert evaluator["blocked_by"] == ["simulation"]
     assert evaluator["measurements"] == [] and evaluator["elapsed_seconds"] is None
@@ -614,9 +624,10 @@ def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> Non
         evaluator.version,
         evaluator.stage,
     )
-    assert [(o.stage, o.metric) for o in problem.objectives] == [
-        ("simulation", "ecal_barrel.angular_residual"),
-        ("simulation", "ecal_barrel.fired_cells"),
+    # the objectives leave the one evaluator out, and name it once read
+    assert [o.label for o in problem.objectives] == [
+        "calo.photon/simulation/ecal_barrel.angular_residual",
+        "calo.photon/simulation/ecal_barrel.fired_cells",
     ]
     assert metric_units(evaluator) == {
         ("simulation", "ecal_barrel.angular_residual"): "mrad",
@@ -889,7 +900,7 @@ def test_the_evaluator_provenance_is_saved_in_the_summary(
         problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluators=[Annotating()]
     )
     on_disk = json.loads(outcome.summary_path.read_text())
-    (evaluator,) = on_disk["evaluators"]
+    (evaluator,) = on_disk["evaluations"].values()
     assert evaluator["provenance"] == {"selection": "barrel", "algo": [2, 1]}
     assert on_disk["stages"]["simulation"]["returncode"] == 0  # the stage's record stays apart
 
@@ -1036,17 +1047,22 @@ def test_an_unwritable_evaluator_directory_is_a_recorded_failure(
 CELLS = ("simulation", "ecal_barrel.mean_hit_cells")
 ENERGY = ("simulation", "ecal_barrel.mean_hit_energy")
 ECHO = ("analysis", "candidate.first_value")
+OWNERS = {CELLS: "test.cell_count", ENERGY: "test.hit_energy", ECHO: "test.parameter_echo"}
 
 
 def declare(problem_file: Path, names: list[str], objectives: list[tuple[str, str]]) -> None:
-    """Make the problem declare the test evaluators ``names`` and these objectives."""
+    """Make the problem declare the test evaluators ``names`` and these objectives, each on the
+    metric of the evaluator that measures it (:data:`OWNERS`)."""
     doc = yaml.safe_load(problem_file.read_text())
     reads = {"stage": "simulation", "collections": {"hits": COLLECTION}}
     doc["evaluators"] = [
         {"name": name, "version": "1"} | ({} if name == "test.parameter_echo" else reads)
         for name in names
     ]
-    doc["objectives"] = [{"stage": s, "metric": m, "direction": "minimize"} for s, m in objectives]
+    doc["objectives"] = [
+        {"evaluator": OWNERS[(s, m)], "stage": s, "metric": m, "direction": "minimize"}
+        for s, m in objectives
+    ]
     problem_file.write_text(yaml.safe_dump(doc))
 
 
@@ -1088,13 +1104,39 @@ def test_the_command_measures_with_several_evaluators_on_one_simulation(
     )
     summary = json.loads((output / SUMMARY_NAME).read_text())
     assert summary["status"] == "valid"
-    assert [e["name"] for e in summary["evaluators"]] == ["test.cell_count", "test.hit_energy"]
-    assert [(m["metric"], m["evaluator"]) for m in summary["metrics"]] == [
-        ("ecal_barrel.mean_hit_cells", "test.cell_count"),
-        ("ecal_barrel.mean_hit_energy", "test.hit_energy"),
+    assert list(summary["evaluations"]) == ["test.cell_count", "test.hit_energy"]
+    assert [m["label"] for m in summary["metrics"]] == [
+        "test.cell_count/simulation/ecal_barrel.mean_hit_cells",
+        "test.hit_energy/simulation/ecal_barrel.mean_hit_energy",
     ]
     assert summary["metrics"][1]["value"] == pytest.approx(10 / 3)  # 4, 2 and 4 hits of 1 GeV
     assert list(summary["stages"]) == ["generation", "simulation"]
+
+
+def test_the_command_reports_each_binding_of_an_implementation_given_once(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["evaluators"].append(doc["evaluators"][0] | {"as": "cells_again"})
+    doc["objectives"][0]["evaluator"] = "test.cell_count"
+    doc["objectives"].append(doc["objectives"][0] | {"evaluator": "cells_again"})
+    problem_file.write_text(yaml.safe_dump(doc))
+    output = tmp_path / "a"
+    code, out, err = evaluate_with(
+        [CELL_COUNT], str(problem_file), "--param", f"{RADIUS}=450", "--output", str(output)
+    )
+    assert code == 0, err
+    assert len(fake.calls) == 1
+    assert "evaluator:   test.cell_count 1: valid" in out
+    assert "evaluator:   cells_again (test.cell_count 1): valid" in out
+    # two bindings that measure the same twice are worth a word, not a refusal
+    assert "evaluators 'test.cell_count' and 'cells_again' bind test.cell_count" in err
+    summary = json.loads((output / SUMMARY_NAME).read_text())
+    assert list(summary["evaluations"]) == ["test.cell_count", "cells_again"]
+    assert sorted(p.name for p in (output / "evaluators").iterdir()) == [
+        "cells_again",
+        "test.cell_count",
+    ]
 
 
 def test_a_failed_simulation_keeps_the_result_of_an_evaluator_that_needs_none(
@@ -1116,7 +1158,7 @@ def test_a_failed_simulation_keeps_the_result_of_an_evaluator_that_needs_none(
     assert "evaluator:   test.parameter_echo 1: valid" in out
     summary = json.loads((output / SUMMARY_NAME).read_text())
     assert summary["status"] == "failed"
-    cells, echo = summary["evaluators"]
+    cells, echo = summary["evaluations"].values()
     assert (cells["status"], cells["elapsed_seconds"], cells["workdir"]) == ("blocked", None, None)
     assert echo["status"] == "valid" and echo["measurements"][0]["value"] == 450.0
     # the measurement that was made is kept; the missing one is missing, not made up
@@ -1209,7 +1251,7 @@ def test_a_misspelled_collection_warns_before_the_run_and_fails_after_it(
     )
     assert code == 1 and len(fake.calls) == 1
     summary = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
-    (evaluator,) = summary["evaluators"]
+    (evaluator,) = summary["evaluations"].values()
     assert (evaluator["status"], evaluator["elapsed_seconds"]) == ("failed", None)
     assert evaluator["message"] == (
         "collection 'InnerTrackerBarelCollection' (hits) is not in events.edm4hep.root, which "
@@ -1227,7 +1269,7 @@ def test_a_setting_with_a_unit_is_recorded_as_written_and_as_received(
     gated = type("Gated", (cell_count(),), {"settings": {"threshold": Quantity("GeV")}})
     outcome = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[gated])
     on_disk = json.loads(outcome.summary_path.read_text())
-    (evaluator,) = on_disk["evaluators"]
+    (evaluator,) = on_disk["evaluations"].values()
     assert evaluator["settings"] == {
         "declared": {"threshold": {"value": 70, "unit": "keV"}},
         "used": {"threshold": 70e-6},
@@ -1447,8 +1489,10 @@ def test_the_identity_of_a_session_is_what_it_evaluates_with(
             "sha256": hashlib.sha256(table.read_bytes()).hexdigest(),
         },
     }
-    (evaluator,) = identity["evaluators"]  # type: ignore[misc]
-    assert (evaluator["name"], evaluator["version"]) == ("test.cell_count", "1")
+    implementations = identity["implementations"]
+    assert isinstance(implementations, dict) and list(implementations) == ["test.cell_count"]
+    evaluator = implementations["test.cell_count"]
+    assert (evaluator["version"], evaluator["stage"]) == ("1", "simulation")
     assert (
         evaluator["source"]["sha256"]
         == hashlib.sha256(Path(CELL_COUNT.split(":")[0]).read_bytes()).hexdigest()
@@ -1782,10 +1826,9 @@ def test_command_prints_each_limit_and_whether_the_candidate_is_feasible(
         str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
     )
     assert code == 0, err  # a valid evaluation, whatever the limits say
-    assert (
-        "limit:       simulation/ecal_barrel.mean_hit_cells >= 1: satisfied, margin -2 [1]" in out
-    )
-    assert "limit:       simulation/ecal_barrel.mean_hit_cells <= 2: violated, margin 1 [1]" in out
+    limit = "limit:       test.cell_count/simulation/ecal_barrel.mean_hit_cells"
+    assert f"{limit} >= 1: satisfied, margin -2 [1]" in out
+    assert f"{limit} <= 2: violated, margin 1 [1]" in out
     assert "feasible:    no" in out
     summary = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
     assert [(limit["bound"], limit["satisfied"]) for limit in summary["assessment"]["limits"]] == [
@@ -1803,7 +1846,10 @@ def test_command_reports_limits_it_could_not_judge(
         str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
     )
     assert code == 1
-    assert "limit:       simulation/ecal_barrel.mean_hit_cells <= 2: not assessed" in out
+    assert (
+        "limit:       test.cell_count/simulation/ecal_barrel.mean_hit_cells <= 2: not assessed"
+        in out
+    )
     assert "feasible:    not assessed" in out
 
 
@@ -1908,13 +1954,14 @@ def test_the_record_is_assembled_from_the_task_results_alone(
         session._process,
     )
     assert json.loads(json.dumps(again)) == written
-    tasks = [written["geometry"], *written["stages"].values(), *written["evaluators"]]
+    tasks = [written["geometry"], *written["stages"].values(), *written["evaluations"].values()]
     assert all(task["status"] in ("done", "valid") for task in tasks)
 
 
 def change(data: dict[str, Any], path: str, value: Any) -> None:
-    """Set the entry at the dotted ``path`` of ``data`` (list items by index) to ``value``."""
-    *parents, last = path.split(".")
+    """Set the entry at ``path`` of ``data``, its keys separated by ``/`` (list items by index),
+    to ``value``."""
+    *parents, last = path.split("/")
     for key in parents:
         data = data[int(key)] if isinstance(data, list) else data[key]
     if isinstance(data, list):
@@ -1928,40 +1975,70 @@ def change(data: dict[str, Any], path: str, value: Any) -> None:
     [
         # what is blocked, by what, and why: re-derived from what each task reads
         (
-            "evaluators.0.status",
+            "evaluations/test.cell_count/status",
             "failed",
             "evaluator 'test.cell_count' is failed (blocked by ['simulation'], message 'not run: "
             "simulation failed'), but what it reads makes it blocked by ['simulation']",
         ),
-        ("evaluators.0.blocked_by", [], "is blocked (blocked by [], message"),
-        ("evaluators.0.blocked_by", ["generation"], "is blocked (blocked by ['generation']"),
-        ("evaluators.0.message", "not run: generation failed", "but what it reads makes it"),
+        ("evaluations/test.cell_count/blocked_by", [], "is blocked (blocked by [], message"),
         (
-            "stages.simulation.status",
+            "evaluations/test.cell_count/blocked_by",
+            ["generation"],
+            "is blocked (blocked by ['generation']",
+        ),
+        (
+            "evaluations/test.cell_count/message",
+            "not run: generation failed",
+            "but what it reads makes it",
+        ),
+        (
+            "stages/simulation/status",
             "done",
             "evaluator 'test.cell_count' is blocked, but every task it reads succeeded",
         ),
         (
-            "stages.simulation.status",
+            "stages/simulation/status",
             "blocked",
             "stage 'simulation' is blocked, but every task it reads succeeded",
         ),
-        ("stages.simulation.message", None, "stage 'simulation': a task that is failed needs a"),
-        ("stages.simulation.status", "crashed", "status 'crashed' is none of done, failed"),
-        ("evaluators.1.blocked_by", ["simulation"], "is blocked, but every task it reads"),
+        ("stages/simulation/message", None, "stage 'simulation': a task that is failed needs a"),
+        ("stages/simulation/status", "crashed", "status 'crashed' is none of done, failed"),
+        (
+            "evaluations/test.parameter_echo/blocked_by",
+            ["simulation"],
+            "is blocked, but every task it reads",
+        ),
         # what each task reads is the problem's, not the record's to say
         (
-            "evaluators.0.reads",
+            "evaluations/test.cell_count/reads",
             ["geometry", "simulation"],
             "evaluator 'test.cell_count' reads ['geometry', 'simulation'], but the problem has it "
             "read ['geometry', 'generation', 'simulation']",
         ),
-        ("stages.simulation.reads", ["geometry"], "stage 'simulation' reads ['geometry'], but"),
-        ("stages.generation", None, "stages.generation must be a mapping"),
-        ("geometry.status", "failed", "geometry: status 'failed', but it is always done"),
+        ("stages/simulation/reads", ["geometry"], "stage 'simulation' reads ['geometry'], but"),
+        ("stages/generation", None, "stages.generation must be a mapping"),
+        ("geometry/status", "failed", "geometry: status 'failed', but it is always done"),
         ("supplied", ["simulation"], "but the problem makes ['simulation']"),
         ("supplied", ["geometry"], "supplied ['geometry'] must list stages"),
         ("supplied", ["simulation", "simulation"], "must list each stage once"),
+        # what a binding was configured with is the problem's, not the record's to say
+        (
+            "evaluations/test.cell_count/collections/hits",
+            "OtherCollection",
+            "evaluator 'test.cell_count': collections {'hits': 'OtherCollection'}, but the "
+            "problem gives {'hits': ",
+        ),
+        (
+            "evaluations/test.cell_count/settings/declared",
+            {"threshold": 1},
+            "evaluator 'test.cell_count': settings.declared {'threshold': 1}, but the problem",
+        ),
+        (
+            "implementations/test.cell_count/stage",
+            "generation",
+            "implementation 'test.cell_count': stage 'generation', but the problem has it read "
+            "'simulation'",
+        ),
         ("message", "simulation failed: boom", "but its tasks make it"),
         ("status", "valid", "status is 'valid', but its tasks make it 'failed'"),
     ],
@@ -1980,7 +2057,7 @@ def test_a_record_whose_tasks_disagree_with_its_plan_is_refused(
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     data = json.loads(outcome.summary_path.read_text())
     Assessment.from_summary(session.spec, data)  # as written, it holds up
-    assert [e["status"] for e in data["evaluators"]] == ["blocked", "valid"]
+    assert [e["status"] for e in data["evaluations"].values()] == ["blocked", "valid"]
     change(data, path, value)
     with pytest.raises(RecordError, match=re.escape(message)):
         Assessment.from_summary(session.spec, data)
@@ -1992,7 +2069,7 @@ def test_a_blocked_evaluator_that_measured_is_refused(
     simulation.install(monkeypatch, returncode=2)
     session = EvaluationSession.open(problem_file, [cell_count()])
     data = json.loads(session.evaluate({RADIUS: 450.0}, tmp_path / "a").summary_path.read_text())
-    data["evaluators"][0]["measurements"] = [
+    data["evaluations"]["test.cell_count"]["measurements"] = [
         {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells", "value": 3.0}
         | {"unit": "1", "uncertainty": None}
     ]

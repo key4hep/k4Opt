@@ -20,7 +20,7 @@ from k4opt.evaluation import (
     Measurement,
     Status,
 )
-from k4opt.problem import ProblemSpec, _evaluate, parse_problem
+from k4opt.problem import MetricRef, ProblemSpec, _evaluate, parse_problem
 from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate
 from k4opt.problem._tasks import Kind, stage_task
 from tests.support import simulation
@@ -36,8 +36,21 @@ GUN = {
 CELLS = ("simulation", "ecal_barrel.mean_hit_cells")  # test.cell_count
 ENERGY = ("simulation", "ecal_barrel.mean_hit_energy")  # test.hit_energy
 ECHO = ("analysis", "candidate.first_value")  # test.parameter_echo
+TRUTH = ("analysis", "truth.particles")  # test.truth
+SIZE = ("analysis", "generation.bytes")  # test.file_size
+# the evaluator that measures each metric of these tests
+OWNERS = {
+    CELLS: "test.cell_count",
+    ENERGY: "test.hit_energy",
+    ECHO: "test.parameter_echo",
+    TRUTH: "test.truth",
+    SIZE: "test.file_size",
+    ("analysis", "a.value"): "a",
+    ("analysis", "b.value"): "b",
+}
 COLLECTIONS = {
-    name: {"hits": COLLECTION} for name in ("test.cell_count", "test.hit_energy", "test.busiest")
+    name: {"hits": COLLECTION}
+    for name in ("test.cell_count", "test.hit_energy", "test.busiest", "test.rival")
 }
 
 
@@ -65,16 +78,23 @@ STAGES = {
 }
 
 
+def measured(candidate: CandidateRecord, metric: tuple[str, str]) -> Any:
+    """The value of ``metric`` by the evaluator that measures it (:data:`OWNERS`)."""
+    return candidate.value(MetricRef(OWNERS[metric], *metric))
+
+
 def problem(
     doc: dict[str, Any],
     *names: str,
-    objectives: tuple[tuple[str, str], ...] = (CELLS,),
+    objectives: tuple[tuple[str, ...], ...] = (CELLS,),
     constraints: tuple[dict[str, Any], ...] = (),
     generation_file: str | None = None,
 ) -> ProblemSpec:
     """The shared problem with evaluators ``names`` (version 1), each reading its stage, the
     stages they need (the gun, or ``generation_file``, and 3 simulated events) and
-    these objectives."""
+    these objectives. An objective ``(stage, metric)``, and a constraint without an evaluator,
+    is on the metric of the evaluator that measures it (:data:`OWNERS`), named only when the
+    problem has several evaluators; ``(evaluator, stage, metric)`` names another."""
     doc = copy.deepcopy(doc)
     doc["evaluators"] = [
         {"name": name, "version": "1"}
@@ -89,8 +109,18 @@ def problem(
         doc["stages"]["generation"] = gun if generation_file is None else {"file": generation_file}
     if "simulation" in read:
         doc["stages"]["simulation"] = {"executor": "ddsim", "events": 3}
-    doc["objectives"] = [{"stage": s, "metric": m, "direction": "minimize"} for s, m in objectives]
-    doc["constraints"] = list(constraints)
+
+    def owned(metric: tuple[str, ...]) -> dict[str, str]:
+        if len(metric) == 3:
+            return dict(zip(("evaluator", "stage", "metric"), metric, strict=True))
+        stage, name = metric
+        owner = {"evaluator": OWNERS[(stage, name)]} if len(names) > 1 else {}
+        return owner | {"stage": stage, "metric": name}
+
+    doc["objectives"] = [owned(o) | {"direction": "minimize"} for o in objectives]
+    doc["constraints"] = [
+        c if "evaluator" in c else owned((c["stage"], c["metric"])) | c for c in constraints
+    ]
     return parse_problem(doc)
 
 
@@ -172,9 +202,12 @@ def test_two_simulation_readers_share_one_ddsim_run(
     first, second = candidate.records
     assert [(m.stage, m.metric) for m in first.result.measurements] == [CELLS]
     assert [(m.stage, m.metric) for m in second.result.measurements] == [ENERGY]
-    assert candidate.value(*CELLS).value == 3.0  # distinct cells per event: 3, 2, 4
-    assert candidate.value(*ENERGY).value == pytest.approx(10 / 3)  # 1 GeV per hit: 4, 2, 4
-    assert candidate.owners == {CELLS: "test.cell_count", ENERGY: "test.hit_energy"}
+    assert measured(candidate, CELLS).value == 3.0  # distinct cells per event: 3, 2, 4
+    assert measured(candidate, ENERGY).value == pytest.approx(10 / 3)  # 1 GeV per hit: 4, 2, 4
+    assert [ref.label for ref in spec.references] == [
+        "test.cell_count/simulation/ecal_barrel.mean_hit_cells",
+        "test.hit_energy/simulation/ecal_barrel.mean_hit_energy",
+    ]
     assert stages(candidate) == ["generation", "simulation"]
     assert sorted(p.name for p in (tmp_path / "run").iterdir()) == ["evaluators", "simulation"]
 
@@ -201,7 +234,7 @@ def test_an_evaluator_that_reads_no_stage_runs_no_simulation(
     candidate = evaluate(spec, [parameter_echo()], tmp_path, geometry)
     assert log == [] and not (tmp_path / "run" / "simulation").exists()
     assert stages(candidate) == [] and reads(candidate) == {"test.parameter_echo": ("geometry",)}
-    assert candidate.status is Status.VALID and candidate.value(*ECHO).value == 6
+    assert candidate.status is Status.VALID and measured(candidate, ECHO).value == 6
 
 
 class FileSize(Evaluator):
@@ -237,7 +270,7 @@ def test_each_evaluator_reads_the_files_of_the_stages_it_needs_and_no_others(
         hepmc_doc,
         "test.cell_count",
         "test.file_size",
-        objectives=(CELLS, ("analysis", "generation.bytes")),
+        objectives=(CELLS, SIZE),
         generation_file="zh.hepmc",
     )
     cells, size = Spy(cell_count(), log), FileSize()
@@ -277,7 +310,7 @@ def test_supplied_stage_files_only_reach_the_evaluators_that_read_them(
         "test.cell_count",
         "test.file_size",
         "test.parameter_echo",
-        objectives=(CELLS, ("analysis", "generation.bytes"), ECHO),
+        objectives=(CELLS, SIZE, ECHO),
         generation_file="zh.hepmc",
     )
     events_file = tmp_path / "provided.root"
@@ -317,8 +350,8 @@ def test_an_independent_evaluator_keeps_its_result_when_the_simulation_fails(
     assert echo.result.status is Status.VALID and echo.elapsed_seconds is not None
     # the evaluation is incomplete, but the measurement that was made is kept
     assert candidate.status is Status.FAILED
-    assert candidate.value(*CELLS) is None
-    assert candidate.value(*ECHO).value == 6
+    assert measured(candidate, CELLS) is None
+    assert measured(candidate, ECHO).value == 6
     message = candidate.message or ""
     assert message.startswith("simulation failed: ddsim exited")
     assert message.endswith("; blocked: test.cell_count")
@@ -333,7 +366,7 @@ def test_a_generation_reader_keeps_its_result_when_the_simulation_fails(
         hepmc_doc,
         "test.cell_count",
         "test.file_size",
-        objectives=(CELLS, ("analysis", "generation.bytes")),
+        objectives=(CELLS, SIZE),
         generation_file="zh.hepmc",
     )
     size = FileSize()
@@ -360,7 +393,7 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
         hepmc_doc,
         "test.cell_count",
         "test.file_size",
-        objectives=(CELLS, ("analysis", "generation.bytes")),
+        objectives=(CELLS, SIZE),
         generation_file="zh.hepmc",
     )
     hepmc, events_file = tmp_path / "zh.hepmc", tmp_path / "mine.edm4hep.root"
@@ -387,7 +420,7 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
     assert reads(candidate)["test.cell_count"] == ("geometry", "simulation")
     counted, sized = candidate.records
     assert counted.result.status is Status.VALID
-    assert candidate.value(*CELLS).value == 3.0
+    assert measured(candidate, CELLS).value == 3.0
     if readable:
         assert sized.result.status is Status.VALID and candidate.status is Status.VALID
     else:
@@ -443,27 +476,12 @@ def test_the_candidate_status_follows_its_evaluators(
         record = candidate.record(name)
         assert record.result.status == own
         # a valid result gives the objective; an invalid one keeps its diagnostic in its record
-        assert (candidate.value("analysis", f"{name}.value") is not None) == (own == "valid")
+        ref = MetricRef(name, "analysis", f"{name}.value")
+        assert (candidate.value(ref) is not None) == (own == "valid")
         assert len(record.result.measurements) == (0 if own == "failed" else 1)
 
 
 # --- everything that can be checked is checked before anything runs ---
-
-
-class Rival(Evaluator):
-    """Declares a metric of ``test.cell_count``."""
-
-    name = "test.rival"
-    version = "1"
-    stage = "simulation"
-    metrics = {"ecal_barrel.mean_hit_cells": "1"}
-
-
-class Silent(Evaluator):
-    """Declares no metrics."""
-
-    name = "test.silent"
-    version = "1"
 
 
 class Ahead(Evaluator):
@@ -492,30 +510,24 @@ class Ahead(Evaluator):
         ),
         (("test.cell_count",), (cell_count, cell_count), {}, r"'test\.cell_count' is given twice"),
         (
-            ("test.cell_count", "test.rival"),
-            (cell_count, Rival),
-            {},
-            r"simulation/ecal_barrel\.mean_hit_cells is declared by evaluators "
-            r"'test\.cell_count' and 'test\.rival'",
-        ),
-        (
-            ("test.cell_count", "test.silent"),
-            (cell_count, Silent),
-            {},
-            r"evaluator\(s\) 'test\.silent' declare no metrics",
+            ("test.cell_count", "test.hit_energy"),
+            (cell_count, hit_energy),
+            {"objectives": (CELLS, ("test.hit_energy", "simulation", "nothing"))},
+            r"evaluator 'test\.hit_energy' does not measure simulation/nothing; supported: "
+            r"simulation/ecal_barrel\.mean_hit_energy$",
         ),
         (
             ("test.cell_count", "test.hit_energy"),
             (cell_count, hit_energy),
-            {"objectives": (CELLS, ("simulation", "nothing"))},
-            r"no evaluator measures simulation/nothing; 'test\.cell_count' measures "
-            r"simulation/ecal_barrel\.mean_hit_cells; 'test\.hit_energy' measures",
+            {"objectives": (("test.hit_energy", *CELLS),)},  # the metric of the other one
+            r"evaluator 'test\.hit_energy' does not measure simulation/ecal_barrel\.mean_hit_cells",
         ),
         (
             ("test.cell_count", "test.hit_energy"),
             (cell_count, hit_energy),
             {"constraints": ({"stage": ENERGY[0], "metric": ENERGY[1], "max": 1, "unit": "MeV"},)},
-            r"declares unit 'MeV' but evaluator 'test\.hit_energy' measures it in 'GeV'",
+            r"constraint on test\.hit_energy/simulation/ecal_barrel\.mean_hit_energy declares unit "
+            r"'MeV' but evaluator 'test\.hit_energy' measures it in 'GeV'",
         ),
         (
             ("test.cell_count", "test.ahead"),
@@ -596,24 +608,49 @@ def test_invalid_collections_of_the_second_evaluator_are_refused_before_anything
     assert log == [] and not (tmp_path / "run").exists()
 
 
-def test_a_metric_of_another_evaluator_is_a_contract_error(
-    doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+class Rival(Evaluator):
+    """Also measures the metric of ``test.cell_count``, by name: 99 cells."""
+
+    name = "test.rival"
+    version = "1"
+    stage = "simulation"
+    collections = {"hits": Collection("SimCalorimeterHit")}
+    metrics = {"ecal_barrel.mean_hit_cells": "1"}
+
+    def evaluate(self, request: EvaluationRequest) -> Any:
+        return {"ecal_barrel.mean_hit_cells": 99}
+
+
+class Silent(Evaluator):
+    """Declares no metrics, and reports one of another evaluator's, by name."""
+
+    name = "test.silent"
+    version = "1"
+
+    def evaluate(self, request: EvaluationRequest) -> Any:
+        return {CELLS: 7}
+
+
+@pytest.mark.parametrize(("other", "value"), [(Rival, 99), (Silent, 7)])
+def test_a_metric_two_evaluators_report_is_two_values_each_of_its_own_evaluator(
+    doc: dict[str, Any],
+    tmp_path: Path,
+    geometry: Path,
+    log: list[str],
+    other: type[Any],
+    value: int,
 ) -> None:
-    class Greedy(Evaluator):
-        name = "test.greedy"
-        version = "1"
-        metrics = {("analysis", "greedy.value"): "1"}
-
-        def evaluate(self, request: EvaluationRequest) -> Any:
-            return {("analysis", "greedy.value"): 1, CELLS: 99}  # not its metric
-
-    spec = problem(doc, "test.cell_count", "test.greedy")
-    with pytest.raises(
-        EvaluationContractError,
-        match=r"'test\.greedy' reported simulation/ecal_barrel\.mean_hit_cells, a metric of "
-        r"evaluator 'test\.cell_count'",
-    ):
-        evaluate(spec, [cell_count(), Greedy()], tmp_path, geometry)
+    # an objective names the evaluator of its value: a metric of the same name is no rival
+    spec = problem(
+        doc,
+        "test.cell_count",
+        other.name,
+        objectives=(("test.cell_count", *CELLS), (other.name, *CELLS)),
+    )
+    candidate = evaluate(spec, [cell_count(), other], tmp_path, geometry)
+    assert candidate.status is Status.VALID
+    assert measured(candidate, CELLS).value == 3.0  # distinct cells per event: 3, 2, 4
+    assert candidate.value(MetricRef(other.name, *CELLS)).value == value
 
 
 # --- workdirs, artifacts and time stay with whoever made them ---
@@ -718,7 +755,7 @@ def test_analysis_metrics_need_no_analysis_stage(
     spec = problem(doc, "test.busiest", objectives=(("analysis", "ecal.max_hits"),))
     candidate = evaluate(spec, [Busiest()], tmp_path, geometry)
     assert stages(candidate) == ["generation", "simulation"]
-    assert candidate.value("analysis", "ecal.max_hits").value == 4
+    assert candidate.value(MetricRef("test.busiest", "analysis", "ecal.max_hits")).value == 4
 
 
 # --- the collections an evaluator declares are checked in the file before it is called ---
@@ -788,9 +825,6 @@ class Truth(Evaluator):
         return {("analysis", "truth.particles"): [len(e.particles) for e in self.events(request)]}
 
 
-TRUTH = ("analysis", "truth.particles")
-
-
 def test_collections_of_a_stage_that_makes_no_file_are_refused_before_anything_runs(
     doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
 ) -> None:
@@ -822,7 +856,7 @@ def test_collections_of_an_edm4hep_generation_file_are_read(
         generation_file="zh.edm4hep.root",
     )
     candidate = evaluate(in_directory(spec, tmp_path), [cell_count(), Truth()], tmp_path, geometry)
-    assert candidate.status is Status.VALID and candidate.value(*TRUTH).value == 1
+    assert candidate.status is Status.VALID and measured(candidate, TRUTH).value == 1
 
 
 @pytest.mark.parametrize("supplied", [False, True])
@@ -874,4 +908,169 @@ def test_a_collection_no_evaluator_reads_cannot_fail_the_ones_that_read_the_file
     )
     spec = problem(doc, "test.cell_count", objectives=(CELLS,))
     candidate = evaluate(spec, [cell_count()], tmp_path, geometry)
-    assert candidate.status is Status.VALID and candidate.value(*CELLS).value == 2
+    assert candidate.status is Status.VALID and measured(candidate, CELLS).value == 2
+
+
+# --- one implementation, bound several times ---
+
+
+BUSY = ("simulation", "ecal_barrel.busy_events")
+
+
+class Threshold(Evaluator):
+    """The events with at least ``min_hits`` hits; one instance per binding and candidate."""
+
+    name = "test.threshold"
+    version = "1"
+    stage = "simulation"
+    collections = {"hits": Collection("SimCalorimeterHit")}
+    settings = {"min_hits": 1}
+    metrics = {BUSY: "1"}
+    created: list[Threshold] = []
+
+    def __init__(self) -> None:
+        Threshold.created.append(self)
+        self.asked: list[int] = []
+
+    def evaluate(self, request: EvaluationRequest) -> Any:
+        least = request.settings["min_hits"]
+        self.asked.append(least)
+        return {BUSY: sum(len(event.hits) >= least for event in self.events(request))}
+
+
+def thresholds(doc: dict[str, Any], *settings: dict[str, Any], **extra: Any) -> ProblemSpec:
+    """``test.threshold`` bound once with each of ``settings``: as itself, then as ``t1``, ``t2``,
+    ..., with an objective on each binding's value."""
+    doc = copy.deepcopy(doc)
+    doc.pop("constraints", None)
+    doc["stages"] = {
+        "generation": {"executor": "gun", **GUN},
+        "simulation": {"executor": "ddsim", "events": 3},
+    }
+    bindings = ["test.threshold", *(f"t{i}" for i in range(1, len(settings)))]
+    doc["evaluators"] = [
+        {"name": "test.threshold", "version": "1", "stage": "simulation"}
+        | ({} if binding == "test.threshold" else {"as": binding})
+        | {"collections": {"hits": COLLECTION}, "settings": given}
+        for binding, given in zip(bindings, settings, strict=True)
+    ]
+    doc["objectives"] = [
+        {"evaluator": binding, "stage": BUSY[0], "metric": BUSY[1], "direction": "minimize"}
+        for binding in bindings
+    ]
+    return parse_problem(doc | extra)
+
+
+def test_two_bindings_of_one_implementation_read_one_simulation_with_their_own_settings(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+) -> None:
+    Threshold.created.clear()
+    spec = thresholds(doc, {"min_hits": 1}, {"min_hits": 3})
+    assert spec.to_dict()["evaluators"][1] == {
+        "name": "test.threshold",
+        "as": "t1",
+        "version": "1",
+        "stage": "simulation",
+        "collections": {"hits": COLLECTION},
+        "settings": {"min_hits": 3},
+    }
+    candidate = evaluate(spec, [Threshold], tmp_path, geometry)  # the class, given once
+    assert log == ["ddsim"]  # one simulation, read by both bindings
+    assert candidate.status is Status.VALID
+    # events with 4, 2 and 4 hits: all have one, two have three
+    assert candidate.value(MetricRef("test.threshold", *BUSY)).value == 3
+    assert candidate.value(MetricRef("t1", *BUSY)).value == 2
+    assert list(candidate.evaluations) == ["test.threshold", "t1"]
+    assert {r.evaluator_name for r in candidate.records} == {"test.threshold"}
+    assert reads(candidate) == {
+        "test.threshold": ("geometry", "generation", "simulation"),
+        "t1": ("geometry", "generation", "simulation"),
+    }
+    # the probe, then an instance of each binding of its own, each asked once
+    probe, first, second = Threshold.created
+    assert (probe.asked, first.asked, second.asked) == ([], [1], [3])
+    assert sorted(p.name for p in (tmp_path / "run" / "evaluators").iterdir()) == [
+        "t1",
+        "test.threshold",
+    ]
+
+
+def test_a_binding_of_another_version_is_named_by_its_binding(
+    doc: dict[str, Any], tmp_path: Path, log: list[str]
+) -> None:
+    spec = thresholds(doc, {"min_hits": 1}, {"min_hits": 3})
+    entries = (spec.evaluators[0], dataclasses.replace(spec.evaluators[1], version="2"))
+    spec = dataclasses.replace(spec, evaluators=entries)
+    with pytest.raises(
+        EvaluationContractError,
+        match=r"problem declares evaluator 'test\.threshold' \(as 't1'\) version '2', got "
+        r"version '1'",
+    ):
+        _evaluate_candidate(spec, {CELL: 6}, implementations(Threshold))
+    assert log == []
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "warned"),
+    [
+        ({"min_hits": 1}, {"min_hits": 1}, True),
+        ({}, {"min_hits": 1}, True),  # the default filled in
+        ({"min_hits": 1}, {"min_hits": 3}, False),
+    ],
+)
+def test_two_bindings_that_measure_the_same_are_a_warning(
+    doc: dict[str, Any],
+    tmp_path: Path,
+    geometry: Path,
+    log: list[str],
+    first: dict[str, Any],
+    second: dict[str, Any],
+    warned: bool,
+) -> None:
+    spec = thresholds(doc, first, second)
+    candidate = evaluate(spec, [Threshold], tmp_path, geometry)
+    assert candidate.status is Status.VALID  # both are evaluated all the same
+    expected = (
+        "evaluators 'test.threshold' and 't1' bind test.threshold with the same settings and "
+        "collections; each is evaluated separately"
+    )
+    assert candidate.warnings == ((expected,) if warned else ())
+
+
+class CutThreshold(Threshold):
+    """:class:`Threshold` with a mapping setting too."""
+
+    settings = {"min_hits": 1, "cuts": {}}
+
+
+@pytest.mark.parametrize(
+    ("second", "warned"),
+    [({"high": 2, "low": 1}, True), ({"low": 1, "high": 3}, False)],
+)
+def test_bindings_with_a_mapping_setting_are_the_same_whatever_its_key_order(
+    doc: dict[str, Any],
+    tmp_path: Path,
+    geometry: Path,
+    log: list[str],
+    second: dict[str, Any],
+    warned: bool,
+) -> None:
+    spec = thresholds(doc, {"cuts": {"low": 1, "high": 2}}, {"cuts": second})
+    candidate = evaluate(spec, [CutThreshold], tmp_path, geometry)
+    assert candidate.status is Status.VALID
+    assert len(candidate.warnings) == (1 if warned else 0)
+
+
+def test_an_objective_on_the_metric_of_a_binding_needs_its_binding_to_measure_it(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+) -> None:
+    spec = thresholds(doc, {"min_hits": 1}, {"min_hits": 3})
+    objectives = (dataclasses.replace(spec.objectives[1], metric="nothing"),)
+    spec = dataclasses.replace(spec, objectives=objectives)
+    with pytest.raises(
+        EvaluationContractError,
+        match=r"evaluator 't1' does not measure simulation/nothing; supported: "
+        r"simulation/ecal_barrel\.busy_events",
+    ):
+        evaluate(spec, [Threshold], tmp_path, geometry)
+    assert log == []

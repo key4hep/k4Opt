@@ -285,7 +285,7 @@ def _trial_report(run: _Study, frozen: FrozenTrial) -> TrialReport:
         status = "error" if "k4opt.error" in attrs else "interrupted"
         if frozen.state == TrialState.RUNNING:
             status = "running"
-    names = [f"{o.stage}/{o.metric}" for o in run.spec.objectives]
+    names = [o.label for o in run.spec.objectives]
     values = frozen.values if frozen.state == TrialState.COMPLETE else None
     return TrialReport(
         number=frozen.number,
@@ -308,7 +308,7 @@ def _study_report(run: _Study) -> StudyReport:
         id=run.document["id"],
         trials=trials,
         pareto=tuple(sorted(t.number for t in run.study.best_trials)),
-        objectives=tuple(f"{o.stage}/{o.metric}" for o in run.spec.objectives),
+        objectives=tuple(o.label for o in run.spec.objectives),
         constraints=tuple(limit_names(run.spec)),
     )
 
@@ -348,9 +348,9 @@ def optimize(
     for warning in session.warnings:
         warn(warning)
     if not resume:
-        for warning in dirty_checkouts(identity["evaluators"]):
+        for warning in dirty_checkouts(identity["implementations"]):
             warn(warning)
-    metrics = {(c.stage, c.metric) for c in spec.constraints}
+    metrics = {c.ref for c in spec.constraints}
     if len(metrics) > 1:
         warn(
             f"constraints on {len(metrics)} metrics: while feasible trials are scarce, the sampler "

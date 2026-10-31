@@ -5,16 +5,26 @@ from __future__ import annotations
 import pickle
 from collections.abc import Mapping
 from typing import Any, cast
+from urllib.parse import unquote
 
 import pytest
 
 from k4opt import frozen as frozen_module
-from k4opt.problem import EvaluatorSpec, ProblemConfigError, ProblemSpec, Stage, parse_problem
+from k4opt.problem import (
+    EvaluatorSpec,
+    MetricRef,
+    ProblemConfigError,
+    ProblemSpec,
+    Stage,
+    parse_problem,
+)
 from k4opt.problem.models import freeze, thaw
 
 
 def test_to_dict_is_plain_json_data(doc: dict[str, Any]) -> None:
     data = parse_problem(doc).to_dict()
+    for item in (*doc["objectives"], *doc["constraints"]):  # left out of the one evaluator's
+        item["evaluator"] = "calo.single_particle_shower"
     assert data == doc  # same content, same shape
     assert list(data) == list(doc)  # schema order
 
@@ -251,3 +261,24 @@ def test_shared_value_within_the_depth_limit_is_fine_in_any_order() -> None:
     for order in (("a", "b"), ("b", "a")):
         document = {name: shared if name == "a" else _nested(20, shared) for name in order}
         assert thaw(freeze(document, "p")) == {"a": shared, "b": _nested(20, shared)}
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (MetricRef("cost", "analysis/x", "y"), MetricRef("cost", "analysis", "x/y")),
+        (MetricRef("cost", "analysis", "x/y"), MetricRef("cost", "analysis", "x%2Fy")),
+    ],
+)
+def test_two_metric_references_never_share_a_label(first: MetricRef, second: MetricRef) -> None:
+    # a stage or metric name may hold "/": each part is escaped, so the label tells them apart
+    assert first.label != second.label
+    for ref in (first, second):  # and each part reads back
+        parts = ref.label.split("/")
+        assert [unquote(part) for part in parts] == [ref.evaluator, ref.stage, ref.metric]
+
+
+def test_a_label_of_plain_names_is_the_names_joined() -> None:
+    ref = MetricRef("calo.photon", "simulation", "ecal_barrel.fired_cells")
+    assert ref.label == "calo.photon/simulation/ecal_barrel.fired_cells"
+    assert MetricRef("e", "analysis", "50%").label == "e/analysis/50%25"

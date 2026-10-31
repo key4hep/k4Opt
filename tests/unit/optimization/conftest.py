@@ -29,11 +29,13 @@ def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
 def problem_document(
     *,
     evaluators: list[dict[str, Any]] | None = None,
-    objectives: list[tuple[str, str, str]] | None = None,
+    objectives: list[tuple[str, ...]] | None = None,
     constraints: list[dict[str, Any]] | None = None,
     parameter: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """A problem measured by ``test.trade_off`` unless it says otherwise."""
+    """A problem measured by ``test.trade_off`` unless it says otherwise. An objective is
+    ``(stage, metric, direction)``, or ``(evaluator, stage, metric, direction)`` for a problem
+    of several evaluators."""
     document: dict[str, Any] = {
         "schema_version": "k4opt.problem/v1alpha1",
         "name": "trade",
@@ -50,8 +52,8 @@ def problem_document(
         ],
         "evaluators": evaluators or [{"name": "test.trade_off", "version": "1"}],
         "objectives": [
-            {"stage": s, "metric": m, "direction": d}
-            for s, m, d in objectives or [(*A, "minimize"), (*B, "minimize")]
+            dict(zip(("evaluator", "stage", "metric", "direction")[-len(o) :], o, strict=True))
+            for o in objectives or [(*A, "minimize"), (*B, "minimize")]
         ],
     }
     if constraints:

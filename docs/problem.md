@@ -263,7 +263,8 @@ Who measures a candidate: one or more evaluators. Each entry:
 
 | Key | Meaning |
 | --- | --- |
-| `name` | Logical name of a versioned evaluator, e.g. `calo.photon`. It must equal the `name` of an evaluator that `k4opt evaluate --evaluator` loads. Unique within the problem; letters, digits, `.`, `_` and `-`, starting with a letter or digit, because it also names the evaluator's directory in a run. Not `geometry` or a stage type (`generation`, `simulation`): a run's record names those steps beside the evaluators. |
+| `name` | Logical name of a versioned evaluator, e.g. `calo.photon`. It must equal the `name` of an evaluator that `k4opt evaluate --evaluator` loads. Letters, digits, `.`, `_` and `-`, starting with a letter or digit. |
+| `as` | Optional. The name of this binding of the evaluator, `name` when not given. Objectives and constraints name a binding, and so do a run's record and the evaluator's directory in a run, so the names of a problem's bindings are unique, also when the case of their letters is ignored (a file system may fold it). The same grammar as `name`; not `geometry` or a stage type (`generation`, `simulation`): a run's record names those steps beside the evaluators. Needed only to bind an evaluator a second time. |
 | `version` | Version of that evaluator's contract. A string. |
 | `stage` | The pipeline stage it reads, one of the `stages`. Required when the evaluator reads one, and absent when it reads none (a cost model working from the parameters alone needs no stage). It must equal the evaluator's own `stage`, so the problem file shows what each evaluator reads. |
 | `collections` | The collection of the stage's file that each role the evaluator declares reads, such as `hits: ECalBarrelCollection`. Roles with a default (`particles`, read from `MCParticles`) may be left out. Only with a `stage`. |
@@ -276,21 +277,48 @@ select among the shared events but never change how the events are made. Evaluat
 seeds need separate problems for now; several named samples in one problem are a planned
 extension, which is why these keys belong to the stages and not to an evaluator.
 
-**Metrics and their evaluators.** Every objective and constraint metric is measured by exactly
-one evaluator. With a single evaluator, that is the one; if it declares its `metrics`, the
-objectives and constraints must be among them. With several, each must declare its `metrics`
-([evaluation](evaluation.md#writing-an-evaluator)), no metric may be declared by two of them,
-and every objective and constraint metric must be declared by one. `k4opt evaluate` checks this,
-and that a constraint's `unit` is the unit its evaluator declares, before anything is created.
-`stage` on a metric only classifies it: an evaluator may report `analysis` metrics without an
-analysis stage. An evaluator reads the files of its stage and of the stages before it.
+**Bindings.** Each entry binds an evaluator to the problem with its own `collections` and
+`settings`. One evaluator may be bound several times, each binding with a name of its own
+(`as`): two thresholds of `calo.photon` read one simulation and are measured separately. The
+evaluator is given once on the command line, however often the problem binds it, and every
+binding gets an instance of its own. Two bindings with the same `collections` and `settings`
+(their defaults filled in) measure the same twice; that is a warning, not an error.
+
+```yaml
+evaluators:
+  - name: calo.photon
+    version: "1"
+    stage: simulation
+    collections: {hits: ECalBarrelCollection}
+    settings: {threshold: {value: 70, unit: keV}}
+  - name: calo.photon               # the same code, a second configuration
+    as: photon_200kev
+    version: "1"
+    stage: simulation
+    collections: {hits: ECalBarrelCollection}
+    settings: {threshold: {value: 200, unit: keV}}
+```
+
+**Metrics and their evaluators.** Every objective and constraint names the binding that
+measures its metric (`evaluator`); in a problem with one binding it may leave it out. Two
+bindings may report a metric of the same name: their objectives are different references,
+labeled `evaluator/stage/metric` (`photon_200kev/simulation/ecal_barrel.fired_cells`; a `%` or
+`/` within a part is percent-escaped, so the stage `analysis/x` with the metric `y` is
+`e/analysis%2Fx/y` and never the stage `analysis` with the metric `x/y`). If the
+evaluator declares its `metrics` ([evaluation](evaluation.md#writing-an-evaluator)), the metric
+must be among them and a constraint's `unit` must be the unit it declares; `k4opt evaluate`
+checks this before anything is created. An evaluator that declares none is checked when its
+result arrives. `stage` on a metric only classifies it: an evaluator may report `analysis`
+metrics without an analysis stage. An evaluator reads the files of its stage and of the stages
+before it.
 
 **Evaluator.** `name` and `version` are the label of a measurement contract. The
 evaluator owns the metric definitions and the interpretation of the stage outputs. k4opt ships
 none: the physicist writes one (the example is
 [`calo_photon.py`](../examples/evaluators/calo_photon.py)) and names it on
-the command line, `k4opt evaluate --evaluator FILE.py:Class` (once per evaluator), whose `name`,
-`version` and `stage` must equal those of its entry. A registry that resolves the label itself
+the command line, `k4opt evaluate --evaluator FILE.py:Class` (once per evaluator, however many
+entries bind it), whose `name`, `version` and `stage` must equal those of each entry that binds
+it. A registry that resolves the label itself
 is deferred.
 
 **Collections.** The roles an evaluator reads and the type of each belong to its contract, and
@@ -318,6 +346,7 @@ A non-empty list. Each item:
 
 | Key | Meaning |
 | --- | --- |
+| `evaluator` | The binding that measures the metric (its `as`, or its `name`). It may be left out when the problem has one binding, and an error lists the bindings when it has several. The problem as k4opt records it, in every run and study, always names it. |
 | `stage` | Scientific classification of the measurement: `simulation` now; `reconstruction` and `analysis` possible later. It is not a request to run a particular pipeline step (that is the evaluator's `stage`), and it does not create separate problem types. |
 | `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.angular_residual` (measured by `calo.photon`). The part before the dot names what is measured (here the ECAL barrel); collection names appear only in `collections`. |
 | `direction` | `minimize` or `maximize`. |
@@ -329,8 +358,8 @@ combined (priorities, weights, scalarization) is deferred.
 
 ### `constraints`
 
-Optional hard limits on measured quantities. Each item has `stage` and `metric` as above,
-plus `min` and/or `max` (inclusive) and `unit` where the metric has one.
+Optional hard limits on measured quantities. Each item has `evaluator`, `stage` and `metric` as
+above, plus `min` and/or `max` (inclusive) and `unit` where the metric has one.
 
 A constraint is judged on the central value of the measurement: `max` is satisfied when the
 value is at most the limit, `min` when it is at least the limit, and equality satisfies both.
@@ -486,16 +515,18 @@ What is checked, with the location of the first problem in the message
   are non-empty strings and are never trimmed or changed. `name` is optional and defaults to
   the file name when loaded from a file.
 - `evaluators` lists at least one evaluator, each with `name` and `version` and optionally the
-  `stage` it reads; names are unique and made of letters, digits, `.`, `_` and `-`, starting
-  with a letter or digit. `collections` maps roles to non-empty collection names and needs a
-  `stage`. Booleans are not numbers anywhere.
+  `stage` it reads and its binding name `as`; names are made of letters, digits, `.`, `_` and
+  `-`, starting with a letter or digit, and binding names are unique, whatever the case of
+  their letters. `collections` maps roles to non-empty collection names and needs a `stage`.
+  Booleans are not numbers anywhere.
 - `settings` may hold any nested data made of `null`, booleans, numbers, strings, lists and
   mappings with string keys. Non-finite numbers, dates, binary data, sets and
   self-referencing YAML aliases are rejected, because they could not be recorded.
 - Objectives have a `minimize`/`maximize` direction and at least one is required. A
-  constraint has `min` and/or `max`, with `min <= max`. Duplicate parameters, objectives
-  (same `stage` and `metric`) and constraints (same `stage` and `metric`) are rejected; an
-  objective and a constraint may name the same metric.
+  constraint has `min` and/or `max`, with `min <= max`. Each names a binding of the problem,
+  or leaves it out in a problem with one. Duplicate parameters, objectives (same `evaluator`,
+  `stage` and `metric`) and constraints (the same) are rejected; an objective and a constraint
+  may name the same metric.
 - Duplicate YAML mapping keys, non-string keys, YAML tags that construct Python objects,
   invalid UTF-8 and unreadable files are reported as `ProblemConfigError`.
 

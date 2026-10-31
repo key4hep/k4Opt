@@ -2,24 +2,26 @@
 
 Not a public workflow. It validates a candidate against the declared parameter domains, binds
 the given evaluator implementations to the problem's ``evaluators`` and checks, before anything
-runs, their identity, the stage each reads, their settings, the pipeline stages and which
-evaluator measures each objective and constraint metric. It then runs the candidate's tasks
-(:mod:`k4opt.problem._tasks`): its geometry, every stage the evaluators read, each once
+runs, their identity, the stage each reads, their settings, the pipeline stages and that each
+objective and constraint names a metric its evaluator measures. It then runs the candidate's
+tasks (:mod:`k4opt.problem._tasks`): its geometry, every stage the evaluators read, each once
 (:mod:`k4opt.problem._stages`), and each evaluator once, with the outputs of the tasks it reads.
-A task whose needs did not all succeed is ``blocked`` and not run. Each ``valid``
-result must carry the metrics its evaluator owns. It neither locates evaluators nor
+A task whose needs did not all succeed is ``blocked`` and not run. Each ``valid`` result must
+carry the metrics the objectives and constraints name of it. It neither locates evaluators nor
 materializes geometry: the caller's function does that, as the work of the geometry task.
 
-An implementation, an evaluator class, is bound to its entry of ``evaluators`` once, through a
-probe instance that is used for nothing else. Every
-candidate gets a new instance of each, whose ``check()`` and ``evaluate()`` it calls, so no
-state of an instance reaches another candidate. An entry is identified by its ``name`` today;
-records, run directories and metric owners use that identity.
+An entry of ``evaluators`` is a binding of an implementation, an evaluator class, identified by
+its binding name (``as:``, the implementation's ``name`` when not given): tasks, records, run
+directories and metric references use it. One implementation may be bound several times, with
+other settings. It is bound to its entries once, through a probe instance that is used for
+nothing else. Every candidate gets a new instance for each binding, whose ``check()`` and
+``evaluate()`` it calls, so no state of an instance reaches another binding or candidate.
 """
 
 from __future__ import annotations
 
 import difflib
+import json
 import math
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -51,7 +53,7 @@ from k4opt.evaluation import (
     result_from,
     with_defaults,
 )
-from k4opt.frozen import FrozenMap, Json
+from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.problem._stages import (
     StageContext,
     changed_by_geometry,
@@ -70,15 +72,16 @@ from k4opt.problem._tasks import (
     TaskResult,
     candidate_message,
     candidate_status,
+    evaluator_task,
     plan_tasks,
     run_tasks,
     stage_task,
 )
 from k4opt.problem.errors import CandidateError
-from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
+from k4opt.problem.models import EvaluatorSpec, MetricRef, Parameter, ProblemSpec
 
 type MetricKey = tuple[str, str]
-"""A metric as objectives, constraints and measurements name it: ``(stage, metric)``."""
+"""A metric as an evaluator declares and measures it: ``(stage, metric)``."""
 
 
 def _is_number(value: object) -> bool:
@@ -250,7 +253,7 @@ def _declaration(evaluator: EvaluatorProtocol) -> _Declaration:
 
 @dataclass(frozen=True, slots=True)
 class _Bound:
-    """An evaluator of the problem: its entry, the implementation given for it and what the probe
+    """A binding of the problem: its entry, the implementation given for it and what the probe
     instance that bound them declared."""
 
     entry: EvaluatorSpec
@@ -270,57 +273,67 @@ def _instance(bound: _Bound) -> EvaluatorProtocol:
     ]
     if changed:
         raise EvaluationContractError(
-            f"evaluator {bound.entry.name!r}: a new instance of "
+            f"evaluator {bound.entry.binding!r}: a new instance of "
             f"{bound.implementation.__qualname__} has {'; '.join(changed)}; every instance must "
             "declare what the first did"
         )
     return evaluator
 
 
+def _as(entry: EvaluatorSpec) -> str:
+    """`` (as b)`` for an entry whose binding is not its implementation's name, else nothing."""
+    return "" if entry.binding == entry.name else f" (as {entry.binding!r})"
+
+
 def _bind(
     spec: ProblemSpec, implementations: Sequence[type[EvaluatorProtocol]]
 ) -> list[tuple[EvaluatorSpec, type[EvaluatorProtocol], EvaluatorProtocol]]:
-    """Pair every evaluator the problem declares with the implementation given for it, in problem
+    """Pair every binding the problem declares with the implementation given for it, in problem
     order, each with the probe instance that decided it.
 
-    A probe of each implementation is matched by its ``name`` and must have the declared
-    ``version`` and read the declared ``stage``; an evaluator that is missing, not declared,
-    given twice or reads another stage is an :class:`EvaluationContractError`, and so is an
-    implementation that cannot be created.
+    A probe of each implementation is matched by its ``name`` to the entries of that name, each
+    of which must declare its ``version`` and read its ``stage``; an implementation that is
+    missing, not declared, given twice or reads another stage is an
+    :class:`EvaluationContractError`, and so is one that cannot be created. Several entries may
+    bind one implementation; they share its probe.
     """
-    declared = {entry.name: entry for entry in spec.evaluators}
+    declared: dict[str, list[EvaluatorSpec]] = {}
+    for entry in spec.evaluators:
+        declared.setdefault(entry.name, []).append(entry)
     given: dict[str, tuple[type[EvaluatorProtocol], EvaluatorProtocol]] = {}
     for implementation in implementations:
         evaluator = _create(implementation)
         name, version = evaluator.name, evaluator.version
         if name in given:
             raise EvaluationContractError(f"evaluator {name!r} is given twice")
-        entry = declared.get(name)
-        if entry is None:
+        entries = declared.get(name)
+        if entries is None:
             raise EvaluationContractError(
                 f"problem declares no evaluator {name!r}; declared: {', '.join(declared)}"
             )
-        if version != entry.version:
-            raise EvaluationContractError(
-                f"problem declares evaluator {name!r} version {entry.version!r}, "
-                f"got version {version!r}"
-            )
         stage = _stage(evaluator)
-        if stage != entry.stage:
-            if entry.stage is None:
-                fix = f"add stage: {stage} to its entry in the problem"
-            elif stage is None:
-                fix = f"it reads no stage; remove stage: {entry.stage} from its entry"
-            else:
-                fix = f"it reads {stage!r}, not {entry.stage!r}"
-            raise EvaluationContractError(
-                f"evaluator {name!r} does not read the stage the problem says: {fix}"
-            )
+        for entry in entries:
+            if version != entry.version:
+                raise EvaluationContractError(
+                    f"problem declares evaluator {name!r}{_as(entry)} version "
+                    f"{entry.version!r}, got version {version!r}"
+                )
+            if stage != entry.stage:
+                if entry.stage is None:
+                    fix = f"add stage: {stage} to its entry in the problem"
+                elif stage is None:
+                    fix = f"it reads no stage; remove stage: {entry.stage} from its entry"
+                else:
+                    fix = f"it reads {stage!r}, not {entry.stage!r}"
+                raise EvaluationContractError(
+                    f"evaluator {name!r}{_as(entry)} does not read the stage the problem says: "
+                    f"{fix}"
+                )
         given[name] = (implementation, evaluator)
     missing = [
-        f"{entry.name!r} version {entry.version!r}"
-        for entry in spec.evaluators
-        if entry.name not in given
+        f"{name!r} version {entries[0].version!r}"
+        for name, entries in declared.items()
+        if name not in given
     ]
     if missing:
         raise EvaluationContractError(f"no evaluator given for {', '.join(missing)}")
@@ -331,80 +344,55 @@ def _show(metrics: Collection[MetricKey]) -> str:
     return ", ".join(f"{stage}/{metric}" for stage, metric in metrics)
 
 
-def _owners(
+def _check_references(
     spec: ProblemSpec, evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]]
-) -> tuple[dict[MetricKey, str], dict[MetricKey, str]]:
-    """``(owners, declared)``: the evaluator instance that measures each metric an objective or
-    a constraint names, and the evaluator that declares each metric any of them declares.
-
-    A single evaluator measures all of them; if it declares ``metrics``, they must be among them.
-    Several evaluators must each declare their metrics, and no metric may be declared by two
-    implementations. Each objective and constraint metric is then resolved: of the instances
-    whose implementation declares it, exactly one must remain (objectives have no filters yet
-    that narrow them down; with one instance per implementation, at most one declares it). A
-    constraint ``unit`` must be the unit its evaluator declares. Raises
-    :class:`EvaluationContractError`.
-    """
-    wanted = [(o.stage, o.metric) for o in spec.objectives]
-    wanted = list(dict.fromkeys(wanted + [(c.stage, c.metric) for c in spec.constraints]))
-    units = {entry.name: metric_units(evaluator) for entry, evaluator in evaluators}
-    silent = [name for name, metrics in units.items() if metrics is None]
-    if len(units) == 1 and silent:
-        return dict.fromkeys(wanted, silent[0]), {}
-    if silent:
-        raise EvaluationContractError(
-            f"evaluator(s) {', '.join(map(repr, silent))} declare no metrics; when a problem has "
-            "several evaluators, each must declare the metrics it measures"
-        )
-    declared: dict[MetricKey, str] = {}
-    for name, metrics in units.items():
-        assert metrics is not None
-        for key in metrics:
-            if key in declared:
-                raise EvaluationContractError(
-                    f"metric {_show([key])} is declared by evaluators {declared[key]!r} and "
-                    f"{name!r}; a metric must have one owner"
-                )
-            declared[key] = name
-    measured_by = {
-        key: [name for name, metrics in units.items() if metrics is not None and key in metrics]
-        for key in wanted
-    }
-    unmeasured = [key for key in wanted if not measured_by[key]]
-    if unmeasured:
-        if len(units) == 1:
-            ((name, metrics),) = units.items()
-            assert metrics is not None
+) -> None:
+    """Each objective and constraint names a metric its evaluator measures, if that one declares
+    its ``metrics``, and a constraint ``unit`` is the unit it declares for it; otherwise the
+    result decides. Raises :class:`EvaluationContractError`."""
+    units = {entry.binding: metric_units(evaluator) for entry, evaluator in evaluators}
+    for ref in spec.references:
+        metrics = units[ref.evaluator]
+        if metrics is not None and (ref.stage, ref.metric) not in metrics:
             raise EvaluationContractError(
-                f"evaluator {name!r} does not measure {_show(unmeasured)}; "
+                f"evaluator {ref.evaluator!r} does not measure {ref.stage}/{ref.metric}; "
                 f"supported: {_show(sorted(metrics))}"
             )
-        supported = "; ".join(
-            f"{name!r} measures {_show(sorted(metrics or {}))}" for name, metrics in units.items()
-        )
-        raise EvaluationContractError(f"no evaluator measures {_show(unmeasured)}; {supported}")
-    owners = {key: _resolve(key, measured_by[key]) for key in wanted}
     for constraint in spec.constraints:
-        key = (constraint.stage, constraint.metric)
-        metrics = units[owners[key]]
-        assert metrics is not None
-        if constraint.unit is not None and constraint.unit != metrics[key]:
+        metrics = units[constraint.evaluator]
+        if metrics is None or constraint.unit is None:
+            continue
+        unit = metrics[(constraint.stage, constraint.metric)]
+        if constraint.unit != unit:
             raise EvaluationContractError(
-                f"constraint on {_show([key])} declares unit {constraint.unit!r} but evaluator "
-                f"{owners[key]!r} measures it in {metrics[key]!r}"
+                f"constraint on {constraint.label} declares unit {constraint.unit!r} but "
+                f"evaluator {constraint.evaluator!r} measures it in {unit!r}"
             )
-    return owners, declared
 
 
-def _resolve(key: MetricKey, instances: Sequence[str]) -> str:
-    """The one evaluator instance of ``instances`` (those that measure ``key``) left after the
-    objective's filters; there are none yet, so exactly one must measure it."""
-    if len(instances) != 1:
-        raise EvaluationContractError(
-            f"metric {_show([key])} is measured by {', '.join(map(repr, instances))}; it must "
-            "resolve to one evaluator"
-        )
-    return instances[0]
+def _identical(evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]]) -> tuple[str, ...]:
+    """A warning for each binding that binds an implementation as an earlier one does: with the
+    same settings (their defaults filled in) and collections, it measures the same twice."""
+    seen: dict[tuple[str, str, str], str] = {}
+    warnings = []
+    for entry, evaluator in evaluators:
+        settings = with_defaults(evaluator, entry.settings)
+        collections = collection_names(evaluator, entry.collections)
+        key = (entry.name, _canonical(settings), _canonical(collections))
+        if key in seen:
+            warnings.append(
+                f"evaluators {seen[key]!r} and {entry.binding!r} bind {entry.name} with the same "
+                "settings and collections; each is evaluated separately"
+            )
+        else:
+            seen[key] = entry.binding
+    return tuple(warnings)
+
+
+def _canonical(settings: Mapping[str, Json]) -> str:
+    """``settings`` as text that is the same for equal settings, whatever the key order of any
+    nested mapping; a default that is not JSON is written as its ``repr``."""
+    return json.dumps(thaw(settings), sort_keys=True, default=repr)
 
 
 def _unexpected_collections(
@@ -435,7 +423,7 @@ def _unexpected_collections(
             close = difflib.get_close_matches(name, expected, n=1)
             hint = f"; did you mean {close[0]!r}?" if close else "."
             warnings.append(
-                f"evaluator {entry.name!r}: ddsim is not expected to write the collection "
+                f"evaluator {entry.binding!r}: ddsim is not expected to write the collection "
                 f"{name!r} ({role}) for {spec.geometry}{hint} The simulation's output "
                 "decides."
             )
@@ -486,15 +474,14 @@ def _collection_error(
 @dataclass(frozen=True, slots=True)
 class _Binding:
     """What holds for every candidate: the implementations bound to the problem, the stages they
-    read, who measures each metric and the tasks of a candidate."""
+    read and the tasks of a candidate."""
 
     context: StageContext
     evaluators: tuple[_Bound, ...]  # problem order
     targets: tuple[str, ...]  # the pipeline stages the evaluators read
-    owners: Mapping[MetricKey, str]  # objective or constraint metric -> evaluator
-    declared: Mapping[MetricKey, str]  # any declared metric -> evaluator
     plan: Plan  # the tasks of every candidate, the stages ``provided`` given
-    warnings: tuple[str, ...] = ()  # collections the simulation is not expected to write
+    # collections the simulation is not expected to write, bindings that measure the same twice
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,7 +491,7 @@ class _Prepared:
 
     binding: _Binding
     evaluators: tuple[tuple[EvaluatorSpec, EvaluatorProtocol], ...]  # problem order
-    requests: Mapping[str, EvaluationRequest]  # normalized and checked before execution
+    requests: Mapping[str, EvaluationRequest]  # by binding; normalized and checked before execution
 
 
 def _bind_problem(
@@ -516,11 +503,12 @@ def _bind_problem(
 
     Binds ``implementations`` to the problem through a probe instance of each, which is then
     dropped: checks the stages they read (those in ``provided``, the files the caller supplies
-    by stage, are not run), each evaluator's settings and collections against what it declares,
-    and decides which evaluator measures each objective and constraint metric. An evaluator that
-    declares collections of a stage without an EDM4hep file (the gun's, or a HepMC file) is
-    refused. Raises :class:`EvaluationContractError`. Collections the simulation is not expected
-    to write are only warnings.
+    by stage, are not run), each binding's settings and collections against what its
+    implementation declares, and the metric each objective and constraint names
+    (:func:`_check_references`). An evaluator that declares collections of a stage without an
+    EDM4hep file (the gun's, or a HepMC file) is refused. Raises
+    :class:`EvaluationContractError`. Collections the simulation is not expected to write, and
+    bindings that measure the same twice, are only warnings.
     """
     provided = provided or {}
     context = StageContext.of(spec)
@@ -533,26 +521,28 @@ def _bind_problem(
         reason = None if stage is None else no_edm4hep_file(context, stage, provided)
         if reason is not None and declared_collections(evaluator):
             raise EvaluationContractError(
-                f"evaluator {entry.name!r} reads collections from the {stage!r} stage, but {reason}"
+                f"evaluator {entry.binding!r} reads collections from the {stage!r} stage, but "
+                f"{reason}"
             )
         # what needs no candidate is checked before any: a check() may depend on the candidate
         check_settings(evaluator, with_defaults(evaluator, entry.settings))
         collection_names(evaluator, entry.collections)
-    owners, declared = _owners(spec, bound)
-    warnings = _unexpected_collections(spec, context, bound, provided)
+    _check_references(spec, bound)
+    warnings = _unexpected_collections(spec, context, bound, provided) + _identical(bound)
+    declarations: dict[type, _Declaration] = {}  # one probe per implementation
     evaluators = tuple(
-        _Bound(entry, implementation, _declaration(probe))
+        _Bound(entry, implementation, declarations.setdefault(implementation, _declaration(probe)))
         for entry, implementation, probe in probed
     )
-    plan = plan_tasks(spec.stages, [(e.name, e.stage) for e in spec.evaluators], provided)
-    return _Binding(context, evaluators, targets, owners, declared, plan, warnings)
+    plan = plan_tasks(spec.stages, [(e.binding, e.stage) for e in spec.evaluators], provided)
+    return _Binding(context, evaluators, targets, plan, warnings)
 
 
 def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
     """Prepare the evaluators of one candidate before a file is created or a stage runs.
 
-    Creates a new instance of each bound implementation, which must declare what its probe
-    declared, checks its settings and collections, then calls each one's ``check()`` with the
+    Creates a new instance of the implementation of each binding, which must declare what its
+    probe declared, checks its settings and collections, then calls each one's ``check()`` with the
     request it would get for this candidate (its settings and collections resolved). Raises
     :class:`EvaluationContractError` (or what a ``check()`` raises). What it returns holds these
     instances and requests made for these ``values``, so it serves one candidate only.
@@ -564,42 +554,33 @@ def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
     requests = {}
     for entry, evaluator in evaluators:
         request = _request(binding.context, values, entry, evaluator)
-        requests[entry.name] = request
+        requests[entry.binding] = request
         check = getattr(evaluator, "check", None)
         if check is not None:
             check(request)
     return _Prepared(binding, evaluators, FrozenMap(requests))
 
 
-def _check_result(
-    spec: ProblemSpec, binding: _Binding, name: str, result: EvaluationResult
-) -> None:
-    """A result must not report a metric another evaluator declares, and a ``valid`` one must
-    report every metric its evaluator ``name`` owns, in the unit a constraint declares."""
-    for m in result.measurements:
-        owner = binding.declared.get((m.stage, m.metric), name)
-        if owner != name:
-            raise EvaluationContractError(
-                f"evaluator {name!r} reported {m.stage}/{m.metric}, a metric of evaluator {owner!r}"
-            )
+def _check_result(spec: ProblemSpec, entry: EvaluatorSpec, result: EvaluationResult) -> None:
+    """A ``valid`` result of the binding of ``entry`` must report every metric an objective or
+    a constraint names of it, in the unit a constraint declares."""
     if result.status is not Status.VALID:
         return
     measured = {(m.stage, m.metric): m for m in result.measurements}
-    owned = [key for key, owner in binding.owners.items() if owner == name]
-    missing = [key for key in owned if key not in measured]
+    owned = [ref for ref in spec.references if ref.evaluator == entry.binding]
+    missing = [(ref.stage, ref.metric) for ref in owned if (ref.stage, ref.metric) not in measured]
     if missing:
         raise EvaluationContractError(
-            f"evaluator {name!r} returned a valid result without required metric(s): "
+            f"evaluator {entry.binding!r} returned a valid result without required metric(s): "
             f"{_show(missing)}"
         )
     for constraint in spec.constraints:
-        key = (constraint.stage, constraint.metric)
-        if key not in owned:
+        if constraint.evaluator != entry.binding:
             continue
-        unit = measured[key].unit
+        unit = measured[(constraint.stage, constraint.metric)].unit
         if constraint.unit is not None and unit != constraint.unit:
             raise EvaluationContractError(
-                f"constraint on {_show([key])} declares unit {constraint.unit!r} but the "
+                f"constraint on {constraint.label} declares unit {constraint.unit!r} but the "
                 f"measurement has unit {unit!r}"
             )
 
@@ -641,14 +622,14 @@ def _measure(
     workdir: Path | None,
     seen: dict[Path, tuple[str, ...] | str],
 ) -> EvaluationRecord:
-    """The record of one evaluator, called once on the outputs of the tasks it ``reads``, which
-    all succeeded.
+    """The record of one binding, its evaluator called once on the outputs of the tasks it
+    ``reads``, which all succeeded.
 
     An evaluator whose stage's file lacks a collection it declares (or holds it with another
     type) gets a ``failed`` result saying so and is not called. Its own directory ``workdir``
     is created just before the call; ``elapsed_seconds`` is the time of the call alone.
     """
-    request = replace(prepared.requests[entry.name], inputs=_inputs(reads))
+    request = replace(prepared.requests[entry.binding], inputs=_inputs(reads))
     error = _collection_error(evaluator, request, seen)
     if error is not None:
         return _record(
@@ -683,7 +664,7 @@ def _record(
     elapsed: float | None = None,
 ) -> EvaluationRecord:
     _check_units(evaluator, result)
-    _check_result(spec, prepared.binding, entry.name, result)
+    _check_result(spec, entry, result)
     return EvaluationRecord(request, result, entry.name, entry.version, key, elapsed)
 
 
@@ -692,22 +673,20 @@ class CandidateRecord:
     """One candidate, measured by every evaluator of its problem.
 
     ``plan`` holds its tasks, and ``results`` the result of each, in plan order: its geometry,
-    the pipeline stages the evaluators read, each recorded once, and every evaluator, with only
-    that evaluator's own work. ``owners`` maps every metric an objective or constraint names to
-    the evaluator that measures it. ``elapsed_seconds`` is the wall time of the whole evaluation:
-    the tasks and k4opt's checks. Its mappings are read-only copies, so a reader cannot change
-    which evaluator owns a metric.
+    the pipeline stages the evaluators read, each recorded once, and every binding of an
+    evaluator, with only its own work. ``elapsed_seconds`` is the wall time of the whole
+    evaluation: the tasks and k4opt's checks. Its mappings are read-only copies.
 
     ``represents_candidate`` is ``False`` when the caller supplied a stage that the parameters
     change (``k4opt evaluate --input simulation=FILE``): that file was not made from the
     candidate, so the record must never count as an evaluation of it, whatever its status.
-    ``warnings`` are the preflight's: collections the simulation was not expected to write.
+    ``warnings`` are the preflight's: collections the simulation was not expected to write, and
+    bindings that measure the same twice.
     """
 
     candidate_key: CandidateKey
     plan: Plan
     results: Mapping[TaskId, TaskResult]
-    owners: Mapping[MetricKey, str]
     elapsed_seconds: float
     represents_candidate: bool = True
     warnings: tuple[str, ...] = ()
@@ -720,16 +699,23 @@ class CandidateRecord:
             )
         results = {task.id: self.results[task.id] for task in self.plan.tasks}
         object.__setattr__(self, "results", FrozenMap(results))
-        object.__setattr__(self, "owners", FrozenMap(self.owners))
+
+    @property
+    def evaluations(self) -> Mapping[str, EvaluationRecord]:
+        """The record of each binding, by binding, in problem order; a blocked one's evaluator
+        was never called."""
+        return FrozenMap(
+            {
+                task.id.name: record
+                for task in self.plan.of(Kind.EVALUATOR)
+                if (record := self.results[task.id].record) is not None
+            }
+        )
 
     @property
     def records(self) -> tuple[EvaluationRecord, ...]:
-        """The record of each evaluator, in problem order; a blocked one's was never called."""
-        return tuple(
-            record
-            for task in self.plan.of(Kind.EVALUATOR)
-            if (record := self.results[task.id].record) is not None
-        )
+        """The record of each binding, in problem order."""
+        return tuple(self.evaluations.values())
 
     @property
     def supplied(self) -> frozenset[str]:
@@ -754,27 +740,28 @@ class CandidateRecord:
         """Every task that failed or is invalid, with its message, then those they blocked."""
         return candidate_message(self.results.values())
 
-    def record(self, name: str) -> EvaluationRecord:
-        """The record of the evaluator called ``name``; :class:`KeyError` if there is none."""
-        for record in self.records:
-            if record.evaluator_name == name:
-                return record
-        raise KeyError(name)
+    def record(self, binding: str) -> EvaluationRecord:
+        """The record of the binding ``binding``; :class:`KeyError` if there is none."""
+        result = self.results.get(evaluator_task(binding))
+        if result is None or result.record is None:
+            raise KeyError(binding)
+        return result.record
 
-    def value(self, stage: str, metric: str) -> Measurement | None:
-        """The measurement of an objective or constraint metric by the evaluator that owns it.
+    def value(self, ref: MetricRef) -> Measurement | None:
+        """The measurement of the metric ``ref`` by the binding it names.
 
-        ``None`` unless that evaluator's result is ``valid``: the diagnostic values of an
+        ``None`` unless that binding's result is ``valid``: the diagnostic values of an
         ``invalid`` or ``failed`` result never stand in for an objective.
         """
-        owner = self.owners.get((stage, metric))
-        if owner is None:
+        try:
+            result = self.record(ref.evaluator).result
+        except KeyError:
             return None
-        result = self.record(owner).result
         if result.status is not Status.VALID:
             return None
         return next(
-            (m for m in result.measurements if (m.stage, m.metric) == (stage, metric)), None
+            (m for m in result.measurements if (m.stage, m.metric) == (ref.stage, ref.metric)),
+            None,
         )
 
 
@@ -798,8 +785,8 @@ def _evaluate_candidate(
     runs, raises :class:`CandidateError` for a candidate outside the declared domains and
     :class:`EvaluationContractError` for implementations that cannot be created or do not match
     the problem (missing, undeclared, given twice, another version), settings an evaluator's
-    ``check()`` rejects, a stage that cannot run, or an objective or constraint metric that no
-    evaluator, or two, declare. ``inputs["geometry"]`` is the candidate's geometry, already
+    ``check()`` rejects, a stage that cannot run, or an objective or constraint metric its
+    evaluator does not declare. ``inputs["geometry"]`` is the candidate's geometry, already
     prepared; any other entry of ``inputs`` supplies the file of the stage it is named after. The
     stages the evaluators read and ``inputs`` does not supply then run once each, in ``workdir``.
     An evaluator whose stage failed, or whose stage output lacks the requested events, is
@@ -851,7 +838,7 @@ def _execute_plan(
     plan = binding.plan
     stages = plan.of(Kind.STAGE)
     check_run_inputs([t.id.name for t in stages if t.given is None], geometry is not None, workdir)
-    evaluators = {entry.name: (entry, evaluator) for entry, evaluator in prepared.evaluators}
+    evaluators = {entry.binding: (entry, evaluator) for entry, evaluator in prepared.evaluators}
     seen: dict[Path, tuple[str, ...] | str] = {}  # the collection names of each stage file
 
     def run(task: Task, reads: Mapping[TaskId, TaskResult]) -> TaskResult:
@@ -892,15 +879,13 @@ def _execute_plan(
             entry, _ = evaluators[task.id.name]
             assert held.message is not None
             outcome = EvaluationResult(Status.BLOCKED, message=held.message)
-            request = prepared.requests[entry.name]
+            request = prepared.requests[entry.binding]
             record = EvaluationRecord(request, outcome, entry.name, entry.version, key, None)
             results[task.id] = replace(held, record=record)
     represents = not any(
         changed_by_geometry(task.id.name) for task in stages if task.given == "supplied"
     )
-    return CandidateRecord(
-        key, plan, results, binding.owners, _since(started), represents, binding.warnings
-    )
+    return CandidateRecord(key, plan, results, _since(started), represents, binding.warnings)
 
 
 def _since(started: float) -> float:
