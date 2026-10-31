@@ -21,6 +21,7 @@ nothing else. Every candidate gets a new instance for each binding, whose ``chec
 from __future__ import annotations
 
 import difflib
+import json
 import math
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -52,7 +53,7 @@ from k4opt.evaluation import (
     result_from,
     with_defaults,
 )
-from k4opt.frozen import FrozenMap, Json
+from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.problem._stages import (
     StageContext,
     changed_by_geometry,
@@ -377,7 +378,7 @@ def _identical(evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]]) ->
     for entry, evaluator in evaluators:
         settings = with_defaults(evaluator, entry.settings)
         collections = collection_names(evaluator, entry.collections)
-        key = (entry.name, repr(sorted(settings.items())), repr(sorted(collections.items())))
+        key = (entry.name, _canonical(settings), _canonical(collections))
         if key in seen:
             warnings.append(
                 f"evaluators {seen[key]!r} and {entry.binding!r} bind {entry.name} with the same "
@@ -386,6 +387,12 @@ def _identical(evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]]) ->
         else:
             seen[key] = entry.binding
     return tuple(warnings)
+
+
+def _canonical(settings: Mapping[str, Json]) -> str:
+    """``settings`` as text that is the same for equal settings, whatever the key order of any
+    nested mapping; a default that is not JSON is written as its ``repr``."""
+    return json.dumps(thaw(settings), sort_keys=True, default=repr)
 
 
 def _unexpected_collections(

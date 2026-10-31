@@ -1037,6 +1037,30 @@ def test_two_bindings_that_measure_the_same_are_a_warning(
     assert candidate.warnings == ((expected,) if warned else ())
 
 
+class CutThreshold(Threshold):
+    """:class:`Threshold` with a mapping setting too."""
+
+    settings = {"min_hits": 1, "cuts": {}}
+
+
+@pytest.mark.parametrize(
+    ("second", "warned"),
+    [({"high": 2, "low": 1}, True), ({"low": 1, "high": 3}, False)],
+)
+def test_bindings_with_a_mapping_setting_are_the_same_whatever_its_key_order(
+    doc: dict[str, Any],
+    tmp_path: Path,
+    geometry: Path,
+    log: list[str],
+    second: dict[str, Any],
+    warned: bool,
+) -> None:
+    spec = thresholds(doc, {"cuts": {"low": 1, "high": 2}}, {"cuts": second})
+    candidate = evaluate(spec, [CutThreshold], tmp_path, geometry)
+    assert candidate.status is Status.VALID
+    assert len(candidate.warnings) == (1 if warned else 0)
+
+
 def test_an_objective_on_the_metric_of_a_binding_needs_its_binding_to_measure_it(
     doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
 ) -> None:
