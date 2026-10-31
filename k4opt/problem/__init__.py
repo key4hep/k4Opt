@@ -3,7 +3,8 @@
 Reads and strictly validates a ``k4opt.problem/v1alpha1`` YAML document into immutable,
 typed models: the parameters, the named ``samples`` a candidate is measured on (each with its
 pipeline stages, each stage run by an executor or given as a file), the ``evaluators`` (named
-bindings of evaluator implementations, each measuring its samples or the candidate) and the
+bindings of evaluator implementations, each measuring its samples or the candidate, or combining
+the evaluations of several samples by role, :class:`Reference`) and the
 objectives and constraints, each on a metric of one evaluation (:class:`MetricRef`).
 ``load_problem`` also resolves the geometry and every parameter target in the active k4geo tree
 (``$K4GEO``); ``parse_problem`` is the pure variant that needs no geometry. Evaluators and
@@ -43,6 +44,7 @@ from k4opt.problem.models import (
     Objective,
     Parameter,
     ProblemSpec,
+    Reference,
     Sample,
     Stage,
 )
@@ -66,6 +68,7 @@ __all__ = [
     "ProblemConfigError",
     "ProblemSpec",
     "RecordError",
+    "Reference",
     "RunError",
     "RunOutcome",
     "Sample",

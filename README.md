@@ -18,9 +18,9 @@ API, command group, documentation and tests.
 | --- | --- | --- |
 | [`k4opt.geometry`](docs/geometry.md) | Discover addressable parameters of a DD4hep XML geometry, override them, materialize modified geometries | available |
 | problem definition | Declare which parameters vary and within which bounds, what each candidate is measured on (named `samples`, each with its stages, each stage run by an executor or given as a file) and who measures it (`evaluators`). A [draft specification](docs/problem.md) can be loaded, validated and its geometry targets resolved (`k4opt.problem.load_problem`, against the active `$K4GEO`); a single candidate can be evaluated by several evaluators that share its simulation (`k4opt evaluate`), many from Python (`EvaluationSession`), each judged against the objectives and constraints; a general evaluator registry and further metrics are **proposed, not yet implemented** | in progress |
-| [`k4opt.evaluation`](docs/evaluation.md) | The contract an evaluator implements (request, result, measurements); evaluators only read the output of a pipeline stage that the framework runs. `load_evaluator` loads an evaluator from a file; a per-run `summary.json` exists; a general runner and result store are **not implemented** | in progress |
+| [`k4opt.evaluation`](docs/evaluation.md) | The contract an evaluator implements (request, result, measurements); evaluators read a pipeline stage or combine per-sample measurements and artifacts through declared roles. `load_evaluator` loads an evaluator from a file; a per-run `summary.json` exists; a general runner and result store are **not implemented** | in progress |
 | [`k4opt.ddsim`](docs/ddsim.md) | Run `ddsim` on a prepared geometry with a particle gun or an event file: command from a sample's stages (the ddsim options written the way ddsim reads them), protected options, logs; run once per candidate and sample as its `simulation` stage, whatever number of evaluators read it | first vertical slice |
-| [examples](docs/evaluators.md) | One problem and one evaluator to copy from, run with `k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] --param REF=VALUE --output DIR`. The problem asks how fine the CLD ECAL cells should be: finer cells measure a photon's direction better (`calo.photon` measures it) but fire more readout channels. k4opt ships no evaluators | example |
+| [examples](docs/evaluators.md) | Runnable photon-direction and photon/pi0-separation problems with evaluators to copy from, run with `k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] --param REF=VALUE --output DIR`. The problem asks how fine the CLD ECAL cells should be: finer cells measure a photon's direction better (`calo.photon` measures it) but fire more readout channels. k4opt ships no evaluators | example |
 | [`k4opt.optimization`](docs/optimization.md) | Search a problem's parameters with an existing optimizer (Optuna's TPE sampler): `k4opt optimize` proposes candidates, evaluates each into a trial directory, judges them against the objectives and constraints, and resumes a study only with what it was made with; `k4opt study` (`load_study`) reads a study back, checked and unchanged, to show its trials and Pareto front or export them as CSV or JSON | first version |
 
 The planned components are directions, not commitments; their shape depends on
@@ -137,7 +137,8 @@ k4opt study export runs/cld-ecal-study --format csv --output results.csv
 
 The guides: [geometry](docs/geometry.md) (target references, include handling, override
 semantics, manifest, Python API, limitations), [problem](docs/problem.md),
-[evaluators](docs/evaluators.md) and [optimization](docs/optimization.md).
+[evaluators](docs/evaluators.md) and [optimization](docs/optimization.md). The [photon/pi0 example](docs/evaluators.md#photonpi0-example)
+combines two samples through histogram artifacts and constrains an approximate channel cost.
 
 ## Development
 

@@ -112,7 +112,11 @@ class EvaluationRequest:
     local files (an EDM4hep file, by the stage that made it); which names an evaluator accepts
     is part of its documentation. ``workdir`` is where the evaluator may write; it is neither
     created nor checked here. ``events`` (positive) and ``seed`` are those of the stage the
-    evaluator reads, where that stage has them (a ddsim simulation).
+    evaluator reads, where that stage has them (a ddsim simulation). ``properties`` are those the
+    problem gives the sample it measures (a cross section, say): facts k4opt records but never
+    reads. ``roles`` holds what each role of a combined evaluator reads, a tuple of
+    :class:`RoleInput` by role, and nothing for ``check()``, which runs before anything exists to
+    read.
 
     Every field is optional so that a toy evaluator needs little setup.
     """
@@ -124,6 +128,8 @@ class EvaluationRequest:
     workdir: Path | None = None
     events: int | None = None
     seed: int | None = None
+    properties: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    roles: Mapping[str, tuple[RoleInput, ...]] = field(default_factory=lambda: FrozenMap({}))
 
     def read(self, stage: str, collection: str, value_type: str) -> Iterator[Any]:
         """The collection ``collection`` of each event of the file that ``stage`` produced.
@@ -157,14 +163,27 @@ class EvaluationRequest:
         object.__setattr__(self, "inputs", _paths(self.inputs, "inputs"))
         if self.workdir is not None and not isinstance(self.workdir, Path):
             raise EvaluationContractError("workdir must be a pathlib.Path")
-        if self.events is not None and (
-            isinstance(self.events, bool) or not isinstance(self.events, int) or self.events < 1
-        ):
-            raise EvaluationContractError(f"events must be a positive integer, got {self.events!r}")
-        if self.seed is not None and (
-            isinstance(self.seed, bool) or not isinstance(self.seed, int)
-        ):
-            raise EvaluationContractError(f"seed must be an integer, got {self.seed!r}")
+        _conditions(self.events, self.seed)
+        object.__setattr__(self, "properties", _json_mapping(self.properties, "properties"))
+        if not isinstance(self.roles, Mapping):
+            raise EvaluationContractError("roles must be a mapping of role to inputs")
+        roles = {}
+        for role, items in self.roles.items():
+            _name(role, "roles name")
+            if not isinstance(items, tuple) or not all(isinstance(i, RoleInput) for i in items):
+                raise EvaluationContractError(f"roles[{role!r}] must be a tuple of RoleInput")
+            roles[role] = items
+        object.__setattr__(self, "roles", FrozenMap(roles))
+
+
+def _conditions(events: object, seed: object) -> None:
+    """Raise unless ``events`` is ``None`` or positive and ``seed`` ``None`` or an integer."""
+    if events is not None and (
+        isinstance(events, bool) or not isinstance(events, int) or events < 1
+    ):
+        raise EvaluationContractError(f"events must be a positive integer, got {events!r}")
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+        raise EvaluationContractError(f"seed must be an integer, got {seed!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +369,72 @@ class Artifact:
             raise EvaluationContractError(
                 f"{self.ref}: sha256 must be 64 lowercase hex digits, got {self.sha256!r}"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class RoleInput:
+    """One item a role of a combined evaluator reads: the evaluation of ``sample`` by the
+    evaluator ``binding`` (``zz/zh.selection``), or the ``stage`` of ``sample``
+    (``zz/simulation``).
+
+    For an evaluation, ``measurements`` are those of its ``valid`` result, ``artifacts`` the files
+    it returned, by name, ``settings`` the settings it received and ``provenance`` what it
+    reported; for a stage, ``artifacts`` holds its file, by the stage's name, and ``provenance``
+    how it was made. ``events`` and ``seed`` are those of the stage the item was made from, and
+    ``properties`` those the problem gives ``sample``: k4opt only delivers them, so normalizing a
+    sample (a cross section times a luminosity, say) is the combined evaluator's own work.
+    """
+
+    sample: str
+    binding: str | None = None
+    stage: str | None = None
+    measurements: tuple[Measurement, ...] = ()
+    artifacts: Mapping[str, Artifact] = field(default_factory=lambda: FrozenMap({}))
+    events: int | None = None
+    seed: int | None = None
+    properties: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    settings: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    provenance: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+
+    @property
+    def label(self) -> str:
+        """``sample/binding`` or ``sample/stage``, as records name the item."""
+        return f"{self.sample}/{self.binding or self.stage}"
+
+    def measurement(self, stage: str, metric: str) -> Measurement:
+        """The measurement of ``stage``/``metric``; :class:`EvaluationContractError` if there is
+        none, which a role that names the metric rules out."""
+        for measured in self.measurements:
+            if (measured.stage, measured.metric) == (stage, metric):
+                return measured
+        raise EvaluationContractError(
+            f"{self.label} has no measurement {stage}/{metric}; name it in the metrics of the "
+            "role that reads it, so that every valid result of it carries it"
+        )
+
+    def __post_init__(self) -> None:
+        _name(self.sample, "sample")
+        if (self.binding is None) == (self.stage is None):
+            raise EvaluationContractError(
+                "a role input is an evaluation (binding) or a stage, exactly one of them"
+            )
+        if self.stage is None:
+            _name(self.binding, "binding")
+        else:
+            _name(self.stage, "stage")
+        if not isinstance(self.measurements, (list, tuple)) or not all(
+            isinstance(m, Measurement) for m in self.measurements
+        ):
+            raise EvaluationContractError("measurements must be a tuple of Measurement")
+        object.__setattr__(self, "measurements", tuple(self.measurements))
+        if not isinstance(self.artifacts, Mapping) or not all(
+            isinstance(name, str) and isinstance(a, Artifact) for name, a in self.artifacts.items()
+        ):
+            raise EvaluationContractError("artifacts must be a mapping of name to Artifact")
+        object.__setattr__(self, "artifacts", FrozenMap(self.artifacts))
+        _conditions(self.events, self.seed)
+        for name in ("properties", "settings", "provenance"):
+            object.__setattr__(self, name, _json_mapping(getattr(self, name), name))
 
 
 type CandidateKey = tuple[tuple[str, str, str, str], ...]

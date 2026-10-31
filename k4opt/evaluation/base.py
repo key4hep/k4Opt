@@ -18,6 +18,9 @@ class adds what most evaluators would write anyway:
 * ``artifacts = {"histogram": "shower widths, JSON {edges, counts}"}`` names the files a
   ``valid`` result returns, each with what it holds: every one, written in ``request.workdir``,
   and no other;
+* ``roles = {"signal": Role(metrics=[("analysis", "yield")])}`` makes it a combined evaluator,
+  which reads no stage but the results of other evaluations, by role: the problem says which
+  ones, and ``request.roles["signal"]`` holds them (:class:`Role`);
 * ``evaluate`` may return ``{"hit_cells": 3.2}`` or ``{"hit_cells": [3, 4, 2]}`` (a number, or
   per-event values, a list or a numpy array, that become their unweighted mean with its
   standard error) instead of an :class:`EvaluationResult`;
@@ -130,6 +133,60 @@ class Quantity:
         if not math.isfinite(converted):
             raise EvaluationContractError(f"{path}.value: too large to express in {self.unit}")
         return converted
+
+
+@dataclass(frozen=True, slots=True)
+class Role:
+    """An input of a combined evaluator: what each item the problem gives it must provide.
+
+    An item is the evaluation of a sample by another evaluator (``{sample: zz, evaluator:
+    zh.selection}``), whose ``metrics`` (``(stage, metric)`` pairs) and ``artifacts`` (names) this
+    role reads: that evaluator must declare them, and a ``valid`` result of it carries them. A role
+    with a ``stage`` reads instead the file of that stage of a sample (``{sample: zz, stage:
+    simulation}``). A role takes one item, or with ``many`` one or more; ``request.roles`` holds a
+    tuple of :class:`~k4opt.evaluation.RoleInput` either way.
+    """
+
+    many: bool = False
+    metrics: tuple[tuple[str, str], ...] = ()
+    artifacts: tuple[str, ...] = ()
+    stage: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.many, bool):
+            raise EvaluationContractError(f"Role: many must be True or False, got {self.many!r}")
+        if not isinstance(self.metrics, (list, tuple)) or not all(
+            isinstance(key, tuple)
+            and len(key) == 2
+            and all(isinstance(part, str) and part.strip() for part in key)
+            for key in self.metrics
+        ):
+            raise EvaluationContractError(
+                "Role: metrics must be (stage, metric) pairs, such as ('analysis', 'yield'); "
+                f"got {self.metrics!r}"
+            )
+        if len(set(self.metrics)) != len(self.metrics):
+            raise EvaluationContractError(f"Role: metrics {list(self.metrics)} name one twice")
+        if not isinstance(self.artifacts, (list, tuple)) or not all(
+            isinstance(name, str) and ARTIFACT_NAME.fullmatch(name) for name in self.artifacts
+        ):
+            raise EvaluationContractError(
+                f"Role: artifacts must be artifact names, such as 'histogram'; got "
+                f"{self.artifacts!r}"
+            )
+        if len(set(self.artifacts)) != len(self.artifacts):
+            raise EvaluationContractError(f"Role: artifacts {list(self.artifacts)} name one twice")
+        if self.stage is not None:
+            if not isinstance(self.stage, str) or not self.stage.strip():
+                raise EvaluationContractError(
+                    f"Role: stage must name a pipeline stage, got {self.stage!r}"
+                )
+            if self.metrics or self.artifacts:
+                raise EvaluationContractError(
+                    "Role: a role that reads a stage's file reads no metrics or artifacts"
+                )
+        object.__setattr__(self, "metrics", tuple(self.metrics))
+        object.__setattr__(self, "artifacts", tuple(self.artifacts))
 
 
 def _fits_float(number: int | float) -> bool:
@@ -247,6 +304,44 @@ def check_settings(evaluator: object, settings: Mapping[str, Json]) -> None:
             raise EvaluationContractError(f"settings.{key}: must not be blank")
 
 
+def _role_name(role: object) -> bool:
+    return (
+        isinstance(role, str)
+        and role.isidentifier()
+        and not keyword.iskeyword(role)
+        and not role.startswith("_")
+    )
+
+
+def declared_roles(evaluator: object) -> dict[str, Role] | None:
+    """The ``roles`` ``evaluator`` declares, by name; ``None`` if it declares none (it is no
+    combined evaluator). Raises :class:`EvaluationContractError` for a declaration that cannot be
+    read, or roles of an evaluator that reads a stage."""
+    declared = getattr(evaluator, "roles", None)
+    if declared is None:
+        return None
+    if not isinstance(declared, Mapping):
+        raise EvaluationContractError(
+            "roles: declare a mapping of name to Role(...), such as "
+            f"{{'signal': Role(metrics=[('analysis', 'yield')])}}; got {declared!r}"
+        )
+    if getattr(evaluator, "stage", None) is not None:
+        raise EvaluationContractError(
+            "roles: an evaluator that reads a stage measures each sample on its own; a combined "
+            "evaluator reads other evaluations instead, so set no stage"
+        )
+    for role, declaration in declared.items():
+        if not _role_name(role):
+            raise EvaluationContractError(
+                f"roles: {role!r} must be a Python identifier such as signal, not a keyword"
+            )
+        if not isinstance(declaration, Role):
+            raise EvaluationContractError(
+                f"roles.{role}: declare it as Role(...), got {declaration!r}"
+            )
+    return dict(declared)
+
+
 def declared_collections(evaluator: object) -> dict[str, Collection]:
     """The ``collections`` ``evaluator`` declares, by role; raises
     :class:`EvaluationContractError` for a declaration that cannot be read."""
@@ -263,12 +358,7 @@ def declared_collections(evaluator: object) -> dict[str, Collection]:
             "collections are read from the file of the evaluator's stage; set stage = <stage>"
         )
     for role, collection in declared.items():
-        if (
-            not isinstance(role, str)
-            or not role.isidentifier()
-            or keyword.iskeyword(role)
-            or role.startswith("_")
-        ):
+        if not _role_name(role):
             raise EvaluationContractError(
                 f"collections: role {role!r} must be a Python identifier such as hits, "
                 "not a keyword"
@@ -392,7 +482,7 @@ def result_from(evaluator: object, returned: EvaluationResult | Values) -> Evalu
 class Evaluator:
     """Base class of evaluators; see the module documentation. ``name`` and ``version`` are
     required; ``stage`` (the pipeline stage it reads), ``collections``, ``settings``,
-    ``metrics`` and ``artifacts`` are optional."""
+    ``metrics``, ``artifacts`` and ``roles`` (a combined evaluator's inputs) are optional."""
 
     name: str
     version: str
@@ -401,6 +491,7 @@ class Evaluator:
     settings: Mapping[str, Any] | None = None
     metrics: Mapping[MetricKey, str] | None = None
     artifacts: Mapping[str, str] | None = None
+    roles: Mapping[str, Role] | None = None
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult | Values:
         raise NotImplementedError

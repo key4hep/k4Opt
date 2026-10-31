@@ -300,3 +300,41 @@ def test_an_export_is_a_new_file_outside_the_study_written_whole(
     with pytest.raises(OptimizationError, match=r"cannot write .*other\.csv: disk full"):
         export(study, "csv", io.StringIO(), tmp_path / "other.csv")
     assert not [p.name for p in tmp_path.iterdir() if "other.csv" in p.name]  # nothing partial
+
+
+def test_combined_bindings_keep_distinct_columns_roles_and_relocatable_records(
+    tmp_path: Path, combined_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    import yaml
+
+    from k4opt.optimization._show import render_trial
+    from tests.support.evaluators import toy_significance, yields
+
+    fake = simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    doc = yaml.safe_load(combined_problem.read_text())
+    doc["evaluators"].append(doc["evaluators"][1] | {"as": "second"})
+    doc["objectives"].append(doc["objectives"][0] | {"evaluator": "second"})
+    combined_problem.write_text(yaml.safe_dump(doc, sort_keys=False))
+    output = tmp_path / "s"
+    run(combined_problem, output, 1, [yields(), toy_significance()])
+    assert len(fake.calls) == 2  # shared upstream evaluations need only two simulations
+    moved = tmp_path / "moved"
+    shutil.move(output, moved)
+    study = load_study(moved)
+    (row,) = csv.DictReader(io.StringIO(to_csv(study)))
+    keys = [f"objective:{b}/analysis/expected_significance" for b in ("significance", "second")]
+    assert all(key in row for key in keys)
+    assert float(row[keys[0]]) == float(row[keys[1]])
+    for render in (
+        lambda out: render_results(study, out),
+        lambda out: render_trial(study, study.trial(0), out),
+    ):
+        out = io.StringIO()
+        render(out)
+        assert "roles:" in out.getvalue()
+        for name in ("significance", "second"):
+            assert f"{name}:" in out.getvalue()
+        assert "signal sig/test.yields" in out.getvalue()
+        assert "backgrounds bkg/test.yields" in out.getvalue()

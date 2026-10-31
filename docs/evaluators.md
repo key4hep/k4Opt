@@ -55,12 +55,13 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    to `um mm cm m mrad rad deg MeV GeV TeV`, expressions are not interpreted), and the geometry
    task materializes the geometry into `<output>/geometry` from the catalog that
    `load_problem()` discovered;
-2. for each sample, in the order of the problem, the stages its evaluators read are made
+2. for each sample, in the order of the problem, the stages its evaluators or roles read are made
    available once each: a generation `file` is checked and hashed, and the `simulation` stage
    runs `ddsim` on that snapshot in `<output>/samples/<sample>/simulation`. Then each evaluator
    that measures the sample, in the order of the problem, reads the files of the sample's stages
    it needs and may write in `<output>/samples/<sample>/evaluators/<binding>`; last, each
-   evaluator of the candidate, which reads no stage, in `<output>/evaluators/<binding>`. Each of
+   evaluator of the candidate runs in `<output>/evaluators/<binding>`; combined evaluators read
+   their role inputs there. Each of
    these is a [task](evaluation.md#stages) that runs only when what it reads succeeded: if a
    stage fails or its output lacks events, the stage is `failed` and the evaluations that read
    it are `blocked`, not called; the others still are, those of the other samples too. An evaluator whose stage's file lacks a
@@ -94,7 +95,8 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      `executed`, and the `revision` of the git checkout that tracks it;
      [details](evaluation.md#loading-an-evaluator)), the metrics it declares with their units
      (`metrics`, `null` if it declares none) and the names of the artifacts it declares
-     (`artifacts`, `null` if it declares none);
+     (`artifacts`, `null` if it declares none), and its role declarations
+     (`roles`, `null` if it declares none);
    - `samples`, each sample of the problem by its name, in problem order, with its `stages` and
      its `evaluations`:
      - `stages`, each once and in pipeline order: its `status` (`done`, `failed` or `blocked`)
@@ -113,8 +115,9 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
        returned (each with its reference `gamma_10gev/calo.photon#histogram`, path, size and
        SHA-256, taken when it returned) and its provenance, its directory (`workdir`, `null` if it
        was not called) and the time of its `evaluate()` call (`null` if it was not called);
-   - `evaluations`: those of the bindings that measure the candidate, which read no stage, the
-     same way;
+   - `evaluations`: those of the bindings that measure the candidate, with `roles` mapping each
+     input role to its ordered producer labels (empty for cost models), otherwise recorded
+     the same way;
    - `geometry`: its `status` (always `done`: a geometry that cannot be made stops the run), the
      time spent making it, the geometry fingerprint and manifest, the path and SHA-256 of each file its external
      references read (`externals`) and of each file only this candidate's values name
@@ -272,8 +275,47 @@ photon by photon, 5.1 mm cells are 0.004 ± 0.002 mrad worse than 2.5 mm cells a
 0.052 ± 0.006 mrad. The direction alone would not justify CLD's 5.1 mm cells; shower
 separation in particle flow does, and measuring it needs reconstruction.
 
+## Photon/pi0 example
+
+The [combined example](../examples/problem/cld-ecal-pi0-rejection.yaml) simulates 20 GeV photons
+and neutral pions on one candidate geometry, then compares their shower-width histograms:
+
+```bash
+k4opt evaluate examples/problem/cld-ecal-pi0-rejection.yaml \
+    --evaluator examples/evaluators/shower_shape.py:ShowerShape \
+    --evaluator examples/evaluators/separation.py:Separation \
+    --evaluator examples/evaluators/ecal_channels.py:EcalChannels \
+    --param constants.ECal_cell_size=8.0 --output runs/cld-pi0-8mm
+```
+
+Use the same three `--evaluator` arguments with `k4opt optimize`, replacing `--param` with
+`--trials 30 --seed 42`, to search cell sizes. The pinned Key4hep stack is required.
+
+`calo.shower_shape` computes each event's energy-weighted RMS hit distance transverse to the
+radial axis through the shower's energy-weighted center, in mm. It uses simulated ECAL barrel
+hits above the threshold, without particle reconstruction. An event with no energy above
+threshold makes the result invalid. Its `histogram` artifact contains `edges`, `counts`,
+`underflow` and `overflow`; a width exactly at the last edge is included in the last bin.
+
+`calo.separation` reads both histograms through roles. It selects the first whole bin reaching
+the requested photon efficiency and accepts all bins through that bin. The achieved efficiency
+may exceed the request. `background_rejection` is **1 minus the accepted background fraction**,
+from zero to one; it remains finite when no background passes. The reported `width_cut` is the
+selected bin's upper edge. Histogram underflow or a cut requiring signal overflow is invalid;
+background overflow remains in the denominator. Empty histograms are invalid. Bin edges must
+match. No uncertainty is assigned: finite statistics, binning, using the signal sample to set
+the cut, and missing reconstruction/systematics limit this demonstration.
+
+`ecal.channels` is a separate candidate-level cost model: `2*pi*radius*length*layers/cell_size²`.
+Its dimensions are explicit settings in mm. It approximates a cylindrical barrel and omits
+gaps, endcaps and layer differences; it does not count the detector's actual channels.
+
+The two simulations each run once, both histogram artifacts are hashed, and the combined
+record names the producer of each role. This is a runnable demonstration of the data flow,
+not a validated particle-flow separation or physics-sensitivity study.
+
 ## Not done
 
-Reconstruction, other metrics, evaluator lookup by name, evaluators that combine several
-samples, stage configuration shared by samples, branches of the stages, aggregation over seeds, retries, a persistent store of runs and
+Reconstruction, evaluator lookup by name, chained combined evaluators, stage configuration
+shared by samples, branches of the stages, aggregation over seeds, retries, a persistent store of runs and
 an environment check against the pin.

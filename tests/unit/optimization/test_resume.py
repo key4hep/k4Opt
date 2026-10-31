@@ -25,7 +25,7 @@ from k4opt.optimization._optuna.space import search_space
 from k4opt.problem import load_problem
 from tests.support import simulation
 from tests.support.common import git, git_checkout, requires_git, tree_digest
-from tests.support.evaluators import TRADE_OFF, cell_count, trade_off
+from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, trade_off, yields
 from tests.support.geometry import MINI_GEO
 from tests.unit.optimization.conftest import (
     RADIUS,
@@ -696,3 +696,69 @@ def test_a_study_whose_sample_reads_a_moved_file_resumes(
     assert [t.status for t in resumed.trials] == ["valid", "valid"]
     read = summary(output, 1)["samples"]["pion"]["stages"]["generation"]
     assert read["file"] == str(moved / "zh.hepmc")
+
+
+COMBINED_CHANGES: dict[str, tuple[Callable[[dict[str, Any]], None], str]] = {
+    "property": (
+        lambda d: d["samples"]["bkg"]["properties"]["cross_section"].update(value=31),
+        "samples changed",
+    ),
+    "role": (
+        lambda d: d["evaluators"][1]["roles"].update(
+            backgrounds={"samples": ["sig", "bkg"], "evaluator": "test.yields"}
+        ),
+        "evaluators changed",
+    ),
+}
+
+ROLES = """
+    import os
+    from k4opt.evaluation import Evaluator, Role
+
+    class Probe(Evaluator):
+        name, version = "test.toy_significance", "1"
+        settings = {"luminosity_invab": float}
+        metrics = {("analysis", "expected_significance"): "1"}
+
+        def __init__(self):  # the same code, configured to read another metric
+            metric = os.environ.get("K4OPT_TEST_METRIC", "selected.sum_weights")
+            role = Role(metrics=[("analysis", metric)])
+            self.roles = {"signal": role, "backgrounds": Role(many=True)}
+
+        def evaluate(self, request):
+            return {("analysis", "expected_significance"): 1.0}
+"""
+
+
+def test_a_study_of_a_combined_evaluator_resumes_and_refuses_other_roles_or_properties(
+    tmp_path: Path, combined_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    output = tmp_path / "s"
+    evaluators = [toy_significance(), yields()]
+    run(combined_problem, output, 1, seed=1, evaluators=evaluators)
+    resumed = run(combined_problem, output, 1, resume=True, evaluators=evaluators)
+    assert [t.status for t in resumed.trials] == ["valid", "valid"]
+    before = tree_digest(output)
+    for change, (edit, message) in COMBINED_CHANGES.items():
+        original = combined_problem.read_text()
+        _edit(combined_problem, edit)
+        with pytest.raises(OptimizationError, match=f"cannot resume trade-.*{message}"):
+            run(combined_problem, output, 1, resume=True, evaluators=evaluators)
+        combined_problem.write_text(original)
+        assert tree_digest(output) == before, change
+
+
+def test_a_study_does_not_resume_with_other_roles_declared(
+    tmp_path: Path, combined_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    output = tmp_path / "s"
+    probe = evaluator_from(tmp_path / "e", "roles", ROLES)
+    run(combined_problem, output, 1, seed=1, evaluators=[probe, yields()])
+    declared = summary(output, 0)["implementations"]["test.toy_significance"]["roles"]
+    assert declared["signal"]["metrics"] == [["analysis", "selected.sum_weights"]]
+    monkeypatch.setenv("K4OPT_TEST_METRIC", "generated.sum_weights")
+    other = evaluator_from(tmp_path / "e", "roles", ROLES)  # the same bytes, other roles
+    with pytest.raises(OptimizationError, match=r"'test\.toy_significance' declares other roles"):
+        run(combined_problem, output, 1, resume=True, evaluators=[other, yields()])

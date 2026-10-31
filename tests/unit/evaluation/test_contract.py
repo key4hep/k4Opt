@@ -20,6 +20,7 @@ from k4opt.evaluation import (
     EvaluationResult,
     EvaluatorProtocol,
     Measurement,
+    RoleInput,
     Status,
     result_from,
 )
@@ -463,3 +464,60 @@ def test_message_must_be_text() -> None:
 def test_measurements_must_be_ordered_sequences(measurements: Any) -> None:
     with pytest.raises(EvaluationContractError, match="list or tuple"):
         EvaluationResult("valid", measurements)
+
+
+# --- what a combined evaluator reads: role inputs ---------------------------------------------
+
+
+def test_a_role_input_is_an_evaluation_or_a_stage_of_a_sample() -> None:
+    histogram = Artifact("zz/sel#histogram", Path("/run/h.json"), 3, "0" * 64)
+    selected = Measurement("analysis", "selected", -2.5, "1")  # signed weights: any sum
+    item = RoleInput(
+        "zz",
+        binding="sel",
+        measurements=[selected],
+        artifacts={"histogram": histogram},
+        events=100,
+        seed=2,
+        properties={"cross_section": {"value": 1360, "unit": "fb"}},
+        settings={"cut": [1, 2]},
+    )
+    assert item.label == "zz/sel"
+    assert item.measurement("analysis", "selected") is selected
+    assert item.measurements == (selected,)
+    assert item.properties == {"cross_section": {"value": 1360, "unit": "fb"}}
+    assert item.settings == {"cut": (1, 2)}  # read-only copies
+    with pytest.raises(EvaluationContractError, match=re.escape("zz/sel has no measurement a/b")):
+        item.measurement("a", "b")
+    events = Artifact("zz/simulation#events", Path("/run/e.root"), 9)
+    stage = RoleInput("zz", stage="simulation", artifacts={"simulation": events})
+    assert (stage.label, stage.artifacts["simulation"].sha256) == ("zz/simulation", None)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({}, "a role input is an evaluation (binding) or a stage, exactly one of them"),
+        ({"binding": "sel", "stage": "simulation"}, "exactly one of them"),
+        ({"binding": ""}, "binding must not be blank"),
+        ({"binding": "sel", "measurements": [1.0]}, "measurements must be a tuple of Measurement"),
+        ({"binding": "sel", "artifacts": {"h": Path("h")}}, "mapping of name to Artifact"),
+        ({"binding": "sel", "events": 0}, "events must be a positive integer"),
+        ({"binding": "sel", "properties": {"x": float("inf")}}, "properties"),
+    ],
+)
+def test_a_role_input_that_breaks_the_contract_is_refused(
+    arguments: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(EvaluationContractError, match=re.escape(message)):
+        RoleInput("zz", **arguments)
+
+
+def test_a_request_carries_the_properties_and_role_inputs_it_is_given() -> None:
+    item = RoleInput("zz", binding="sel")
+    request = EvaluationRequest(properties={"process": "ZZ"}, roles={"backgrounds": (item,)})
+    assert request.properties == {"process": "ZZ"}
+    assert request.roles["backgrounds"] == (item,)
+    assert EvaluationRequest().roles == {} and EvaluationRequest().properties == {}
+    with pytest.raises(EvaluationContractError, match="must be a tuple of RoleInput"):
+        EvaluationRequest(roles={"backgrounds": [item]})  # type: ignore[dict-item]

@@ -128,6 +128,8 @@ class EvaluatorSpec:
     ``samples`` on its own, from the stage of that sample; one that reads none measures the
     candidate once, and has no samples. ``collections`` names the collection of that stage's file
     for each role the evaluator declares; ``settings`` is owned by that evaluator's contract.
+    A combined evaluator reads no stage either, but ``roles``: the items each of its roles reads,
+    by role, in the order the problem gives them.
     """
 
     name: str
@@ -137,6 +139,7 @@ class EvaluatorSpec:
     collections: Mapping[str, str] = field(default_factory=lambda: FrozenMap({}))
     binding: str = ""
     samples: tuple[str, ...] = ()
+    roles: Mapping[str, tuple[Reference, ...]] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
         # Direct construction gets the same defensive copy as parsing does.
@@ -145,8 +148,15 @@ class EvaluatorSpec:
         object.__setattr__(self, "settings", settings)
         object.__setattr__(self, "collections", FrozenMap(self.collections))
         object.__setattr__(self, "samples", tuple(self.samples))
+        roles = {role: tuple(items) for role, items in self.roles.items()}
+        object.__setattr__(self, "roles", FrozenMap(roles))
         if not self.binding:
             object.__setattr__(self, "binding", self.name)
+
+    @property
+    def reads(self) -> tuple[Reference, ...]:
+        """Every item its roles read, each once, in the order the problem gives them."""
+        return tuple(dict.fromkeys(item for items in self.roles.values() for item in items))
 
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {"name": self.name}
@@ -159,9 +169,39 @@ class EvaluatorSpec:
             data["samples"] = list(self.samples)
         if self.collections:
             data["collections"] = dict(self.collections)
+        if self.roles:
+            data["roles"] = {
+                role: [item.to_dict() for item in items] for role, items in self.roles.items()
+            }
         if self.settings:
             data["settings"] = thaw(self.settings)
         return data
+
+
+@dataclass(frozen=True, slots=True)
+class Reference:
+    """An item a role of a combined evaluator reads: the evaluation of ``sample`` by the binding
+    ``evaluator``, or the ``stage`` of ``sample`` (its file); exactly one of them is set."""
+
+    sample: str
+    evaluator: str | None = None
+    stage: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.evaluator is None) == (self.stage is None):
+            raise ProblemConfigError(
+                f"a reference to {self.sample} names an evaluator or a stage, exactly one of them"
+            )
+
+    @property
+    def label(self) -> str:
+        """``sample/evaluator`` or ``sample/stage``: the task it reads, as records name it."""
+        return f"{self.sample}/{self.evaluator or self.stage}"
+
+    def to_dict(self) -> dict[str, object]:
+        if self.evaluator is not None:
+            return {"sample": self.sample, "evaluator": self.evaluator}
+        return {"sample": self.sample, "stage": self.stage}
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,17 +250,26 @@ class Sample:
 
     ``stages`` says how each stage of the sample is made, by stage type in pipeline order. The
     name is a label that evaluators, objectives and constraints refer to the sample by; what its
-    events are is said by its stages alone.
+    events are is said by its stages alone. ``properties`` are facts about the sample that its
+    evaluators may read (a process, a cross section), any JSON: k4opt records and delivers them,
+    and never reads them itself.
     """
 
     name: str
     stages: Mapping[str, Stage] = field(default_factory=lambda: FrozenMap({}))
+    properties: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stages", FrozenMap(self.stages))
+        properties = freeze(self.properties, f"samples.{self.name}.properties")
+        assert isinstance(properties, Mapping)
+        object.__setattr__(self, "properties", properties)
 
     def to_dict(self) -> dict[str, object]:
-        return {name: stage.to_dict() for name, stage in self.stages.items()}
+        data: dict[str, object] = {}
+        if self.properties:
+            data["properties"] = thaw(self.properties)
+        return data | {name: stage.to_dict() for name, stage in self.stages.items()}
 
 
 def _escaped(part: str) -> str:

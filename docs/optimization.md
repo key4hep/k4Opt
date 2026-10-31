@@ -203,7 +203,7 @@ keeps its geometry and its EDM4hep file.
   option names);
 - `implementations`: each evaluator the problem binds, once however many entries bind it, by
   name: its version, the stage it reads, its source identity, declared metrics and declared
-  artifacts;
+  artifacts and roles;
 - the compact file, source root and fingerprint of the unmodified geometry, and the path and
   SHA-256 of each file its external references read (`${DD4hepINSTALL}/...`, `${K4GEO}/...`,
   absolute paths);
@@ -213,6 +213,13 @@ keeps its geometry and its EDM4hep file.
 - the optimizer: `optuna` and its version, the study name (`<problem name>-<8 hex>`), the
   storage (a URL without its password), the sampler and its seed, the directions, the
   parameters' distributions, the limits and the constraint-value policy.
+
+Combined objectives use `binding/stage/metric` without a sample prefix. Two combined bindings
+reporting the same metric have separate objective columns. `study show` and `study trial`
+include the role wiring. Changing sample properties, role wiring or declared role requirements
+refuses resume, just as changing evaluator settings does. A failed or invalid upstream input
+blocks the combined evaluation and produces a failed trial (the evaluation is incomplete), with no
+partial objective vector.
 
 ## Resuming a study
 

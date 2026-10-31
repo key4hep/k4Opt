@@ -112,6 +112,41 @@ def sampled_problem(write_problem: Callable[..., Path]) -> Path:
     return path
 
 
+@pytest.fixture
+def combined_problem(write_problem: Callable[..., Path]) -> Path:
+    """``test.yields`` on a signal sample, ``sig`` (photons), and a background, ``bkg`` (pions),
+    of 2 events each, combined by ``test.toy_significance`` as ``significance``, whose expected
+    significance is the objective; a test installs the fake ddsim."""
+    yields = {"name": "test.yields", "version": "1", "stage": "simulation"}
+    path = write_problem(
+        evaluators=[
+            yields | {"samples": ["sig", "bkg"], "collections": {"hits": "ECalBarrelCollection"}},
+            {
+                "name": "test.toy_significance",
+                "as": "significance",
+                "version": "1",
+                "roles": {
+                    "signal": {"sample": "sig", "evaluator": "test.yields"},
+                    "backgrounds": {"sample": "bkg", "evaluator": "test.yields"},
+                },
+                "settings": {"luminosity_invab": 1.0},
+            },
+        ],
+        objectives=[("significance", "analysis", "expected_significance", "maximize")],
+    )
+    document = yaml.safe_load(path.read_text())
+    document["samples"] = {
+        name: {
+            "properties": {"cross_section": {"value": cross_section, "unit": "fb"}},
+            "generation": GUN | {"particle": particle},
+            "simulation": {"executor": "ddsim", "events": 2, "seed": seed},
+        }
+        for name, particle, seed, cross_section in (("sig", "gamma", 1, 2), ("bkg", "pi-", 2, 30))
+    }
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
+
+
 TRADE = {"name": "test.trade_off", "version": "1"}
 # what each radius gives, with invalid_below 200, failed_below 150 and the limit a <= 400
 OUTCOME = {300: "feasible", 500: "infeasible", 170: "invalid", 120: "failed"}

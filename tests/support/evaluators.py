@@ -16,6 +16,8 @@ HIT_ENERGY = f"{Path(__file__).with_name('hit_energy.py')}:HitEnergy"
 PARAMETER_ECHO = f"{Path(__file__).with_name('parameter_echo.py')}:ParameterEcho"
 TRADE_OFF = f"{Path(__file__).with_name('trade_off.py')}:TradeOff"
 CANDIDATE_CHECK = f"{Path(__file__).with_name('candidate_check.py')}:CandidateCheck"
+YIELDS = f"{Path(__file__).with_name('yields.py')}:Yields"
+TOY_SIGNIFICANCE = f"{Path(__file__).with_name('toy_significance.py')}:ToySignificance"
 
 
 def calo_photon() -> type[Evaluator]:
@@ -46,6 +48,16 @@ def trade_off() -> type[Evaluator]:
 def candidate_check() -> type[Evaluator]:
     """The class of ``test.candidate_check``, which records what its instances are asked."""
     return load_evaluator(CANDIDATE_CHECK)
+
+
+def yields() -> type[Evaluator]:
+    """The class of ``test.yields``, the selected and generated sums of weights of a sample."""
+    return load_evaluator(YIELDS)
+
+
+def toy_significance() -> type[Evaluator]:
+    """The class of ``test.toy_significance``, a combined evaluator over ``test.yields``."""
+    return load_evaluator(TOY_SIGNIFICANCE)
 
 
 def implementations(*given: Any) -> list[type[Any]]:

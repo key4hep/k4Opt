@@ -201,7 +201,8 @@ lowercase letters, digits and `_`, starting with a letter, at most 64 characters
 (`gamma_10gev`), so that no two names differ only in case. Objectives, constraints and records
 refer to a sample by it, and a run directory holds each sample's work in `samples/<name>`.
 
-A sample maps a stage to how it is made; its keys are the stage types, in any order:
+A sample maps a stage to how it is made, and may also have `properties` (below). Its stage
+keys may be in any order:
 
 | Stage | Reads | Run by `executor:` | Or given as `file:` |
 | --- | --- | --- | --- |
@@ -269,6 +270,19 @@ validity of the metrics and are never left to a raw option.
 Reconstruction and analysis are out of scope for now; they will be further stage types with
 their own executors (`k4run`, say), and the problem will name them the same way.
 
+Sample `properties` is an optional mapping of JSON facts for evaluators, for example:
+
+```yaml
+properties:
+  process: "e+e- -> ZH"
+  cross_section: {value: 200, unit: fb}
+```
+
+These values reach the sample's evaluator as `request.properties` and combined evaluators as
+`RoleInput.properties`. They are immutable copies, recorded in the normalized problem and
+compared when a study resumes. k4opt does not interpret units, normalize yields or use these
+properties to run stages. Properties alone do not define a sample: it still needs stages.
+
 ### `evaluators`
 
 Who measures a candidate: one or more evaluators. Each entry:
@@ -281,6 +295,7 @@ Who measures a candidate: one or more evaluators. Each entry:
 | `stage` | The pipeline stage it reads. Required when the evaluator reads one, and absent when it reads none (a cost model working from the parameters alone needs no stage). It must equal the evaluator's own `stage`, so the problem file shows what each evaluator reads. |
 | `samples` | The samples whose `stage` it measures, each on its own: one evaluation per sample, each with its own result. May be left out when the problem has one sample; an evaluator without a `stage` measures the candidate, once, and has none. The problem as k4opt records it always lists them. |
 | `collections` | The collection of the stage's file that each role the evaluator declares reads, such as `hits: ECalBarrelCollection`. Roles with a default (`particles`, read from `MCParticles`) may be left out. Only with a `stage`. |
+| `roles` | For a combined evaluator: named references to evaluations or stage files of samples. Mutually exclusive with `stage`, `samples` and `collections`; see below. |
 | `settings` | Optional. Evaluator-defined, semantically meaningful inputs (a threshold, a cut, ...). |
 
 **One set of stages per sample, several evaluators.** The stages of a sample run once per
@@ -382,6 +397,37 @@ declares, and the run records both. In the example:
 | Key | Meaning |
 | --- | --- |
 | `threshold` | the energy above which a cell fires (`value: 70`, `unit: keV`); the evaluator receives GeV |
+
+**Combined evaluators.** A candidate-level binding may read several samples through roles:
+
+```yaml
+- name: calo.separation
+  as: pi0_rejection
+  version: "1"
+  roles:
+    signal: {sample: gamma_20gev, evaluator: calo.shower_shape}
+    background: {sample: pi0_20gev, evaluator: calo.shower_shape}
+  settings: {signal_efficiency: 0.9}
+```
+
+Each reference has exactly one of `sample` or `samples`, and exactly one of `evaluator` (a
+binding name) or `stage`. `samples: [zz, ww]` expands to one input per sample in that order;
+a role may also hold a list of references. The normalized problem stores explicit lists of
+single-sample references. A sample and binding must exist, and the binding must measure that
+sample. Candidate-level bindings cannot be referenced yet. A stage reference must name a
+stage that produces a file; gun generation runs inside simulation and has no file of its own.
+
+An item cannot appear twice within a role; it may fill several roles or feed several combined
+evaluators. Every producer runs once per candidate. The implementation declares which roles
+accept several items and what metrics or artifacts they need; session opening checks these
+contracts. A failed, invalid or blocked input blocks the combined evaluator. All evaluations
+still gate candidate validity in this increment.
+
+A combined result belongs to its binding, with no sample, for example
+`pi0_rejection/analysis/background_rejection`. The full
+[photon/pi0 example](../examples/problem/cld-ecal-pi0-rejection.yaml) runs with gun samples.
+Combining process yields for a physics sensitivity needs appropriate input event files and
+reconstruction; k4opt performs no implicit arithmetic across samples.
 
 ### `objectives`
 
@@ -594,9 +640,8 @@ analysis stages and running `k4run`; steering and configuration files (refused f
 they can be captured); a problem fingerprint; a multi-objective strategy beyond the Pareto
 front; non-geometry parameter sources (stage options are named keys so that a parameter can
 target one later); stage configuration shared by several samples; samples entering at any stage,
-and evaluators that combine several samples; branches of the stages; a parameter that drives
-several geometry targets at once; example evaluators of metrics that are not simulated measurements (cost or channel-count
-models need no new framework: an evaluator without a `stage` can compute them); a named baseline
+and chained combined evaluators; branches of the stages; a parameter that drives
+several geometry targets at once; a named baseline
 candidate (an evaluation of the unmodified geometry is the natural baseline for validating
 bounds and constraint limits).
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import re
 from pathlib import Path
 from typing import Any
 
@@ -18,13 +19,21 @@ from k4opt.evaluation import (
     EvaluationResult,
     Evaluator,
     Measurement,
+    Role,
     Status,
 )
 from k4opt.problem import MetricRef, ProblemSpec, _evaluate, parse_problem
 from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate
 from k4opt.problem._tasks import Kind, stage_task
 from tests.support import simulation
-from tests.support.evaluators import cell_count, hit_energy, implementations, parameter_echo
+from tests.support.evaluators import (
+    cell_count,
+    hit_energy,
+    implementations,
+    parameter_echo,
+    toy_significance,
+    yields,
+)
 from tests.support.simulation import COLLECTION, Event, Hits, Particle, Particles, events_with
 
 CELL = "constants.ECal_cell_size"
@@ -1094,3 +1103,206 @@ def test_an_objective_on_the_metric_of_a_binding_needs_its_binding_to_measure_it
     ):
         evaluate(spec, [Threshold], tmp_path, geometry)
     assert log == []
+
+
+# --- combined evaluators: each role is given what its implementation declares ---------------
+
+SELECTED = ("analysis", "selected.sum_weights")  # test.yields
+GENERATED = ("analysis", "generated.sum_weights")
+SUM = ("analysis", "sum")  # test.combiner
+SIGNAL = {"sample": "gamma", "evaluator": "test.yields"}
+BOTH = {"samples": ["gamma", "pion"], "evaluator": "test.yields"}
+
+
+def combiner(**declared: Role) -> type[Evaluator]:
+    """``test.combiner``, a combined evaluator with the roles ``declared``: the sum of the
+    selected weights of every evaluation its roles read."""
+
+    class Combiner(Evaluator):
+        name, version = "test.combiner", "1"
+        roles = declared or None
+        metrics = {SUM: "1"}
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            items = [item for items in request.roles.values() for item in items]
+            return {SUM: sum(i.measurement(*SELECTED).value for i in items if i.binding)}
+
+    return Combiner
+
+
+def combined_problem(doc: dict[str, Any], *entries: dict[str, Any]) -> ProblemSpec:
+    """Two samples, ``gamma`` and ``pion``, each measured by ``test.yields``, and the combined
+    ``entries`` (of ``test.combiner`` unless they say otherwise) with an objective on the sum
+    of each."""
+    doc = copy.deepcopy(doc)
+    doc["samples"] = {
+        name: {
+            "generation": {"executor": "gun", **GUN, "particle": particle},
+            "simulation": {"executor": "ddsim", "events": 3},
+        }
+        for name, particle in (("gamma", "gamma"), ("pion", "pi-"))
+    }
+    doc["evaluators"] = [
+        {"name": "test.yields", "version": "1", "stage": "simulation"}
+        | {"samples": ["gamma", "pion"], "collections": {"hits": COLLECTION}},
+        *({"name": "test.combiner", "version": "1"} | entry for entry in entries),
+    ]
+    bindings = [entry.get("as", entry.get("name", "test.combiner")) for entry in entries]
+    doc["objectives"] = [
+        {"evaluator": binding, "stage": "analysis", "metric": "sum", "direction": "maximize"}
+        for binding in bindings
+    ]
+    doc["constraints"] = []
+    return parse_problem(doc)
+
+
+@pytest.mark.parametrize(
+    ("declared", "roles", "message"),
+    [
+        (
+            {"signal": Role(metrics=[SELECTED])},
+            {"signal": SIGNAL, "extra": SIGNAL},
+            "evaluator 'test.combiner': its roles are signal; unknown extra",
+        ),
+        (
+            {"signal": Role(), "backgrounds": Role(many=True)},
+            {"signal": SIGNAL},
+            "evaluator 'test.combiner': its roles are signal, backgrounds; missing backgrounds",
+        ),
+        (
+            {"signal": Role()},
+            {"signal": BOTH},
+            "evaluator 'test.combiner': role 'signal' reads one item, but the problem gives 2: "
+            "gamma/test.yields, pion/test.yields",
+        ),
+        (
+            {"signal": Role(metrics=[SELECTED, ("analysis", "other")])},
+            {"signal": SIGNAL},
+            "role 'signal' reads analysis/other of gamma/test.yields, but test.yields does not "
+            "declare it",
+        ),
+        (
+            {"signal": Role(artifacts=["histogram", "covariance"])},
+            {"signal": SIGNAL},
+            "role 'signal' reads the artifact(s) covariance of gamma/test.yields, but "
+            "test.yields does not declare it",
+        ),
+        (
+            {"signal": Role(stage="simulation")},
+            {"signal": SIGNAL},
+            "role 'signal' reads the simulation file of a sample, as {sample: ..., stage: "
+            "simulation}; got gamma/test.yields",
+        ),
+        (
+            {"signal": Role()},
+            {"signal": {"sample": "gamma", "stage": "simulation"}},
+            "role 'signal' reads evaluations, as {sample: ..., evaluator: ...}; got the stage "
+            "gamma/simulation",
+        ),
+    ],
+)
+def test_roles_that_do_not_fit_their_implementation_are_refused_before_anything_runs(
+    doc: dict[str, Any], log: list[str], declared: dict[str, Role], roles: Any, message: str
+) -> None:
+    spec = combined_problem(doc, {"roles": roles})
+    with pytest.raises(EvaluationContractError, match=re.escape(message)):
+        _evaluate_candidate(spec, {CELL: 6}, implementations(yields(), combiner(**declared)))
+    assert log == []
+
+
+def test_a_combined_evaluator_and_its_entry_must_agree_that_it_is_one(
+    doc: dict[str, Any], log: list[str]
+) -> None:
+    spec = combined_problem(doc, {"roles": {"signal": SIGNAL}})
+    with pytest.raises(
+        EvaluationContractError,
+        match=re.escape(
+            "evaluator 'test.combiner' declares no roles, so it is no combined evaluator; remove "
+            "roles: from its entry"
+        ),
+    ):
+        _evaluate_candidate(spec, {CELL: 6}, implementations(yields(), combiner()))
+    spec = combined_problem(doc, {})
+    with pytest.raises(
+        EvaluationContractError,
+        match=re.escape(
+            "evaluator 'test.combiner' is a combined evaluator with the roles signal; say what "
+            "each reads under roles: in its entry"
+        ),
+    ):
+        _evaluate_candidate(
+            spec, {CELL: 6}, implementations(yields(), combiner(signal=Role(metrics=[SELECTED])))
+        )
+    assert log == []
+
+
+def test_malformed_settings_of_a_combined_evaluator_are_refused_before_anything_runs(
+    doc: dict[str, Any], log: list[str]
+) -> None:
+    roles = {"signal": SIGNAL, "backgrounds": {"sample": "pion", "evaluator": "test.yields"}}
+    entry = {"name": "test.toy_significance", "roles": roles}
+    spec = combined_problem(doc, entry | {"settings": {"luminosity_invab": "much"}})
+    with pytest.raises(
+        EvaluationContractError, match=re.escape("settings.luminosity_invab: expected float")
+    ):
+        _evaluate_candidate(spec, {CELL: 6}, implementations(yields(), toy_significance()))
+    assert log == []
+
+
+def test_one_evaluation_may_fill_two_roles(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+) -> None:
+    spec = combined_problem(doc, {"roles": {"signal": SIGNAL, "all": BOTH}})
+    both = combiner(signal=Role(metrics=[SELECTED]), all=Role(many=True, metrics=[SELECTED]))
+    candidate = evaluate(spec, [yields(), both], tmp_path, geometry)
+    assert candidate.status is Status.VALID
+    assert candidate.value(MetricRef("test.combiner", *SUM)).value == 3 + 3 + 3
+    assert reads(candidate)["test.combiner"] == (
+        "geometry",
+        "gamma/test.yields",
+        "pion/test.yields",
+    )
+
+
+def test_combined_evaluators_that_share_an_evaluation_read_it_made_once(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+) -> None:
+    made: list[str] = []
+
+    class Counted(yields()):  # type: ignore[misc]
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            made.append(str(request.workdir))
+            return super().evaluate(request)
+
+    spec = combined_problem(
+        doc, {"as": "c1", "roles": {"signal": SIGNAL}}, {"as": "c2", "roles": {"signal": BOTH}}
+    )
+    many = combiner(signal=Role(many=True, metrics=[SELECTED]))
+    candidate = evaluate(spec, [Counted, many], tmp_path, geometry)
+    assert candidate.status is Status.VALID
+    assert log.count("ddsim") == 2 and len(made) == 2  # each sample simulated and measured once
+    # the same metric of two combined evaluators: two values, each its own evaluator's
+    assert [ref.label for ref in spec.references] == ["c1/analysis/sum", "c2/analysis/sum"]
+    assert candidate.value(MetricRef("c1", *SUM)).value == 3
+    assert candidate.value(MetricRef("c2", *SUM)).value == 6
+
+
+def test_a_valid_evaluation_a_role_reads_must_carry_the_metrics_the_role_reads(
+    doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
+) -> None:
+    class Partial(yields()):  # type: ignore[misc]
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            result = super().evaluate(request)
+            kept = [m for m in result.measurements if (m.stage, m.metric) != GENERATED]
+            return dataclasses.replace(result, measurements=tuple(kept))
+
+    spec = combined_problem(doc, {"roles": {"signal": SIGNAL}})
+    reading = combiner(signal=Role(metrics=[SELECTED, GENERATED]))
+    with pytest.raises(
+        EvaluationContractError,
+        match=re.escape(
+            "evaluator 'gamma/test.yields' returned a valid result without required metric(s): "
+            "analysis/generated.sum_weights"
+        ),
+    ):
+        evaluate(spec, [Partial, reading], tmp_path, geometry)

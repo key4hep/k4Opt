@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from k4opt.evaluation import EvaluationContractError, Status
-from k4opt.problem import EvaluatorSpec, Sample, Stage
+from k4opt.problem import EvaluatorSpec, Reference, Sample, Stage
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
@@ -112,6 +112,29 @@ def test_each_sample_is_planned_on_its_own_and_reads_only_its_own_stages() -> No
         samples, [ev("calo", "simulation", "gamma"), ev("edge", "generation", "pion")]
     )
     assert stage_task("simulation", "pion") not in [task.id for task in only.tasks]
+
+
+def test_a_combined_evaluator_reads_the_geometry_and_each_item_of_its_roles() -> None:
+    samples = GAMMA | {"pion": Sample("pion", {"generation": GUN, "simulation": DDSIM})}
+    calo = ev("calo", "simulation", "gamma")
+    roles = {
+        "signal": (Reference("gamma", evaluator="calo"),),
+        # a stage no evaluator of the sample reads is planned for the role that reads it
+        "events": (Reference("pion", stage="simulation"), Reference("gamma", evaluator="calo")),
+    }
+    sep = EvaluatorSpec("sep", "1", roles=roles)
+    plan = plan_tasks(samples, [sep, calo])
+    assert labels(plan) == {
+        "geometry": [],
+        "gamma/generation": [],
+        "gamma/simulation": ["geometry", "gamma/generation"],
+        "gamma/calo": ["geometry", "gamma/generation", "gamma/simulation"],
+        "pion/generation": [],
+        "pion/simulation": ["geometry", "pion/generation"],
+        # each item once, in the order the roles name them; the stages before them are theirs
+        "sep": ["geometry", "gamma/calo", "pion/simulation"],
+    }
+    assert plan[evaluator_task("sep")].directory == "evaluators/sep"
 
 
 def test_a_stage_given_as_a_file_reads_nothing() -> None:

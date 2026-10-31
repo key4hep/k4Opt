@@ -136,6 +136,78 @@ class CellCount:
         )
 ```
 
+## Writing a combined evaluator
+
+A combined evaluator measures a candidate using results from several samples. It declares
+`roles` instead of a `stage`; the problem wires each role to a per-sample binding or a stage.
+For example, this evaluator reads histograms produced by `calo.shower_shape`:
+
+```python
+from k4opt.evaluation import Evaluator, Role
+
+
+class Separation(Evaluator):
+    name, version = "calo.separation", "1"
+    roles = {
+        "signal": Role(artifacts=("histogram",)),
+        "background": Role(artifacts=("histogram",)),
+    }
+    settings = {"signal_efficiency": float}
+    metrics = {("analysis", "background_rejection"): "1"}
+
+    def evaluate(self, request):
+        (signal,) = request.roles["signal"]
+        (background,) = request.roles["background"]
+        # Read signal.artifacts["histogram"].path and background's histogram,
+        # calculate rejection, then return an EvaluationResult or metric mapping.
+```
+
+The complete [Separation example](../examples/evaluators/separation.py) implements this
+calculation; [the runnable problem](../examples/problem/cld-ecal-pi0-rejection.yaml) supplies
+photon and pi0 gun samples. See [its definitions and limits](evaluators.md#photonpi0-example).
+
+`Role(metrics=(("analysis", "yield"),), artifacts=("histogram",))` requires each input's
+producer to declare that metric and artifact. A valid upstream evaluation must return them.
+`Role(many=True, ...)` accepts one or more inputs; otherwise a role takes exactly one. Either
+way, `request.roles[name]` is a tuple of `RoleInput`. Role names are Python identifiers, not
+keywords or names starting with `_`. Every declared role must be wired, with no extras.
+
+Each `RoleInput` exposes:
+
+- `sample`, `binding` (or `stage` for a stage input), and `label` (`sample/binding`);
+- `measurements`, with `measurement(stage, metric)` for lookup;
+- `artifacts`, named `Artifact` objects with an absolute `path`, logical `ref`, byte count and
+  SHA-256 when hashed;
+- `events`, `seed`, the sample's opaque `properties`, the producer's resolved `settings` and
+  its result `provenance`.
+
+A `Role(stage="simulation")` takes a stage file directly. Its input has
+`artifacts["simulation"]`, with reference `sample/simulation#events`; generated EDM4hep files
+are not hashed. Files supplied by the caller or named in the problem carry the input hash.
+There are no collection helpers for stage roles yet; read these files with podio yourself.
+
+Session opening checks wiring, cardinality, settings and declarations before creating files.
+`check(request)` receives candidate values and settings, with **empty roles**: upstream data
+does not exist yet. `evaluate(request)` runs only after every input succeeds; failed, invalid
+or blocked inputs block it. Independent evaluations still run. One upstream task may feed
+several roles or combined evaluators, and it executes only once. A fresh evaluator instance
+is created for every invocation and candidate. Candidate-level evaluators cannot be role
+inputs yet, so combined evaluators cannot be chained.
+
+Records store each role's ordered input labels, and store upstream measurements and artifacts
+once at their producer. `Assessment.from_summary` rechecks the wiring, required metrics and
+blocking against the problem and recorded declarations. Studies compare role declarations,
+wiring and sample properties when resuming.
+
+Normalization and statistics belong entirely to evaluators. The test-only
+[`ToySignificance`](../tests/support/toy_significance.py) demonstrates a single-bin Asimov
+significance using cross sections from sample properties and generated/selected sums of
+weights. It converts luminosity from ab⁻¹ to fb⁻¹ itself. This toy has no systematics, shape
+information or correlations, and rejects nonpositive generated weight sums and background.
+The framework preserves signed measurements and covariance artifacts without interpreting
+them. A real sensitivity analysis needs suitable event files, reconstruction and a statistical
+model; the toy is a data-flow test.
+
 ## Request
 
 `EvaluationRequest` is immutable and every field is optional:
@@ -147,6 +219,8 @@ class CellCount:
 | `collections` | role to the name of the collection it reads: the one the problem's entry names, or the declared default |
 | `inputs` | role name to local `Path` of an already prepared artifact: the main output of each stage it reads, by stage (`inputs["simulation"]`, an EDM4hep file), and the compact XML snapshot as `inputs["geometry"]`. The evaluator documents the roles it accepts |
 | `workdir` | where the evaluator may write, and where its artifacts must be. `k4opt evaluate` gives each evaluation its own, `<output>/samples/<sample>/evaluators/<binding>` (`<output>/evaluators/<binding>` for one of the candidate), created for the call; the request never creates or checks it |
+| `properties` | immutable JSON mapping from the measured sample, or empty for a candidate-level evaluator; k4opt records it without interpreting it |
+| `roles` | immutable mapping of role name to tuples of `RoleInput`; empty during `check()` and for evaluators without roles |
 | `events`, `seed` | those of the stage the evaluator reads, where that stage has them (a ddsim simulation); `None` otherwise. `events` is positive |
 
 The request holds no `ProblemSpec`, geometry or stage object; the framework builds it from
@@ -329,8 +403,9 @@ The work of a candidate is a set of **tasks**, each run at most once: the candid
 every **evaluation**: an evaluator on one of its samples (`gamma_10gev/calo.photon`), or on the
 candidate (`readout`), for one that reads no stage. Each task names the tasks it reads, and
 nothing else orders it: a stage that runs reads the stages of its sample before it (and the
-geometry, if it is made from it), and every evaluation reads the geometry and, of its sample,
-its evaluator's stage with the stages that one reads, even an evaluation that reads no stage.
+geometry, if it is made from it). Every evaluation reads the geometry. A per-sample evaluation
+also reads its stage and that stage's inputs; a combined evaluation reads the producers named
+by its roles.
 Each writes in a directory of its own (`samples/<sample>/simulation/`,
 `samples/<sample>/evaluators/<binding>/`, `evaluators/<binding>/` for one of the candidate). A
 task runs only when every task it reads succeeded (a stage is `done`, an evaluation `valid`);
@@ -413,7 +488,7 @@ candidate is created: k4opt calls its `check()` and later its `evaluate()`, then
 evaluator keeps on `self` reaches another candidate.
 
 Every instance must declare what the first did: the same class, `name`, `version`, `stage`,
-`settings`, `collections` and `metrics`. The records name the first one's class as the code that
+`settings`, `collections`, `metrics`, `artifacts` and `roles`. The records name the first one's class as the code that
 ran, its metrics decide what the objectives may name, and its settings and collections, defaults included,
 make the request, which must not change from one candidate to the next. What the first declared
 is copied all through when the session opens, so an evaluator that changes a nested default of
@@ -650,9 +725,8 @@ trusting it.
 
 ## Deliberately deferred
 
-An evaluator registry or lookup by name (evaluators are named on the command line), evaluators
-that combine several samples, stage configuration shared by samples, branches of the stages,
-validating metric names, `k4run`, chaining artifacts between evaluators (callers do it by hand,
-as the tests show), hashing stage outputs, a store of artifacts, execution cost, retries and scheduling, fingerprints and caching,
+An evaluator registry or lookup by name (evaluators are named on the command line), chained
+combined evaluators, stage configuration shared by samples, branches of the stages, validating
+metric names, `k4run`, hashing stage outputs, a store of artifacts, execution cost, retries and scheduling, fingerprints and caching,
 persisting or serializing the `EvaluationRecord` apart from `summary.json`, and aggregation,
 significance or constraints judged with their uncertainty.
