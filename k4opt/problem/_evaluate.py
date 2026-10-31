@@ -1126,7 +1126,8 @@ def _evaluate_candidate(
     after (``gamma/simulation``). The stages the evaluators read and ``inputs`` does not supply
     then run once each, in ``workdir``.
     An evaluator whose stage failed, or whose stage output lacks the requested events, is
-    ``blocked`` and not called; the others are still called. An evaluator that raises
+    ``blocked`` and not called, as is a combined evaluator an item of whose roles did not succeed
+    (failed, invalid or blocked); the others are still called. An evaluator that raises
     :class:`EvaluationFailed` or :class:`EvaluationInvalid` gets that result; any other
     exception propagates, and so does an :class:`EvaluationContractError` for a result that
     breaks the contract.

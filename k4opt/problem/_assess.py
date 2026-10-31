@@ -503,9 +503,13 @@ def _roles(value: object, where: str) -> dict[str, _Role] | None:
         metrics: list[MetricKey] = []
         for key in _list(role.get("metrics"), f"{at}.metrics"):
             if not (
-                isinstance(key, list) and len(key) == 2 and all(isinstance(k, str) for k in key)
+                isinstance(key, list)
+                and len(key) == 2
+                and all(isinstance(k, str) and k.strip() for k in key)
             ):
                 raise RecordError(f"{at}.metrics: {key!r} is no [stage, metric]")
+            if (key[0], key[1]) in metrics:  # as a live Role refuses it
+                raise RecordError(f"{at}.metrics: {key[0]}/{key[1]} is named twice")
             metrics.append((key[0], key[1]))
         artifacts = _artifact_names(role.get("artifacts"), at) or []
         if stage is not None and (metrics or artifacts):

@@ -217,8 +217,9 @@ keeps its geometry and its EDM4hep file.
 Combined objectives use `binding/stage/metric` without a sample prefix. Two combined bindings
 reporting the same metric have separate objective columns. `study show` and `study trial`
 include the role wiring. Changing sample properties, role wiring or declared role requirements
-refuses resume, just as changing evaluator settings does. A failed upstream input blocks the
-combined evaluation and produces a failed trial, with no partial objective vector.
+refuses resume, just as changing evaluator settings does. A failed or invalid upstream input
+blocks the combined evaluation and produces a failed trial (the evaluation is incomplete), with no
+partial objective vector.
 
 ## Resuming a study
 

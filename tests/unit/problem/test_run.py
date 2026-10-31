@@ -3037,6 +3037,18 @@ def test_a_record_whose_roles_disagree_with_its_problem_is_refused(
             "evaluator 'significance': role 'signal' reads what sig/test.yields does not declare",
         ),
         (
+            f"{roles}/signal/metrics",
+            [["analysis", "selected.sum_weights"], ["analysis", "selected.sum_weights"]],
+            "implementation 'test.toy_significance': roles.signal.metrics: "
+            "analysis/selected.sum_weights is named twice",
+        ),
+        (
+            f"{roles}/signal/metrics",
+            [["analysis", " "]],
+            "implementation 'test.toy_significance': roles.signal.metrics: ['analysis', ' '] is "
+            "no [stage, metric]",
+        ),
+        (
             "samples/sig/evaluations/test.yields/measurements",
             [],
             "evaluator 'sig/test.yields' is valid without [('analysis', 'selected.sum_weights'), "
