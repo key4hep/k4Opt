@@ -493,25 +493,25 @@ def test_a_trial_directory_of_no_trial_refuses_the_resume(
 
 # --- files the problem names -----------------------------------------------------------------
 
-SAMPLE_SIZE = """
+FILE_SIZE = """
     from k4opt.evaluation import Evaluator
 
     class Probe(Evaluator):
-        name, version = "test.sample_size", "1"
+        name, version = "test.file_size", "1"
         stage = "generation"
-        metrics = {"sample.bytes": "B"}
+        metrics = {"generation.bytes": "B"}
 
         def evaluate(self, request):
             (x,) = request.candidate.values()
-            return {"sample.bytes": request.inputs["generation"].stat().st_size + x / 1000}
+            return {"generation.bytes": request.inputs["generation"].stat().st_size + x / 1000}
 """
 
 
 @pytest.fixture
-def sample_problem(tmp_path: Path, write_problem: Callable[..., Path]) -> Path:
+def file_problem(tmp_path: Path, write_problem: Callable[..., Path]) -> Path:
     problem = write_problem(
-        evaluators=[{"name": "test.sample_size", "version": "1", "stage": "generation"}],
-        objectives=[("generation", "sample.bytes", "minimize")],
+        evaluators=[{"name": "test.file_size", "version": "1", "stage": "generation"}],
+        objectives=[("generation", "generation.bytes", "minimize")],
     )
     (tmp_path / "zh.hepmc").write_text("HepMC::Version 3\n")
     _edit(problem, lambda d: d.update(stages={"generation": {"file": "zh.hepmc"}}))
@@ -519,21 +519,21 @@ def sample_problem(tmp_path: Path, write_problem: Callable[..., Path]) -> Path:
 
 
 def test_a_file_the_problem_names_that_changes_refuses_the_resume(
-    tmp_path: Path, sample_problem: Path
+    tmp_path: Path, file_problem: Path
 ) -> None:
-    sizes = evaluator_from(tmp_path / "evaluators", "sample_size", SAMPLE_SIZE)
-    run(sample_problem, tmp_path / "s", 1, seed=1, evaluators=[sizes])
+    sizes = evaluator_from(tmp_path / "evaluators", "file_size", FILE_SIZE)
+    run(file_problem, tmp_path / "s", 1, seed=1, evaluators=[sizes])
     (tmp_path / "zh.hepmc").write_text("HepMC::Version 3\nE 0\n")  # the same path
     with pytest.raises(
         OptimizationError, match=r"stages\.generation\.file: .*zh\.hepmc is not the"
     ):
-        run(sample_problem, tmp_path / "s", 1, resume=True, evaluators=[sizes])
+        run(file_problem, tmp_path / "s", 1, resume=True, evaluators=[sizes])
 
 
 def test_a_file_the_problem_names_that_changes_during_a_study_stops_it(
-    tmp_path: Path, sample_problem: Path
+    tmp_path: Path, file_problem: Path
 ) -> None:
-    sizes = evaluator_from(tmp_path / "evaluators", "sample_size", SAMPLE_SIZE)
+    sizes = evaluator_from(tmp_path / "evaluators", "file_size", FILE_SIZE)
 
     def change(trial: Any) -> None:  # after the first trial, while the study runs
         (tmp_path / "zh.hepmc").write_text("HepMC::Version 3\nE 1\n")
@@ -541,7 +541,7 @@ def test_a_file_the_problem_names_that_changes_during_a_study_stops_it(
     with pytest.raises(
         OptimizationError, match=r"trial 1 stops the study.*changed after the session"
     ):
-        run(sample_problem, tmp_path / "s", 3, seed=1, evaluators=[sizes], progress=change)
+        run(file_problem, tmp_path / "s", 3, seed=1, evaluators=[sizes], progress=change)
     first, stopped = optuna_study(tmp_path / "s").trials
     assert first.state == TrialState.COMPLETE and stopped.state == TrialState.FAIL
     assert not (tmp_path / "s" / "trial-000001").exists()

@@ -116,8 +116,8 @@ def _sha256(path: str, size: int, mtime_ns: int, ctime_ns: int, inode: int) -> s
     per run of candidates but a changed one is hashed again: writing to a file or replacing it
     changes its ctime or inode even if the content keeps its size and its mtime is restored.
     The kernel stamps ctime with a coarse clock (milliseconds), so a file rewritten within the
-    same tick as it was hashed is not told apart; samples are assumed not to change while a
-    campaign hashes them."""
+    same tick as it was hashed is not told apart; input files are assumed not to change while
+    a campaign hashes them."""
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
         for block in iter(lambda: handle.read(1 << 20), b""):
@@ -146,7 +146,7 @@ def provided_provenance(path: Path) -> dict[str, Json]:
 
 
 def _primaries(context: StageContext, given: Path | None) -> tuple[Json, Path | None]:
-    """``(particle_gun, sample)`` for ddsim: a generation file, given or supplied, wins."""
+    """``(particle_gun, input_file)`` for ddsim: a generation file, given or supplied, wins."""
     if given is not None:
         return None, given
     generation = context.stages.get("generation")
@@ -189,12 +189,12 @@ def _check_simulation(context: StageContext, provided: Collection[str]) -> None:
             "stages.simulation.events: ddsim needs the events to simulate"
         )
     given = "generation" in provided or "generation" in context.files()
-    particle_gun, sample = _primaries(context, Path("generation") if given else None)
+    particle_gun, input_file = _primaries(context, Path("generation") if given else None)
     check_arguments(
         events=stage.events,
         seed=stage.seed,
         particle_gun=particle_gun,
-        sample=sample,
+        input_file=input_file,
         options=stage.options,
     )
     for key, path in _option_files(context, stage.options).items():
@@ -208,7 +208,7 @@ def _run_simulation(
     stage = context.stages["simulation"]
     assert stage.events is not None  # checked by _check_simulation
     assert workdir is not None  # checked by check_run_inputs
-    particle_gun, sample = _primaries(context, inputs.get("generation"))
+    particle_gun, input_file = _primaries(context, inputs.get("generation"))
     files = _option_files(context, stage.options)
     read = {key: _identity_if_readable(path) for key, path in files.items()}  # before ddsim does
     run = simulate(
@@ -217,7 +217,7 @@ def _run_simulation(
         events=stage.events,
         seed=stage.seed,
         particle_gun=particle_gun,
-        sample=sample,
+        input_file=input_file,
         options={key: str(files[key]) if key in files else v for key, v in stage.options.items()},
         timeout=context.timeout,
     )

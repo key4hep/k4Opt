@@ -187,7 +187,7 @@ reaches the calorimeter as an electron and a positron; its event is left out of 
   fired cells has no residual.
 
 Each value is the mean over the selected events with the standard error of the mean
-([`Measurement.from_samples`](evaluation.md#result): `s / sqrt(N)`, `s` the sample standard
+([`Measurement.from_values`](evaluation.md#result): `s / sqrt(N)`, `s` the sample standard
 deviation with `ddof=1`); a single event has no uncertainty. The error is statistical only (one
 seed, one sample). There is no electronics noise, digitization or reconstruction, which would
 change both numbers. The residual measures a direction, not whether two nearby showers can be

@@ -165,23 +165,24 @@ class Measurement:
     uncertainty: int | float | None = None
 
     @classmethod
-    def from_samples(
-        cls, stage: str, metric: str, samples: Sequence[int | float], unit: str | None = None
+    def from_values(
+        cls, stage: str, metric: str, values: Sequence[int | float], unit: str | None = None
     ) -> Measurement:
-        """The mean of ``samples`` (one per event, say) with its statistical uncertainty.
+        """The unweighted mean of ``values`` (one per event, say) with its statistical uncertainty.
 
-        The uncertainty is the standard error of the mean, ``s / sqrt(N)`` with the sample
-        standard deviation ``s`` (``ddof=1``); a single sample has none.
+        Every value counts once, so weighted events (signed weights included) need an estimate
+        of the evaluator's own. The uncertainty is the standard error of the mean, ``s / sqrt(N)``
+        with the sample standard deviation ``s`` (``ddof=1``); a single value has none.
         """
         where = f"measurement {stage}/{metric}"
-        if len(samples) == 0:
-            raise EvaluationContractError(f"{where}: no samples to average")
-        values = [_real(sample, f"{where}: sample") for sample in samples]
+        if len(values) == 0:
+            raise EvaluationContractError(f"{where}: no values to average")
+        reals = [_real(value, f"{where}: value") for value in values]
         try:
-            mean = statistics.fmean(values)
-            error = statistics.stdev(values) / math.sqrt(len(values)) if len(values) > 1 else None
+            mean = statistics.fmean(reals)
+            error = statistics.stdev(reals) / math.sqrt(len(reals)) if len(reals) > 1 else None
         except OverflowError:
-            raise EvaluationContractError(f"{where}: samples too large to average") from None
+            raise EvaluationContractError(f"{where}: values too large to average") from None
         return cls(stage, metric, mean, unit, error)
 
     def __post_init__(self) -> None:

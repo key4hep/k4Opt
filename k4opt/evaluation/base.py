@@ -16,8 +16,8 @@ class adds what most evaluators would write anyway:
 * ``metrics = {"hit_cells": "1"}`` maps each metric to its unit; its stage is ``stage``,
   or the metric is written ``(stage, metric)``;
 * ``evaluate`` may return ``{"hit_cells": 3.2}`` or ``{"hit_cells": [3, 4, 2]}`` (a number, or
-  per-event values, a list or a numpy array, that become their mean with its standard error)
-  instead of an :class:`EvaluationResult`;
+  per-event values, a list or a numpy array, that become their unweighted mean with its
+  standard error) instead of an :class:`EvaluationResult`;
 * ``self.invalid(...)`` and ``self.fail(...)`` end an evaluation with that status.
 
 ``request.read(stage, collection, type)`` reads one collection of any stage's file; collections
@@ -333,17 +333,17 @@ def result_from(evaluator: object, returned: EvaluationResult | Values) -> Evalu
         # per-event values: a list, a tuple or a numpy array, say; text is not a sequence of numbers
         if isinstance(value, Iterable) and not isinstance(value, (str, bytes, Mapping)):
             try:
-                samples = list(value)
+                values = list(value)
             except TypeError:  # iterable in type only, like a zero-dimensional numpy array
                 raise EvaluationContractError(
                     f"metric {stage}/{metric}: {value!r} is neither a number nor per-event values"
                 ) from None
-            if not samples:  # may be a bug, so judging validity is left to the evaluator
+            if not values:  # may be a bug, so judging validity is left to the evaluator
                 raise EvaluationContractError(
                     f"metric {stage}/{metric}: no per-event values to average; if nothing could "
                     "be measured, end the evaluation with self.invalid('...')"
                 )
-            measurements.append(Measurement.from_samples(stage, metric, samples, unit))
+            measurements.append(Measurement.from_values(stage, metric, values, unit))
         else:  # a number; Measurement rejects anything else
             measurements.append(Measurement(stage, metric, cast(float, value), unit))
     return EvaluationResult.valid(measurements)

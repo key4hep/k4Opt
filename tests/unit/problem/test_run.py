@@ -697,8 +697,8 @@ def test_command_requires_an_output_directory(problem_file: Path) -> None:
 def test_a_generation_file_is_simulated_and_its_hash_recorded(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
-    sample = tmp_path / "zh.hepmc"
-    sample.write_bytes(b"HepMC::Version 3\n")
+    hepmc = tmp_path / "zh.hepmc"
+    hepmc.write_bytes(b"HepMC::Version 3\n")
     doc = yaml.safe_load(problem_file.read_text(encoding="utf-8"))
     doc["stages"]["generation"] = {"file": "zh.hepmc"}  # next to the problem file
     problem_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
@@ -706,10 +706,10 @@ def test_a_generation_file_is_simulated_and_its_hash_recorded(
     outcome = run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "s")
 
     ((argv, _),) = fake.calls
-    assert f"--inputFiles={sample}" in argv and not any(a.startswith("--gun") for a in argv)
+    assert f"--inputFiles={hepmc}" in argv and not any(a.startswith("--gun") for a in argv)
     generation = outcome.summary["stages"]["generation"]  # type: ignore[index]
-    assert generation["file"] == str(sample)
-    assert generation["sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert generation["file"] == str(hepmc)
+    assert generation["sha256"] == hashlib.sha256(hepmc.read_bytes()).hexdigest()
     assert outcome.candidate.status == "valid" and outcome.candidate.represents_candidate
 
 
@@ -1274,20 +1274,20 @@ def test_a_session_keeps_the_problem_it_loaded(
 @pytest.fixture
 def named_files(tmp_path: Path, problem_file: Path) -> tuple[Path, Path]:
     """The problem reads a generation file and a file a ddsim option names."""
-    sample, table = tmp_path / "zh.hepmc", tmp_path / "particle.tbl"
-    sample.write_bytes(b"HepMC::Version 3\n")
+    hepmc, table = tmp_path / "zh.hepmc", tmp_path / "particle.tbl"
+    hepmc.write_bytes(b"HepMC::Version 3\n")
     table.write_bytes(b"22 gamma\n")
     doc = yaml.safe_load(problem_file.read_text())
-    doc["stages"]["generation"] = {"file": sample.name}  # next to the problem file
+    doc["stages"]["generation"] = {"file": hepmc.name}  # next to the problem file
     doc["stages"]["simulation"]["physics.pdgfile"] = table.name
     problem_file.write_text(yaml.safe_dump(doc))
-    return sample, table
+    return hepmc, table
 
 
 def test_the_identity_of_a_session_is_what_it_evaluates_with(
     problem_file: Path, named_files: tuple[Path, Path]
 ) -> None:
-    sample, table = named_files
+    hepmc, table = named_files
     session = EvaluationSession.open(problem_file, [cell_count()])
     identity = session.identity()
     assert identity["problem"] == {
@@ -1296,9 +1296,9 @@ def test_the_identity_of_a_session_is_what_it_evaluates_with(
     }
     assert identity["inputs"] == {
         "stages.generation.file": {
-            "path": str(sample),
-            "bytes": sample.stat().st_size,
-            "sha256": hashlib.sha256(sample.read_bytes()).hexdigest(),
+            "path": str(hepmc),
+            "bytes": hepmc.stat().st_size,
+            "sha256": hashlib.sha256(hepmc.read_bytes()).hexdigest(),
         },
         "stages.simulation.physics.pdgfile": {
             "path": str(table),
@@ -1335,16 +1335,16 @@ def test_a_file_that_changes_stops_the_session_before_its_next_candidate(
     fake: simulation.FakeDdsim,
     change: str,
 ) -> None:
-    sample, _ = named_files
+    hepmc, _ = named_files
     session = EvaluationSession.open(problem_file, [cell_count()])
     session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     if change == "edit":
-        sample.write_bytes(b"HepMC::Version 3\nE 0\n")  # the same path, other events
+        hepmc.write_bytes(b"HepMC::Version 3\nE 0\n")  # the same path, other events
         now = "17 bytes"
     else:
-        sample.unlink()
+        hepmc.unlink()
         now = "unreadable now"
-    message = rf"stages\.generation\.file: {sample} changed after the session opened .*{now}"
+    message = rf"stages\.generation\.file: {hepmc} changed after the session opened .*{now}"
     with pytest.raises(RunError, match=message):
         session.verify_inputs()
     with pytest.raises(RunError, match=message):
@@ -1460,12 +1460,12 @@ def test_what_changes_while_a_candidate_runs_leaves_it_without_a_record(
 ) -> None:
     from k4opt import revision
 
-    sample, _ = named_files
+    hepmc, _ = named_files
     session = EvaluationSession.open(problem_file, [cell_count()])
 
     def changing(argv: list[str], **kwargs: Any) -> Any:  # while ddsim reads the files
         if change == "generation file":
-            sample.write_bytes(b"HepMC::Version 3\nE 0\n")
+            hepmc.write_bytes(b"HepMC::Version 3\nE 0\n")
         elif change == "external file":
             dd4hep.write_text("<define/>")
         else:
@@ -1474,7 +1474,7 @@ def test_what_changes_while_a_candidate_runs_leaves_it_without_a_record(
 
     monkeypatch.setattr(ddsim_run, "_execute", changing)
     message = {
-        "generation file": rf"stages\.generation\.file: {sample} changed after the session",
+        "generation file": rf"stages\.generation\.file: {hepmc} changed after the session",
         "external file": r"geometry: \$\{DD4hepINSTALL\}/.*detector_types\.xml does not read",
         "k4opt code": "k4opt's code changed on disk",
     }[change]

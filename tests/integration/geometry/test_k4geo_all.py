@@ -18,7 +18,7 @@ from k4opt.geometry.xmlio import find_by_locator, parse_xml_file
 pytestmark = pytest.mark.integration
 
 SKIPPED_PARTS = {"build", "install"}
-SAMPLE_STRIDE = 40
+PARAMETER_STRIDE = 40
 
 
 def entry_points(root: Path) -> list[str]:
@@ -51,7 +51,7 @@ def test_every_entry_point_discovers_and_keeps_its_identities(k4geo_root: Path) 
         assert max(per_file.values()) == 1, f"{rel}: a target is not unique within its file"
         trees = {}
         # every 40th parameter keeps the run to seconds; the full set was verified once offline
-        for parameter in catalog[::SAMPLE_STRIDE]:
+        for parameter in catalog[::PARAMETER_STRIDE]:
             checked += 1
             assert parse_reference(parameter.target).text == parameter.target
             tree = trees.setdefault(parameter.file, parse_xml_file(k4geo_root / parameter.file))
@@ -62,9 +62,9 @@ def test_every_entry_point_discovers_and_keeps_its_identities(k4geo_root: Path) 
 
 
 def test_snapshots_without_overrides_are_byte_identical(k4geo_root: Path, tmp_path: Path) -> None:
-    sample = [e for e in entry_points(k4geo_root) if "CLD" in e or "IDEA" in e][:4]
-    assert sample
-    for index, rel in enumerate(sample):
+    chosen = [e for e in entry_points(k4geo_root) if "CLD" in e or "IDEA" in e][:4]
+    assert chosen
+    for index, rel in enumerate(chosen):
         source = GeometrySource(rel, root=k4geo_root)
         catalog = source.discover()
         result = source.materialize([], tmp_path / f"snapshot-{index}", catalog)

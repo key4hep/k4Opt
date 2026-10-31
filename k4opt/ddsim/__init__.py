@@ -1,6 +1,6 @@
 """ddsim component: run Key4hep's ``ddsim`` on a prepared geometry.
 
-The primaries come from a particle gun or from an input sample file.
+The primaries come from a particle gun or from an input event file.
 
 Translates the generation settings of a problem into ``ddsim`` options (units included, the
 direction distribution checked against what ``ddsim`` offers) and the ddsim options a problem
@@ -20,7 +20,7 @@ Typical use::
         events=100,
         seed=42,
         particle_gun={...},  # the generation stage of a problem file
-        # or sample=Path("events.hepmc") instead
+        # or input_file=Path("events.hepmc") instead
         options={"physics.list": "FTFP_BERT"},
     )
     print(run.error or run.output)

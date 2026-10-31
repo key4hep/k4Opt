@@ -354,33 +354,37 @@ def ddsim_arguments(
     events: int,
     seed: int | None,
     particle_gun: Json = None,
-    sample: Path | None = None,
+    input_file: Path | None = None,
     options: Mapping[str, Json],
 ) -> tuple[str, ...]:
     """The arguments of ``ddsim`` (without the executable): managed ones, then ``options``.
 
     The primaries come from exactly one of ``particle_gun`` (see :func:`particle_gun_args`) and
-    ``sample``, an event file that ``ddsim`` reads with ``--inputFiles`` (it picks the reader
-    from the file extension and validates the content). ``options`` follow in order, translated
-    by :func:`option_args`; one that sets an option managed by k4opt raises :class:`DdsimError`
-    instead of silently winning or losing. ``events`` must be a positive integer and ``seed`` an
-    integer or ``None``.
+    ``input_file``, an event file that ``ddsim`` reads with ``--inputFiles`` (it picks the
+    reader from the file extension and validates the content). ``options`` follow in order,
+    translated by :func:`option_args`; one that sets an option managed by k4opt raises
+    :class:`DdsimError` instead of silently winning or losing. ``events`` must be a positive
+    integer and ``seed`` an integer or ``None``.
     """
     if isinstance(events, bool) or not isinstance(events, int) or events < 1:
         raise DdsimError(f"events must be a positive integer, got {events!r}")
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         raise DdsimError(f"seed must be an integer, got {seed!r}")
-    if (particle_gun is None) == (sample is None):
+    if (particle_gun is None) == (input_file is None):
         raise DdsimError(
-            "generation: set exactly one of particle_gun and sample "
-            f"(got {'both' if sample is not None else 'neither'})"
+            "generation: set exactly one of particle_gun and input_file "
+            f"(got {'both' if input_file is not None else 'neither'})"
         )
     user = option_args(options)
     managed = [
         f"--compactFile={compact}",
         f"--outputFile={output}",
         f"--numberOfEvents={events}",
-        *(particle_gun_args(particle_gun) if sample is None else (f"--inputFiles={sample}",)),
+        *(
+            particle_gun_args(particle_gun)
+            if input_file is None
+            else (f"--inputFiles={input_file}",)
+        ),
     ]
     if seed is not None:
         managed.append(f"--random.seed={seed}")
