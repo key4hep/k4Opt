@@ -20,8 +20,8 @@ from optuna.trial import TrialState
 
 from k4opt.evaluation import load_evaluator
 from k4opt.optimization import OptimizationError, optimize
-from k4opt.optimization import _optuna as adapter
-from k4opt.optimization._optuna import search_space
+from k4opt.optimization._optuna import run as adapter
+from k4opt.optimization._optuna.space import search_space
 from k4opt.problem import load_problem
 from tests.support.common import git, git_checkout, requires_git, tree_digest
 from tests.support.evaluators import TRADE_OFF, trade_off
@@ -30,6 +30,7 @@ from tests.unit.optimization.conftest import (
     RADIUS,
     Log,
     evaluator_from,
+    left_running,
     optuna_study,
     summary,
 )
@@ -326,25 +327,13 @@ def test_another_revision_of_an_evaluators_checkout_only_warns(
 # --- recovery --------------------------------------------------------------------------------
 
 
-def _left_running(output: Path, problem: Path, directory: bool = False) -> int:
-    """A trial asked for and left RUNNING, as a session killed just after asking leaves it."""
-    study = optuna_study(output)
-    trial = study.ask(fixed_distributions=search_space(load_problem(problem)))
-    if directory:
-        name = f"trial-{trial.number:06d}"
-        trial.set_user_attr("k4opt.dir", name)
-        (output / name / "geometry").mkdir(parents=True)
-        (output / name / "geometry" / "partial.xml").write_text("<lccdd>")
-    return int(trial.number)
-
-
 @pytest.mark.parametrize("directory", [False, True])
 def test_a_trial_left_running_without_a_record_is_closed_as_failed(
     tmp_path: Path, write_problem: Callable[..., Path], directory: bool
 ) -> None:
     problem, output = write_problem(), tmp_path / "s"
     run(problem, output, 2, seed=1)
-    number = _left_running(output, problem, directory)
+    number = left_running(output, problem, directory)
     left = tree_digest(output / f"trial-{number:06d}") if directory else None
     log = Log()
     report = run(problem, output, 1, resume=True, **log.kwargs())

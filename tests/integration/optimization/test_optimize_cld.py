@@ -81,3 +81,19 @@ def test_a_study_of_the_example_runs_resumes_and_tells_the_optimizer_its_records
         assert summary["geometry"]["changes"][0]["new_value"] == f"{size!r}*mm"
         sizes.append(size)
     assert len(set(sizes)) == 3  # the resumed session proposed a new candidate
+
+    # read back as it is, with the units, uncertainties and times its records hold
+    shown, exported = io.StringIO(), io.StringIO()
+    assert main(["study", "show", str(output)], stdout=shown, stderr=io.StringIO()) == 0
+    assert "trials:     3: 3 valid" in shown.getvalue()
+    assert "simulation/ecal_barrel.angular_residual  minimize  (mrad)" in shown.getvalue()
+    command = ["study", "export", str(output), "--format", "json"]
+    assert main(command, stdout=exported, stderr=io.StringIO()) == 0
+    for entry in json.loads(exported.getvalue())["trials"]:
+        summary = json.loads((output / entry["record"]["path"]).read_text())
+        assert entry["assessment"] == summary["assessment"]
+        assert (
+            entry["stage_seconds"]["simulation"]
+            == summary["stages"]["simulation"]["elapsed_seconds"]
+        )
+    assert [m["uncertainty"] is not None for m in entry["assessment"]["objectives"]] == [True, True]

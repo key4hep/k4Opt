@@ -11,9 +11,14 @@ from typing import Any
 import pytest
 
 from k4opt.cli import main
-from k4opt.optimization import TrialReport
+from k4opt.evaluation import Measurement
+from k4opt.frozen import FrozenMap
+from k4opt.optimization import StudyResults, TrialReport, TrialResult
 from k4opt.optimization._render import BAR_WIDTH, Progress, trial_line
+from k4opt.optimization._show import render_results, render_trial
+from k4opt.problem import Assessment, Limit, parse_problem
 from tests.support.evaluators import TRADE_OFF
+from tests.unit.optimization.conftest import RADIUS, problem_document
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -227,3 +232,48 @@ def test_on_a_terminal_the_command_draws_the_bar_and_colors_the_output(
     monkeypatch.setenv("TERM", "dumb")
     code, text = optimize("dumb")
     assert code == 0 and "\x1b" not in text and "\r" not in text and len(text.splitlines()) == 5
+
+
+def test_a_study_read_back_cannot_send_the_terminal_a_control_sequence() -> None:
+    esc = "\x1b[2J"  # clears the screen, were it printed as it is
+    spec = parse_problem(
+        problem_document(
+            objectives=[("analysis", f"a{esc}", "minimize")],
+            constraints=[{"stage": "analysis", "metric": f"a{esc}", "max": 1, "unit": f"mm{esc}"}],
+            parameter={
+                "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+                "type": "categorical",
+                "choices": [f"x{esc}"],
+            },
+        )
+    )
+    measured = (Measurement("analysis", f"a{esc}", 1.0, unit=f"mm{esc}"),)
+    limit = Limit("analysis", f"a{esc}", "max", 1, f"mm{esc}", 1.0, None, 0.0, True)
+    trial = TrialResult(
+        0,
+        "valid",
+        {RADIUS: f"x{esc}"},
+        Path(f"trial{esc}"),
+        Assessment(measured, (limit,), True),
+        record=f"id{esc}",
+        sha256="0" * 64,
+        message=f"note{esc}",
+        elapsed_seconds=1.0,
+        stage_seconds={f"simulation{esc}": 1.0},
+    )
+    metric = FrozenMap({"stage": "analysis", "metric": f"a{esc}", "unit": f"mm{esc}"})
+    document = FrozenMap(
+        {
+            "optimizer": FrozenMap({"storage": FrozenMap({"journal": f"study{esc}.journal"})}),
+            "evaluators": (FrozenMap({"metrics": (metric,)}),),
+        }
+    )
+    study = StudyResults(
+        f"name{esc}", f"id{esc}", f"now{esc}", Path(f"dir{esc}"), spec, document, (trial,), (0,)
+    )
+    out = io.StringIO()
+    render_results(study, out)
+    render_trial(study, trial, out)
+    shown = out.getvalue()
+    assert "\x1b" not in shown
+    assert shown.count("\\x1b[2J") >= 12  # each shown escaped instead

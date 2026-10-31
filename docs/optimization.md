@@ -1,13 +1,14 @@
-# Optimization and `k4opt optimize`
+# Optimization: `k4opt optimize` and `k4opt study`
 
 `k4opt optimize` runs a **study** of a problem. An optimizer proposes candidates. Each one is
 evaluated exactly as [`k4opt evaluate`](evaluators.md#k4opt-evaluate) evaluates one, into a
 trial directory of the study. The optimizer then learns each result from that trial's
 `summary.json`, read back from disk and checked. The optimizer is
 [Optuna](https://optuna.org)'s TPE sampler, but k4opt is not built around it. The problem file,
-the evaluators and the run records know nothing of Optuna, and only one module of this
-component imports it. A study keeps everything it was made with in `study.json`, and it
-resumes only with exactly that.
+the evaluators and the run records know nothing of Optuna, and only one package of this
+component (`k4opt/optimization/_optuna/`) imports it. A study keeps everything it was made with
+in `study.json`, and it resumes only with exactly that. `k4opt study` reads a study back, to
+inspect and export its results ([below](#inspecting-and-exporting-a-study)).
 
 ```bash
 k4opt optimize examples/problem/cld-ecal-granularity.yaml \
@@ -299,6 +300,154 @@ SQLite path is relative to the working directory. Its password and the
 values of its query parameters are never recorded or shown, also not in an error from the
 database, and every resume needs the same URL.
 
+## Inspecting and exporting a study
+
+`k4opt study` reads a study back as its records hold it. Nothing is evaluated, created, locked,
+recovered or written, so it can read a study while a session works on it, a copy of the study
+directory, or a study long after it ran: the problem file, the evaluators, the geometry and the
+Key4hep stack it was made with need not exist any more. What the study optimizes comes from
+`study.json`, which trials there are from the optimizer's storage, and every value from the
+trials' `summary.json`.
+
+```bash
+k4opt study show runs/cld-ecal-study
+k4opt study trial runs/cld-ecal-study 12
+k4opt study export runs/cld-ecal-study --format csv --output results.csv
+k4opt study export runs/cld-ecal-study --format json --output results.json
+```
+
+`show` prints what the study optimizes, how its trials ended, and the trials on the Pareto front
+with their values to 6 significant digits (the values here are illustrative). It names no single
+"best" trial: with several objectives, the front is the answer.
+
+```text
+study:      cld-ecal-granularity-3f9c2a1b, created 2026-10-30T12:00:00+00:00
+id:         3f9c2a1b-5d0e-4f43-9a52-77c1d2e0b6a4
+directory:  /home/me/runs/cld-ecal-study (trials in study.journal)
+parameters: constants.ECal_cell_size  continuous [2.5, 20.0] mm
+objectives: simulation/ecal_barrel.angular_residual  minimize  (mrad)
+            simulation/ecal_barrel.fired_cells  minimize  (1)
+limits:     none
+trials:     30: 28 valid (28 feasible, 0 infeasible), 1 invalid, 1 failed
+pareto:     0, 4, 7
+            trial 0:  constants.ECal_cell_size=9.79789 mm  simulation/ecal_barrel.angular_residual=0.948 mrad  simulation/ecal_barrel.fired_cells=227 1
+            ...
+```
+
+`trial` prints one trial, chosen by its number, with every value as recorded: its status, its
+candidate with units, each objective with its uncertainty and unit, each limit with the value it
+judges, its bound, its margin and whether it is satisfied, the wall-clock time of the whole
+evaluation and of each stage that ran, its record (path, id, SHA-256) and the message of an
+invalid, failed or error trial. Every text from the study (names, units, paths, ids, messages)
+is shown with its control characters escaped (`\x1b`), so neither a colored log in a message
+nor anything else a study holds can change the terminal. Times are those the record
+holds; nothing is estimated.
+
+| The trial | Status | What is shown |
+| --- | --- | --- |
+| a valid record, every limit satisfied | `valid`, feasible | objectives, limits with margins |
+| a valid record, a limit violated | `valid`, infeasible | the same; never on the front |
+| an invalid or failed record | `invalid`, `failed` | no objective values; limits not assessed; its message |
+| ended without a record | `interrupted` | nothing measured |
+| stopped the study | `error` | nothing measured; why it stopped. A valid record whose values never reached the optimizer is named but not used |
+| RUNNING in the optimizer | `running` | nothing measured or checked; a record already on disk is not read: the optimizer has not taken it yet, a resume will |
+
+A running trial is being evaluated, or was left by a session that was killed; the resume closes
+it. Counts cover every trial of the study, from all its sessions, recovered ones included.
+
+**What is checked.** `study.json` must be `k4opt.study/1`, and its identity digest that of its
+parts, so an edited problem definition is refused. The optimizer's study must be the one it
+describes (id, identity, directions, limits). Every trial the optimizer was told a record of
+must still have it, with the bytes whose SHA-256 it was told and the id it was told, made for
+this trial of this study with its candidate, evaluators, Key4hep stack, k4opt code and files,
+and its assessment must recompute from its raw measurements
+([`Assessment.from_summary`](evaluation.md#assessment-objectives-limits-and-feasibility)).
+What the optimizer holds must agree: a COMPLETE trial has a valid record with the same objective
+values, feasibility and constraint values, a FAIL trial an invalid or failed one. A record that
+is missing or does not hold up, a trial without any mark of k4opt, or a study that was never set
+up makes the read fail, with the trial and file named: nothing is skipped, repaired or
+recomputed with other code. A `trial-*` directory that no trial names is a warning. Warnings go
+to stderr.
+
+**The Pareto front** holds the feasible valid trials that no other one dominates: at least as
+good in every objective, in its direction, and better in one. Trials with equal values all stay.
+The recorded values are compared and their uncertainties play no part, so the front is the one
+Optuna reports for the study.
+
+**Storage.** The journal is read without Optuna's lock and never written. A study made with
+`--storage URL` needs the URL again (`study.json` keeps it without its password); without it,
+or with another, it is refused, and no journal is made in its place. The database itself refuses
+every write: SQLite is opened in its read-only mode, and PostgreSQL over `psycopg2` or `psycopg`
+in read-only transactions. A SQLite database in WAL mode is refused, since even a read-only
+connection writes `-wal` and `-shm` files beside it there (`k4opt optimize` makes none in that
+mode), and so is any other database, since nothing would keep it from being written. A database that Optuna would set up or repair as it opens it (its tables, version row
+or schema revision missing) is refused rather than repaired. The URL's secrets are never shown.
+
+### Export formats
+
+`export` writes the data alone: to standard output, or to `--output FILE`. The file must be new
+(an existing one is never replaced) and outside the study directory (refused there, also through
+a symlink); it is written whole, so a failure leaves no partial file. The same study gives the
+same bytes every time. Values are as recorded: a missing value is empty in CSV and `null` in
+JSON, never 0 or NaN, and a float keeps all its digits.
+
+**CSV**: one row per trial, by number, with columns that only the problem decides:
+
+| Column | Holds |
+| --- | --- |
+| `study` | the study's id |
+| `trial` | the trial's number |
+| `status` | `valid`, `invalid`, `failed`, `interrupted`, `error` or `running` |
+| `feasible` | `true` or `false` for a valid trial, empty otherwise |
+| `pareto`, `recovered` | `true` for a trial on the front, for one a resume finished |
+| `parameter:<reference>` | the candidate's value (its unit is the problem's) |
+| `objective:<stage>/<metric>`, `…:unit`, `…:uncertainty` | the measured value, its unit, its uncertainty |
+| `limit:<stage>/<metric>:<bound>:value`, `…:margin`, `…:satisfied` | the value judged, its margin (zero or below when satisfied), the verdict |
+| `elapsed_seconds`, `stage:<stage>:elapsed_seconds` | the recorded wall-clock time of the evaluation, and of each stage that ran |
+| `record`, `record_sha256`, `record_path` | the record's id, SHA-256 and path in the study |
+| `message` | why the trial is invalid, failed or an error |
+
+In a column name, a `%`, `/`, `:` or control character within a name from the problem (a
+parameter reference, a stage or metric name) is percent-escaped (`%25`, `%2F`, `%3A`, `%1B`), so
+each column names one thing and the header holds nothing a terminal would run: `objective:analysis/count%3Aunit` is the value of the
+metric `count:unit`, and `objective:analysis/count:unit` the unit of `count`. Split such a name
+at its one `/` and unescape each part (`urllib.parse.unquote`) to get the stage and metric back.
+Booleans are `true` and `false`; control characters in text are escaped (`\x1b`), tab and
+newline kept in quoted cells. The CSV cannot tell a categorical `""` or `"1"` from an empty cell
+or the number 1: the JSON export is the typed one.
+
+**JSON** (`k4opt.study-results/1`): the whole study, typed, with `study.json` as it is.
+
+```json
+{
+  "format": "k4opt.study-results/1",
+  "directory": "/home/me/runs/cld-ecal-study",
+  "study": {"schema": "k4opt.study/1", "id": "3f9c2a1b-...", "problem": {}, "optimizer": {}},
+  "outcomes": {"feasible": 28, "infeasible": 0, "invalid": 1, "failed": 1, "interrupted": 0, "error": 0, "running": 0},
+  "pareto": [0, 4, 7],
+  "warnings": [],
+  "trials": [
+    {
+      "number": 0,
+      "status": "valid",
+      "outcome": "feasible",
+      "recovered": false,
+      "candidate": {"constants.ECal_cell_size": 9.797885082295046},
+      "assessment": {"feasible": true, "objectives": [], "limits": []},
+      "elapsed_seconds": 291.3,
+      "stage_seconds": {"generation": 0.4, "simulation": 280.2},
+      "message": null,
+      "record": {"id": "7a2aca36-...", "path": "trial-000000/summary.json", "sha256": "a22d51..."},
+      "pareto": true
+    }
+  ]
+}
+```
+
+A trial's `assessment` is the one its `summary.json` holds (`null` without a record): each
+objective as `stage`, `metric`, `value`, `unit` and `uncertainty`, and each limit as `stage`,
+`metric`, `bound`, `limit`, `unit`, `value`, `uncertainty`, `margin` and `satisfied`.
+
 ## Python API
 
 ```python
@@ -324,10 +473,40 @@ on, and `KeyboardInterrupt` after a clean stop on Ctrl-C or SIGTERM. Underneath 
 [`EvaluationSession`](evaluation.md#evaluating-candidates-evaluationsession), which any other
 optimizer can drive the same way.
 
+`load_study` reads a study back, as `k4opt study` does:
+
+```python
+from k4opt.optimization import load_study
+
+study = load_study("runs/cld-ecal-study")  # storage="postgresql://..." for a database study
+study.name, study.id, study.created, study.directory
+study.problem  # the ProblemSpec of study.json: parameters (bounds or choices, unit),
+# objectives (direction), constraints
+study.outcomes  # how many trials ended how: feasible, infeasible, invalid, failed, ...
+study.pareto  # the numbers of the feasible valid trials on the Pareto front
+
+trial = study.trial(12)  # by its number
+trial.status, trial.outcome, trial.candidate, trial.message, trial.recovered
+for m in trial.assessment.objectives:  # None for a trial without a valid result
+    print(m.stage, m.metric, m.value, m.unit, m.uncertainty)
+trial.assessment.limits  # each Limit: value, limit, margin, satisfied
+trial.elapsed_seconds, trial.stage_seconds  # recorded times
+trial.record, trial.sha256, trial.summary_path  # the summary.json it was read from
+
+data = study.to_dict()  # the JSON export, plain data
+```
+
+`StudyResults` and `TrialResult` are a snapshot: immutable, detached from the storage, and free
+of Optuna types; `study.document` is `study.json` as a read-only mapping. They are not the
+`StudyReport` and `TrialReport` of `optimize`, which report a study as it runs. `load_study`
+raises `OptimizationError` for anything it cannot read or does not trust (above), and needs
+Optuna, which holds the trials; the rest of k4opt does not.
+
 ## Not done
 
 Retrying interrupted trials, reusing the record of a candidate proposed twice, a warm start from
 `k4opt evaluate` records, sampler options, a characteristic `scale` per constraint, treating
-invalid candidates as infeasible, parallel workers, a `study show` or export command, overrides
-for changed software, and other optimizers. None of them is blocked by the design: records have
+invalid candidates as infeasible, parallel workers, overrides for changed software, other
+optimizers, comparing or plotting studies, and exporting an evaluator's other measurements (each
+row names its record, which holds them). None of them is blocked by the design: records have
 ids, studies reference them, and the session knows no optimizer.

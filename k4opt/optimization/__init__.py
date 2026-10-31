@@ -3,14 +3,15 @@
 :func:`optimize` runs a study: an optimizer proposes candidates, each is evaluated as
 ``k4opt evaluate`` evaluates one, into a trial directory of the study, and the optimizer learns
 each result from the trial's ``summary.json``. The optimizer is Optuna's TPE sampler; Optuna is
-imported only when a study runs, so the rest of k4opt works without it. A study keeps
-everything it is made with in ``study.json`` and can be resumed with exactly that. See
-``docs/optimization.md``.
+imported only when a study runs or is read, so the rest of k4opt works without it. A study keeps
+everything it is made with in ``study.json`` and can be resumed with exactly that.
+:func:`load_study` reads a study back, checked and without changing it, for inspection and
+export. See ``docs/optimization.md``.
 
 Typical use::
 
     from k4opt.evaluation import load_evaluator
-    from k4opt.optimization import optimize
+    from k4opt.optimization import load_study, optimize
 
     report = optimize(
         "examples/problem/cld-ecal-granularity.yaml",
@@ -20,18 +21,47 @@ Typical use::
         seed=42,
     )
     report.pareto  # the trials on the Pareto front of the feasible valid ones
+
+    study = load_study("runs/cld-ecal-study")  # later, anywhere the directory is
+    study.trial(12).assessment.objectives  # each with its value, unit and uncertainty
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 from k4opt.evaluation import EvaluatorProtocol
+from k4opt.optimization._results import StudyResults, TrialResult
 from k4opt.optimization._study import STUDY_NAME, StudyReport, TrialReport
 from k4opt.optimization.errors import OptimizationError
 
-__all__ = ["STUDY_NAME", "OptimizationError", "StudyReport", "TrialReport", "optimize"]
+__all__ = [
+    "STUDY_NAME",
+    "OptimizationError",
+    "StudyReport",
+    "StudyResults",
+    "TrialReport",
+    "TrialResult",
+    "load_study",
+    "optimize",
+]
+
+
+@contextlib.contextmanager
+def _needs_optuna(what: str) -> Iterator[None]:
+    """Optuna missing, while the adapter is imported, becomes an error that says how to install
+    it; any other missing module is not dressed up."""
+    try:
+        yield
+    except ModuleNotFoundError as exc:
+        if exc.name != "optuna" and not (exc.name or "").startswith("optuna."):
+            raise
+        raise OptimizationError(
+            f"{what} needs Optuna, which is not installed: pip install 'optuna>=5.0,<6' "
+            "(or k4opt[optimize])"
+        ) from exc
 
 
 def optimize(
@@ -67,15 +97,8 @@ def optimize(
     created. Ctrl-C and SIGTERM end the running trial (FAIL, or told its record), remove the
     lock and raise :class:`KeyboardInterrupt`.
     """
-    try:
+    with _needs_optuna("k4opt optimize"):
         from k4opt.optimization import _optuna
-    except ModuleNotFoundError as exc:
-        if exc.name != "optuna" and not (exc.name or "").startswith("optuna."):
-            raise
-        raise OptimizationError(
-            "k4opt optimize needs Optuna, which is not installed: pip install 'optuna>=5.0,<6' "
-            "(or k4opt[optimize])"
-        ) from exc
     return _optuna.optimize(
         problem,
         evaluators,
@@ -88,3 +111,23 @@ def optimize(
         warn=warn or (lambda message: None),
         progress=progress or (lambda trial: None),
     )
+
+
+def load_study(directory: str | os.PathLike[str], *, storage: str | None = None) -> StudyResults:
+    """The study in ``directory``, as its records hold it, for inspection and export.
+
+    Nothing is evaluated, created, locked, recovered or written: the optimizer's storage is
+    opened so that it refuses every write, and the problem, geometry and evaluators the study
+    was made with need not exist any more. ``storage`` is the database URL of a study made with
+    one (``study.json`` keeps it without its password); a study in its journal file needs none.
+    Every trial the optimizer was told a record of is read back and checked: the record has the
+    bytes it was told, belongs to this trial of this study, and its assessment recomputes from
+    its measurements. A study in progress is read as it is at that moment.
+
+    Raises :class:`OptimizationError` for a directory that is no study, a storage that is
+    missing, not set up or not the study's, and any record that does not hold up; a record is
+    never skipped. Needs Optuna, which holds the trials.
+    """
+    with _needs_optuna("reading a study"):
+        from k4opt.optimization import _optuna
+    return _optuna.load(directory, storage)

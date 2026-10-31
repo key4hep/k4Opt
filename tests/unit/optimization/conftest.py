@@ -71,6 +71,25 @@ def write_problem(tmp_path: Path) -> Callable[..., Path]:
     return write
 
 
+TRADE = {"name": "test.trade_off", "version": "1"}
+# what each radius gives, with invalid_below 200, failed_below 150 and the limit a <= 400
+OUTCOME = {300: "feasible", 500: "infeasible", 170: "invalid", 120: "failed"}
+
+
+@pytest.fixture
+def mixed_problem(write_problem: Callable[..., Path]) -> Path:
+    """A problem whose trials end every way a record can, some of them with equal values."""
+    return write_problem(
+        parameter={
+            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "type": "categorical",
+            "choices": list(OUTCOME),
+        },
+        evaluators=[TRADE | {"settings": {"invalid_below": 200, "failed_below": 150}}],
+        constraints=[{"stage": "analysis", "metric": "a", "max": 400, "unit": "mm"}],
+    )
+
+
 @dataclass
 class Log:
     """What a study reported while it ran."""
@@ -99,6 +118,21 @@ def optuna_study(study: Path) -> Any:
     path = str(study / "study.journal")
     storage = JournalStorage(JournalFileBackend(path, lock_obj=JournalFileOpenLock(path)))
     return optuna.load_study(study_name=document["optimizer"]["study"], storage=storage)
+
+
+def left_running(output: Path, problem: Path, directory: bool = False) -> int:
+    """A trial asked for and left RUNNING, as a session killed just after asking leaves it."""
+    from k4opt.optimization._optuna.space import search_space
+    from k4opt.problem import load_problem
+
+    study = optuna_study(output)
+    trial = study.ask(fixed_distributions=search_space(load_problem(problem)))
+    if directory:
+        name = f"trial-{trial.number:06d}"
+        trial.set_user_attr("k4opt.dir", name)
+        (output / name / "geometry").mkdir(parents=True)
+        (output / name / "geometry" / "partial.xml").write_text("<lccdd>")
+    return int(trial.number)
 
 
 def evaluator_from(directory: Path, name: str, source: str) -> Any:

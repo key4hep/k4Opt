@@ -20,12 +20,8 @@ from optuna.distributions import (
 
 from k4opt.evaluation import Measurement
 from k4opt.optimization import OptimizationError, optimize
-from k4opt.optimization._optuna import (
-    constraint_values,
-    limit_names,
-    objective_values,
-    search_space,
-)
+from k4opt.optimization._optuna.space import constraint_values, objective_values, search_space
+from k4opt.optimization._results import limit_names
 from k4opt.problem import Assessment, Limit, parse_problem
 from tests.support.evaluators import candidate_check, trade_off
 from tests.support.geometry import MINI_GEO
@@ -142,20 +138,20 @@ def test_objective_values_are_floats_in_the_problems_order() -> None:
 def test_a_storage_url_is_recorded_and_shown_without_its_secrets(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from k4opt.optimization import _optuna
+    from k4opt.optimization._optuna import storage
 
     url = "postgresql://k4opt:s3cr%2Bt@db.cern.ch:6600/studies?sslmode=require&password=hush#x"
-    assert _optuna._redacted(url) == (
+    assert storage.redacted(url) == (
         "postgresql://k4opt:***@db.cern.ch:6600/studies?sslmode=***&password=***"
     )
     for plain in ("sqlite:///studies.db", "sqlite:////abs/studies.db", "postgresql://h/db"):
-        assert _optuna._redacted(plain) == plain
-    assert _optuna._redacted("sqlite:///s.db?timeout=20") == "sqlite:///s.db?timeout=***"
+        assert storage.redacted(plain) == plain
+    assert storage.redacted("sqlite:///s.db?timeout=20") == "sqlite:///s.db?timeout=***"
 
     def refusing(given: str) -> None:  # what a database driver may say
         raise ValueError(f"could not connect to {given} (password 'hush', secret s3cr+t)")
 
-    monkeypatch.setattr(_optuna, "RDBStorage", refusing)
+    monkeypatch.setattr(storage, "RDBStorage", refusing)
     with pytest.raises(OptimizationError) as info:
         optimize(write_problem(), [trade_off()], tmp_path / "s", trials=1, storage=url)
     message = str(info.value)
@@ -169,7 +165,7 @@ def test_a_storage_url_is_recorded_and_shown_without_its_secrets(
     def failing(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError(f"lost the connection {url} (password=hush)")
 
-    monkeypatch.setattr(_optuna, "RDBStorage", lambda given: optuna.storages.InMemoryStorage())
+    monkeypatch.setattr(storage, "RDBStorage", lambda given: optuna.storages.InMemoryStorage())
     monkeypatch.setattr(optuna, "create_study", failing)
     with pytest.raises(OptimizationError) as info:
         optimize(write_problem(), [trade_off()], tmp_path / "t", trials=1, storage=url)
@@ -192,7 +188,7 @@ def test_a_storage_url_is_recorded_and_shown_without_its_secrets(
         except RuntimeError as cause:
             raise optuna.exceptions.StorageInternalError("lost the database") from cause
 
-    monkeypatch.setattr(_optuna, "RDBStorage", database)
+    monkeypatch.setattr(storage, "RDBStorage", database)
     monkeypatch.setattr(optuna.Study, "ask", asking)
     with pytest.raises(
         OptimizationError, match="the study cannot go on: StorageInternalError"
