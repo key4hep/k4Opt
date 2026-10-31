@@ -15,7 +15,7 @@ from typing import TextIO
 
 from k4opt.optimization._render import _paint, _value
 from k4opt.optimization._results import StudyResults, TrialResult
-from k4opt.problem import MetricRef, Parameter
+from k4opt.problem import MetricRef, Parameter, ProblemSpec
 from k4opt.terminal import Style
 
 LABEL = 12  # the width of a line's label
@@ -83,6 +83,21 @@ def _print(out: TextIO, style: Style, label: str, lines: list[str]) -> None:
         print(f"{style.dim(head.ljust(LABEL))}{line}", file=out)
 
 
+def _roles(spec: ProblemSpec, out: TextIO, style: Style) -> None:
+    """Show each combined binding's input wiring, which is fixed for the study."""
+    lines = [
+        printable(f"{entry.binding}: ")
+        + "; ".join(
+            printable(f"{name} {', '.join(item.label for item in items)}")
+            for name, items in entry.roles.items()
+        )
+        for entry in spec.evaluators
+        if entry.roles
+    ]
+    if lines:
+        _print(out, style, "roles", lines)
+
+
 def _counts(results: StudyResults, style: Style) -> str:
     outcomes = results.outcomes
     if not results.trials:
@@ -139,6 +154,7 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
     ]
     _print(out, style, "objectives", objectives)
     _print(out, style, "limits", _limits(results))
+    _roles(spec, out, style)
     _print(out, style, "trials", [_counts(results, style)])
     if results.pareto:
         front = [results.trial(number) for number in results.pareto]
@@ -162,6 +178,7 @@ def render_trial(
     record and message."""
     style = Style(color)
     spec = results.problem
+    _roles(spec, out, style)
     state = [_paint(style, trial.status, trial.status)]
     if trial.status == "valid":
         state.append(_paint(style, trial.outcome, trial.outcome))

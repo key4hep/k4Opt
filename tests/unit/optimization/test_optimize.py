@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,9 @@ from tests.support.evaluators import (
     candidate_check,
     cell_count,
     hit_energy,
+    toy_significance,
     trade_off,
+    yields,
 )
 from tests.support.simulation import COLLECTION
 from tests.unit.optimization.conftest import (
@@ -557,3 +560,34 @@ def test_a_trial_whose_sample_fails_is_failed_and_keeps_the_other_samples_values
     assert record["message"].startswith("pion/simulation failed")
     assert [m["value"] for m in record["metrics"]] == [1.5, None]  # gamma's is kept
     assert record["samples"]["gamma"]["evaluations"]["test.cell_count"]["status"] == "valid"
+
+
+def test_a_combined_evaluator_is_optimized_and_a_trial_without_its_background_fails(
+    tmp_path: Path, combined_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    simulated = 0
+
+    def second_background_crashes(argv: list[str], **kwargs: Any) -> Any:
+        nonlocal simulated
+        code = fake(argv, **kwargs)
+        simulated += 1
+        return 2 if simulated == 4 else code  # the background of the second trial
+
+    monkeypatch.setattr(simulation.ddsim_run, "_execute", second_background_crashes)
+    evaluators = [toy_significance(), yields()]
+    report = study(combined_problem, tmp_path / "s", trials=3, evaluators=evaluators)
+    assert report.objectives == ("significance/analysis/expected_significance",)
+    assert [t.status for t in report.trials] == ["valid", "failed", "valid"]
+    states = [trial.state for trial in optuna_study(tmp_path / "s").trials]
+    assert states == [TrialState.COMPLETE, TrialState.FAIL, TrialState.COMPLETE]
+    # 2 fb and 30 fb over 1 ab^-1 = 1000 fb^-1, every event selected
+    s, b = 2000.0, 30000.0
+    expected = math.sqrt(2 * ((s + b) * math.log1p(s / b) - s))
+    first = report.trials[0].objectives
+    assert first == {"significance/analysis/expected_significance": pytest.approx(expected)}
+    record = summary(tmp_path / "s", 1)
+    assert record["message"].startswith("bkg/simulation failed")
+    assert record["message"].endswith("; blocked: bkg/test.yields, significance")
+    assert record["evaluations"]["significance"]["status"] == "blocked"
+    assert record["samples"]["sig"]["evaluations"]["test.yields"]["status"] == "valid"

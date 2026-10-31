@@ -17,8 +17,12 @@ work of the geometry task.
 An entry of ``evaluators`` is a binding of an implementation, an evaluator class, identified by
 its binding name (``as:``, the implementation's ``name`` when not given): tasks, records, run
 directories and metric references use it, with the sample for an evaluation of one
-(``gamma/calo.photon``). One implementation may be bound several times, with other settings. It
-is bound to its entries once, through a probe instance that is used for nothing else. Every
+(``gamma/calo.photon``). One implementation may be bound several times, with other settings. A
+combined evaluator is bound to the candidate and reads, by role, what the problem names: the
+evaluations of other samples, given to it as :class:`~k4opt.evaluation.RoleInput`, or their stage
+files; it runs only once all of them succeeded (``valid``), and every ``valid`` result it reads
+carries the metrics its roles name. An implementation is bound to its entries once, through a
+probe instance that is used for nothing else. Every
 candidate gets a new instance for each evaluation, whose ``check()`` and ``evaluate()`` it calls,
 so no state of an instance reaches another sample, binding or candidate.
 """
@@ -38,6 +42,7 @@ from typing import NamedTuple
 
 from k4opt.ddsim import output_collections
 from k4opt.evaluation import (
+    Artifact,
     CandidateKey,
     EvaluationContractError,
     EvaluationFailed,
@@ -47,6 +52,8 @@ from k4opt.evaluation import (
     EvaluationResult,
     EvaluatorProtocol,
     Measurement,
+    Role,
+    RoleInput,
     Scalar,
     Status,
     available_collections,
@@ -55,6 +62,7 @@ from k4opt.evaluation import (
     collection_types,
     declared_artifacts,
     declared_collections,
+    declared_roles,
     metric_units,
     result_from,
     with_defaults,
@@ -85,11 +93,13 @@ from k4opt.problem._tasks import (
     changed_files,
     evaluations,
     plan_tasks,
+    read_stages,
+    reference_task,
     run_tasks,
     stage_task,
 )
 from k4opt.problem.errors import CandidateError
-from k4opt.problem.models import EvaluatorSpec, MetricRef, Parameter, ProblemSpec
+from k4opt.problem.models import EvaluatorSpec, MetricRef, Parameter, ProblemSpec, Reference
 
 type MetricKey = tuple[str, str]
 """A metric as an evaluator declares and measures it: ``(stage, metric)``."""
@@ -240,8 +250,8 @@ class _Declaration(NamedTuple):
     """What every instance of an implementation must say of itself as its probe did: the session
     records the probe's class as the code that runs, the stage and metrics decided what each
     evaluator reads and measures, the settings and collections (their defaults included)
-    make the request it gets, which must not change from one candidate to the next, and the
-    artifacts are what its results are checked against."""
+    make the request it gets, which must not change from one candidate to the next, the artifacts
+    are what its results are checked against, and the roles what it reads."""
 
     cls: type
     name: str
@@ -251,6 +261,7 @@ class _Declaration(NamedTuple):
     collections: Mapping[str, object]
     metrics: Mapping[MetricKey, str] | None
     artifacts: Mapping[str, str] | None
+    roles: Mapping[str, Role] | None
 
 
 def _declaration(evaluator: EvaluatorProtocol) -> _Declaration:
@@ -265,6 +276,7 @@ def _declaration(evaluator: EvaluatorProtocol) -> _Declaration:
         declared_collections(evaluator),
         metric_units(evaluator),
         declared_artifacts(evaluator),
+        declared_roles(evaluator),
     )
 
 
@@ -291,6 +303,7 @@ def _instance(bound: _Bound) -> EvaluatorProtocol:
         "collections",
         "metrics",
         "artifacts",
+        "roles",
     )
     changed = [
         f"{label} {new!r}, not {old!r}"
@@ -337,7 +350,7 @@ def _bind(
             raise EvaluationContractError(
                 f"problem declares no evaluator {name!r}; declared: {', '.join(declared)}"
             )
-        stage = _stage(evaluator)
+        stage, roles = _stage(evaluator), declared_roles(evaluator)
         for entry in entries:
             if version != entry.version:
                 raise EvaluationContractError(
@@ -354,6 +367,16 @@ def _bind(
                 raise EvaluationContractError(
                     f"evaluator {name!r}{_as(entry)} does not read the stage the problem says: "
                     f"{fix}"
+                )
+            if entry.roles and not roles:
+                raise EvaluationContractError(
+                    f"evaluator {name!r}{_as(entry)} declares no roles, so it is no combined "
+                    "evaluator; remove roles: from its entry"
+                )
+            if roles and not entry.roles:
+                raise EvaluationContractError(
+                    f"evaluator {name!r}{_as(entry)} is a combined evaluator with the roles "
+                    f"{', '.join(roles)}; say what each reads under roles: in its entry"
                 )
         given[name] = (implementation, evaluator)
     missing = [
@@ -396,22 +419,91 @@ def _check_references(
             )
 
 
+def _check_roles(
+    spec: ProblemSpec, evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]]
+) -> dict[TaskId, tuple[MetricKey, ...]]:
+    """Each combined evaluator gets for its roles what its implementation declares: every role
+    and no other, one item unless the role reads ``many``, evaluations where the role reads them
+    (of evaluators that declare the metrics and artifacts it reads) and the files of its stage
+    otherwise. Returns the metrics the roles read of each evaluation, which a ``valid`` result of
+    that evaluation must carry. Raises :class:`EvaluationContractError`."""
+    probes = {
+        (entry.binding, sample): (entry, evaluator)
+        for entry, evaluator in evaluators
+        for sample in entry.samples
+    }
+    demands: dict[TaskId, dict[MetricKey, None]] = {}
+    for entry, evaluator in evaluators:
+        declared = declared_roles(evaluator)
+        if not entry.roles or declared is None:
+            continue  # the form is checked when it is bound (_bind)
+        where = f"evaluator {entry.binding!r}"
+        unknown = [role for role in entry.roles if role not in declared]
+        missing = [role for role in declared if role not in entry.roles]
+        if unknown or missing:
+            raise EvaluationContractError(
+                f"{where}: its roles are {', '.join(declared)}"
+                + (f"; unknown {', '.join(unknown)}" if unknown else "")
+                + (f"; missing {', '.join(missing)}" if missing else "")
+            )
+        for name, role in declared.items():
+            items, at = entry.roles[name], f"{where}: role {name!r}"
+            if not role.many and len(items) > 1:
+                raise EvaluationContractError(
+                    f"{at} reads one item, but the problem gives {len(items)}: "
+                    f"{', '.join(item.label for item in items)}"
+                )
+            for item in items:
+                if role.stage is not None:
+                    if item.stage != role.stage:
+                        raise EvaluationContractError(
+                            f"{at} reads the {role.stage} file of a sample, as "
+                            f"{{sample: ..., stage: {role.stage}}}; got {item.label}"
+                        )
+                    continue
+                if item.evaluator is None:
+                    raise EvaluationContractError(
+                        f"{at} reads evaluations, as {{sample: ..., evaluator: ...}}; got the "
+                        f"stage {item.label}"
+                    )
+                upstream, probe = probes[(item.evaluator, item.sample)]
+                metrics = metric_units(probe) or {}
+                undeclared = [key for key in role.metrics if key not in metrics]
+                if undeclared:
+                    raise EvaluationContractError(
+                        f"{at} reads {_show(undeclared)} of {item.label}, but {upstream.name} "
+                        f"does not declare {'it' if len(undeclared) == 1 else 'them'}"
+                    )
+                artifacts = declared_artifacts(probe) or {}
+                absent = [name for name in role.artifacts if name not in artifacts]
+                if absent:
+                    raise EvaluationContractError(
+                        f"{at} reads the artifact(s) {', '.join(absent)} of {item.label}, but "
+                        f"{upstream.name} does not declare {'it' if len(absent) == 1 else 'them'}"
+                    )
+                demands.setdefault(reference_task(item), {}).update(dict.fromkeys(role.metrics))
+    return {task: tuple(keys) for task, keys in demands.items()}
+
+
 def _identical(
     spec: ProblemSpec, evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]]
 ) -> tuple[str, ...]:
     """A warning for each binding that binds an implementation as an earlier one does on the same
-    sample, or on the candidate: with the same settings (their defaults filled in) and
-    collections, it measures the same twice. And one for each sample whose stages are those of an
+    sample, or on the candidate: with the same settings (their defaults filled in), collections
+    and roles, it measures the same twice. And one for each sample whose stages are those of an
     earlier one: its events are simulated again."""
     keys = {  # by entry: one binding name may bind its samples with other settings
         id(entry): (
             entry.name,
             _canonical(with_defaults(evaluator, entry.settings)),
             _canonical(collection_names(evaluator, entry.collections)),
+            _canonical(
+                {role: tuple(i.label for i in items) for role, items in entry.roles.items()}
+            ),
         )
         for entry, evaluator in evaluators
     }
-    seen: dict[tuple[str | None, tuple[str, str, str]], str] = {}
+    seen: dict[tuple[str | None, tuple[str, str, str, str]], str] = {}
     warnings: dict[str, None] = {}
     for task, entry in evaluations(spec.samples, [entry for entry, _ in evaluators]):
         key = (task.sample, keys[id(entry)])
@@ -421,7 +513,8 @@ def _identical(
         where = "" if task.sample is None else f" on {task.sample}"
         warning = (
             f"evaluators {seen[key]!r} and {entry.binding!r} bind {entry.name} with the same "
-            f"settings and collections{where}; each is evaluated separately"
+            f"settings and {'roles' if entry.roles else 'collections'}{where}; each is evaluated "
+            "separately"
         )
         warnings[warning] = None
     first: dict[object, str] = {}
@@ -535,10 +628,13 @@ class _Binding:
     contexts: Mapping[str, StageContext]  # by sample
     evaluators: tuple[_Bound, ...]  # problem order
     evaluations: tuple[tuple[TaskId, _Bound], ...]  # plan order
-    targets: Mapping[str, tuple[str, ...]]  # the pipeline stages the evaluators read, by sample
+    targets: Mapping[str, tuple[str, ...]]  # the pipeline stages tasks read, by sample
     plan: Plan  # the tasks of every candidate, the stages ``provided`` given
     # collections the simulation is not expected to write, what is measured or simulated twice
     warnings: tuple[str, ...] = ()
+    # the metrics the roles of combined evaluators read, by the evaluation that measures them
+    demands: Mapping[TaskId, tuple[MetricKey, ...]] = FrozenMap({})
+    properties: Mapping[str, Mapping[str, Json]] = FrozenMap({})  # by sample
 
 
 @dataclass(frozen=True, slots=True)
@@ -570,10 +666,7 @@ def _bind_problem(
     """
     provided = provided or {}
     contexts = {name: StageContext.of(spec, name) for name in spec.samples}
-    targets = {
-        sample: tuple(e.stage for e in spec.evaluators if e.stage and sample in e.samples)
-        for sample in spec.samples
-    }
+    targets = {sample: read_stages(sample, spec.evaluators) for sample in spec.samples}
     probed = _bind(spec, implementations)
     bound = [(entry, probe) for entry, _, probe in probed]
     for sample, context in contexts.items():
@@ -596,6 +689,7 @@ def _bind_problem(
         check_settings(evaluator, with_defaults(evaluator, entry.settings))
         collection_names(evaluator, entry.collections)
     _check_references(spec, bound)
+    demands = _check_roles(spec, bound)
     warnings = _unexpected_collections(spec, bound, provided) + _identical(spec, bound)
     declarations: dict[type, _Declaration] = {}  # one probe per implementation
     evaluators = tuple(
@@ -607,7 +701,16 @@ def _bind_problem(
         (task, of[id(entry)]) for task, entry in evaluations(spec.samples, spec.evaluators)
     )
     plan = plan_tasks(spec.samples, spec.evaluators, provided)
-    return _Binding(contexts, evaluators, planned, FrozenMap(targets), plan, warnings)
+    return _Binding(
+        contexts,
+        evaluators,
+        planned,
+        FrozenMap(targets),
+        plan,
+        warnings,
+        FrozenMap(demands),
+        FrozenMap({name: sample.properties for name, sample in spec.samples.items()}),
+    )
 
 
 def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
@@ -615,8 +718,9 @@ def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
 
     Creates a new instance of the implementation of each evaluation, which must declare what its
     probe declared, checks its settings and collections, then calls each one's ``check()`` with the
-    request it would get for this candidate (its settings and collections resolved, the events
-    and seed of its sample). Raises :class:`EvaluationContractError` (or what a ``check()``
+    request it would get for this candidate (its settings and collections resolved, the events,
+    seed and properties of its sample; no roles, since nothing exists yet for them to read).
+    Raises :class:`EvaluationContractError` (or what a ``check()``
     raises). What it returns holds these instances and requests made for these ``values``, so it
     serves one candidate only.
     """
@@ -627,7 +731,8 @@ def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
     requests = {}
     for task, (entry, evaluator) in evaluators.items():
         context = None if task.sample is None else binding.contexts[task.sample]
-        request = _request(context, values, entry, evaluator)
+        properties = {} if task.sample is None else binding.properties[task.sample]
+        request = _request(context, values, entry, evaluator, properties)
         requests[task] = request
         check = getattr(evaluator, "check", None)
         if check is not None:
@@ -635,14 +740,17 @@ def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
     return _Prepared(binding, FrozenMap(evaluators), FrozenMap(requests))
 
 
-def _check_result(spec: ProblemSpec, task: TaskId, result: EvaluationResult) -> None:
+def _check_result(
+    spec: ProblemSpec, task: TaskId, result: EvaluationResult, demanded: Sequence[MetricKey] = ()
+) -> None:
     """A ``valid`` result of the evaluation ``task`` must report every metric an objective or a
-    constraint names of it, in the unit a constraint declares."""
+    constraint names of it, in the unit a constraint declares, and every metric ``demanded`` of
+    it by the roles that read it."""
     if result.status is not Status.VALID:
         return
     measured = {(m.stage, m.metric): m for m in result.measurements}
-    owned = [ref for ref in spec.references if ref.invocation == task.label]
-    missing = [(ref.stage, ref.metric) for ref in owned if (ref.stage, ref.metric) not in measured]
+    owned = [(r.stage, r.metric) for r in spec.references if r.invocation == task.label]
+    missing = [key for key in dict.fromkeys([*owned, *demanded]) if key not in measured]
     if missing:
         raise EvaluationContractError(
             f"evaluator {task.label!r} returned a valid result without required metric(s): "
@@ -664,13 +772,15 @@ def _request(
     values: Mapping[str, Scalar],
     entry: EvaluatorSpec,
     evaluator: EvaluatorProtocol | None = None,
+    properties: Mapping[str, Json] | None = None,
 ) -> EvaluationRequest:
     """The request an evaluator receives, for ``check()`` and ``evaluate()`` alike.
 
     ``settings`` are those of its ``entry`` in the problem plus the defaults the evaluator
     declares, each quantity in its declared unit; ``collections`` the collection of each role it
     declares; ``events`` and ``seed`` are those of the stage it reads in the sample of
-    ``context``, ``None`` for an evaluation of the candidate (``context`` is ``None``).
+    ``context``, ``None`` for an evaluation of the candidate (``context`` is ``None``), and
+    ``properties`` those of that sample.
     """
     events, seed = (None, None) if context is None else context.conditions(entry.stage)
     return EvaluationRequest(
@@ -679,12 +789,67 @@ def _request(
         collections=collection_names(evaluator, entry.collections),
         events=events,
         seed=seed,
+        properties=properties or {},
     )
 
 
 def _inputs(reads: Mapping[TaskId, TaskResult]) -> dict[str, Path]:
     """What a task is given of the tasks it reads: the main output of each, by its name."""
     return {task.name: result.output for task, result in reads.items() if result.output is not None}
+
+
+def _role_inputs(
+    binding: _Binding, entry: EvaluatorSpec, reads: Mapping[TaskId, TaskResult]
+) -> dict[str, tuple[RoleInput, ...]]:
+    """What each role of a combined evaluator reads, from the results of the tasks it reads."""
+    return {
+        role: tuple(_role_input(binding, item, reads[reference_task(item)]) for item in items)
+        for role, items in entry.roles.items()
+    }
+
+
+def _role_input(binding: _Binding, item: Reference, result: TaskResult) -> RoleInput:
+    """One item of a role, from the result of its task, which succeeded: an evaluation with what
+    it measured and made, or a stage with its file."""
+    properties = binding.properties[item.sample]
+    if item.evaluator is not None:
+        record = result.record
+        assert record is not None  # every evaluation has one
+        return RoleInput(
+            item.sample,
+            binding=item.evaluator,
+            measurements=record.result.measurements,
+            artifacts={name: made.artifact for name, made in result.made.items()},
+            events=record.request.events,
+            seed=record.request.seed,
+            properties=properties,
+            settings=record.request.settings,
+            provenance=record.result.provenance,
+        )
+    assert item.stage is not None
+    assert result.output is not None  # a stage that makes a file
+    name = stage_output(item.stage)
+    made = result.made.get(name)
+    if made is not None:  # made in its directory: never hashed
+        artifact = made.artifact
+    else:  # a file of the problem or the caller's, hashed when the session opened
+        size, sha256 = result.provenance.get("bytes"), result.provenance.get("sha256")
+        artifact = Artifact(
+            f"{result.id.label}#{name}",
+            result.output,
+            size if isinstance(size, int) else result.output.stat().st_size,
+            sha256 if isinstance(sha256, str) else None,
+        )
+    events, seed = binding.contexts[item.sample].conditions(item.stage)
+    return RoleInput(
+        item.sample,
+        stage=item.stage,
+        artifacts={item.stage: artifact},
+        events=events,
+        seed=seed,
+        properties=properties,
+        provenance=result.provenance,
+    )
 
 
 def _measure(
@@ -706,23 +871,36 @@ def _measure(
     call fails it too: the record could not say what it read.
     """
     entry, evaluator = prepared.evaluators[task]
-    # what it declared when bound, which the record holds, not what it declares now
-    declared = dict(prepared.binding.evaluations)[task].declaration
-    request = replace(prepared.requests[task], inputs=_inputs(reads))
+    binding = prepared.binding
+    declared = dict(binding.evaluations)[task].declaration
+    demanded = binding.demands.get(task, ())
+    if task.sample is None:  # the geometry, and what its roles read: no stage of its own
+        given = _inputs({need: result for need, result in reads.items() if need == GEOMETRY})
+        request = replace(
+            prepared.requests[task], inputs=given, roles=_role_inputs(binding, entry, reads)
+        )
+    else:
+        request = replace(prepared.requests[task], inputs=_inputs(reads))
     changed = changed_files(reads.values())
     if changed:
         result = EvaluationResult.failed(_changed_before(changed))
-        return _record(spec, task, entry, evaluator, declared, key, request, result), {}
+        return _record(
+            spec, task, entry, evaluator, declared, key, request, result, None, demanded
+        ), {}
     error = _collection_error(evaluator, request, seen)
     if error is not None:
         result = EvaluationResult.failed(error)
-        return _record(spec, task, entry, evaluator, declared, key, request, result), {}
+        return _record(
+            spec, task, entry, evaluator, declared, key, request, result, None, demanded
+        ), {}
     if workdir is not None:
         try:
             workdir.mkdir(parents=True)
         except OSError as exc:  # not called, so its request has no directory
             result = EvaluationResult.failed(f"cannot create evaluator directory {workdir}: {exc}")
-            return _record(spec, task, entry, evaluator, declared, key, request, result), {}
+            return _record(
+                spec, task, entry, evaluator, declared, key, request, result, None, demanded
+            ), {}
     request = replace(request, workdir=workdir)
     started = time.perf_counter()
     try:
@@ -732,7 +910,10 @@ def _measure(
     except EvaluationInvalid as exc:
         result = EvaluationResult.invalid(str(exc))
     elapsed = time.perf_counter() - started
-    record = _record(spec, task, entry, evaluator, declared, key, request, result, elapsed)
+    record = _record(
+        spec, task, entry, evaluator, declared, key, request, result, elapsed, demanded
+    )
+    # what it declared when bound, which the record holds, not what it declares now
     made = _artifacts(task, declared.artifacts, result, workdir)
     changed = changed_files(reads.values())
     if changed:  # what it returned stays, as diagnostics of a failed result
@@ -812,9 +993,10 @@ def _record(
     request: EvaluationRequest,
     result: EvaluationResult,
     elapsed: float | None = None,
+    demanded: Sequence[MetricKey] = (),
 ) -> EvaluationRecord:
     _check_units(evaluator, declared.metrics, result)
-    _check_result(spec, task, result)
+    _check_result(spec, task, result, demanded)
     return EvaluationRecord(request, result, entry.name, entry.version, key, elapsed)
 
 

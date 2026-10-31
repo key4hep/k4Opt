@@ -40,6 +40,7 @@ from k4opt.problem.models import (
     Parameter,
     ParameterKind,
     ProblemSpec,
+    Reference,
     Sample,
     Stage,
     freeze,
@@ -392,13 +393,20 @@ def _samples(raw: object) -> dict[str, Sample]:
                 "lowercase letters, digits and '_', at most 64 characters",
             )
         where = f"samples.{name}"
-        stages = _mapping(value, where, STAGE_TYPES)
-        if not stages:
+        stages = _mapping(value, where, (*STAGE_TYPES, "properties"))
+        if not set(stages) - {"properties"}:
             raise _fail(where, f"must define its stages: {', '.join(STAGE_TYPES)}")
         made = {
             stage: _stage(where, stage, stages[stage]) for stage in STAGE_TYPES if stage in stages
         }
-        samples[name] = Sample(name, made)
+        properties: Mapping[str, Json] = {}
+        if "properties" in stages:
+            at, raw = f"{where}.properties", stages["properties"]
+            # any JSON, which evaluators read and k4opt does not: a mapping with string keys
+            frozen = freeze(_mapping(raw, at, tuple(raw) if isinstance(raw, Mapping) else ()), at)
+            assert isinstance(frozen, Mapping)
+            properties = frozen
+        samples[name] = Sample(name, made, properties)
     return samples
 
 
@@ -470,9 +478,17 @@ def _evaluators(raw: object, samples: list[str]) -> tuple[EvaluatorSpec, ...]:
         m = _mapping(
             item,
             path,
-            ("name", "as", "version", "stage", "samples", "collections", "settings"),
+            ("name", "as", "version", "stage", "samples", "collections", "settings", "roles"),
             ("name", "version"),
         )
+        if "roles" in m:
+            others = [key for key in ("stage", "samples", "collections") if key in m]
+            if others:
+                raise _fail(
+                    path,
+                    f"a combined evaluator (roles:) reads no stage of its own, so it takes no "
+                    f"{', '.join(others)}; its roles name what it reads",
+                )
         name = _name(m["name"], f"{path}.name")
         # the binding names the evaluator's task, its directory in a run and its metrics
         where = f"{path}.as" if "as" in m else f"{path}.name"
@@ -498,13 +514,111 @@ def _evaluators(raw: object, samples: list[str]) -> tuple[EvaluatorSpec, ...]:
             collections = {role: _text(name, f"{where}.{role}") for role, name in roles.items()}
         version = _text(m["version"], f"{path}.version")
         measured = _measured(m, path, stage, samples)
-        entry = EvaluatorSpec(name, version, settings, stage, collections, binding, measured)
+        roles = _roles(m["roles"], f"{path}.roles") if "roles" in m else {}
+        entry = EvaluatorSpec(name, version, settings, stage, collections, binding, measured, roles)
         folded = binding.casefold()  # run directories may be on a file system that folds case
         for earlier in bound.get(folded, []):
             _check_repeated(entry, evaluators[earlier], f"evaluators[{earlier}]", path)
         bound.setdefault(folded, []).append(index)
         evaluators.append(entry)
+    for index, entry in enumerate(evaluators):  # once all are known: a role may read a later one
+        _check_roles(entry, f"evaluators[{index}].roles", evaluators, samples)
     return tuple(evaluators)
+
+
+_REFERENCE_KEYS = ("sample", "samples", "evaluator", "stage")
+
+
+def _roles(raw: object, path: str) -> dict[str, tuple[Reference, ...]]:
+    """The items each role of a combined evaluator reads, by role: each role is given one
+    reference, ``{sample, evaluator}`` (an evaluation) or ``{sample, stage}`` (a stage's file),
+    with ``samples:`` for one such item per sample, or a list of references."""
+    m = _mapping(raw, path, tuple(raw) if isinstance(raw, Mapping) else ())
+    if not m:
+        raise _fail(
+            path, "must name at least one role; an evaluator without roles measures the candidate"
+        )
+    roles: dict[str, tuple[Reference, ...]] = {}
+    for role, value in m.items():
+        where = f"{path}.{role}"
+        _text(role, path)
+        given = value if isinstance(value, (list, tuple)) else [value]
+        if not given:
+            raise _fail(where, "must reference at least one evaluation or stage")
+        items: list[Reference] = []
+        for index, reference in enumerate(given):
+            at = f"{where}[{index}]" if isinstance(value, (list, tuple)) else where
+            for item in _references(reference, at):
+                if item in items:
+                    raise _fail(
+                        at,
+                        f"{item.label} is given twice in this role, so the evaluator would read "
+                        "it twice; give it once",
+                    )
+                items.append(item)
+        roles[role] = tuple(items)
+    return roles
+
+
+def _references(raw: object, path: str) -> list[Reference]:
+    """The items one reference of a role stands for: one per sample it names."""
+    m = _mapping(raw, path, _REFERENCE_KEYS)
+    if ("sample" in m) == ("samples" in m):
+        raise _fail(path, "needs exactly one of 'sample' and 'samples'")
+    if ("evaluator" in m) == ("stage" in m):
+        raise _fail(
+            path, "needs exactly one of 'evaluator' (its evaluation) and 'stage' (its file)"
+        )
+    if "sample" in m:
+        samples = [_text(m["sample"], f"{path}.sample")]
+    else:
+        listed = _sequence(m["samples"], f"{path}.samples")
+        if not listed:
+            raise _fail(f"{path}.samples", "must list at least one sample")
+        samples = [_text(s, f"{path}.samples[{i}]") for i, s in enumerate(listed)]
+    if "evaluator" in m:
+        evaluator = _text(m["evaluator"], f"{path}.evaluator")
+        return [Reference(sample, evaluator=evaluator) for sample in samples]
+    stage = _choice(m["stage"], f"{path}.stage", STAGE_TYPES)
+    return [Reference(sample, stage=stage) for sample in samples]
+
+
+def _check_roles(
+    entry: EvaluatorSpec, path: str, evaluators: list[EvaluatorSpec], samples: list[str]
+) -> None:
+    """Each item a role of ``entry`` reads is of a sample of the problem, and an evaluation of it
+    by a binding that measures it; the stage of a stage item is checked with the samples
+    (:func:`_check_pipeline`)."""
+    measures: dict[str, list[str]] = {}
+    for other in evaluators:
+        measures.setdefault(other.binding, []).extend(other.samples)
+    for role, items in entry.roles.items():
+        for item in items:
+            where = f"{path}.{role}"
+            if item.sample not in samples:
+                known = f"its samples are {', '.join(samples)}" if samples else "it has none"
+                raise _fail(where, f"the problem has no sample {item.sample!r}; {known}")
+            if item.evaluator is None:
+                continue
+            if item.evaluator not in measures:
+                raise _fail(
+                    where,
+                    f"the problem has no evaluator {item.evaluator!r}; its evaluators are "
+                    f"{', '.join(measures)}",
+                )
+            measured = measures[item.evaluator]
+            if not measured:
+                raise _fail(
+                    where,
+                    f"{item.evaluator!r} measures the candidate, not a sample; chained combined "
+                    "evaluators are not supported yet",
+                )
+            if item.sample not in measured:
+                raise _fail(
+                    where,
+                    f"evaluator {item.evaluator!r} does not measure {item.sample!r}; it measures "
+                    f"{', '.join(measured)}",
+                )
 
 
 def _measured(
@@ -594,14 +708,42 @@ def _check_pipeline(
                     f"sample {sample} defines no {evaluator.stage} stage; add "
                     f"samples.{sample}.{evaluator.stage}",
                 )
+    read: dict[str, list[str]] = {name: [] for name in samples}  # the stages roles read, by sample
+    for index, evaluator in enumerate(evaluators):
+        for role, items in evaluator.roles.items():
+            for item in items:
+                if item.stage is None:
+                    continue
+                stages = samples[item.sample].stages
+                where = f"evaluators[{index}].roles.{role}"
+                if item.stage not in stages:
+                    raise _fail(
+                        where,
+                        f"sample {item.sample} defines no {item.stage} stage; add "
+                        f"samples.{item.sample}.{item.stage}",
+                    )
+                executor = stages[item.stage].executor
+                inside = None if executor is None else executors(item.stage)[executor].inside
+                if inside is not None:
+                    raise _fail(
+                        where,
+                        f"{item.label} is fired inside samples.{item.sample}.{inside} and makes "
+                        f"no file of its own; read samples.{item.sample}.{inside} instead",
+                    )
+                read[item.sample].append(item.stage)
     for spec in samples.values():
-        _check_sample(spec, [e for e in evaluators if spec.name in e.samples], parameters)
+        measuring = [e for e in evaluators if spec.name in e.samples]
+        _check_sample(spec, measuring, read[spec.name], parameters)
 
 
 def _check_sample(
-    sample: Sample, evaluators: list[EvaluatorSpec], parameters: tuple[Parameter, ...]
+    sample: Sample,
+    evaluators: list[EvaluatorSpec],
+    read: list[str],
+    parameters: tuple[Parameter, ...],
 ) -> None:
-    """The stages of one sample fit together and fit the ``evaluators`` that measure it."""
+    """The stages of one sample fit together and fit the ``evaluators`` that measure it and the
+    stages of it that roles ``read``."""
     where, stages = f"samples.{sample.name}", sample.stages
     for name, stage in stages.items():
         if stage.executor is None:
@@ -624,9 +766,11 @@ def _check_sample(
                     f"an executor run the stage (to try an evaluator on an existing file, use "
                     f"k4opt evaluate --input {sample.name}/{name}=FILE)",
                 )
-    if not evaluators:
+    if not evaluators and not read:
         raise _fail(
-            where, "is measured by no evaluator; list it in the samples of one, or remove it"
+            where,
+            "is measured by no evaluator; list it in the samples of one, have a role read one of "
+            "its stages, or remove it",
         )
     used: set[str] = set()
 
@@ -640,11 +784,13 @@ def _check_sample(
     for evaluator in evaluators:
         assert evaluator.stage is not None  # an evaluator without a stage measures no sample
         use(evaluator.stage)
+    for name in read:
+        use(name)
     for name in stages:
         if name not in used:
             raise _fail(
                 f"{where}.{name}",
-                "is not used: no evaluator of the sample reads it, and no stage that runs does",
+                "is not used: no evaluator of the sample reads it, no role, and no stage that runs",
             )
 
 

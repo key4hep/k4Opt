@@ -277,3 +277,60 @@ def test_two_samples_are_simulated_on_one_geometry_and_measured_each_on_its_own(
         parse_problem(two_samples["problem"]["definition"]), two_samples
     )
     assert assessment.objectives is not None and len(assessment.objectives) == 4
+
+
+def test_pi0_example_combines_hashed_histograms_from_two_real_samples(
+    tmp_path: Path, stack: None
+) -> None:
+    from podio.reading import get_reader
+
+    example = EXAMPLE.with_name("cld-ecal-pi0-rejection.yaml")
+    doc = yaml.safe_load(example.read_text())
+    for sample in doc["samples"].values():
+        sample["simulation"]["events"] = EVENTS
+    path = tmp_path / "pi0.yaml"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False))
+    sources = example.parent.parent / "evaluators"
+    run = evaluate(
+        path,
+        "8.0",
+        tmp_path / "run",
+        tuple(
+            f"{sources / file}:{name}"
+            for file, name in (
+                ("shower_shape.py", "ShowerShape"),
+                ("separation.py", "Separation"),
+                ("ecal_channels.py", "EcalChannels"),
+            )
+        ),
+    )
+    root = Path(run["run_dir"])
+    histograms = {}
+    for sample, pdg in (("gamma_20gev", 22), ("pi0_20gev", 111)):
+        assert run["samples"][sample]["stages"]["simulation"]["events_read"] == EVENTS
+        for event in get_reader(str(stage_file(run, sample, "events"))).get("events"):
+            (primary,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
+            assert primary.getPDG() == pdg
+        artifact = run["samples"][sample]["evaluations"]["calo.shower_shape"]["artifacts"][
+            "histogram"
+        ]
+        assert artifact["sha256"] is not None
+        histograms[sample] = json.loads((root / artifact["path"]).read_text())
+        histogram = histograms[sample]
+        assert sum(histogram["counts"]) + histogram["underflow"] + histogram["overflow"] == EVENTS
+    combined = run["evaluations"]["pi0_rejection"]
+    assert combined["roles"] == {
+        "signal": ["gamma_20gev/calo.shower_shape"],
+        "background": ["pi0_20gev/calo.shower_shape"],
+    }
+    metrics = {m["metric"]: m["value"] for m in combined["measurements"]}
+    background = histograms["pi0_20gev"]
+    cut_index = background["edges"].index(metrics["width_cut"])
+    assert metrics["background_rejection"] == pytest.approx(
+        1 - sum(background["counts"][:cut_index]) / EVENTS
+    )
+    assert metrics["signal_efficiency"] >= 0.9
+    assert len(list(root.glob("**/ddsim.json"))) == 2
+    assert len(list(root.glob("**/k4opt-manifest.json"))) == 1
+    assert run["evaluations"]["readout"]["status"] == "valid"
+    assert Assessment.from_summary(parse_problem(run["problem"]["definition"]), run).feasible

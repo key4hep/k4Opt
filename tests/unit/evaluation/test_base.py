@@ -19,10 +19,12 @@ from k4opt.evaluation import (
     EvaluationResult,
     Evaluator,
     Quantity,
+    Role,
     Status,
     collection_names,
     declared_artifacts,
     declared_collections,
+    declared_roles,
     metric_units,
     result_from,
     units,
@@ -555,3 +557,80 @@ def test_an_unreadable_artifact_declaration_is_a_contract_error(
 
     with pytest.raises(EvaluationContractError, match=re.escape(message)):
         declared_artifacts(Plotting())
+
+
+# --- roles: what a combined evaluator reads ---------------------------------------------------
+
+YIELD = ("analysis", "selected.sum_weights")
+
+
+def test_a_combined_evaluator_declares_its_roles() -> None:
+    class Separation(Evaluator):
+        name, version = "calo.separation", "1"
+        roles = {
+            "signal": Role(metrics=[YIELD], artifacts=["histogram"]),
+            "backgrounds": Role(many=True, metrics=[YIELD]),
+            "events": Role(stage="simulation"),
+        }
+
+    declared = declared_roles(Separation())
+    assert declared == Separation.roles
+    assert declared is not Separation.roles  # a copy
+    signal = declared["signal"]
+    assert (signal.many, signal.metrics, signal.artifacts, signal.stage) == (
+        False,
+        (YIELD,),  # lists become tuples
+        ("histogram",),
+        None,
+    )
+    assert declared_roles(object()) is None  # no combined evaluator
+    assert Evaluator.roles is None
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"many": 1}, "Role: many must be True or False, got 1"),
+        ({"metrics": ["selected"]}, "Role: metrics must be (stage, metric) pairs"),
+        ({"metrics": [("analysis", "")]}, "Role: metrics must be (stage, metric) pairs"),
+        ({"metrics": [YIELD, YIELD]}, "name one twice"),
+        ({"artifacts": ["a#b"]}, "Role: artifacts must be artifact names"),
+        ({"artifacts": "histogram"}, "Role: artifacts must be artifact names"),
+        ({"artifacts": ["h", "h"]}, "Role: artifacts ['h', 'h'] name one twice"),
+        ({"stage": ""}, "Role: stage must name a pipeline stage"),
+        (
+            {"stage": "simulation", "metrics": [YIELD]},
+            "Role: a role that reads a stage's file reads no metrics or artifacts",
+        ),
+    ],
+)
+def test_a_role_that_cannot_be_read_is_a_contract_error(
+    arguments: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(EvaluationContractError, match=re.escape(message)):
+        Role(**arguments)
+
+
+@pytest.mark.parametrize(
+    ("declared", "stage", "message"),
+    [
+        (["signal"], None, "roles: declare a mapping of name to Role(...)"),
+        ({"class": Role()}, None, "roles: 'class' must be a Python identifier"),
+        ({"_x": Role()}, None, "roles: '_x' must be a Python identifier"),
+        ({"signal": {"many": True}}, None, "roles.signal: declare it as Role(...)"),
+        (
+            {"signal": Role()},
+            "simulation",
+            "roles: an evaluator that reads a stage measures each sample on its own",
+        ),
+    ],
+)
+def test_an_unreadable_role_declaration_is_a_contract_error(
+    declared: Any, stage: str | None, message: str
+) -> None:
+    class Combined:
+        roles = declared
+
+    Combined.stage = stage  # type: ignore[attr-defined]
+    with pytest.raises(EvaluationContractError, match=re.escape(message)):
+        declared_roles(Combined())

@@ -7,6 +7,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import math
 import re
 import shutil
 import sys
@@ -26,12 +27,18 @@ from k4opt.evaluation import (
     Collection,
     EvaluationContractError,
     EvaluationRequest,
+    EvaluationResult,
+    Evaluator,
+    Measurement,
     Quantity,
+    Role,
+    RoleInput,
     collection_names,
     metric_units,
     result_from,
     with_defaults,
 )
+from k4opt.frozen import thaw
 from k4opt.geometry import GeometrySource, Override
 from k4opt.problem import (
     SUMMARY_NAME,
@@ -56,11 +63,15 @@ from tests.support.evaluators import (
     CELL_COUNT,
     HIT_ENERGY,
     PARAMETER_ECHO,
+    TOY_SIGNIFICANCE,
+    YIELDS,
     calo_photon,
     cell_count,
     hit_energy,
     implementations,
     parameter_echo,
+    toy_significance,
+    yields,
 )
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.simulation import COLLECTION, events_with
@@ -2625,3 +2636,432 @@ def test_a_geometry_changed_between_two_samples_simulates_no_further_and_leaves_
     # pion was not simulated with the edited geometry, and no record says one geometry was
     assert [particle(argv) for argv, _ in fake.calls] == ["gamma"]
     assert not (run_dir / SUMMARY_NAME).exists()
+
+
+# --- combined evaluators: the evaluations of several samples, read by role -------------------
+
+SIGNIFICANCE = ("analysis", "expected_significance")
+
+
+def combined(problem_file: Path, **changes: Any) -> dict[str, Any]:
+    """Make the problem a toy signal over two backgrounds: the samples ``sig`` (photons), ``zz``
+    and ``ww`` (pions), each with a cross section, measured by ``test.yields`` and combined by
+    ``test.toy_significance`` as ``significance``, whose significance is the objective;
+    ``changes`` replace entries of the document. The document."""
+    doc = yaml.safe_load(problem_file.read_text())
+    gamma = doc["samples"].pop("gamma")
+    for seed, (name, particle, cross_section) in enumerate(
+        [("sig", "gamma", 200), ("zz", "pi-", 1360), ("ww", "pi+", 16400)], start=1
+    ):
+        stages = copy.deepcopy(gamma)
+        stages["generation"]["particle"] = particle
+        stages["simulation"]["seed"] = seed
+        properties = {"cross_section": {"value": cross_section, "unit": "fb"}}
+        doc["samples"][name] = {"properties": properties, **stages}
+    doc["evaluators"] = [
+        {
+            "name": "test.yields",
+            "version": "1",
+            "stage": "simulation",
+            "samples": ["sig", "zz", "ww"],
+            "collections": {"hits": COLLECTION},
+        },
+        {
+            "name": "test.toy_significance",
+            "as": "significance",
+            "version": "1",
+            # in another order than the evaluator declares them, which does not matter
+            "roles": {
+                "backgrounds": {"samples": ["zz", "ww"], "evaluator": "test.yields"},
+                "signal": {"sample": "sig", "evaluator": "test.yields"},
+            },
+            "settings": {"luminosity_invab": 10.8},
+        },
+    ]
+    doc["objectives"] = [
+        {"evaluator": "significance", "stage": "analysis", "metric": SIGNIFICANCE[1]}
+        | {"direction": "maximize"}
+    ]
+    doc |= changes
+    problem_file.write_text(yaml.safe_dump(doc, sort_keys=False))
+    return doc
+
+
+def toy(signal: float, *backgrounds: float) -> float:
+    """The toy significance of ``signal`` over the sum of ``backgrounds``."""
+    b = sum(backgrounds)
+    return math.sqrt(2 * ((signal + b) * math.log1p(signal / b) - signal))
+
+
+def test_a_combined_evaluator_reads_the_evaluations_of_its_samples_by_role(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    combined(problem_file)
+    session = EvaluationSession.open(problem_file, [toy_significance(), yields()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    record = outcome.candidate
+    assert record.status == "valid", record.message
+    assert list(record.evaluations) == [
+        "sig/test.yields",
+        "zz/test.yields",
+        "ww/test.yields",
+        "significance",
+    ]
+    # every event is selected, so each sample is expected as often as its cross section says
+    luminosity = 1e3 * 10.8
+    expected = toy(200 * luminosity, 1360 * luminosity, 16400 * luminosity)
+    (objective,) = outcome.assessment.objectives or ()
+    assert objective.label == "significance/analysis/expected_significance"
+    assert objective.value == pytest.approx(expected)
+    plan = record.plan[TaskId(Kind.EVALUATOR, "significance")]
+    assert [need.label for need in plan.needs] == [  # in the order the roles name them
+        "geometry",
+        "zz/test.yields",
+        "ww/test.yields",
+        "sig/test.yields",
+    ]
+    assert plan.directory == "evaluators/significance"
+    summary = json.loads(outcome.summary_path.read_text())
+    evaluation = summary["evaluations"]["significance"]
+    assert evaluation["roles"] == {
+        "signal": ["sig/test.yields"],
+        "backgrounds": ["zz/test.yields", "ww/test.yields"],
+    }
+    assert evaluation["reads"] == [need.label for need in plan.needs]
+    assert summary["implementations"]["test.toy_significance"]["roles"] == {
+        "signal": {
+            "many": False,
+            "stage": None,
+            "metrics": [
+                ["analysis", "selected.sum_weights"],
+                ["analysis", "generated.sum_weights"],
+            ],
+            "artifacts": [],
+        },
+        "backgrounds": {
+            "many": True,
+            "stage": None,
+            "metrics": [
+                ["analysis", "selected.sum_weights"],
+                ["analysis", "generated.sum_weights"],
+            ],
+            "artifacts": [],
+        },
+    }
+    assert summary["implementations"]["test.yields"]["roles"] is None
+    assert summary["problem"]["definition"]["samples"]["zz"]["properties"] == {
+        "cross_section": {"value": 1360, "unit": "fb"}
+    }
+    assert Assessment.from_summary(session.spec, summary) == outcome.assessment
+
+
+def test_each_item_of_a_role_holds_what_its_task_made_and_the_sample_it_is_of(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    combined(problem_file)
+    seen: dict[str, EvaluationRequest] = {}
+
+    class Watched(toy_significance()):  # type: ignore[misc]
+        def check(self, request: EvaluationRequest) -> None:
+            super().check(request)
+            seen["check"] = request
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            seen["evaluate"] = request
+            return super().evaluate(request)
+
+    session = EvaluationSession.open(problem_file, [Watched, yields()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert seen["check"].roles == {}  # nothing exists to read before the candidate runs
+    request = seen["evaluate"]
+    run_dir = tmp_path / "a"
+    assert dict(request.inputs) == {"geometry": run_dir / "geometry" / MINI_COMPACT}
+    assert request.properties == {}  # it measures no sample of its own
+    (signal,) = request.roles["signal"]
+    zz, ww = request.roles["backgrounds"]
+    assert [item.label for item in (signal, zz, ww)] == [
+        "sig/test.yields",
+        "zz/test.yields",
+        "ww/test.yields",
+    ]
+    upstream = outcome.candidate.record("zz/test.yields")
+    assert zz.measurements == upstream.result.measurements
+    assert (zz.events, zz.seed) == (3, 2)
+    assert zz.properties == {"cross_section": {"value": 1360, "unit": "fb"}}
+    assert zz.settings == {"min_energy": 0.0}  # as it received them
+    histogram = zz.artifacts["histogram"]
+    written = run_dir / "samples" / "zz" / "evaluators" / "test.yields" / "histogram.json"
+    assert (histogram.ref, histogram.path) == ("zz/test.yields#histogram", written)
+    summary = json.loads(outcome.summary_path.read_text())
+    recorded = summary["samples"]["zz"]["evaluations"]["test.yields"]["artifacts"]["histogram"]
+    assert histogram.sha256 == recorded["sha256"] and histogram.bytes == recorded["bytes"]
+
+
+def test_a_combined_evaluator_is_blocked_by_an_input_that_did_not_succeed(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch, events_with([1, 1, 2, 3], [4, 5], [6, 7, 8, 9]))
+
+    def ww_crashes(argv: list[str], **kwargs: Any) -> Any:
+        code = fake(argv, **kwargs)
+        return 2 if particle(argv) == "pi+" else code
+
+    monkeypatch.setattr(ddsim_run, "_execute", ww_crashes)
+    doc = combined(problem_file)
+    doc["evaluators"].append({"name": "test.parameter_echo", "as": "readout", "version": "1"})
+    doc["constraints"] = [
+        {"evaluator": "readout", "stage": ECHO[0], "metric": ECHO[1], "max": 1000}
+    ]
+    problem_file.write_text(yaml.safe_dump(doc, sort_keys=False))
+    session = EvaluationSession.open(problem_file, [toy_significance(), yields(), parameter_echo()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    record = outcome.candidate
+    statuses = {label: r.result.status for label, r in record.evaluations.items()}
+    assert statuses == {
+        "sig/test.yields": "valid",
+        "zz/test.yields": "valid",
+        "ww/test.yields": "blocked",
+        "significance": "blocked",  # never called with a background missing
+        "readout": "valid",  # reads neither, so keeps its result
+    }
+    assert record.results[TaskId(Kind.EVALUATOR, "significance")].blocked_by == (
+        TaskId(Kind.STAGE, "simulation", "ww"),
+    )
+    assert record.status == "failed"
+    assert (record.message or "").endswith("; blocked: ww/test.yields, significance")
+    assert outcome.assessment.objectives is None
+    written = json.loads(outcome.summary_path.read_text())
+    blocked_record = written["evaluations"]["significance"]
+    assert blocked_record["message"] == "not run: ww/simulation failed"
+    assert blocked_record["workdir"] is None
+    assert not (tmp_path / "a" / "evaluators" / "significance").exists()
+    Assessment.from_summary(session.spec, written)
+
+
+def test_an_invalid_input_blocks_a_combined_evaluator_and_an_empty_background_is_invalid(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = combined(problem_file)
+    plain = copy.deepcopy(doc)
+    # one binding name, other settings on the backgrounds: nothing of them is selected
+    selection = doc["evaluators"][0]
+    selection["samples"] = ["sig"]
+    tight = selection | {"samples": ["zz", "ww"], "settings": {"min_energy": {"value": 1e3}}}
+    tight["settings"]["min_energy"]["unit"] = "GeV"
+    doc["evaluators"].insert(1, tight)
+    problem_file.write_text(yaml.safe_dump(doc, sort_keys=False))
+    session = EvaluationSession.open(problem_file, [toy_significance(), yields()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    significance = outcome.candidate.record("significance").result
+    assert significance.status == "invalid"
+    assert significance.message == "no expected background: the toy significance is undefined"
+    assert outcome.candidate.status == "invalid"
+
+    class Invalid(yields()):  # type: ignore[misc]
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            if request.seed == 3:  # ww
+                self.invalid("too few events selected")
+            return super().evaluate(request)
+
+    problem_file.write_text(yaml.safe_dump(plain, sort_keys=False))
+    session = EvaluationSession.open(problem_file, [toy_significance(), Invalid])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    held = outcome.candidate.record("significance").result
+    assert (held.status, held.message) == ("blocked", "not run: ww/test.yields invalid")
+    # a background that ran but is unusable makes the evaluation incomplete, not invalid
+    assert outcome.candidate.status == "failed"
+    Assessment.from_summary(session.spec, json.loads(outcome.summary_path.read_text()))
+
+
+def test_what_a_role_reads_reaches_the_evaluator_unchanged_and_k4opt_computes_nothing(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    """Signed weights summing below zero, opaque properties and a covariance file are the
+    evaluators' to interpret: delivered and recorded as they are."""
+    covariance = [[4.0, -1.5], [-1.5, 9.0]]
+
+    class Signed(yields()):  # type: ignore[misc]
+        artifacts = {**yields().artifacts, "covariance": "a 2x2 covariance, JSON"}
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            measured = super().evaluate(request)
+            assert request.workdir is not None
+            path = request.workdir / "covariance.json"
+            path.write_text(json.dumps(covariance))
+            values = [
+                Measurement(*key, -7.25 if key[1] == "generated.sum_weights" else 1.5, "1", 0.5)
+                for key in (
+                    ("analysis", "selected.sum_weights"),
+                    ("analysis", "generated.sum_weights"),
+                )
+            ]
+            artifacts = dict(measured.artifacts) | {"covariance": path}
+            return EvaluationResult.valid(values, artifacts=artifacts)
+
+    seen: list[RoleInput] = []
+
+    class Echo(Evaluator):
+        name, version = "test.echo", "1"
+        roles = {"inputs": Role(many=True, artifacts=["covariance"])}
+        metrics = {("analysis", "seen"): "1"}
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            seen.extend(request.roles["inputs"])
+            return {("analysis", "seen"): len(seen)}
+
+    doc = combined(problem_file)
+    properties = {"process": "e+e- -> ZZ", "weights": [-1, 1], "k_factor": None}
+    doc["samples"]["zz"]["properties"] = properties
+    doc["evaluators"][1] = {
+        "name": "test.echo",
+        "version": "1",
+        "roles": {"inputs": {"samples": ["zz", "ww"], "evaluator": "test.yields"}},
+    }
+    doc["objectives"] = [{"evaluator": "test.echo", "stage": "analysis", "metric": "seen"}]
+    doc["objectives"][0]["direction"] = "maximize"
+    problem_file.write_text(yaml.safe_dump(doc, sort_keys=False))
+    session = EvaluationSession.open(problem_file, [Echo, Signed])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert outcome.candidate.status == "valid"
+    zz, _ = seen
+    assert zz.measurement("analysis", "generated.sum_weights").value == -7.25
+    assert zz.measurement("analysis", "generated.sum_weights").uncertainty == 0.5
+    assert thaw(zz.properties) == properties
+    assert json.loads(zz.artifacts["covariance"].path.read_text()) == covariance
+    summary = json.loads(outcome.summary_path.read_text())
+    recorded = summary["samples"]["zz"]["evaluations"]["test.yields"]
+    assert {m["metric"]: m["value"] for m in recorded["measurements"]} == {
+        "selected.sum_weights": 1.5,
+        "generated.sum_weights": -7.25,
+    }
+    assert recorded["artifacts"]["covariance"]["sha256"] == zz.artifacts["covariance"].sha256
+    assert summary["problem"]["definition"]["samples"]["zz"]["properties"] == properties
+    # the combined evaluation records what it read by reference, nothing of it twice
+    assert summary["evaluations"]["test.echo"]["roles"] == {
+        "inputs": ["zz/test.yields", "ww/test.yields"]
+    }
+    assert "measurements" not in json.dumps(summary["evaluations"]["test.echo"]["roles"])
+    Assessment.from_summary(session.spec, summary)
+
+
+def test_a_role_that_reads_a_stage_gets_its_file_unhashed(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hashed: list[str] = []
+
+    def sha256(path: str, *key: int) -> str:
+        hashed.append(path)
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    monkeypatch.setattr(_stages, "_sha256", sha256)  # uncached: every hash is counted
+    seen: list[RoleInput] = []
+
+    class Files(Evaluator):
+        name, version = "test.files", "1"
+        roles = {"events": Role(many=True, stage="simulation")}
+        metrics = {("analysis", "bytes"): "1"}
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            seen.extend(request.roles["events"])
+            return {("analysis", "bytes"): sum(i.artifacts["simulation"].bytes for i in seen)}
+
+    doc = combined(problem_file)
+    doc["evaluators"][0]["samples"] = ["sig"]  # zz and ww are read by the role alone
+    doc["evaluators"][1] = {
+        "name": "test.files",
+        "version": "1",
+        "roles": {"events": {"samples": ["zz", "ww"], "stage": "simulation"}},
+    }
+    doc["objectives"] = [{"evaluator": "test.files", "stage": "analysis", "metric": "bytes"}]
+    doc["objectives"][0]["direction"] = "minimize"
+    problem_file.write_text(yaml.safe_dump(doc, sort_keys=False))
+    session = EvaluationSession.open(problem_file, [Files, yields()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert outcome.candidate.status == "valid"
+    assert [particle(argv) for argv, _ in fake.calls] == ["gamma", "pi-", "pi+"]
+    zz, _ww = seen
+    assert (zz.label, zz.stage, zz.binding, (zz.events, zz.seed)) == (
+        "zz/simulation",
+        "simulation",
+        None,
+        (3, 2),
+    )
+    events = zz.artifacts["simulation"]
+    assert events.ref == "zz/simulation#events"
+    assert events.path == tmp_path / "a" / "samples" / "zz" / "simulation" / "events.edm4hep.root"
+    assert events.sha256 is None and not any(path.endswith(".root") for path in hashed)
+    summary = json.loads(outcome.summary_path.read_text())
+    assert summary["evaluations"]["test.files"]["reads"] == [
+        "geometry",
+        "zz/simulation",
+        "ww/simulation",
+    ]
+    assert list(summary["samples"]["zz"]["evaluations"]) == []
+    Assessment.from_summary(session.spec, summary)
+
+
+def test_a_record_whose_roles_disagree_with_its_problem_is_refused(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    combined(problem_file)
+    session = EvaluationSession.open(problem_file, [toy_significance(), yields()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    written = json.loads(outcome.summary_path.read_text())
+    roles = "implementations/test.toy_significance/roles"
+    for path, value, message in [
+        (
+            "evaluations/significance/roles/backgrounds",
+            ["zz/test.yields"],
+            "evaluator 'significance': roles {'backgrounds': ['zz/test.yields'], 'signal': "
+            "['sig/test.yields']}, but the problem's are",
+        ),
+        (
+            f"{roles}/signal/many",
+            "no",
+            "implementation 'test.toy_significance': roles.signal: many 'no' or stage None is "
+            "not a role's",
+        ),
+        (
+            f"{roles}/backgrounds/many",
+            False,
+            "evaluator 'significance': role 'backgrounds' reads one item, given 2",
+        ),
+        (
+            roles,
+            None,
+            "evaluator 'significance': the problem gives it roles, which it does not declare",
+        ),
+        (
+            f"{roles}/signal/metrics",
+            [["analysis", "selected.sum_weights"], ["analysis", "other"]],
+            "evaluator 'significance': role 'signal' reads what sig/test.yields does not declare",
+        ),
+        (
+            "samples/sig/evaluations/test.yields/measurements",
+            [],
+            "evaluator 'sig/test.yields' is valid without [('analysis', 'selected.sum_weights'), "
+            "('analysis', 'generated.sum_weights')], which role 'signal' of 'significance' reads",
+        ),
+    ]:
+        tampered = copy.deepcopy(written)
+        change(tampered, path, value)
+        with pytest.raises(RecordError, match=re.escape(message)):
+            Assessment.from_summary(session.spec, tampered)
+
+
+def test_the_command_reports_what_each_role_of_a_combined_evaluator_read(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    combined(problem_file)
+    out, err = io.StringIO(), io.StringIO()
+    references = ["--evaluator", TOY_SIGNIFICANCE, "--evaluator", YIELDS]
+    argv = [str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")]
+    code = main(["evaluate", *references, *argv], stdout=out, stderr=err)
+    assert code == 0, err.getvalue()
+    report = out.getvalue()
+    assert "evaluator:   test.yields 1 on ww: valid\n" in report
+    assert (
+        "evaluator:   significance (test.toy_significance 1): valid\n"
+        "roles:       backgrounds zz/test.yields, ww/test.yields; signal sig/test.yields\n"
+        "metric:      analysis/expected_significance = "
+    ) in report

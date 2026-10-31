@@ -33,6 +33,7 @@ from k4opt.evaluation import (
     CandidateKey,
     EvaluatorProtocol,
     Measurement,
+    Role,
     Scalar,
     evaluator_source,
 )
@@ -305,6 +306,22 @@ def _declared(units: Mapping[MetricKey, str] | None) -> list[dict[str, str]] | N
     return [{"stage": s, "metric": m, "unit": unit} for (s, m), unit in units.items()]
 
 
+def _roles(roles: Mapping[str, Role] | None) -> dict[str, dict[str, Json]] | None:
+    """The roles a combined evaluator declares, each with what it reads; ``None`` if it declares
+    none."""
+    if roles is None:
+        return None
+    return {
+        name: {
+            "many": role.many,
+            "stage": role.stage,
+            "metrics": tuple(role.metrics),
+            "artifacts": tuple(role.artifacts),
+        }
+        for name, role in roles.items()
+    }
+
+
 def _relative(path: Path, run_dir: Path) -> str:
     """How the record names ``path``, a file in the run directory ``run_dir``: relative to it."""
     return path.resolve().relative_to(run_dir.resolve()).as_posix()
@@ -356,10 +373,13 @@ def _evaluation(
     task: Task, result: TaskResult, entry: EvaluatorSpec, run_dir: Path
 ) -> dict[str, object]:
     """One evaluation's own part of the summary: nothing of the stages it shares, nor of its
-    implementation, which ``implementations`` records once."""
+    implementation, which ``implementations`` records once, nor of what its roles read, which is
+    recorded by the tasks that made it."""
     record = result.record
     assert record is not None  # every binding has one, a blocked one too
     outcome, request = record.result, record.request
+    # what each role of an evaluation of the candidate reads, by the task that made it
+    roles = {role: [item.label for item in items] for role, items in entry.roles.items()}
     return {
         "implementation": entry.name,
         **_fragment(result),
@@ -367,6 +387,7 @@ def _evaluation(
         # quantities in the declared unit)
         "settings": {"declared": thaw(entry.settings), "used": thaw(request.settings)},
         "collections": dict(request.collections),
+        **({} if task.id.sample is not None else {"roles": roles}),
         **_reads(task, result),
         "measurements": [
             {"stage": m.stage, "metric": m.metric} | _measurement(m) for m in outcome.measurements
@@ -492,7 +513,7 @@ class EvaluationSession:
     geometry's external references read. Every candidate gets a new instance of each evaluator,
     so no state of one reaches another candidate; it must declare what the first instance,
     created when the session opened, declared (its class, name, version, stage, settings,
-    collections and metrics).
+    collections, metrics, artifacts and roles).
     Each candidate is then checked afresh, by :meth:`check` and again by :meth:`evaluate`: its
     values against the parameter domains, the ``check()`` of each new instance with a request
     made for this candidate, and that none of those files, the environment or k4opt's
@@ -605,6 +626,8 @@ class EvaluationSession:
                 "metrics": _declared(declaration.metrics),
                 # the names of the files a valid result of it returns; null if it declares none
                 "artifacts": None if declaration.artifacts is None else list(declaration.artifacts),
+                # what each role of a combined evaluator reads; null for an evaluator of no roles
+                "roles": _roles(declaration.roles),
             }
             frozen = freeze(data, f"evaluator {declaration.name}", RunError)
             assert isinstance(frozen, Mapping)
@@ -654,8 +677,8 @@ class EvaluationSession:
         of each file the stages read, by where it is named (``samples.gamma.generation.file``) or
         supplied (``supplied.gamma.simulation``), a file that could not be read with its path
         only; a file that several samples read is named for each, and hashed once;
-        ``implementations``: the version, stage, source identity and declared metrics of each
-        implementation the problem binds, by name, in the order it first binds them;
+        ``implementations``: the version, stage, source identity and declared metrics, artifacts
+        and roles of each implementation the problem binds, by name, in first-bound order;
         ``geometry``: the compact file, the source root, the fingerprint of the unmodified
         geometry and what its external references read
         (:meth:`~k4opt.geometry.GeometrySource.external_files`); ``environment``:

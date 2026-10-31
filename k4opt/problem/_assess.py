@@ -187,10 +187,14 @@ class Assessment:
         the record against it.
 
         The record's ``implementations`` must be those the problem binds, with its versions and
-        stages; its ``samples`` the problem's, each with the evaluations of the bindings that
+        stages, and roles that fit what the problem gives each combined evaluator (every role
+        and no other, one item unless it reads many, of evaluators that declare what it reads);
+        its ``samples`` the problem's, each with the evaluations of the bindings that
         measure it, and its ``evaluations`` those of the bindings that measure the candidate, each
         of the implementation the problem binds it to, with the settings (``declared``) and
-        collections the problem gives it. The candidate's tasks are planned again from the problem
+        collections the problem gives it, and for a combined evaluator the items each of its roles
+        reads; a ``valid`` evaluation a role reads carries the metrics that role reads. The
+        candidate's tasks are planned again from the problem
         and the stages the record says were ``supplied``: each must read what the plan says, be
         ``blocked`` exactly when a task it reads did not succeed (by the tasks the plan makes it
         blocked by, with their message) and otherwise have run. Each file a task made is named by
@@ -432,12 +436,22 @@ def _check_candidate(spec: ProblemSpec, record: Mapping[str, object]) -> None:
         )
 
 
+class _Role(NamedTuple):
+    """A role a combined evaluator of a record declares."""
+
+    many: bool
+    stage: str | None
+    metrics: list[MetricKey]
+    artifacts: list[str]
+
+
 class _Implementation(NamedTuple):
-    """What an implementation of a record declares: its metrics with their units, and the names
-    of its artifacts; ``None`` for none."""
+    """What an implementation of a record declares: its metrics with their units, the names of
+    its artifacts and its roles; ``None`` for none."""
 
     metrics: dict[MetricKey, str] | None
     artifacts: list[str] | None
+    roles: dict[str, _Role] | None
 
 
 def _implementations(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, _Implementation]:
@@ -469,8 +483,71 @@ def _implementations(spec: ProblemSpec, record: Mapping[str, object]) -> dict[st
         declared[name] = _Implementation(
             _declared(implementation.get("metrics"), where),
             _artifact_names(implementation.get("artifacts"), where),
+            _roles(implementation.get("roles"), where),
         )
+    _check_roles(spec, declared)
     return declared
+
+
+def _roles(value: object, where: str) -> dict[str, _Role] | None:
+    """The roles a combined evaluator of a record declares, ``None`` for none."""
+    if value is None:
+        return None
+    roles: dict[str, _Role] = {}
+    for name, entry in _mapping(value, f"{where}: roles").items():
+        at = f"{where}: roles.{name}"
+        role = _mapping(entry, at)
+        many, stage = role.get("many"), role.get("stage")
+        if not isinstance(many, bool) or not (stage is None or stage in STAGE_TYPES):
+            raise RecordError(f"{at}: many {many!r} or stage {stage!r} is not a role's")
+        metrics: list[MetricKey] = []
+        for key in _list(role.get("metrics"), f"{at}.metrics"):
+            if not (
+                isinstance(key, list) and len(key) == 2 and all(isinstance(k, str) for k in key)
+            ):
+                raise RecordError(f"{at}.metrics: {key!r} is no [stage, metric]")
+            metrics.append((key[0], key[1]))
+        artifacts = _artifact_names(role.get("artifacts"), at) or []
+        if stage is not None and (metrics or artifacts):
+            raise RecordError(f"{at}: a role that reads a stage reads no metrics or artifacts")
+        roles[name] = _Role(many, stage, metrics, artifacts)
+    return roles
+
+
+def _check_roles(spec: ProblemSpec, declared: Mapping[str, _Implementation]) -> None:
+    """Each binding gives the roles of its implementation, as a live session checks them: every
+    one and no other, one item unless the role reads many, of the kind it reads, and of
+    evaluators that declare the metrics and artifacts it reads."""
+    implementation = {(e.binding, s): e.name for e in spec.evaluators for s in e.samples}
+    for entry in spec.evaluators:
+        where = f"evaluator {entry.binding!r}"
+        roles = declared[entry.name].roles
+        if not roles:
+            if entry.roles:
+                raise RecordError(f"{where}: the problem gives it roles, which it does not declare")
+            continue
+        if set(roles) != set(entry.roles):  # in any order, as a live session checks them
+            raise RecordError(
+                f"{where}: its implementation declares the roles {list(roles)}, but the problem "
+                f"gives {list(entry.roles)}"
+            )
+        for name, role in roles.items():
+            items = entry.roles[name]
+            if not role.many and len(items) > 1:
+                raise RecordError(f"{where}: role {name!r} reads one item, given {len(items)}")
+            for item in items:
+                if item.stage != role.stage:  # None for both: an evaluation
+                    raise RecordError(f"{where}: role {name!r} does not read {item.label}")
+                if item.evaluator is None:
+                    continue
+                upstream = declared[implementation[(item.evaluator, item.sample)]]
+                metrics, artifacts = upstream.metrics or {}, upstream.artifacts or []
+                if any(key not in metrics for key in role.metrics) or any(
+                    a not in artifacts for a in role.artifacts
+                ):
+                    raise RecordError(
+                        f"{where}: role {name!r} reads what {item.label} does not declare"
+                    )
 
 
 def _artifact_names(value: object, where: str) -> list[str] | None:
@@ -584,8 +661,14 @@ def _evaluations(
                 f"{where}: collections {named!r}, but the problem gives "
                 f"{dict(spec_entry.collections)!r}"
             )
+        if task.sample is None:
+            roles = {role: [i.label for i in items] for role, items in spec_entry.roles.items()}
+            if entry.get("roles") != roles:
+                raise RecordError(
+                    f"{where}: roles {entry.get('roles')!r}, but the problem's are {roles}"
+                )
         fragment = _fragment(entry, where, set(Status))
-        metrics, names = declared[spec_entry.name]
+        metrics, names, _ = declared[spec_entry.name]
         directory = plan[task].directory
         workdir = entry.get("workdir")
         if workdir not in (None, directory):
@@ -622,6 +705,20 @@ def _evaluations(
             raise RecordError(f"{where}: it is blocked, so it was never called, yet it measured")
         status = Status(fragment.status)
         evaluators[task] = _Evaluator(status, fragment.message, own, metrics, fragment)
+    for task, spec_entry in planned:  # a valid evaluation carries the metrics roles read of it
+        for name, role in (declared[spec_entry.name].roles or {}).items():
+            for item in spec_entry.roles.get(name, ()):
+                if item.evaluator is None:
+                    continue
+                read = evaluators[evaluator_task(item.evaluator, item.sample)]
+                if read.status is not Status.VALID:
+                    continue
+                missing_metrics = [key for key in role.metrics if key not in read.measured]
+                if missing_metrics:
+                    raise RecordError(
+                        f"evaluator {item.label!r} is valid without {missing_metrics}, which role "
+                        f"{name!r} of {task.label!r} reads"
+                    )
     return evaluators
 
 

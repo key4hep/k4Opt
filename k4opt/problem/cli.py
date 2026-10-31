@@ -11,6 +11,7 @@ feasible or not.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from typing import TextIO
 
 from k4opt.evaluation import Status, load_evaluator
@@ -88,6 +89,8 @@ def _limit(limit: Limit) -> str:
 
 def _report(outcome: RunOutcome, out: TextIO) -> None:
     candidate = outcome.candidate
+    evaluations = outcome.summary["evaluations"]  # of the candidate, with what their roles read
+    assert isinstance(evaluations, Mapping)
     print(f"status:      {candidate.status}", file=out)
     for task in candidate.plan.of(Kind.EVALUATOR):
         record = candidate.results[task.id].record
@@ -99,6 +102,9 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
         if task.id.sample is not None:
             name = f"{name} on {task.id.sample}"
         print(f"evaluator:   {name}: {result.status}", file=out)
+        if task.id.sample is None and (roles := evaluations[task.id.name]["roles"]):
+            reads = "; ".join(f"{role} {', '.join(items)}" for role, items in roles.items())
+            print(f"roles:       {reads}", file=out)
         for m in result.measurements:
             error = "" if m.uncertainty is None else f" +- {m.uncertainty:.6g}"
             unit = f" [{m.unit}]" if m.unit else ""

@@ -204,6 +204,7 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
                     # the units its values are in: an instance can declare them otherwise
                     "metrics": entry.get("metrics"),
                     "artifacts": entry.get("artifacts"),
+                    "roles": entry.get("roles"),
                 }
                 for name, entry in identity["implementations"].items()
             },
@@ -275,6 +276,10 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
                 found.append(
                     f"evaluator {name!r} declares other artifacts: "
                     f"{new['artifacts']}, not {old['artifacts']}"
+                )
+            elif old["roles"] != new["roles"]:
+                found.append(
+                    f"evaluator {name!r} declares other roles: {new['roles']}, not {old['roles']}"
                 )
     if then["geometry"]["fingerprint"] != now_["geometry"]["fingerprint"]:
         found.append("the geometry the candidates start from changed (another fingerprint)")
@@ -389,6 +394,10 @@ def check_record(
         if _get(new, "artifacts") != old.get("artifacts"):
             raise OptimizationError(
                 f"{where}: evaluator {name!r} declared other artifacts than in the study"
+            )
+        if _get(new, "roles") != old.get("roles"):
+            raise OptimizationError(
+                f"{where}: evaluator {name!r} declared other roles than in the study"
             )
     observed = _get(summary, "environment", "observed")
     if _get(observed, "KEY4HEP_STACK") != study["environment"]["KEY4HEP_STACK"]:
