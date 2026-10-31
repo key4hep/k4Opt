@@ -7,7 +7,7 @@ pre-commit==4.7.0
 cfgv==3.5.0
 identify==2.6.20
 nodeenv==1.11.0
-virtualenv==21.14.13
+virtualenv==21.15.1
 distlib==0.4.4
 filelock==4.2.4
 platformdirs==4.13.5
