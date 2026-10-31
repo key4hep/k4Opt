@@ -633,6 +633,250 @@ def test_an_ambiguous_objective_is_refused_with_the_choices(
     reject(doc, message)
 
 
+# --- shared stages ---------------------------------------------------------------------
+
+
+def shared(doc: dict[str, Any]) -> dict[str, Any]:
+    """The two samples of :func:`two_samples`, written as shared ``stages`` that each sample
+    completes with what differs: the particle and the seed."""
+    doc = two_samples(doc)
+    gamma = doc["samples"]["gamma"]
+    doc["stages"] = {
+        "generation": {k: v for k, v in gamma["generation"].items() if k != "particle"},
+        "simulation": {k: v for k, v in gamma["simulation"].items() if k != "seed"},
+    }
+    doc["samples"] = {
+        "gamma": {"generation": {"particle": "gamma"}, "simulation": {"seed": 42}},
+        "pion": {"generation": {"particle": "pi-"}, "simulation": {"seed": 43}},
+    }
+    return doc
+
+
+def test_samples_complete_the_shared_stages(doc: dict[str, Any]) -> None:
+    explicit = parse_problem(two_samples(copy.deepcopy(doc)))
+    problem = parse_problem(shared(doc))
+    # parse-time only: the problem, its normalized form and so the study identity are those of
+    # the samples written out in full
+    assert problem == explicit
+    assert problem.to_dict() == explicit.to_dict()
+    assert "stages" not in problem.to_dict()
+    pion = problem.samples["pion"].stages
+    assert pion["generation"].options["particle"] == "pi-"
+    assert pion["generation"].options["energy"] == {"value": 10, "unit": "GeV"}
+    assert (pion["simulation"].events, pion["simulation"].seed) == (1000, 43)
+    assert pion["simulation"].options == {"physics.list": "FTFP_BERT"}
+
+
+def test_a_sample_takes_a_shared_stage_it_does_not_define(doc: dict[str, Any]) -> None:
+    doc = shared(doc)
+    doc["stages"]["simulation"]["seed"] = 7
+    for sample in doc["samples"].values():
+        del sample["simulation"]
+    problem = parse_problem(doc)
+    for sample in problem.samples.values():
+        assert (sample.stages["simulation"].events, sample.stages["simulation"].seed) == (1000, 7)
+    doc["samples"]["pion"] = {"properties": {"process": "pi-"}, **doc["samples"]["pion"]}
+    assert parse_problem(doc).samples["pion"].properties == {"process": "pi-"}
+
+
+def test_a_stage_naming_executor_or_file_replaces_the_shared_one(doc: dict[str, Any]) -> None:
+    doc = shared(doc)
+    doc["samples"]["pion"]["simulation"] = {"executor": "ddsim", "events": 10}
+    doc["samples"]["pion"]["generation"] = {"file": "events/pion.hepmc"}
+    problem = parse_problem(doc)
+    pion = problem.samples["pion"].stages
+    assert pion["simulation"].options == {}  # physics.list is not taken from stages.simulation
+    assert (pion["simulation"].events, pion["simulation"].seed) == (10, None)
+    assert pion["generation"].file == "events/pion.hepmc"
+    assert problem.samples["gamma"].stages["simulation"].options == {"physics.list": "FTFP_BERT"}
+
+
+def test_a_nested_value_replaces_the_shared_one_whole(doc: dict[str, Any]) -> None:
+    doc = shared(doc)
+    doc["samples"]["pion"]["generation"]["direction"] = {
+        "distribution": "uniform",
+        "theta": [10, 20],
+        "phi": [0, 90],
+        "unit": "deg",
+    }
+    direction = parse_problem(doc).samples["pion"].stages["generation"].options["direction"]
+    assert direction == {
+        "distribution": "uniform",
+        "theta": (10, 20),
+        "phi": (0, 90),
+        "unit": "deg",
+    }
+    doc["samples"]["pion"]["generation"]["energy"] = {"value": 50}  # no unit: not merged
+    reject(doc, "samples.pion.generation.energy: missing required key(s) ['unit']")
+
+
+def takes_shared_simulation(doc: dict[str, Any]) -> None:
+    """Every sample of ``doc`` takes ``stages.simulation`` as it is."""
+    for sample in doc["samples"].values():
+        del sample["simulation"]
+
+
+def replaces_simulation(doc: dict[str, Any]) -> None:
+    """Every sample of ``doc`` defines a simulation of its own."""
+    for sample in doc["samples"].values():
+        sample["simulation"] = {"executor": "ddsim", "events": 5}
+
+
+def has_no_generation(doc: dict[str, Any]) -> None:
+    """Neither ``stages`` nor any sample of ``doc`` defines a generation."""
+    del doc["stages"]["generation"]
+    for sample in doc["samples"].values():
+        del sample["generation"]
+
+
+def takes_shared_simulation_without_events(doc: dict[str, Any]) -> None:
+    takes_shared_simulation(doc)
+    del doc["stages"]["simulation"]["events"]
+
+
+def takes_shared_simulation_file(doc: dict[str, Any]) -> None:
+    takes_shared_simulation(doc)
+    doc["stages"]["simulation"] = {"file": "events.edm4hep.root"}
+
+
+@pytest.mark.parametrize(
+    ("file", "particles", "energies", "seeds"),
+    [
+        ("cld-ecal-photon-energies.yaml", ["gamma", "gamma"], [10, 50], [42, 43]),
+        ("cld-ecal-pi0-rejection.yaml", ["gamma", "pi0"], [20, 20], [1, 2]),
+    ],
+)
+def test_the_checked_in_examples_share_their_stages(
+    file: str, particles: list[str], energies: list[int], seeds: list[int]
+) -> None:
+    example = EXAMPLE.with_name(file)
+    assert "stages" in yaml.safe_load(example.read_text())
+    problem = parse_problem(yaml.safe_load(example.read_text()), source=example)
+    generation = [s.stages["generation"] for s in problem.samples.values()]
+    simulation = [s.stages["simulation"] for s in problem.samples.values()]
+    assert [g.options["particle"] for g in generation] == particles
+    assert [g.options["energy"]["value"] for g in generation] == energies  # type: ignore[index]
+    assert [s.seed for s in simulation] == seeds
+    assert {(s.events, s.options["physics.list"]) for s in simulation} == {(1000, "FTFP_BERT")}
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (lambda d: d.update(stages={}), "stages: must name at least one stage"),
+        (lambda d: d.update(stages=[]), "stages: must be a mapping, got list"),
+        (
+            lambda d: d["stages"].update(reconstruction={"executor": "k4run"}),
+            "stages: unknown key(s) ['reconstruction']",
+        ),
+        (
+            lambda d: d["stages"]["simulation"].pop("executor"),
+            "stages.simulation: needs exactly one of 'executor' and 'file'",
+        ),
+        (
+            lambda d: d["stages"]["simulation"].update(executor="geant4"),
+            "stages.simulation.executor: must be one of ['ddsim'], got 'geant4'",
+        ),
+        (
+            lambda d: d["stages"].update(generation={"file": "a.hepmc", "particle": "gamma"}),
+            "stages.generation: a stage given as a file is not run, so it takes no ['particle']",
+        ),
+        (
+            lambda d: d.pop("samples"),
+            "stages: there are no samples to take these stages; add samples:",
+        ),
+        (
+            replaces_simulation,
+            "stages.simulation: is not used: every sample replaces it",
+        ),
+        (
+            # a partial stage with nothing to complete
+            lambda d: d["stages"].pop("simulation"),
+            "samples.gamma.simulation: needs exactly one of 'executor' (k4opt runs it) and 'file' "
+            "(its output exists), or a stages.simulation for it to complete",
+        ),
+        (
+            lambda d: d["stages"].update(generation={"file": "a.hepmc"}),
+            "samples.gamma.generation: stages.generation gives a file, which takes no other keys; "
+            "define the whole stage here, with executor: or file:",
+        ),
+        # a key still missing after completion names both places
+        (
+            lambda d: d["stages"]["simulation"].pop("events"),
+            "samples.gamma.simulation (completing stages.simulation): missing required key "
+            "'events'",
+        ),
+        (
+            takes_shared_simulation_without_events,
+            "samples.gamma.simulation (from stages.simulation): missing required key 'events'",
+        ),
+        # an invalid key is found where it was written
+        (
+            lambda d: d["stages"]["simulation"].update(events=0),
+            "stages.simulation.events: must be >= 1, got 0",
+        ),
+        (
+            lambda d: d["samples"]["pion"]["simulation"].update(seed="x"),
+            "samples.pion.simulation.seed: must be an integer",
+        ),
+        (
+            lambda d: d["stages"]["simulation"].update({"physics.list": ["a", "b"]}),
+            "stages.simulation.physics.list: ddsim reads a single value for this option",
+        ),
+        (
+            lambda d: d["samples"]["pion"]["simulation"].update({"physics.list": ["a", "b"]}),
+            "samples.pion.simulation.physics.list: ddsim reads a single value for this option",
+        ),
+        (
+            lambda d: d["stages"]["generation"]["energy"].update(value=-1),
+            "stages.generation.energy.value: must be positive, got -1",
+        ),
+        (
+            lambda d: d["stages"]["generation"].pop("energy"),
+            "samples.gamma.generation (completing stages.generation): missing required key(s) "
+            "['energy']",
+        ),
+        (
+            lambda d: d["stages"]["generation"].update(seed=1),
+            "stages.generation.seed: gun runs inside each sample's simulation, which sets the "
+            "seed; set stages.simulation.seed instead",
+        ),
+        (
+            has_no_generation,
+            "samples.gamma.simulation (completing stages.simulation): simulation reads generation: "
+            "add samples.gamma.generation",
+        ),
+        (
+            takes_shared_simulation_file,
+            "stages.simulation.file: the parameters vary the geometry",
+        ),
+    ],
+)
+def test_shared_stage_errors(
+    doc: dict[str, Any], edit: Callable[[dict[str, Any]], object], message: str
+) -> None:
+    doc = shared(doc)
+    edit(doc)
+    reject(doc, message)
+
+
+def test_a_shared_stage_a_sample_does_not_use_says_where_it_comes_from(
+    doc: dict[str, Any],
+) -> None:
+    doc = shared(doc)
+    # zh reads an event file; nothing simulates it, yet it takes stages.simulation
+    doc["samples"]["zh"] = {"generation": {"file": "events/zh.hepmc"}}
+    doc["evaluators"].append(
+        {"name": "test.file_size", "version": "1", "stage": "generation", "samples": ["zh"]}
+    )
+    reject(
+        doc,
+        "samples.zh.simulation (from stages.simulation): is not used: no evaluator of the sample "
+        "reads it, no role, and no stage that runs; every sample takes stages.simulation, so "
+        "define simulation in the samples that use it instead",
+    )
+
+
 # --- sample properties and combined evaluators ----------------------------------------------
 
 

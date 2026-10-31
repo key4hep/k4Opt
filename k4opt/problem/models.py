@@ -430,9 +430,11 @@ class ProblemSpec:
     def to_dict(self) -> dict[str, object]:
         """Plain JSON-compatible data in schema order; a fresh copy on every call.
 
-        Every evaluator that reads a stage lists its samples, and every objective and constraint
-        names its evaluator and the sample it is measured on, also where the problem file leaves
-        them out. ``parse_problem(spec.to_dict())`` gives back an equal :class:`ProblemSpec`.
+        Every sample holds each of its stages in full, also where the problem file shares them in
+        ``stages``; every evaluator that reads a stage lists its samples, and every objective and
+        constraint names its evaluator and the sample it is measured on, also where the problem
+        file leaves them out. ``parse_problem(spec.to_dict())`` gives back an equal
+        :class:`ProblemSpec`.
         """
         data: dict[str, object] = {"schema_version": SCHEMA_VERSION}
         if self.name is not None:

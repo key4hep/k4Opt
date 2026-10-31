@@ -10,21 +10,20 @@ parameters:
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
+# every sample starts from these stages and adds what differs: the particle and the seed
+stages:
+  generation:
+    executor: gun
+    energy: {value: 20, unit: GeV}
+    direction: {distribution: uniform, theta: [80, 100], phi: [0, 360], unit: deg}
+  simulation: {executor: ddsim, events: 1000, physics.list: FTFP_BERT}
 samples:
   gamma_20gev:
-    generation:
-      executor: gun
-      particle: gamma
-      energy: {value: 20, unit: GeV}
-      direction: {distribution: uniform, theta: [80, 100], phi: [0, 360], unit: deg}
-    simulation: {executor: ddsim, events: 1000, seed: 1, physics.list: FTFP_BERT}
+    generation: {particle: gamma}
+    simulation: {seed: 1}
   pi0_20gev:
-    generation:
-      executor: gun
-      particle: pi0
-      energy: {value: 20, unit: GeV}
-      direction: {distribution: uniform, theta: [80, 100], phi: [0, 360], unit: deg}
-    simulation: {executor: ddsim, events: 1000, seed: 2, physics.list: FTFP_BERT}
+    generation: {particle: pi0}
+    simulation: {seed: 2}
 evaluators:
   - name: calo.shower_shape
     version: "1"

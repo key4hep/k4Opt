@@ -1,0 +1,81 @@
+# How fine should the CLD ECAL barrel cells be for photons of 10 and of 50 GeV? The same question
+# as cld-ecal-granularity.yaml, asked of two photon energies at once: the angular residual of
+# each, and the number of cells the harder photons fire. Both samples share their stages and say
+# only what differs, the energy and the seed (docs/problem.md, "stages").
+#
+#   k4opt evaluate examples/problem/cld-ecal-photon-energies.yaml \
+#       --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
+#       --param constants.ECal_cell_size=10.0 --output runs/cld-photons-10mm
+#
+# Needs the Key4hep environment (ddsim, podio, $K4GEO); about 5 minutes per sample and candidate
+# on one core.
+schema_version: k4opt.problem/v1alpha1
+name: cld-ecal-photon-energies
+
+environment:
+  key4hep:
+    channel: nightly
+    version: "2026-10-20"
+
+geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+
+parameters:
+  - geometry:
+      constant: ECal_cell_size
+    type: continuous
+    bounds: [2.5, 20.0]
+    unit: mm
+
+# what every sample starts from: photons into the middle of the barrel, simulated by ddsim
+stages:
+  generation:
+    executor: gun
+    particle: gamma
+    direction:
+      distribution: uniform
+      theta: [80, 100]
+      phi: [0, 360]
+      unit: deg
+  simulation:
+    executor: ddsim
+    events: 1000
+    physics.list: FTFP_BERT
+
+# each sample completes the shared stages; a value given here replaces the shared one whole
+samples:
+  gamma_10gev:
+    generation:
+      energy: {value: 10, unit: GeV}
+    simulation:
+      seed: 42
+  gamma_50gev:
+    generation:
+      energy: {value: 50, unit: GeV}
+    simulation:
+      seed: 43
+
+evaluators:
+  - name: calo.photon
+    version: "1"
+    stage: simulation
+    samples: [gamma_10gev, gamma_50gev]
+    collections:
+      hits: ECalBarrelCollection
+    settings:
+      threshold:
+        value: 70
+        unit: keV
+
+objectives:
+  - sample: gamma_10gev
+    stage: simulation
+    metric: ecal_barrel.angular_residual
+    direction: minimize
+  - sample: gamma_50gev
+    stage: simulation
+    metric: ecal_barrel.angular_residual
+    direction: minimize
+  - sample: gamma_50gev
+    stage: simulation
+    metric: ecal_barrel.fired_cells
+    direction: minimize

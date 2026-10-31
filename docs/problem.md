@@ -100,7 +100,7 @@ comparable.
 | Concept | Where | Who decides | Example |
 | --- | --- | --- | --- |
 | Scientific choices | `parameters`, `objectives`, `constraints` | the physicist | vary `ECal_cell_size` in 2.5-20 mm, minimize the photon's angular residual and the number of fired cells (and, optionally, limit a metric) |
-| Samples | `samples`: each sample's stages, with their executors, `events`, `seed`, the gun or a `file` | the physicist, checked by k4opt; shared by every evaluator that measures the sample | `gamma_10gev`: 1000 photons of 10 GeV, seed 42 |
+| Samples | `samples`: each sample's stages, with their executors, `events`, `seed`, the gun or a `file`, written in the sample or completed from the shared `stages` | the physicist, checked by k4opt; shared by every evaluator that measures the sample | `gamma_10gev`: 1000 photons of 10 GeV, seed 42 |
 | Evaluator inputs | `evaluators[*].collections`, `.settings` | each evaluator's contract, filled by the physicist | the hits in `ECalBarrelCollection`, a threshold of 70 keV |
 | Executor options | the other keys of a stage, such as `physics.list` | the physicist, validated by the tool | `physics.list: FTFP_BERT` |
 | Execution environment | `environment`, `geometry` | the physicist pins, k4opt resolves | nightly `2026-10-20`, CLD_o2_v09 |
@@ -121,6 +121,7 @@ stay separate (see [Identity](#identity-and-provenance)).
 | `environment` | yes | The software stack the problem is meant to be evaluated with. |
 | `geometry` | yes | The starting detector description. |
 | `parameters` | yes | The quantities that vary between candidates. |
+| `stages` | no | Stages every sample starts from, so that samples say only what differs. |
 | `samples` | no | The events a candidate is measured on: named samples, each with the stages that make its data, each stage run by an executor or given as a file. Not needed when no evaluator reads a stage. |
 | `evaluators` | yes | Who measures a candidate: which stage each reads, of which samples. |
 | `objectives` | yes | What to minimize or maximize; one or more. |
@@ -223,9 +224,10 @@ takes only its own keys:
   default otherwise), and any other key is a ddsim option named as `ddsim --help` names it,
   such as `physics.list: FTFP_BERT` ([ddsim](ddsim.md#options-simulation)).
 
-Each sample is complete on its own: nothing is shared between samples but the candidate's
-geometry, which every simulation reads. The stages of a sample must fit together and fit the
-evaluators that measure it, which loading checks:
+Samples share nothing but the candidate's geometry, which every simulation reads, and what the
+problem writes once for all of them in [`stages`](#stages). The stages of a sample, once
+completed from `stages`, must fit together and fit the evaluators that measure it, which loading
+checks:
 
 - a stage that runs needs the stage it reads, run or given as a file ("samples.gamma.simulation:
   simulation reads generation: add samples.gamma.generation with executor: gun, or give its
@@ -281,7 +283,54 @@ properties:
 These values reach the sample's evaluator as `request.properties` and combined evaluators as
 `RoleInput.properties`. They are immutable copies, recorded in the normalized problem and
 compared when a study resumes. k4opt does not interpret units, normalize yields or use these
-properties to run stages. Properties alone do not define a sample: it still needs stages.
+properties to run stages. Properties alone do not define a sample: it still needs stages, its
+own or from `stages`.
+
+### `stages`
+
+Samples often differ in one or two keys, a particle, an energy or a seed, and agree on the rest.
+`stages` writes the rest once: it maps a stage to what that stage of every sample starts from.
+
+```yaml
+stages:
+  generation:
+    executor: gun
+    particle: gamma
+    direction: {distribution: uniform, theta: [80, 100], phi: [0, 360], unit: deg}
+  simulation: {executor: ddsim, events: 1000, physics.list: FTFP_BERT}
+
+samples:
+  gamma_10gev:
+    generation: {energy: {value: 10, unit: GeV}}
+    simulation: {seed: 42}
+  gamma_50gev:
+    generation: {energy: {value: 50, unit: GeV}}
+    simulation: {seed: 43}
+```
+
+Each sample takes the shared stages as follows:
+
+- a sample that defines no such stage takes the shared one as it is;
+- a sample stage without `executor` or `file` completes the shared one key by key: its keys win,
+  a nested value (an `energy`, a `direction`) replaces the shared one whole, and nothing is
+  removed;
+- a sample stage that names `executor` or `file` replaces the shared one; none of its keys are
+  taken.
+
+A shared stage names `executor` or `file`, like any stage; a shared `file` takes no other keys,
+and a sample cannot complete it, only replace it. Every sample takes every shared stage, so a
+sample that does not use one (an event file that nothing simulates, next to a shared
+`simulation`) is an error; define that stage in the samples that use it instead. A shared stage
+that every sample replaces is an error too, and so is `stages` without `samples`.
+
+A stage is checked once completed, as if it had been written out in the sample. An error names
+both places: `samples.gamma_10gev.simulation (completing stages.simulation): missing required key
+'events'`, and an invalid key is reported where it was written (`stages.simulation.events` or
+`samples.gamma_10gev.simulation.seed`).
+
+`stages` is only a way of writing samples. The normalized problem in records and studies holds
+each sample written out in full and no `stages`, so writing the samples out in full or sharing
+their stages gives the same problem and the same study.
 
 ### `evaluators`
 
@@ -668,7 +717,7 @@ evaluator is named on the command line) and metric metadata beyond units; recons
 analysis stages and running `k4run`; steering and configuration files (refused for ddsim until
 they can be captured); a problem fingerprint; a multi-objective strategy beyond the Pareto
 front; non-geometry parameter sources (stage options are named keys so that a parameter can
-target one later); stage configuration shared by several samples; samples entering at any stage,
+target one later); samples entering at any stage,
 and chained combined evaluators; branches of the stages; a parameter that drives
 several geometry targets at once; a named baseline
 candidate (an evaluation of the unmodified geometry is the natural baseline for validating
