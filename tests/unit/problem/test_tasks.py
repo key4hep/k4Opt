@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from k4opt.evaluation import EvaluationContractError, Status
-from k4opt.problem import EvaluatorSpec, Reference, Sample, Stage
+from k4opt.problem import EvaluatorSpec, MetricRef, Reference, Sample, Stage
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
@@ -24,6 +25,7 @@ from k4opt.problem._tasks import (
     candidate_message,
     candidate_status,
     changed_files,
+    diagnostics,
     evaluator_task,
     plan_tasks,
     run_tasks,
@@ -50,7 +52,7 @@ def labels(plan: Plan) -> dict[str, list[str]]:
 
 
 def test_a_simulation_reader_reads_the_geometry_and_every_stage_of_its_chain() -> None:
-    plan = plan_tasks(GAMMA, [ev("calo", "simulation")])
+    plan = plan_tasks(GAMMA, [ev("calo", "simulation")], references=())
     assert labels(plan) == {
         "geometry": [],
         "gamma/generation": [],  # a gun is fired by ddsim: it reads no geometry
@@ -67,7 +69,7 @@ def test_a_simulation_reader_reads_the_geometry_and_every_stage_of_its_chain() -
 
 
 def test_every_evaluator_reads_the_geometry_even_one_that_reads_no_stage() -> None:
-    plan = plan_tasks({}, [ev("cost"), ev("echo")])
+    plan = plan_tasks({}, [ev("cost"), ev("echo")], references=())
     assert labels(plan) == {"geometry": [], "cost": ["geometry"], "echo": ["geometry"]}
     assert all(GEOMETRY in task.needs for task in plan.of(Kind.EVALUATOR))
     assert plan[evaluator_task("cost")].directory == "evaluators/cost"
@@ -75,7 +77,7 @@ def test_every_evaluator_reads_the_geometry_even_one_that_reads_no_stage() -> No
 
 def test_each_stage_is_planned_once_however_many_evaluators_read_it() -> None:
     evaluators = [ev("a", "simulation"), ev("b", "generation"), ev("c", "simulation")]
-    plan = plan_tasks(GAMMA, evaluators)
+    plan = plan_tasks(GAMMA, evaluators, references=())
     assert list(labels(plan)) == [
         "geometry",
         "gamma/generation",
@@ -94,7 +96,7 @@ def test_each_sample_is_planned_on_its_own_and_reads_only_its_own_stages() -> No
         ev("cost"),
         ev("edge", "generation", "pion"),
     ]
-    plan = plan_tasks(samples, evaluators)
+    plan = plan_tasks(samples, evaluators, references=())
     assert labels(plan) == {
         "geometry": [],
         "gamma/generation": [],
@@ -109,7 +111,9 @@ def test_each_sample_is_planned_on_its_own_and_reads_only_its_own_stages() -> No
     assert plan[evaluator_task("calo", "pion")].directory == "samples/pion/evaluators/calo"
     # a sample that only a generation reader measures does not simulate
     only = plan_tasks(
-        samples, [ev("calo", "simulation", "gamma"), ev("edge", "generation", "pion")]
+        samples,
+        [ev("calo", "simulation", "gamma"), ev("edge", "generation", "pion")],
+        references=(),
     )
     assert stage_task("simulation", "pion") not in [task.id for task in only.tasks]
 
@@ -123,7 +127,7 @@ def test_a_combined_evaluator_reads_the_geometry_and_each_item_of_its_roles() ->
         "events": (Reference("pion", stage="simulation"), Reference("gamma", evaluator="calo")),
     }
     sep = EvaluatorSpec("sep", "1", roles=roles)
-    plan = plan_tasks(samples, [sep, calo])
+    plan = plan_tasks(samples, [sep, calo], references=())
     assert labels(plan) == {
         "geometry": [],
         "gamma/generation": [],
@@ -140,7 +144,7 @@ def test_a_combined_evaluator_reads_the_geometry_and_each_item_of_its_roles() ->
 def test_a_stage_given_as_a_file_reads_nothing() -> None:
     hepmc = Stage("generation", file="zh.hepmc")
     sample = {"gamma": Sample("gamma", {"generation": hepmc, "simulation": DDSIM})}
-    plan = plan_tasks(sample, [ev("calo", "simulation")])
+    plan = plan_tasks(sample, [ev("calo", "simulation")], references=())
     assert plan[GENERATION] == Task(GENERATION, given="file")
     assert labels(plan)["gamma/simulation"] == ["geometry", "gamma/generation"]
 
@@ -148,7 +152,7 @@ def test_a_stage_given_as_a_file_reads_nothing() -> None:
 def test_a_supplied_stage_reads_nothing_and_the_stages_only_it_needs_are_not_planned() -> None:
     samples = GAMMA | {"pion": Sample("pion", {"generation": GUN, "simulation": DDSIM})}
     calo = [ev("calo", "simulation", "gamma", "pion")]
-    plan = plan_tasks(samples, calo, {SIMULATION})
+    plan = plan_tasks(samples, calo, {SIMULATION}, references=())
     assert labels(plan) == {
         "geometry": [],
         "gamma/simulation": [],
@@ -161,9 +165,9 @@ def test_a_supplied_stage_reads_nothing_and_the_stages_only_it_needs_are_not_pla
     assert plan[SIMULATION].given == "supplied"
     # supplied wins over a file the problem gives
     filed = {"gamma": Sample("gamma", {"simulation": Stage("simulation", file="events.root")})}
-    assert plan_tasks(filed, [ev("calo", "simulation")], {SIMULATION})[SIMULATION].given == (
-        "supplied"
-    )
+    assert plan_tasks(filed, [ev("calo", "simulation")], {SIMULATION}, references=())[
+        SIMULATION
+    ].given == ("supplied")
 
 
 def test_the_task_kind_and_sample_tell_tasks_of_the_same_name_apart() -> None:
@@ -171,7 +175,7 @@ def test_the_task_kind_and_sample_tell_tasks_of_the_same_name_apart() -> None:
     assert evaluator_task("x", "gamma") != evaluator_task("x", "pion") != evaluator_task("x")
     assert (evaluator_task("x", "gamma").label, evaluator_task("x").label) == ("gamma/x", "x")
     with pytest.raises(KeyError):
-        plan_tasks({}, [ev("calo")])[stage_task("calo", "gamma")]
+        plan_tasks({}, [ev("calo")], references=())[stage_task("calo", "gamma")]
 
 
 @pytest.mark.parametrize(
@@ -224,7 +228,7 @@ def test_a_blocked_task_names_where_its_candidate_went_wrong_not_the_blocked_in_
 
 
 def test_the_executor_runs_each_task_once_in_plan_order_with_only_what_it_reads() -> None:
-    plan = plan_tasks(GAMMA, [ev("a", "simulation"), ev("b")])
+    plan = plan_tasks(GAMMA, [ev("a", "simulation"), ev("b")], references=())
     seen: list[tuple[str, list[str]]] = []
 
     def run(task: Task, reads: Mapping[TaskId, TaskResult]) -> TaskResult:
@@ -243,7 +247,7 @@ def test_the_executor_runs_each_task_once_in_plan_order_with_only_what_it_reads(
 
 
 def test_the_executor_does_not_run_a_blocked_task() -> None:
-    plan = plan_tasks(GAMMA, [ev("a", "simulation"), ev("b")])
+    plan = plan_tasks(GAMMA, [ev("a", "simulation"), ev("b")], references=())
     ran: list[str] = []
 
     def run(task: Task, reads: Mapping[TaskId, TaskResult]) -> TaskResult:
@@ -261,36 +265,123 @@ def test_the_executor_does_not_run_a_blocked_task() -> None:
 # --- the candidate's status and message, from its tasks ---
 
 
+def required(*tasks: TaskId, diagnostics: tuple[TaskId, ...] = ()) -> Plan:
+    """A plan of ``tasks``, each required, then ``diagnostics``, none of them reading another."""
+    return Plan(
+        tuple(Task(task, required=True) for task in tasks)
+        + tuple(Task(task) for task in diagnostics)
+    )
+
+
+ECHO, CELLS = evaluator_task("echo"), evaluator_task("cells")
+
+
 @pytest.mark.parametrize(
     ("statuses", "status"),
     [
         (["done", "valid"], Status.VALID),
         (["done", "valid", "invalid"], Status.INVALID),
         (["failed", "blocked", "invalid"], Status.FAILED),
-        (["done", "blocked"], Status.FAILED),  # never alone, but incomplete all the same
-        ([], Status.VALID),
+        # blocked by an invalid task: nothing failed, and it is no result
+        (["done", "invalid", "blocked"], Status.INVALID),
+        (["done", "blocked"], Status.INVALID),  # never alone, but no result all the same
     ],
 )
 def test_a_candidate_is_failed_before_invalid_before_valid(
     statuses: list[str], status: Status
 ) -> None:
-    assert candidate_status(statuses) is status
+    tasks = [GEOMETRY, SIMULATION, ECHO][: len(statuses)]
+    results = {task: done(task, s) for task, s in zip(tasks, statuses, strict=True)}
+    assert candidate_status(required(*tasks), results) is status
+
+
+@pytest.mark.parametrize("diagnostic", ["failed", "invalid", "blocked"])
+def test_a_diagnostic_never_changes_the_candidate_status_or_message(diagnostic: str) -> None:
+    plan = required(GEOMETRY, ECHO, diagnostics=(CELLS,))
+    results = {GEOMETRY: done(GEOMETRY), ECHO: done(ECHO, "valid"), CELLS: done(CELLS, diagnostic)}
+    assert candidate_status(plan, results) is Status.VALID
+    assert candidate_message(plan, results) is None
+    assert diagnostics(plan, results) == [results[CELLS]]
+    assert diagnostics(plan, results | {CELLS: done(CELLS, "valid")}) == []
+    assert candidate_status(required(), {}) is Status.VALID
 
 
 def test_the_message_names_the_causes_then_what_they_blocked() -> None:
-    simulation = done(SIMULATION, "failed", "ddsim crashed")
-    results = [
-        done(GEOMETRY),
-        simulation,
-        TaskResult(evaluator_task("calo"), Status.BLOCKED, "x", blocked_by=(SIMULATION,)),
-        done(evaluator_task("echo"), "invalid", "too far out"),
-        TaskResult(evaluator_task("energy"), Status.BLOCKED, "x", blocked_by=(SIMULATION,)),
-        done(evaluator_task("cells"), "valid", "fine"),
-    ]
-    assert candidate_message(results) == (
+    calo, energy = evaluator_task("calo"), evaluator_task("energy")
+    results = {
+        GEOMETRY: done(GEOMETRY),
+        SIMULATION: done(SIMULATION, "failed", "ddsim crashed"),
+        calo: TaskResult(calo, Status.BLOCKED, "x", blocked_by=(SIMULATION,)),
+        ECHO: done(ECHO, "invalid", "too far out"),
+        energy: TaskResult(energy, Status.BLOCKED, "x", blocked_by=(SIMULATION,)),
+        CELLS: done(CELLS, "valid", "fine"),
+    }
+    plan = required(*results)
+    assert candidate_message(plan, results) == (
         "gamma/simulation failed: ddsim crashed; echo invalid: too far out; blocked: calo, energy"
     )
-    assert candidate_message([done(GEOMETRY), done(evaluator_task("a"), "valid")]) is None
+    # only the required ones: a diagnostic that failed is not the candidate's
+    plan = required(GEOMETRY, ECHO, CELLS, diagnostics=(SIMULATION, calo, energy))
+    assert candidate_message(plan, results) == "echo invalid: too far out"
+    assert candidate_message(required(GEOMETRY, CELLS), results) is None
+
+
+# --- which tasks are required ---
+
+
+def needed(plan: Plan) -> list[str]:
+    return [task.id.label for task in plan.tasks if task.required]
+
+
+def test_the_tasks_required_are_those_an_objective_or_constraint_names_and_what_they_read() -> None:
+    evaluators = [ev("calo", "simulation"), ev("occupancy", "simulation"), ev("cost")]
+    calo = MetricRef("calo", "simulation", "x", "gamma")
+    plan = plan_tasks(GAMMA, evaluators, references=[calo])
+    assert needed(plan) == ["geometry", "gamma/generation", "gamma/simulation", "gamma/calo"]
+    assert [task.id.label for task in plan.diagnostics] == ["gamma/occupancy", "cost"]
+    # several metrics of one evaluation, or of the candidate: each task once
+    cost = MetricRef("cost", "geometry", "channels")
+    plan = plan_tasks(GAMMA, evaluators, references=[calo, replace(calo, metric="y"), cost])
+    assert [task.id.label for task in plan.diagnostics] == ["gamma/occupancy"]
+
+
+def test_an_evaluator_marked_required_is_required_with_what_it_reads_on_every_sample() -> None:
+    samples = GAMMA | {"pion": Sample("pion", {"generation": GUN, "simulation": DDSIM})}
+    check = replace(ev("check", "simulation", "gamma", "pion"), required=True)
+    plan = plan_tasks(samples, [ev("cost"), check], references=[MetricRef("cost", "g", "c")])
+    assert needed(plan) == [
+        "geometry",
+        "gamma/generation",
+        "gamma/simulation",
+        "gamma/check",
+        "pion/generation",
+        "pion/simulation",
+        "pion/check",
+        "cost",
+    ]
+    assert plan.diagnostics == ()
+
+
+def test_what_a_required_combined_evaluator_reads_is_required_and_only_that() -> None:
+    samples = {name: Sample(name, {"generation": GUN, "simulation": DDSIM}) for name in "ab"}
+    shape = ev("shape", "simulation", "a", "b")
+    occupancy = ev("occupancy", "simulation", "b")
+    separation = EvaluatorSpec(
+        "separation", "1", roles={"signal": (Reference("a", evaluator="shape"),)}
+    )
+    plan = plan_tasks(
+        samples,
+        [shape, occupancy, separation],
+        references=[MetricRef("separation", "analysis", "rejection")],
+    )
+    # b is simulated for its diagnostics alone: no objective needs its events
+    assert [task.id.label for task in plan.diagnostics] == [
+        "b/generation",
+        "b/simulation",
+        "b/shape",
+        "b/occupancy",
+    ]
+    assert needed(plan) == ["geometry", "a/generation", "a/simulation", "a/shape", "separation"]
 
 
 # --- the files a task made, and whether they are still what its record says ---

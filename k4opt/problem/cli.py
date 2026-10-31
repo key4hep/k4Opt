@@ -5,7 +5,7 @@
 
 A thin wrapper over :func:`k4opt.problem._run.run_candidate`; :func:`register` plugs it into
 the top-level ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate,
-feasible or not.
+feasible or not, whatever its diagnostics gave.
 """
 
 from __future__ import annotations
@@ -101,7 +101,8 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
             name = f"{task.id.name} ({name})"
         if task.id.sample is not None:
             name = f"{name} on {task.id.sample}"
-        print(f"evaluator:   {name}: {result.status}", file=out)
+        diagnostic = "" if task.required else " (diagnostic)"
+        print(f"evaluator:   {name}: {result.status}{diagnostic}", file=out)
         if task.id.sample is None and (roles := evaluations[task.id.name]["roles"]):
             reads = "; ".join(f"{role} {', '.join(items)}" for role, items in roles.items())
             print(f"roles:       {reads}", file=out)
@@ -149,6 +150,11 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     )
     _report(outcome, out)
     candidate = outcome.candidate
+    for result in candidate.diagnostics:  # the candidate's status leaves them out
+        print(
+            f"k4opt: warning: diagnostic {result.id.label} {result.status}: {result.message}",
+            file=err,
+        )
     if candidate.status is not Status.VALID:
         print(f"k4opt: evaluation {candidate.status}: {candidate.message}", file=err)
         return 1

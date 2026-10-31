@@ -239,3 +239,9 @@ def render_trial(
         _print(out, style, "record", record)
     if trial.message is not None:
         _print(out, style, "message", [printable(trial.message)])
+    if trial.diagnostics:  # what the status leaves out
+        diagnostics = [
+            printable(f"{entry['task']} {entry['status']}: {entry['message']}")
+            for entry in trial.diagnostics
+        ]
+        _print(out, style, "diagnostics", diagnostics)

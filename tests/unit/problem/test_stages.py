@@ -349,7 +349,10 @@ def test_a_supplied_stage_reads_nothing_even_where_the_problem_gives_the_stage_b
         EvaluatorSpec("b", "1", stage="simulation", samples=("gamma",)),
     ]
     plan = plan_tasks(
-        {"gamma": Sample("gamma", stages)}, readers, {stage_task("simulation", "gamma")}
+        {"gamma": Sample("gamma", stages)},
+        readers,
+        {stage_task("simulation", "gamma")},
+        references=(),
     )
     simulated = plan[stage_task("simulation", "gamma")]
     assert (simulated.needs, simulated.given) == ((), "supplied")
@@ -400,7 +403,7 @@ def test_a_failed_stage_blocks_only_the_tasks_that_read_it(
         EvaluatorSpec("on_left", "1", stage="last", samples=("s",)),
         EvaluatorSpec("on_right", "1", stage="after_right", samples=("s",)),
     ]
-    plan = plan_tasks({"s": Sample("s")}, readers)
+    plan = plan_tasks({"s": Sample("s")}, readers, references=())
     results = run_tasks(plan, run)
     assert ran == ["left", "right", "after_right"]
     status = {task.label: (r.status, r.message) for task, r in results.items()}
@@ -454,7 +457,7 @@ def test_a_generation_file_is_given_hashed_and_resolved_from_the_problem_directo
     }
     # given by the problem, not supplied by the caller: it reads nothing
     reader = EvaluatorSpec("reader", "1", stage="generation", samples=("gamma",))
-    plan = plan_tasks(file_spec.samples, [reader])
+    plan = plan_tasks(file_spec.samples, [reader], references=())
     assert plan[stage_task("generation", "gamma")].given == "file"
 
 

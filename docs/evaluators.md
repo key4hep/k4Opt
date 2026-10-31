@@ -77,7 +77,10 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    - `problem`: the original path and name plus `definition`, the normalized problem loaded
      for this run, including parameter domains, objective directions and constraint limits;
    - `status` and `message` of the candidate ([how they follow from its tasks'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
-     the candidate and its key, whether the run `represents_candidate`, which stages were
+     the `required` tasks that decide them (by label: `geometry`, `gamma_10gev/simulation`,
+     `gamma_10gev/calo.photon`), the `diagnostics` that did not succeed (each with its `task`,
+     `status` and `message`), the candidate and its key, whether the run
+     `represents_candidate`, which stages were
      `supplied` with `--input` (`gamma_10gev/simulation`), and the `warnings` printed before the
      run;
    - `metrics`: every objective and constraint metric, named by its `evaluator` (a binding),
@@ -146,8 +149,11 @@ events:      gamma_10gev: 1000 of 1000
 ```
 
 The exit status is 0 for a `valid` candidate, feasible or not; otherwise the message (each
-evaluator that is not `valid`, with its status and reason) goes to stderr and the exit status
-is 1.
+required task that is not `done` or `valid`, with its status and reason) goes to stderr and the
+exit status is 1. An evaluation that no objective, constraint or required evaluator reads is a
+diagnostic ([problem](problem.md#evaluators)): the command lists the diagnostics on stderr before
+anything runs, marks each in its line (`calo.occupancy 1 on zz: failed (diagnostic)`) and warns
+of each one that did not succeed, but a diagnostic never changes the status or the exit status.
 
 The summary is published only after it has been completely serialized and closed. A failed
 write leaves no partial `summary.json`, and an existing file is never overwritten. Filesystem

@@ -478,7 +478,17 @@ def _evaluators(raw: object, samples: list[str]) -> tuple[EvaluatorSpec, ...]:
         m = _mapping(
             item,
             path,
-            ("name", "as", "version", "stage", "samples", "collections", "settings", "roles"),
+            (
+                "name",
+                "as",
+                "version",
+                "stage",
+                "samples",
+                "collections",
+                "settings",
+                "roles",
+                "required",
+            ),
             ("name", "version"),
         )
         if "roles" in m:
@@ -515,7 +525,10 @@ def _evaluators(raw: object, samples: list[str]) -> tuple[EvaluatorSpec, ...]:
         version = _text(m["version"], f"{path}.version")
         measured = _measured(m, path, stage, samples)
         roles = _roles(m["roles"], f"{path}.roles") if "roles" in m else {}
-        entry = EvaluatorSpec(name, version, settings, stage, collections, binding, measured, roles)
+        required = _required(m["required"], f"{path}.required") if "required" in m else False
+        entry = EvaluatorSpec(
+            name, version, settings, stage, collections, binding, measured, roles, required
+        )
         folded = binding.casefold()  # run directories may be on a file system that folds case
         for earlier in bound.get(folded, []):
             _check_repeated(entry, evaluators[earlier], f"evaluators[{earlier}]", path)
@@ -524,6 +537,18 @@ def _evaluators(raw: object, samples: list[str]) -> tuple[EvaluatorSpec, ...]:
     for index, entry in enumerate(evaluators):  # once all are known: a role may read a later one
         _check_roles(entry, f"evaluators[{index}].roles", evaluators, samples)
     return tuple(evaluators)
+
+
+def _required(value: object, path: str) -> bool:
+    """``required: true``, the one value it takes: an evaluator is required already when an
+    objective or a constraint, or a required evaluator, reads it, and a diagnostic otherwise."""
+    if value is not True:
+        raise _fail(
+            path,
+            f"must be true, got {_show(value)}; an evaluator that no objective, constraint or "
+            "required evaluator reads is a diagnostic without it",
+        )
+    return True
 
 
 _REFERENCE_KEYS = ("sample", "samples", "evaluator", "stage")

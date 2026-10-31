@@ -416,7 +416,8 @@ def assemble(
 
     Each task's part (``geometry``; each sample's ``stages`` and ``evaluations``; the
     ``evaluations`` of the candidate) is made from that task's result alone; the candidate's
-    ``status``, ``message``, ``metrics`` and ``assessment`` derive from them, as
+    ``status``, ``message``, ``required``, ``diagnostics``, ``metrics`` and ``assessment`` derive
+    from them and the plan, as
     :meth:`Assessment.from_summary` derives them again.
     ``record_id`` is the record's identity; the rest is what the session holds: the problem,
     what it recorded of each implementation (``taken``: its version, stage, source and metrics)
@@ -454,7 +455,15 @@ def assemble(
         "candidate_key": [list(part) for part in candidate.candidate_key],
         "status": candidate.status,
         "message": candidate.message,
-        # False if a supplied stage file was not made from this candidate (--input)
+        # the tasks the status is decided by: what the objectives, constraints and the evaluators
+        # marked required read; the others are diagnostics
+        "required": [task.id.label for task in plan.tasks if task.required],
+        # each diagnostic that did not succeed, which the status leaves out
+        "diagnostics": [
+            {"task": result.id.label, "status": result.status, "message": result.message}
+            for result in candidate.diagnostics
+        ],
+        # False if a required stage file was supplied that was not made from this candidate
         "represents_candidate": candidate.represents_candidate,
         "supplied": sorted(candidate.supplied),
         "warnings": list(candidate.warnings),
@@ -669,6 +678,27 @@ class EvaluationSession:
         simulation's output decides, so they do not stop an evaluation. Each summary keeps
         them too."""
         return self._warnings
+
+    @property
+    def diagnostics(self) -> tuple[str, ...]:
+        """The evaluations that no objective, constraint or required evaluator reads, by label
+        (``zz/calo.occupancy``), in plan order: each is run and recorded, but whatever its
+        result, the candidate's status does not depend on it."""
+        return tuple(
+            task.id.label for task in self._binding.plan.of(Kind.EVALUATOR) if not task.required
+        )
+
+    @property
+    def notice(self) -> str | None:
+        """What to tell someone who starts the session of its :attr:`diagnostics`, ``None``
+        without one: a check meant to veto candidates that is not marked ``required: true``
+        would otherwise veto nothing, unnoticed."""
+        if not self.diagnostics:
+            return None
+        return (
+            f"diagnostics (recorded, do not affect the result): {', '.join(self.diagnostics)}; "
+            "mark an evaluator required: true if its result must count"
+        )
 
     def identity(self) -> dict[str, object]:
         """What this session evaluates with, as plain JSON-compatible data.
@@ -958,7 +988,8 @@ def run_candidate(
     :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
     ``SAMPLE/STAGE=FILE`` strings, ``timeout`` that of :meth:`EvaluationSession.open`. ``warn``
     is called with each of the session's warnings once the candidate is known to be valid, before
-    anything is created; the warnings are also kept in the summary.
+    anything is created, and with its :attr:`~EvaluationSession.notice` of diagnostics; the
+    warnings are also kept in the summary.
     """
     session = EvaluationSession.open(
         problem_path, implementations, inputs=_parse_inputs(inputs), timeout=timeout
@@ -968,4 +999,6 @@ def run_candidate(
     if warn is not None:
         for warning in session.warnings:
             warn(warning)
+        if session.notice is not None:
+            warn(session.notice)
     return session.evaluate(values, output)

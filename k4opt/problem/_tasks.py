@@ -18,6 +18,11 @@ from how it runs:
   and its status and message are derived from them (:func:`candidate_status`,
   :func:`candidate_message`).
 
+A task is ``required`` if an objective, a constraint or a binding marked ``required: true`` needs
+it: the evaluation that measures what one names, and every task it reads, transitively. Only the
+required tasks decide the candidate's status; every other task is a diagnostic, run and recorded
+like any other, and one that does not succeed is listed (:func:`diagnostics`) but fails nothing.
+
 A stage given as a file, in the problem or by the caller, is a task too: it reads that file and
 no task, so the stages before it are planned only if something else needs them. The samples
 share nothing but the geometry: a task of one sample never reads a task of another, and only a
@@ -35,7 +40,7 @@ stats are machine-specific and never recorded.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
@@ -49,7 +54,7 @@ from k4opt.problem._stages import (
     reads_geometry,
     writes_files,
 )
-from k4opt.problem.models import EvaluatorSpec, Reference, Sample
+from k4opt.problem.models import EvaluatorSpec, MetricRef, Reference, Sample
 
 
 class Kind(StrEnum):
@@ -134,13 +139,15 @@ class Task:
 
     ``directory`` is relative to the candidate's run directory, ``None`` for a task that writes
     nothing. ``given`` says how a stage that does not run is given: as a ``file`` of the problem,
-    or ``supplied`` by the caller.
+    or ``supplied`` by the caller. ``required`` says whether the candidate's status depends on
+    it; a task that is not required is a diagnostic.
     """
 
     id: TaskId
     needs: tuple[TaskId, ...] = ()
     directory: str | None = None
     given: Literal["file", "supplied"] | None = None
+    required: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,14 +186,22 @@ class Plan:
         """The tasks of one kind, in plan order."""
         return tuple(task for task in self.tasks if task.id.kind is kind)
 
+    @property
+    def diagnostics(self) -> tuple[Task, ...]:
+        """The tasks that are not required, in plan order."""
+        return tuple(task for task in self.tasks if not task.required)
+
 
 def plan_tasks(
     samples: Mapping[str, Sample],
     evaluators: Sequence[EvaluatorSpec],
     supplied: Collection[TaskId] = (),
+    *,
+    references: Collection[MetricRef],
 ) -> Plan:
     """The plan of a problem with ``samples`` and ``evaluators`` (in problem order), the stages
-    in ``supplied`` given by the caller.
+    in ``supplied`` given by the caller, and the metrics its objectives and constraints name,
+    ``references``.
 
     The stages planned of a sample are those its evaluators and the roles of combined evaluators
     read (:func:`read_stages`) and the stages these read, except that a stage given as a file
@@ -195,6 +210,9 @@ def plan_tasks(
     reads, and a combined evaluator each item of its roles. A stage of sample ``s`` writes in
     ``samples/s/<stage>``, an evaluation in ``samples/s/evaluators/<binding>``, or in
     ``evaluators/<binding>`` for one of the candidate.
+
+    The required tasks are the evaluations that measure a metric of ``references``, those of an
+    entry marked ``required``, and every task these read, transitively.
     """
     tasks = [Task(GEOMETRY, directory=GEOMETRY.name)]
     planned = evaluations(samples, evaluators)
@@ -228,7 +246,13 @@ def plan_tasks(
         if task.sample is None:
             needs = (GEOMETRY, *(reference_task(item) for item in entry.reads))
             tasks.append(Task(task, needs, f"evaluators/{entry.binding}"))
-    return Plan(tuple(tasks))
+    needed = {evaluator_task(ref.evaluator, ref.sample) for ref in references}
+    needed |= {task for task, entry in planned if entry.required}
+    for each in reversed(tasks):  # each after its needs, so a need is reached after its readers
+        if each.id in needed:
+            needed.update(each.needs)
+    assert needed <= {each.id for each in tasks}  # the problem names only evaluations it has
+    return Plan(tuple(replace(each, required=each.id in needed) for each in tasks))
 
 
 type Stat = tuple[int, int, int, int]
@@ -400,19 +424,35 @@ def run_tasks(plan: Plan, run: RunTask) -> dict[TaskId, TaskResult]:
     return results
 
 
-def candidate_status(statuses: Iterable[str]) -> Status:
-    """The status of a candidate from its tasks': ``failed`` if any failed or was blocked (the
-    evaluation is incomplete), otherwise ``invalid`` if any is, otherwise ``valid``."""
-    seen = set(statuses)
-    if seen & {Status.FAILED, Status.BLOCKED}:
+def _required(plan: Plan, results: Mapping[TaskId, TaskResult]) -> list[TaskResult]:
+    return [results[task.id] for task in plan.tasks if task.required]
+
+
+def candidate_status(plan: Plan, results: Mapping[TaskId, TaskResult]) -> Status:
+    """The status of a candidate from the ``results`` of the required tasks of its ``plan``:
+    ``failed`` if any failed (the evaluation is incomplete), otherwise ``invalid`` if any is
+    invalid or blocked (by an invalid one, since a required task reads only required ones),
+    otherwise ``valid``. A diagnostic never changes it."""
+    seen = {result.status for result in _required(plan, results)}
+    if Status.FAILED in seen:
         return Status.FAILED
-    return Status.INVALID if Status.INVALID in seen else Status.VALID
+    return Status.INVALID if seen & {Status.INVALID, Status.BLOCKED} else Status.VALID
 
 
-def candidate_message(results: Iterable[TaskResult]) -> str | None:
-    """The message of a candidate from its task results, in plan order: each that failed or is
-    invalid, with its status and message, then the tasks they blocked."""
-    results = list(results)
+def candidate_message(plan: Plan, results: Mapping[TaskId, TaskResult]) -> str | None:
+    """The message of a candidate from the ``results`` of the required tasks of its ``plan``, in
+    plan order: each that failed or is invalid, with its status and message, then the tasks
+    they blocked."""
+    return _message(_required(plan, results))
+
+
+def diagnostics(plan: Plan, results: Mapping[TaskId, TaskResult]) -> list[TaskResult]:
+    """The results of the tasks of ``plan`` that are not required and did not succeed, in plan
+    order: what the candidate's status leaves out."""
+    return [result for task in plan.diagnostics if not (result := results[task.id]).succeeded]
+
+
+def _message(results: Sequence[TaskResult]) -> str | None:
     causes = [
         f"{result.id.label} {result.status}: {result.message}"
         for result in results

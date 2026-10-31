@@ -65,6 +65,9 @@ def trial_line(trial: TrialReport, *, color: bool = False) -> str:
     else:
         where = f"{trial.directory.name}/summary.json" if trial.record else trial.directory.name
         line = f"{head}{printable(trial.message or '')}  {style.dim(printable(where))}"
+    if trial.diagnostics:
+        noun = "diagnostic" if trial.diagnostics == 1 else "diagnostics"
+        line = f"{line}  {style.dim(f'({trial.diagnostics} {noun} did not succeed)')}"
     return f"{line}  {style.dim('(recovered)')}" if trial.recovered else line
 
 

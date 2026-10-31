@@ -20,6 +20,7 @@ from optuna.trial import TrialState
 
 from k4opt.evaluation import EvaluationContractError
 from k4opt.optimization import STUDY_NAME, OptimizationError, optimize
+from k4opt.optimization._render import trial_line
 from k4opt.problem import Assessment, EvaluationSession, load_problem
 from tests.support import simulation
 from tests.support.evaluators import (
@@ -591,3 +592,28 @@ def test_a_combined_evaluator_is_optimized_and_a_trial_without_its_background_fa
     assert record["message"].endswith("; blocked: bkg/test.yields, significance")
     assert record["evaluations"]["significance"]["status"] == "blocked"
     assert record["samples"]["sig"]["evaluations"]["test.yields"]["status"] == "valid"
+
+
+def test_a_diagnostic_that_fails_leaves_its_trial_complete_and_is_counted(
+    tmp_path: Path, diagnosed_problem: Path
+) -> None:
+    log = Log()
+    report = study(diagnosed_problem, tmp_path / "s", trials=6, **log.kwargs())
+    assert (
+        "diagnostics (recorded, do not affect the result): check; mark an evaluator "
+        "required: true if its result must count"
+    ) in log.warnings
+    failing = 0
+    for trial, frozen in zip(report.trials, optuna_study(tmp_path / "s").trials, strict=True):
+        record = summary(tmp_path / "s", trial.number)
+        below = frozen.params[RADIUS] < 350
+        failing += below
+        assert (frozen.state, record["status"]) == (TrialState.COMPLETE, "valid")
+        assert frozen.user_attrs["k4opt.diagnostics"] == trial.diagnostics == int(below)
+        assert record["diagnostics"] == (
+            [{"task": "check", "status": "failed", "message": record["diagnostics"][0]["message"]}]
+            if below
+            else []
+        )
+        assert ("(1 diagnostic did not succeed)" in trial_line(trial)) is below
+    assert 0 < failing < 6  # both ways, to mean much

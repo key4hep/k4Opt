@@ -25,6 +25,12 @@ carries the metrics its roles name. An implementation is bound to its entries on
 probe instance that is used for nothing else. Every
 candidate gets a new instance for each evaluation, whose ``check()`` and ``evaluate()`` it calls,
 so no state of an instance reaches another sample, binding or candidate.
+
+Only the required tasks decide the candidate's status: the evaluations its objectives and
+constraints name, those of bindings marked ``required: true``, and what they read. Every other
+evaluation is a diagnostic: it runs, and its record is kept, but it neither fails the candidate
+nor makes it invalid, and a supplied stage only diagnostics read does not keep the record from
+representing the candidate.
 """
 
 from __future__ import annotations
@@ -91,6 +97,7 @@ from k4opt.problem._tasks import (
     candidate_message,
     candidate_status,
     changed_files,
+    diagnostics,
     evaluations,
     plan_tasks,
     read_stages,
@@ -700,7 +707,7 @@ def _bind_problem(
     planned = tuple(
         (task, of[id(entry)]) for task, entry in evaluations(spec.samples, spec.evaluators)
     )
-    plan = plan_tasks(spec.samples, spec.evaluators, provided)
+    plan = plan_tasks(spec.samples, spec.evaluators, provided, references=spec.references)
     return _Binding(
         contexts,
         evaluators,
@@ -1009,9 +1016,10 @@ class CandidateRecord:
     evaluation, with only its own work. ``elapsed_seconds`` is the wall time of the whole
     evaluation: the tasks and k4opt's checks. Its mappings are read-only copies.
 
-    ``represents_candidate`` is ``False`` when the caller supplied a stage that the parameters
-    change (``k4opt evaluate --input simulation=FILE``): that file was not made from the
-    candidate, so the record must never count as an evaluation of it, whatever its status.
+    ``represents_candidate`` is ``False`` when the caller supplied a required stage that the
+    parameters change (``k4opt evaluate --input gamma/simulation=FILE``): that file was not made
+    from the candidate, so the record must never count as an evaluation of it, whatever its
+    status.
     ``warnings`` are the preflight's: collections the simulation was not expected to write, and
     what is measured or simulated twice.
     """
@@ -1060,17 +1068,21 @@ class CandidateRecord:
 
     @property
     def status(self) -> Status:
-        """``failed`` if a task failed or was blocked (the evaluation is incomplete), otherwise
-        ``invalid`` if an evaluator found the result unusable, otherwise ``valid``.
-
-        A candidate is thus only ever ``invalid`` after a complete evaluation.
-        """
-        return candidate_status(result.status for result in self.results.values())
+        """From the required tasks alone: ``failed`` if one failed (the evaluation is
+        incomplete), otherwise ``invalid`` if an evaluator found the result unusable (and the
+        tasks that read it were not run), otherwise ``valid``. A diagnostic changes nothing."""
+        return candidate_status(self.plan, self.results)
 
     @property
     def message(self) -> str | None:
-        """Every task that failed or is invalid, with its message, then those they blocked."""
-        return candidate_message(self.results.values())
+        """Every required task that failed or is invalid, with its message, then the required
+        ones they blocked."""
+        return candidate_message(self.plan, self.results)
+
+    @property
+    def diagnostics(self) -> tuple[TaskResult, ...]:
+        """The result of each task that is not required and did not succeed, in plan order."""
+        return tuple(diagnostics(self.plan, self.results))
 
     def changed(self) -> list[str]:
         """The references of the files its tasks made that are no longer what its record says
@@ -1265,7 +1277,9 @@ def _execute_plan(
             record = EvaluationRecord(request, outcome, entry.name, entry.version, key, None)
             results[task.id] = replace(held, record=record)
     represents = not any(
-        changed_by_geometry(task.id.name) for task in stages if task.given == "supplied"
+        changed_by_geometry(task.id.name)
+        for task in stages
+        if task.given == "supplied" and task.required
     )
     return CandidateRecord(key, plan, results, _since(started), represents, binding.warnings)
 

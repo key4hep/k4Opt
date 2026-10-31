@@ -1071,6 +1071,28 @@ def test_an_objective_must_name_an_evaluator_of_the_problem(
     reject(doc, message)
 
 
+def test_an_evaluator_may_be_marked_required_and_keeps_it_through_the_normalized_form(
+    doc: dict[str, Any],
+) -> None:
+    assert parse_problem(doc).evaluators[0].required is False
+    assert "required" not in parse_problem(doc).to_dict()["evaluators"][0]
+    doc["evaluators"][0]["required"] = True
+    problem = parse_problem(doc)
+    assert problem.evaluators[0].required is True
+    assert problem.to_dict()["evaluators"][0]["required"] is True  # so in the study's identity
+    assert parse_problem(problem.to_dict()) == problem
+
+
+@pytest.mark.parametrize("value", [False, "yes", 1, None])
+def test_required_takes_true_alone(doc: dict[str, Any], value: object) -> None:
+    doc["evaluators"][0]["required"] = value
+    reject(
+        doc,
+        f"evaluators[0].required: must be true, got {value!r}; an evaluator that no objective, "
+        "constraint or required evaluator reads is a diagnostic without it",
+    )
+
+
 def test_an_objective_names_a_binding_not_an_implementation(doc: dict[str, Any]) -> None:
     doc["evaluators"][0]["as"] = "shower"
     doc["constraints"][0]["evaluator"] = "shower"

@@ -157,6 +157,8 @@ def _report(
         trial.set_user_attr("k4opt.fingerprint", geometry.get("fingerprint"))
     if isinstance(summary.get("message"), str):
         trial.set_user_attr("k4opt.message", summary["message"][:_MESSAGE])
+    # the diagnostics that did not succeed, which the status leaves out (checked by from_summary)
+    trial.set_user_attr("k4opt.diagnostics", len(summary["diagnostics"]))
     if recovered:
         trial.set_user_attr("k4opt.recovered", True)
     if values is None:
@@ -269,6 +271,7 @@ def _trial_report(run: _Study, frozen: FrozenTrial) -> TrialReport:
         record=(attrs.get("k4opt.record") or {}).get("id"),
         message=attrs.get("k4opt.message", attrs.get("k4opt.error")),
         recovered=bool(attrs.get("k4opt.recovered", False)),
+        diagnostics=attrs.get("k4opt.diagnostics", 0),
     )
 
 
@@ -319,6 +322,8 @@ def optimize(
     names = limit_names(spec)
     for warning in session.warnings:
         warn(warning)
+    if session.notice is not None:
+        warn(session.notice)
     if not resume:
         for warning in dirty_checkouts(identity["implementations"]):
             warn(warning)

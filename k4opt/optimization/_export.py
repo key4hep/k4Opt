@@ -93,6 +93,7 @@ def _columns(results: StudyResults, stages: list[str]) -> list[str]:
         "record_sha256",
         "record_path",
         "message",
+        "diagnostics",
     ]
     assert len(set(header)) == len(header)  # each column names one thing
     return header
@@ -147,6 +148,7 @@ def to_csv(results: StudyResults) -> str:
         row += [trial.stage_seconds.get(stage) for stage in stages]
         path = None if trial.record is None else f"{trial_directory(trial.number)}/{SUMMARY_NAME}"
         row += [trial.record, trial.sha256, path, trial.message]
+        row.append(None if trial.record is None else len(trial.diagnostics))
         writer.writerow([_cell(value) for value in row])
     return buffer.getvalue()
 
