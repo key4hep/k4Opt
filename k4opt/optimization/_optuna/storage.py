@@ -106,8 +106,8 @@ _OPTUNA_TABLES = ("studies", "trials", "version_info", "alembic_version")
 def _read_only(url: str) -> dict[str, Any]:
     """The engine options that open the database ``url`` names so that it refuses every write.
 
-    SQLite is opened with ``mode=ro``, which also refuses a file that does not exist instead of
-    creating it; PostgreSQL over libpq (``psycopg2``, ``psycopg``) with
+    SQLite is opened in its read-only mode, which also refuses a file that does not exist instead
+    of creating it; PostgreSQL over libpq (``psycopg2``, ``psycopg``) with
     ``default_transaction_read_only``, added to the URL's own ``options``. Any other database is
     refused: nothing would keep it from being written.
     """
@@ -132,7 +132,7 @@ def _read_only(url: str) -> dict[str, Any]:
             raise OptimizationError(
                 f"--storage {redacted(url)}: {path} does not exist, so it holds no study"
             )
-        uri = f"file:{urllib.parse.quote(str(path))}?mode=ro"
+        uri = f"file:{urllib.parse.quote(str(path))}?mode=ro"  # codespell:ignore ro
         return {"creator": lambda: sqlite3.connect(uri, uri=True, check_same_thread=False)}
     if backend == "postgresql" and driver in ("psycopg2", "psycopg"):
         given = parsed.query.get("options", ())
