@@ -20,6 +20,7 @@ from k4opt.cli import main
 from k4opt.ddsim import run as ddsim_run
 from k4opt.errors import K4OptError
 from k4opt.evaluation import (
+    Collection,
     EvaluationContractError,
     EvaluationRequest,
     Quantity,
@@ -52,6 +53,7 @@ from tests.support.evaluators import (
     calo_photon,
     cell_count,
     hit_energy,
+    implementations,
     parameter_echo,
 )
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
@@ -70,8 +72,9 @@ EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
 def run_candidate(
     problem: Path, assignments: list[str], output: Path, **changes: Any
 ) -> RunOutcome:
-    """``run_candidate`` with the test evaluator unless the test passes others."""
-    changes.setdefault("evaluators", [cell_count()])
+    """``run_candidate`` with the test evaluator unless the test passes ``evaluators`` of its own:
+    classes, or instances to watch."""
+    changes["implementations"] = implementations(*changes.pop("evaluators", [cell_count()]))
     return _run_candidate(problem, assignments, output, **changes)
 
 
@@ -591,7 +594,7 @@ def test_text_values_are_read_by_the_parameter_kind(
 
 def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> None:
     problem = parse_problem(yaml.safe_load((EXAMPLES / "cld-ecal-granularity.yaml").read_text()))
-    evaluator = calo_photon()
+    evaluator = calo_photon()()
     (entry,) = problem.evaluators
     assert (entry.name, entry.version, entry.stage) == (
         evaluator.name,
@@ -840,7 +843,7 @@ class Spy:
     """The test evaluator, recording the requests of check() and evaluate()."""
 
     def __init__(self) -> None:
-        self.inner: Any = cell_count()
+        self.inner: Any = cell_count()()
         self.name, self.version = self.inner.name, self.inner.version
         self.stage, self.metrics = self.inner.stage, self.inner.metrics
         self.collections = self.inner.collections
@@ -1202,7 +1205,7 @@ def test_a_setting_with_a_unit_is_recorded_as_written_and_as_received(
     doc = yaml.safe_load(problem_file.read_text())
     doc["evaluators"][0]["settings"] = {"threshold": {"value": 70, "unit": "keV"}}
     problem_file.write_text(yaml.safe_dump(doc))
-    gated = type("Gated", (type(cell_count()),), {"settings": {"threshold": Quantity("GeV")}})()
+    gated = type("Gated", (cell_count(),), {"settings": {"threshold": Quantity("GeV")}})
     outcome = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[gated])
     on_disk = json.loads(outcome.summary_path.read_text())
     (evaluator,) = on_disk["evaluators"]
@@ -1224,7 +1227,7 @@ def test_a_session_checks_and_measures_each_candidate_with_a_request_of_its_own(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
 ) -> None:
     spy = Spy()
-    session = EvaluationSession.open(problem_file, [spy])
+    session = EvaluationSession.open(problem_file, implementations(spy))
     session.check({RADIUS: 300.0})  # checks, and creates and runs nothing
     first = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     second = session.evaluate({RADIUS: 500.0}, tmp_path / "b")
@@ -1251,11 +1254,130 @@ def test_a_check_that_refuses_one_candidate_refuses_only_that_one(
             if request.candidate[RADIUS] == 500.0:
                 raise EvaluationContractError("this evaluator cannot measure a radius of 500 mm")
 
-    session = EvaluationSession.open(problem_file, [Picky()])
+    session = EvaluationSession.open(problem_file, [Picky])
     with pytest.raises(EvaluationContractError, match="500 mm"):
         session.evaluate({RADIUS: 500.0}, tmp_path / "a")
     assert not (tmp_path / "a").exists() and fake.calls == [] and "materialize" not in guard
     assert session.evaluate({RADIUS: 450.0}, tmp_path / "b").candidate.status == "valid"
+
+
+# --- an evaluator class, and a new instance of it for every candidate ----------------------
+
+
+def test_every_candidate_gets_new_instances_of_its_evaluators(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    created: list[Spy] = []
+
+    class Counted(Spy):
+        def __init__(self) -> None:
+            super().__init__()
+            created.append(self)
+
+    session = EvaluationSession.open(problem_file, [Counted])
+    session.check({RADIUS: 300.0})
+    session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    # one instance binds the class when the session opens and is asked nothing; then each
+    # candidate has an instance of its own, so nothing one keeps reaches another candidate
+    probe, *instances = created
+    assert (probe.checked, probe.evaluated) == ([], [])
+    assert [(candidates(i.checked), candidates(i.evaluated)) for i in instances] == [
+        ([300.0], []),
+        ([450.0], [450.0]),
+        ([500.0], [500.0]),
+    ]
+
+
+def test_an_evaluator_that_cannot_be_created_stops_before_anything_is_created(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
+) -> None:
+    class Broken(Spy):
+        def __init__(self) -> None:
+            raise RuntimeError("no model file")
+
+    with pytest.raises(EvaluationContractError, match=r"Broken\(\) failed: RuntimeError: no model"):
+        EvaluationSession.open(problem_file, [Broken])
+    created: list[Spy] = []
+
+    class Once(Spy):  # a constructor that fails later, for a candidate
+        def __init__(self) -> None:
+            if created:
+                raise RuntimeError("one instance per process")
+            super().__init__()
+            created.append(self)
+
+    session = EvaluationSession.open(problem_file, [Once])
+    with pytest.raises(EvaluationContractError, match="one instance per process"):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert not (tmp_path / "a").exists() and fake.calls == [] and "materialize" not in guard
+
+
+@pytest.mark.parametrize(
+    ("field", "later", "message"),
+    [
+        ("name", "test.other", "name 'test.other', not 'test.cell_count'"),
+        ("version", "2", "version '2', not '1'"),
+        ("metrics", {"other": "1"}, "metrics .*'other'"),
+        # the defaults and collections the request is made with: another trial would be
+        # measured otherwise under the same problem and study
+        ("settings", {"threshold": Quantity("GeV", default=1.0)}, "settings .*'threshold'"),
+        ("collections", {"hits": Collection("SimTrackerHit")}, "collections .*SimTrackerHit"),
+    ],
+)
+def test_a_new_instance_must_declare_what_the_first_did(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    guard: list[str],
+    field: str,
+    later: Any,
+    message: str,
+) -> None:
+    created: list[Spy] = []
+
+    class Drifting(Spy):
+        def __init__(self) -> None:
+            super().__init__()
+            if created:  # the record names what the first instance declared
+                setattr(self, field, later)
+            created.append(self)
+
+    session = EvaluationSession.open(problem_file, [Drifting])
+    with pytest.raises(
+        EvaluationContractError, match=rf"a new instance of .*Drifting has {message}"
+    ):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert not (tmp_path / "a").exists() and fake.calls == [] and "materialize" not in guard
+
+
+def test_only_an_evaluator_class_is_accepted(problem_file: Path) -> None:
+    def build() -> Any:  # could set up the instance in ways the class's source does not say
+        return cell_count()()
+
+    for given, kind in ((cell_count()(), "CellCount"), (build, "function")):
+        with pytest.raises(
+            EvaluationContractError, match=f"got a {kind} object, not an evaluator class"
+        ):
+            EvaluationSession.open(problem_file, [given])
+
+
+def test_a_nested_default_an_evaluator_changes_stops_the_next_candidate(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
+) -> None:
+    class Mutating(Spy):
+        settings = {"cuts": {"min": 1}}  # a default: the problem sets no settings
+
+        def evaluate(self, request: Any) -> Any:
+            assert request.settings == {"cuts": {"min": 1}}
+            self.settings["cuts"]["min"] = 2  # the class's own dict, shared by every instance
+            return super().evaluate(request)
+
+    session = EvaluationSession.open(problem_file, [Mutating])
+    assert session.evaluate({RADIUS: 450.0}, tmp_path / "a").candidate.status == "valid"
+    with pytest.raises(EvaluationContractError, match=r"settings \{'cuts': \{'min': 2\}\}"):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and len(fake.calls) == 1
 
 
 def test_a_session_keeps_the_problem_it_loaded(

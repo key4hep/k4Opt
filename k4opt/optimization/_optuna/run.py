@@ -315,7 +315,7 @@ def _study_report(run: _Study) -> StudyReport:
 
 def optimize(
     problem: str | os.PathLike[str],
-    evaluators: Sequence[EvaluatorProtocol],
+    implementations: Sequence[type[EvaluatorProtocol]],
     output: str | os.PathLike[str],
     *,
     trials: int,
@@ -337,7 +337,7 @@ def optimize(
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
     # everything that can be checked before a file is created
-    session = EvaluationSession.open(problem, evaluators, timeout=timeout)
+    session = EvaluationSession.open(problem, implementations, timeout=timeout)
     spec = session.spec
     space = search_space(spec)  # the evaluators' settings were checked when the session opened
     identity: dict[str, Any] = session.identity()

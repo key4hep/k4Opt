@@ -1,14 +1,17 @@
 """Internal bridge: one candidate of a problem, measured by each of its evaluators.
 
 Not a public workflow. It validates a candidate against the declared parameter domains, binds
-the given evaluators to the problem's ``evaluators`` and checks, before anything runs, their
-identity, the stage each reads, their settings, the pipeline stages and which evaluator measures
-each objective and constraint metric. It then makes every stage the evaluators read available,
-running each once (:mod:`k4opt.problem._stages`), calls each evaluator once with the files of the
-stages it reads, and checks that each ``valid`` result carries the metrics its evaluator owns.
-It neither locates evaluators nor materializes geometry.
+the given evaluator implementations to the problem's ``evaluators`` and checks, before anything
+runs, their identity, the stage each reads, their settings, the pipeline stages and which
+evaluator measures each objective and constraint metric. It then makes every stage the
+evaluators read available, running each once (:mod:`k4opt.problem._stages`), calls each
+evaluator once with the files of the stages it reads, and checks that each ``valid`` result
+carries the metrics its evaluator owns. It neither locates evaluators nor materializes geometry.
 
-Each entry of ``evaluators`` becomes one evaluator instance, identified by its ``name`` today;
+An implementation, an evaluator class, is bound to its entry of ``evaluators`` once, through a
+probe instance that is used for nothing else. Every
+candidate gets a new instance of each, whose ``check()`` and ``evaluate()`` it calls, so no
+state of an instance reaches another candidate. An entry is identified by its ``name`` today;
 records, run directories and metric owners use that identity.
 """
 
@@ -18,9 +21,11 @@ import difflib
 import math
 import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
+from typing import NamedTuple
 
 from k4opt.ddsim import output_collections
 from k4opt.evaluation import (
@@ -170,19 +175,109 @@ def _stage(evaluator: EvaluatorProtocol) -> str | None:
     return stage
 
 
-def _bind(
-    spec: ProblemSpec, evaluators: Sequence[EvaluatorProtocol]
-) -> list[tuple[EvaluatorSpec, EvaluatorProtocol]]:
-    """Pair every evaluator the problem declares with the one given for it, in problem order.
+def _create(implementation: type[EvaluatorProtocol]) -> EvaluatorProtocol:
+    """A new instance of the class ``implementation``, which must have ``name``, ``version`` and
+    ``evaluate``; :class:`EvaluationContractError` if it is no class, cannot be created or lacks
+    one."""
+    if not isinstance(implementation, type):
+        # a function that builds an instance could configure it in ways the class's source,
+        # which the records identify as the code that ran, does not say
+        raise EvaluationContractError(
+            f"got a {type(implementation).__name__} object, not an evaluator class: give the "
+            "class, whose source is recorded and of which k4opt creates an instance per candidate"
+        )
+    label = implementation.__qualname__
+    try:
+        evaluator = implementation()
+    except Exception as exc:
+        raise EvaluationContractError(
+            f"creating {label}() failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    missing = [
+        member for member in ("name", "version", "evaluate") if not hasattr(evaluator, member)
+    ]
+    if missing or not callable(evaluator.evaluate):
+        raise EvaluationContractError(
+            f"{label} is not an evaluator: needs name, version and an evaluate() method"
+            + (f" (missing {', '.join(missing)})" if missing else "")
+        )
+    return evaluator
 
-    Evaluators are matched by ``name`` and must have the declared ``version`` and read the
-    declared ``stage``; one that is missing, not declared, given twice or reads another stage is
-    an :class:`EvaluationContractError`.
+
+class _Declaration(NamedTuple):
+    """What every instance of an implementation must say of itself as its probe did: the session
+    records the probe's class as the code that runs, the stage and metrics decided what each
+    evaluator reads and measures, and the settings and collections (their defaults included)
+    make the request it gets, which must not change from one candidate to the next."""
+
+    cls: type
+    name: str
+    version: str
+    stage: str | None
+    settings: Mapping[str, object]
+    collections: Mapping[str, object]
+    metrics: Mapping[MetricKey, str] | None
+
+
+def _declaration(evaluator: EvaluatorProtocol) -> _Declaration:
+    return _Declaration(
+        type(evaluator),
+        evaluator.name,
+        evaluator.version,
+        _stage(evaluator),
+        # a copy all through: an instance that changes a nested default changes its class's, and
+        # the next instance would declare the changed one unnoticed
+        deepcopy(dict(getattr(evaluator, "settings", None) or {})),
+        declared_collections(evaluator),
+        metric_units(evaluator),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Bound:
+    """An evaluator of the problem: its entry, the implementation given for it and what the probe
+    instance that bound them declared."""
+
+    entry: EvaluatorSpec
+    implementation: type[EvaluatorProtocol]
+    declaration: _Declaration
+
+
+def _instance(bound: _Bound) -> EvaluatorProtocol:
+    """A new instance of a bound implementation; :class:`EvaluationContractError` unless it
+    declares what the probe declared."""
+    evaluator = _create(bound.implementation)
+    labels = ("class", "name", "version", "stage", "settings", "collections", "metrics")
+    changed = [
+        f"{label} {new!r}, not {old!r}"
+        for label, new, old in zip(labels, _declaration(evaluator), bound.declaration, strict=True)
+        if new != old
+    ]
+    if changed:
+        raise EvaluationContractError(
+            f"evaluator {bound.entry.name!r}: a new instance of "
+            f"{bound.implementation.__qualname__} has {'; '.join(changed)}; every instance must "
+            "declare what the first did"
+        )
+    return evaluator
+
+
+def _bind(
+    spec: ProblemSpec, implementations: Sequence[type[EvaluatorProtocol]]
+) -> list[tuple[EvaluatorSpec, type[EvaluatorProtocol], EvaluatorProtocol]]:
+    """Pair every evaluator the problem declares with the implementation given for it, in problem
+    order, each with the probe instance that decided it.
+
+    A probe of each implementation is matched by its ``name`` and must have the declared
+    ``version`` and read the declared ``stage``; an evaluator that is missing, not declared,
+    given twice or reads another stage is an :class:`EvaluationContractError`, and so is an
+    implementation that cannot be created.
     """
     declared = {entry.name: entry for entry in spec.evaluators}
-    given: dict[str, EvaluatorProtocol] = {}
-    for evaluator in evaluators:
-        name, version = evaluator.name, evaluator.version  # read once: the record reuses them
+    given: dict[str, tuple[type[EvaluatorProtocol], EvaluatorProtocol]] = {}
+    for implementation in implementations:
+        evaluator = _create(implementation)
+        name, version = evaluator.name, evaluator.version
         if name in given:
             raise EvaluationContractError(f"evaluator {name!r} is given twice")
         entry = declared.get(name)
@@ -206,7 +301,7 @@ def _bind(
             raise EvaluationContractError(
                 f"evaluator {name!r} does not read the stage the problem says: {fix}"
             )
-        given[name] = evaluator
+        given[name] = (implementation, evaluator)
     missing = [
         f"{entry.name!r} version {entry.version!r}"
         for entry in spec.evaluators
@@ -214,7 +309,7 @@ def _bind(
     ]
     if missing:
         raise EvaluationContractError(f"no evaluator given for {', '.join(missing)}")
-    return [(entry, given[entry.name]) for entry in spec.evaluators]
+    return [(entry, *given[entry.name]) for entry in spec.evaluators]
 
 
 def _show(metrics: Collection[MetricKey]) -> str:
@@ -375,11 +470,11 @@ def _collection_error(
 
 @dataclass(frozen=True, slots=True)
 class _Binding:
-    """What holds for every candidate: the evaluators bound to the problem, the stages they read
-    and who measures each metric."""
+    """What holds for every candidate: the implementations bound to the problem, the stages they
+    read and who measures each metric."""
 
     context: StageContext
-    evaluators: tuple[tuple[EvaluatorSpec, EvaluatorProtocol], ...]  # problem order
+    evaluators: tuple[_Bound, ...]  # problem order
     targets: tuple[str, ...]  # the pipeline stages the evaluators read
     owners: Mapping[MetricKey, str]  # objective or constraint metric -> evaluator
     declared: Mapping[MetricKey, str]  # any declared metric -> evaluator
@@ -388,7 +483,8 @@ class _Binding:
 
 @dataclass(frozen=True, slots=True)
 class _Plan:
-    """What the preflight established before anything runs."""
+    """What the preflight established before anything runs, with the candidate's own evaluator
+    instances."""
 
     context: StageContext
     evaluators: tuple[tuple[EvaluatorSpec, EvaluatorProtocol], ...]  # problem order
@@ -401,21 +497,23 @@ class _Plan:
 
 def _bind_problem(
     spec: ProblemSpec,
-    evaluators: Sequence[EvaluatorProtocol],
+    implementations: Sequence[type[EvaluatorProtocol]],
     provided: Mapping[str, Path] | None = None,
 ) -> _Binding:
     """Check what does not depend on a candidate, before a file is created or a stage runs.
 
-    Binds ``evaluators`` to the problem, checks the stages they read (those in ``provided``, the
-    files the caller supplies by stage, are not run), each evaluator's settings and collections
-    against what it declares, and decides which evaluator measures each objective and
-    constraint metric. An evaluator that declares collections of a stage without an EDM4hep file
-    (the gun's, or a HepMC file) is refused. Raises :class:`EvaluationContractError`.
-    Collections the simulation is not expected to write are only warnings.
+    Binds ``implementations`` to the problem through a probe instance of each, which is then
+    dropped: checks the stages they read (those in ``provided``, the files the caller supplies
+    by stage, are not run), each evaluator's settings and collections against what it declares,
+    and decides which evaluator measures each objective and constraint metric. An evaluator that
+    declares collections of a stage without an EDM4hep file (the gun's, or a HepMC file) is
+    refused. Raises :class:`EvaluationContractError`. Collections the simulation is not expected
+    to write are only warnings.
     """
     provided = provided or {}
     context = StageContext.of(spec)
-    bound = _bind(spec, evaluators)
+    probed = _bind(spec, implementations)
+    bound = [(entry, probe) for entry, _, probe in probed]
     targets = tuple(stage for _, ev in bound if (stage := _stage(ev)) is not None)
     check_stages(context, *targets, provided=provided)
     for entry, evaluator in bound:
@@ -430,25 +528,28 @@ def _bind_problem(
         collection_names(evaluator, entry.collections)
     owners, declared = _owners(spec, bound)
     warnings = _unexpected_collections(spec, context, bound, provided)
-    return _Binding(context, tuple(bound), targets, owners, declared, warnings)
+    evaluators = tuple(
+        _Bound(entry, implementation, _declaration(probe))
+        for entry, implementation, probe in probed
+    )
+    return _Binding(context, evaluators, targets, owners, declared, warnings)
 
 
-def _preflight(
-    spec: ProblemSpec,
-    values: Mapping[str, Scalar],
-    evaluators: Sequence[EvaluatorProtocol],
-    provided: Mapping[str, Path] | None = None,
-) -> _Plan:
-    """Check everything that can be checked before a file is created or a stage runs.
+def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Plan:
+    """Prepare the evaluators of one candidate before a file is created or a stage runs.
 
-    :func:`_bind_problem`, then each evaluator's ``check()`` with the request it would get for
-    this candidate (its settings and collections resolved). Raises
-    :class:`EvaluationContractError` (or what a ``check()`` raises). The plan holds requests
-    made for these ``values``, so it serves one candidate only.
+    Creates a new instance of each bound implementation, which must declare what its probe
+    declared, checks its settings and collections, then calls each one's ``check()`` with the
+    request it would get for this candidate (its settings and collections resolved). Raises
+    :class:`EvaluationContractError` (or what a ``check()`` raises). The plan holds these
+    instances and requests made for these ``values``, so it serves one candidate only.
     """
-    binding = _bind_problem(spec, evaluators, provided)
+    evaluators = tuple((bound.entry, _instance(bound)) for bound in binding.evaluators)
+    for entry, evaluator in evaluators:  # before any check(), which may depend on the candidate
+        check_settings(evaluator, with_defaults(evaluator, entry.settings))
+        collection_names(evaluator, entry.collections)
     requests = {}
-    for entry, evaluator in binding.evaluators:
+    for entry, evaluator in evaluators:
         request = _request(binding.context, values, entry, evaluator)
         requests[entry.name] = request
         check = getattr(evaluator, "check", None)
@@ -456,7 +557,7 @@ def _preflight(
             check(request)
     return _Plan(
         binding.context,
-        binding.evaluators,
+        evaluators,
         binding.targets,
         binding.owners,
         binding.declared,
@@ -671,31 +772,32 @@ class CandidateRecord:
 def _evaluate_candidate(
     spec: ProblemSpec,
     candidate: Mapping[str, Scalar],
-    evaluators: Sequence[EvaluatorProtocol],
+    implementations: Sequence[type[EvaluatorProtocol]],
     *,
     inputs: Mapping[str, Path] | None = None,
     workdir: Path | None = None,
 ) -> CandidateRecord:
-    """Evaluate one complete ``candidate`` of ``spec`` with each of ``evaluators``, once.
+    """Evaluate one complete ``candidate`` of ``spec`` with an instance of each implementation.
 
-    The candidate maps each canonical parameter reference to a scalar; ``evaluators`` implement
-    the problem's ``evaluators``, in any order. Before any stage runs, raises
-    :class:`CandidateError` for a candidate outside the declared domains and
-    :class:`EvaluationContractError` for evaluators that do not match the problem (missing,
-    undeclared, given twice, another version), settings an evaluator's ``check()`` rejects, a
-    stage that cannot run, or an objective or constraint metric that no evaluator, or two,
-    declare. The stages the evaluators read and ``inputs`` does not supply then run once each
-    (on ``inputs["geometry"]``, in ``workdir``); any other entry of ``inputs`` supplies the file
-    of the stage it is named after. An evaluator whose stage failed, or whose stage
-    output lacks the requested events, gets a ``failed`` result without being called; the others
-    are still called. An evaluator that raises :class:`EvaluationFailed` or
-    :class:`EvaluationInvalid` gets that result; any other exception propagates, and so does an
-    :class:`EvaluationContractError` for a result that breaks the contract.
+    The candidate maps each canonical parameter reference to a scalar; ``implementations`` (an
+    evaluator class, say) implement the problem's ``evaluators``, in any order. Before any stage
+    runs, raises :class:`CandidateError` for a candidate outside the declared domains and
+    :class:`EvaluationContractError` for implementations that cannot be created or do not match
+    the problem (missing, undeclared, given twice, another version), settings an evaluator's
+    ``check()`` rejects, a stage that cannot run, or an objective or constraint metric that no
+    evaluator, or two, declare. The stages the evaluators read and ``inputs`` does not supply
+    then run once each (on ``inputs["geometry"]``, in ``workdir``); any other entry of
+    ``inputs`` supplies the file of the stage it is named after. An evaluator whose stage
+    failed, or whose stage output lacks the requested events, gets a ``failed`` result without
+    being called; the others are still called. An evaluator that raises
+    :class:`EvaluationFailed` or :class:`EvaluationInvalid` gets that result; any other
+    exception propagates, and so does an :class:`EvaluationContractError` for a result that
+    breaks the contract.
     """
     started = time.perf_counter()
     values, key = _validate_candidate(spec, candidate)
     inputs = dict(inputs or {})
-    plan = _preflight(spec, values, evaluators, inputs)
+    plan = _preflight(_bind_problem(spec, implementations, inputs), values)
     checked = time.perf_counter() - started
     return _execute_plan(spec, plan, key, inputs=inputs, workdir=workdir, checked_seconds=checked)
 

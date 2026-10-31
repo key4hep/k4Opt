@@ -23,7 +23,7 @@ from k4opt.evaluation import (
 from k4opt.problem import ProblemSpec, _evaluate, _stages, parse_problem
 from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate
 from tests.support import simulation
-from tests.support.evaluators import cell_count, hit_energy, parameter_echo
+from tests.support.evaluators import cell_count, hit_energy, implementations, parameter_echo
 from tests.support.simulation import COLLECTION, Event, Hits, Particle, Particles, events_with
 
 CELL = "constants.ECal_cell_size"
@@ -101,10 +101,11 @@ def log(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 class Spy:
-    """Passes everything on to ``inner`` and logs each ``check`` and ``evaluate``."""
+    """Passes everything on to an instance of the class ``inner`` and logs each ``check`` and
+    ``evaluate``."""
 
-    def __init__(self, inner: Any, log: list[str]) -> None:
-        self.inner, self.log = inner, log
+    def __init__(self, inner: type[Any], log: list[str]) -> None:
+        self.inner, self.log = inner(), log
         self.name, self.version = inner.name, inner.version
         self.stage, self.metrics = inner.stage, inner.metrics
         self.collections = inner.collections
@@ -122,7 +123,11 @@ class Spy:
 
 def evaluate(spec: ProblemSpec, evaluators: list[Any], tmp_path: Path, geometry: Path) -> Any:
     return _evaluate_candidate(
-        spec, {CELL: 6}, evaluators, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        spec,
+        {CELL: 6},
+        implementations(*evaluators),
+        inputs={"geometry": geometry},
+        workdir=tmp_path / "run",
     )
 
 
@@ -265,7 +270,7 @@ def test_supplied_stage_files_only_reach_the_evaluators_that_read_them(
     result = _evaluate_candidate(
         in_directory(spec, tmp_path),
         {CELL: 6},
-        [cells, size, echo],
+        implementations(cells, size, echo),
         inputs={"geometry": geometry, "simulation": events_file},
         workdir=tmp_path / "run",
     )
@@ -351,7 +356,7 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
     candidate = _evaluate_candidate(
         in_directory(spec, tmp_path),
         {CELL: 6},
-        [cells, FileSize()],
+        implementations(cells, FileSize()),
         inputs={"simulation": events_file},
     )
     assert "ddsim" not in log
@@ -405,7 +410,9 @@ def test_the_candidate_status_follows_its_evaluators(
     doc: dict[str, Any], first: str, second: str, status: str, message: str | None
 ) -> None:
     spec = problem(doc, "a", "b", objectives=(("analysis", "a.value"), ("analysis", "b.value")))
-    candidate = _evaluate_candidate(spec, {CELL: 6}, [toy("a", first), toy("b", second)])
+    candidate = _evaluate_candidate(
+        spec, {CELL: 6}, implementations(toy("a", first), toy("b", second))
+    )
     assert candidate.status == status
     assert candidate.message == message
     for name, own in (("a", first), ("b", second)):
@@ -518,7 +525,7 @@ def test_another_version_is_refused(doc: dict[str, Any], tmp_path: Path, log: li
     with pytest.raises(
         EvaluationContractError, match=r"'test\.hit_energy' version '2', got version '1'"
     ):
-        _evaluate_candidate(spec, {CELL: 6}, [cell_count(), hit_energy()])
+        _evaluate_candidate(spec, {CELL: 6}, implementations(cell_count(), hit_energy()))
     assert log == []
 
 
@@ -611,7 +618,10 @@ def test_each_evaluator_writes_and_names_its_files_on_its_own(
 ) -> None:
     spec = problem(doc, "a", "b", "test.parameter_echo", objectives=(ECHO,))
     candidate = _evaluate_candidate(
-        spec, {CELL: 6}, [plotter("a"), plotter("b"), parameter_echo()], workdir=tmp_path
+        spec,
+        {CELL: 6},
+        implementations(plotter("a"), plotter("b"), parameter_echo()),
+        workdir=tmp_path,
     )
     plots = {r.evaluator_name: r.result.artifacts.get("plot") for r in candidate.records}
     assert plots["a"] == tmp_path / "evaluators" / "a" / "plot.txt"
@@ -814,7 +824,7 @@ def test_collections_of_a_file_podio_cannot_read_are_refused_before_anything_run
         _evaluate_candidate(
             in_directory(spec, tmp_path),
             {CELL: 6},
-            [cell_count(), Truth()],
+            implementations(cell_count(), Truth()),
             inputs=inputs,
             workdir=tmp_path / "run",
         )

@@ -43,6 +43,7 @@ from k4opt.problem._stages import (
     run_stages,
 )
 from tests.support import simulation
+from tests.support.evaluators import implementations
 from tests.support.simulation import events_with
 
 CELL = "constants.ECal_cell_size"
@@ -89,8 +90,9 @@ def without_stages(doc: dict[str, Any], *, reads: str | None = None) -> ProblemS
 def evaluate(
     spec: ProblemSpec, candidate: dict[str, Any], evaluator: Any, **kwargs: Any
 ) -> CandidateRecord:
-    """The bridge with ``evaluator`` as the problem's only evaluator."""
-    return _evaluate_candidate(spec, candidate, [evaluator], **kwargs)
+    """The bridge with ``evaluator``, a class or a watched instance, as the problem's only
+    evaluator."""
+    return _evaluate_candidate(spec, candidate, implementations(evaluator), **kwargs)
 
 
 def evaluate_one(

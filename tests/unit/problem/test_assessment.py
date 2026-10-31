@@ -19,6 +19,7 @@ from k4opt.evaluation import EvaluationRequest, EvaluationResult, Measurement
 from k4opt.problem import Assessment, EvaluationSession, ProblemSpec, RecordError, parse_problem
 from k4opt.problem._assess import assess
 from k4opt.problem._evaluate import _evaluate_candidate
+from tests.support.evaluators import implementations
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
 CELL = "constants.ECal_cell_size"
@@ -83,7 +84,7 @@ def judged(
     """The assessment of a candidate whose only evaluator returned these measurements."""
     message = None if status == "valid" else f"the evaluator says {status}"
     result = EvaluationResult(status, measurements, message=message)  # type: ignore[arg-type]
-    record = _evaluate_candidate(spec, {CELL: 5.0}, [Fixed(result)])
+    record = _evaluate_candidate(spec, {CELL: 5.0}, implementations(Fixed(result)))
     if not represents:  # as for a stage supplied with --input
         record = dataclasses.replace(record, represents_candidate=False)
     return assess(spec, record)
@@ -201,7 +202,7 @@ def test_a_valid_owner_does_not_make_an_invalid_candidate_assessable() -> None:
     spec = problem({"metric": "a", "max": 1.0}, evaluators=("test.owner", "test.check"))
     owner = Owner(EvaluationResult.valid([a(0.5)]))
     check = Check(EvaluationResult.invalid("the candidate fails a validity check"))
-    record = _evaluate_candidate(spec, {CELL: 5.0}, [owner, check])
+    record = _evaluate_candidate(spec, {CELL: 5.0}, implementations(owner, check))
     assert record.status == "invalid"
     assessment = assess(spec, record)
     assert (assessment.objectives, assessment.feasible) == (None, None)
@@ -280,7 +281,7 @@ def open_session(tmp_path: Path, *evaluators: Any) -> EvaluationSession:
     }
     path = tmp_path / "problem.yaml"
     path.write_text(yaml.safe_dump(data))
-    return EvaluationSession.open(path, list(evaluators))
+    return EvaluationSession.open(path, implementations(*evaluators))
 
 
 @pytest.fixture(autouse=True)

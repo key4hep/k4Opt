@@ -217,7 +217,7 @@ directory itself is fine.
 | --- | --- | --- |
 | problem | its definition, but not its `name` | the path of the file |
 | files the problem names | size and SHA-256 of each | their paths |
-| evaluators | name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units (an instance may declare others) | path, whether the bytes were `executed`, the git revision (a change warns) |
+| evaluators | name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
 | k4opt | the SHA-256 of its code | version, git commit |
@@ -456,7 +456,7 @@ from k4opt.optimization import optimize
 
 report = optimize(
     "examples/problem/cld-ecal-granularity.yaml",
-    [load_evaluator("examples/evaluators/calo_photon.py:CaloPhoton")],
+    [load_evaluator("examples/evaluators/calo_photon.py:CaloPhoton")],  # the class
     "runs/cld-ecal-study",
     trials=30,
     seed=42,  # or resume=True, storage="postgresql://..."

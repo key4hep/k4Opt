@@ -295,9 +295,10 @@ longer than the `timeout` of the session kills it and fails. Stages are internal
 ## Loading an evaluator
 
 `load_evaluator("path/to/file.py:Class")` (or `"package.module:Class"`) imports the file or
-module, creates the class without arguments and checks that it has `name`, `version` and
-`evaluate`; `EvaluatorLoadError` otherwise. This is what `k4opt evaluate --evaluator` uses. The
-file is executed as ordinary Python: name only evaluators you trust. Like `python file.py`, its
+module and returns the class, after checking that it is a class with an `evaluate` method;
+`EvaluatorLoadError` otherwise. It creates no instance: k4opt creates one for every candidate
+([Lifecycle](#lifecycle-a-class-and-an-instance-per-candidate)). This is what
+`k4opt evaluate --evaluator` uses. The file is executed as ordinary Python: name only evaluators you trust. Like `python file.py`, its
 directory is put on `sys.path` (and stays there), so an evaluator can import helper modules next
 to it, at the top of the file or inside a method. Python caches modules by name for the whole
 process, so two evaluator files that each import a helper called `metrics` share whichever was
@@ -307,20 +308,44 @@ helpers unique names or, better, install the study as a package and use
 registry; the `name` of each entry of `evaluators` stays a label that must equal the `name` of
 an evaluator that is loaded.
 
-`evaluator_source(evaluator)` reports the path, size and SHA-256 of the file that defines the
-evaluator's class, taken when `load_evaluator` imports it, and whether those are the bytes
-Python `executed`. For `FILE.py:Class` they are (`executed: true`): the bytes hashed are the
-bytes compiled. For `package.module:Class` the file is read right after the import
+`evaluator_source(cls)` reports the path, size and SHA-256 of the file that defines an
+evaluator class, taken when `load_evaluator` imports it, and whether those are the bytes Python
+`executed`. For `FILE.py:Class` they are (`executed: true`): the bytes hashed are the bytes
+compiled. For `package.module:Class` the file is read right after the import
 (`executed: false`); Python may have run a cached `.pyc` of it, which only an edit that keeps
-size and timestamp leaves stale. Cached instances keep that identity if the file is later
-edited or removed. A
-class whose module was imported before `load_evaluator`, or reloaded since
-(`importlib.reload`), carries only its path: hashing
-the current file would not establish which code Python executed. Only the defining file is
+size and timestamp leaves stale. The class keeps that identity if its file is later edited or
+removed. A class whose module was imported before `load_evaluator`, or reloaded since
+(`importlib.reload`), carries only its path: hashing the current file would not establish which
+code Python executed. `reference` is what loads the class again: `FILE.py:Class` with the
+file's absolute path, or `package.module:Class` as given; `null` for a class `load_evaluator`
+did not load. It is provenance only: a study compares the SHA-256, not where the file is. Only the defining file is
 identified, not imported helpers. To label those, `revision` holds the commit and dirty flag of
 the git checkout that tracks the file, taken at the same time: an edited helper module of that
 checkout shows as `dirty: true`. It is `null` for a file that no checkout tracks (outside one,
 or new or ignored in it), and helpers outside a checkout are not tracked at all.
+
+## Lifecycle: a class, and an instance per candidate
+
+k4opt is given evaluator classes, not instances: `EvaluationSession.open(problem, [CellCount])`,
+`optimize(problem, [CellCount], ...)` and `k4opt evaluate --evaluator FILE.py:CellCount` all
+take the class. A function that builds an instance, or an instance, is refused: it could set
+up the evaluator in ways its class's source, which the records identify as the code that ran,
+does not say. When a session opens, k4opt creates one instance of each to read what it
+declares and bind it to its entry of `evaluators`; that instance is asked nothing else. Every
+candidate then gets a new instance of each evaluator, before anything of the candidate is
+created: k4opt calls its `check()` and later its `evaluate()`, then drops it. Nothing an
+evaluator keeps on `self` reaches another candidate.
+
+Every instance must declare what the first did: the same class, `name`, `version`, `stage`,
+`settings`, `collections` and `metrics`. The records name the first one's class as the code that
+ran, its metrics decide who measures what, and its settings and collections, defaults included,
+make the request, which must not change from one candidate to the next. What the first declared
+is copied all through when the session opens, so an evaluator that changes a nested default of
+its class (`self.settings["cuts"]["min"] = ...`) is caught at the next candidate. An instance
+that declares otherwise, or a constructor that raises, is an `EvaluationContractError` before
+anything of the candidate is created. Setup that is expensive and the same for every candidate
+(a model file, a lookup table) belongs in a module-level cache of the evaluator's own
+(`functools.cache`), not in `__init__`, which runs for every candidate.
 
 ## Problem, evaluator, record
 
@@ -365,7 +390,7 @@ workdir=None)` connects a `ProblemSpec` to explicitly supplied evaluators and re
 [`EvaluationSession`](#evaluating-candidates-evaluationsession), which takes the problem file.
 
 ```python
-candidate = _evaluate_candidate(spec, {"constants.ECal_cell_size": 6.0}, [CellCount()])
+candidate = _evaluate_candidate(spec, {"constants.ECal_cell_size": 6.0}, [CellCount])
 ```
 
 In order, it:
@@ -375,12 +400,14 @@ In order, it:
    within inclusive bounds; integer a real `int` (no `bool`, no rounding) within bounds;
    categorical one of the choices by kind (strings need a string, booleans a boolean, numbers
    compare numerically). Units are never interpreted or converted;
-2. matches the evaluators to `evaluators` by `name`, in any order: each declared evaluator must
-   be given exactly once, with the declared `version` and reading the declared `stage`, and no
-   other (`EvaluationContractError` otherwise). Each entry becomes one evaluator instance,
-   identified by its name; records, run directories and metric owners use that identity;
-3. before anything runs, checks the stages the evaluators read, resolves each evaluator's
-   settings and collections, calls its `check()` and decides which evaluator owns each
+2. matches the evaluator classes to `evaluators` by the `name` of an instance of each, in any
+   order: each declared evaluator must be given exactly once, with the declared `version` and
+   reading the declared `stage`, and no other (`EvaluationContractError` otherwise, and for a
+   class that cannot be created). Each entry is identified by its name; records, run
+   directories and metric owners use that identity;
+3. before anything runs, checks the stages the evaluators read, creates a new instance of each
+   evaluator for the candidate, resolves its settings and collections, calls its `check()` and
+   decides which evaluator owns each
    objective and constraint metric (see [problem](problem.md#evaluators);
    `EvaluationContractError` otherwise). A collection ddsim is not expected to write is a
    warning, kept with the candidate;
@@ -451,12 +478,13 @@ for size in (5.0, 7.0, 10.0):
 | Once, when the session opens | For every candidate, in `check()` and `evaluate()` |
 | --- | --- |
 | load the problem file (later edits to it do not reach the session) and discover the geometry | check the candidate against the parameter domains |
-| bind the evaluators, check the stages they read and their settings and collections, decide who measures each metric | build each evaluator's request for this candidate and call its `check()` |
+| bind the evaluator classes through one instance of each, check the stages they read and their settings and collections, decide who measures each metric | create a new instance of each evaluator, which must declare what the first did, build its request for this candidate and call its `check()` |
 | collect the warnings about collections ddsim is not expected to write (`session.warnings`) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened |
 | record the size and SHA-256 of every file the stages read (a stage `file`, a file a ddsim option names, a file supplied with `inputs`), what the geometry's external references read ([`external_files`](geometry.md#fingerprint)), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, check again what the previous row checks, assess, write the summary |
 
-No request outlives the candidate it was made for, so an evaluator's `check()` and `evaluate()`
-always see that candidate's values. `check(candidate)` creates and runs nothing: it raises for
+No request or evaluator instance outlives the candidate it was made for, so an evaluator's
+`check()` and `evaluate()` always see that candidate's values, and nothing an instance keeps
+reaches another candidate. `check(candidate)` creates and runs nothing: it raises for
 what `evaluate()` would refuse before creating anything. A file the stages read (named by the
 problem or supplied) that changes during a session (other bytes under the same path, or removed)
 stops the next candidate with a `RunError` before anything is created; `verify_inputs()` checks

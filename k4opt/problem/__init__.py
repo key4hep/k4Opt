@@ -7,10 +7,11 @@ geometry and every parameter target in the active k4geo tree (``$K4GEO``);
 ``parse_problem`` is the pure variant that needs no geometry. Evaluators and metrics are not
 checked. See ``docs/problem.md``.
 
-An :class:`EvaluationSession` evaluates candidates of a problem file with its evaluators, each
-into a run directory with a ``summary.json``, and judges each against the objectives and
-constraints (:class:`Assessment`). It knows no optimizer: whatever proposes candidates, a person
-or an optimization library, calls it the same way. See ``docs/evaluation.md``.
+An :class:`EvaluationSession` evaluates candidates of a problem file with its evaluators, given
+as classes of which every candidate gets new instances, each candidate into a run directory with
+a ``summary.json``, and judges each against the objectives and constraints
+(:class:`Assessment`). It knows no optimizer: whatever proposes candidates, a person or an
+optimization library, calls it the same way. See ``docs/evaluation.md``.
 
 Typical use::
 
@@ -20,7 +21,7 @@ Typical use::
     print(problem.parameters[0].bounds, problem.evaluators[0].name)
     data = problem.to_dict()  # plain JSON-compatible data
 
-    session = EvaluationSession.open("problem.yaml", [MyEvaluator()])
+    session = EvaluationSession.open("problem.yaml", [MyEvaluator])  # the class
     outcome = session.evaluate({"constants.ECal_cell_size": 7.0}, "runs/7mm")
     outcome.assessment.feasible  # True, False or None (not assessed)
 """
