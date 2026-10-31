@@ -57,6 +57,7 @@ from k4opt.evaluation import (
 )
 from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.problem._stages import (
+    STAGE_TYPES,
     StageContext,
     changed_by_geometry,
     check_run_inputs,
@@ -850,10 +851,21 @@ def _evaluate_candidate(
     supplied = {}
     for label, path in given.items():
         sample, _, stage = label.partition("/")
-        if sample not in spec.samples or not stage:
-            raise EvaluationContractError(f"input {label!r}: expected SAMPLE/STAGE")
+        if sample not in spec.samples or stage not in STAGE_TYPES:
+            raise EvaluationContractError(
+                f"input {label!r}: expected SAMPLE/STAGE, a sample of the problem and one of "
+                f"{', '.join(STAGE_TYPES)}"
+            )
         supplied[stage_task(stage, sample)] = path
-    prepared = _preflight(_bind_problem(spec, implementations, supplied), values)
+    binding = _bind_problem(spec, implementations, supplied)
+    planned = {task.id for task in binding.plan.of(Kind.STAGE)}
+    for task in supplied:  # a file no task reads would be dropped without a word
+        if task not in planned:
+            raise EvaluationContractError(
+                f"input {task.label!r}: no evaluator of the problem reads that stage of "
+                f"{task.sample}"
+            )
+    prepared = _preflight(binding, values)
     checked = time.perf_counter() - started
     return _execute_plan(
         spec,

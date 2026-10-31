@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import hashlib
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -683,6 +684,42 @@ def test_a_failed_stage_blocks_the_evaluator_which_never_runs(
     assert simulated.provenance["returncode"] == 3
     assert simulated.status == "failed" and "status 3" in (simulated.message or "")
     assert candidate.results[record_task(record)].blocked_by == (stage_task("simulation", "gamma"),)
+
+
+@pytest.mark.parametrize(
+    ("label", "message"),
+    [
+        # a misspelled stage would name a task the plan never makes: the file would be dropped
+        ("gamma/simulaton", "input 'gamma/simulaton': expected SAMPLE/STAGE"),
+        ("pion/simulation", "input 'pion/simulation': expected SAMPLE/STAGE"),
+        ("simulation", "input 'simulation': expected SAMPLE/STAGE"),
+    ],
+)
+def test_an_input_that_names_no_stage_of_a_sample_is_refused(
+    spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, label: str, message: str
+) -> None:
+    fake = simulation.install(monkeypatch)
+    events_file = tmp_path / "mine.root"
+    events_file.write_bytes(b"fake")
+    with pytest.raises(EvaluationContractError, match=re.escape(message)):
+        evaluate(spec, {CELL: 6}, Reader(), inputs={label: events_file}, workdir=tmp_path / "run")
+    assert fake.calls == [] and not (tmp_path / "run").exists()
+
+
+def test_an_input_of_a_stage_no_evaluator_reads_is_refused(
+    spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+    events_file = tmp_path / "mine.root"
+    events_file.write_bytes(b"fake")
+    # the simulation, supplied too, reads no generation: a generation file would go unread
+    inputs = {"gamma/simulation": events_file, "gamma/generation": events_file}
+    with pytest.raises(
+        EvaluationContractError,
+        match="input 'gamma/generation': no evaluator of the problem reads that stage of gamma",
+    ):
+        evaluate(spec, {CELL: 6}, Reader(), inputs=inputs, workdir=tmp_path / "run")
+    assert fake.calls == [] and not (tmp_path / "run").exists()
 
 
 def test_an_input_supplied_by_the_caller_skips_the_stage(
