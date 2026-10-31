@@ -27,11 +27,16 @@ type Scalar = bool | int | float | str
 
 
 class Status(StrEnum):
-    """How an evaluation ended; the values are the strings written to ``summary.json``."""
+    """How an evaluation ended; the values are the strings written to ``summary.json``.
+
+    ``blocked`` is the framework's alone: an evaluator that was not called because something it
+    reads did not succeed (its stage failed). An evaluator never returns it.
+    """
 
     VALID = "valid"
     INVALID = "invalid"
     FAILED = "failed"
+    BLOCKED = "blocked"
 
 
 def _name(value: object, what: str) -> str:
@@ -306,7 +311,8 @@ class EvaluationRecord:
     """One evaluator's attempt at one candidate, as observed by the framework that ran it.
 
     ``request`` is the object the evaluator received and ``result`` the one it returned, or the
-    ``failed`` result that stands in for it when a pipeline stage it reads could not be read. It
+    result that stands in for it when it was not called: ``failed`` when the file of its stage
+    lacks a collection it declares, ``blocked`` when a stage it reads could not be made. It
     holds only the evaluator's own work: the stages it read, which other evaluators may share,
     are recorded once by the caller, and ``request.inputs`` names their files.
     ``evaluator_name`` and ``evaluator_version`` are those of the evaluator object that ran (the

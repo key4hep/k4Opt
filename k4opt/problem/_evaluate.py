@@ -3,10 +3,12 @@
 Not a public workflow. It validates a candidate against the declared parameter domains, binds
 the given evaluator implementations to the problem's ``evaluators`` and checks, before anything
 runs, their identity, the stage each reads, their settings, the pipeline stages and which
-evaluator measures each objective and constraint metric. It then makes every stage the
-evaluators read available, running each once (:mod:`k4opt.problem._stages`), calls each
-evaluator once with the files of the stages it reads, and checks that each ``valid`` result
-carries the metrics its evaluator owns. It neither locates evaluators nor materializes geometry.
+evaluator measures each objective and constraint metric. It then runs the candidate's tasks
+(:mod:`k4opt.problem._tasks`): its geometry, every stage the evaluators read, each once
+(:mod:`k4opt.problem._stages`), and each evaluator once, with the outputs of the tasks it reads.
+A task whose needs did not all succeed is ``blocked`` and not run. Each ``valid``
+result must carry the metrics its evaluator owns. It neither locates evaluators nor
+materializes geometry: the caller's function does that, as the work of the geometry task.
 
 An implementation, an evaluator class, is bound to its entry of ``evaluators`` once, through a
 probe instance that is used for nothing else. Every
@@ -20,7 +22,7 @@ from __future__ import annotations
 import difflib
 import math
 import time
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -49,15 +51,28 @@ from k4opt.evaluation import (
     result_from,
     with_defaults,
 )
-from k4opt.frozen import FrozenMap
+from k4opt.frozen import FrozenMap, Json
 from k4opt.problem._stages import (
-    STAGE_TYPES,
     StageContext,
-    StageRecords,
     changed_by_geometry,
+    check_run_inputs,
     check_stages,
+    make_stage,
     no_edm4hep_file,
-    run_stages,
+)
+from k4opt.problem._tasks import (
+    DONE,
+    GEOMETRY,
+    Kind,
+    Plan,
+    Task,
+    TaskId,
+    TaskResult,
+    candidate_message,
+    candidate_status,
+    plan_tasks,
+    run_tasks,
+    stage_task,
 )
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
@@ -471,28 +486,25 @@ def _collection_error(
 @dataclass(frozen=True, slots=True)
 class _Binding:
     """What holds for every candidate: the implementations bound to the problem, the stages they
-    read and who measures each metric."""
+    read, who measures each metric and the tasks of a candidate."""
 
     context: StageContext
     evaluators: tuple[_Bound, ...]  # problem order
     targets: tuple[str, ...]  # the pipeline stages the evaluators read
     owners: Mapping[MetricKey, str]  # objective or constraint metric -> evaluator
     declared: Mapping[MetricKey, str]  # any declared metric -> evaluator
+    plan: Plan  # the tasks of every candidate, the stages ``provided`` given
     warnings: tuple[str, ...] = ()  # collections the simulation is not expected to write
 
 
 @dataclass(frozen=True, slots=True)
-class _Plan:
-    """What the preflight established before anything runs, with the candidate's own evaluator
-    instances."""
+class _Prepared:
+    """What the preflight of one candidate established before anything runs: its own evaluator
+    instances and the requests made for it."""
 
-    context: StageContext
+    binding: _Binding
     evaluators: tuple[tuple[EvaluatorSpec, EvaluatorProtocol], ...]  # problem order
-    targets: tuple[str, ...]  # the pipeline stages the evaluators read
-    owners: Mapping[MetricKey, str]  # objective or constraint metric -> evaluator
-    declared: Mapping[MetricKey, str]  # any declared metric -> evaluator
     requests: Mapping[str, EvaluationRequest]  # normalized and checked before execution
-    warnings: tuple[str, ...] = ()  # collections the simulation is not expected to write
 
 
 def _bind_problem(
@@ -532,16 +544,17 @@ def _bind_problem(
         _Bound(entry, implementation, _declaration(probe))
         for entry, implementation, probe in probed
     )
-    return _Binding(context, evaluators, targets, owners, declared, warnings)
+    plan = plan_tasks(spec.stages, [(e.name, e.stage) for e in spec.evaluators], provided)
+    return _Binding(context, evaluators, targets, owners, declared, plan, warnings)
 
 
-def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Plan:
+def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
     """Prepare the evaluators of one candidate before a file is created or a stage runs.
 
     Creates a new instance of each bound implementation, which must declare what its probe
     declared, checks its settings and collections, then calls each one's ``check()`` with the
     request it would get for this candidate (its settings and collections resolved). Raises
-    :class:`EvaluationContractError` (or what a ``check()`` raises). The plan holds these
+    :class:`EvaluationContractError` (or what a ``check()`` raises). What it returns holds these
     instances and requests made for these ``values``, so it serves one candidate only.
     """
     evaluators = tuple((bound.entry, _instance(bound)) for bound in binding.evaluators)
@@ -555,22 +568,16 @@ def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Plan:
         check = getattr(evaluator, "check", None)
         if check is not None:
             check(request)
-    return _Plan(
-        binding.context,
-        evaluators,
-        binding.targets,
-        binding.owners,
-        binding.declared,
-        FrozenMap(requests),
-        binding.warnings,
-    )
+    return _Prepared(binding, evaluators, FrozenMap(requests))
 
 
-def _check_result(spec: ProblemSpec, plan: _Plan, name: str, result: EvaluationResult) -> None:
+def _check_result(
+    spec: ProblemSpec, binding: _Binding, name: str, result: EvaluationResult
+) -> None:
     """A result must not report a metric another evaluator declares, and a ``valid`` one must
     report every metric its evaluator ``name`` owns, in the unit a constraint declares."""
     for m in result.measurements:
-        owner = plan.declared.get((m.stage, m.metric), name)
+        owner = binding.declared.get((m.stage, m.metric), name)
         if owner != name:
             raise EvaluationContractError(
                 f"evaluator {name!r} reported {m.stage}/{m.metric}, a metric of evaluator {owner!r}"
@@ -578,7 +585,7 @@ def _check_result(spec: ProblemSpec, plan: _Plan, name: str, result: EvaluationR
     if result.status is not Status.VALID:
         return
     measured = {(m.stage, m.metric): m for m in result.measurements}
-    owned = [key for key, owner in plan.owners.items() if owner == name]
+    owned = [key for key, owner in binding.owners.items() if owner == name]
     missing = [key for key in owned if key not in measured]
     if missing:
         raise EvaluationContractError(
@@ -619,39 +626,41 @@ def _request(
     )
 
 
+def _inputs(reads: Mapping[TaskId, TaskResult]) -> dict[str, Path]:
+    """What a task is given of the tasks it reads: the main output of each, by its name."""
+    return {task.name: result.output for task, result in reads.items() if result.output is not None}
+
+
 def _measure(
     spec: ProblemSpec,
-    plan: _Plan,
+    prepared: _Prepared,
     key: CandidateKey,
     entry: EvaluatorSpec,
     evaluator: EvaluatorProtocol,
-    stages: StageRecords,
-    inputs: Mapping[str, Path],
+    reads: Mapping[TaskId, TaskResult],
     workdir: Path | None,
     seen: dict[Path, tuple[str, ...] | str],
 ) -> EvaluationRecord:
-    """The record of one evaluator, called once on the files of the stages it reads.
+    """The record of one evaluator, called once on the outputs of the tasks it ``reads``, which
+    all succeeded.
 
-    An evaluator whose stage cannot be read, or whose stage's file lacks a collection it
-    declares (or holds it with another type), gets a ``failed`` result saying so and is not
-    called. Its own directory, ``workdir/evaluators/<name>``, is created just before the
-    call; ``elapsed_seconds`` is the time of the call alone.
+    An evaluator whose stage's file lacks a collection it declares (or holds it with another
+    type) gets a ``failed`` result saying so and is not called. Its own directory ``workdir``
+    is created just before the call; ``elapsed_seconds`` is the time of the call alone.
     """
-    stage = _stage(evaluator)
-    given = {name: path for name, path in inputs.items() if name not in STAGE_TYPES}
-    given.update(stages.inputs(stage))
-    request = replace(plan.requests[entry.name], inputs=given)
-    error = stages.error(stage) or _collection_error(evaluator, request, seen)
+    request = replace(prepared.requests[entry.name], inputs=_inputs(reads))
+    error = _collection_error(evaluator, request, seen)
     if error is not None:
-        return _record(spec, plan, entry, evaluator, key, request, EvaluationResult.failed(error))
-    own = None if workdir is None else workdir / "evaluators" / entry.name
-    request = replace(request, workdir=own)
-    if own is not None:
+        return _record(
+            spec, prepared, entry, evaluator, key, request, EvaluationResult.failed(error)
+        )
+    request = replace(request, workdir=workdir)
+    if workdir is not None:
         try:
-            own.mkdir(parents=True)
+            workdir.mkdir(parents=True)
         except OSError as exc:
-            result = EvaluationResult.failed(f"cannot create evaluator directory {own}: {exc}")
-            return _record(spec, plan, entry, evaluator, key, request, result)
+            result = EvaluationResult.failed(f"cannot create evaluator directory {workdir}: {exc}")
+            return _record(spec, prepared, entry, evaluator, key, request, result)
     started = time.perf_counter()
     try:
         result = result_from(evaluator, evaluator.evaluate(request))
@@ -660,12 +669,12 @@ def _measure(
     except EvaluationInvalid as exc:
         result = EvaluationResult.invalid(str(exc))
     elapsed = time.perf_counter() - started
-    return _record(spec, plan, entry, evaluator, key, request, result, elapsed)
+    return _record(spec, prepared, entry, evaluator, key, request, result, elapsed)
 
 
 def _record(
     spec: ProblemSpec,
-    plan: _Plan,
+    prepared: _Prepared,
     entry: EvaluatorSpec,
     evaluator: EvaluatorProtocol,
     key: CandidateKey,
@@ -674,38 +683,20 @@ def _record(
     elapsed: float | None = None,
 ) -> EvaluationRecord:
     _check_units(evaluator, result)
-    _check_result(spec, plan, entry.name, result)
+    _check_result(spec, prepared.binding, entry.name, result)
     return EvaluationRecord(request, result, entry.name, entry.version, key, elapsed)
-
-
-def candidate_status(statuses: Iterable[Status]) -> Status:
-    """The status of a candidate from its evaluators': ``failed`` if any failed, otherwise
-    ``invalid`` if any is, otherwise ``valid``."""
-    seen = set(statuses)
-    return next((s for s in (Status.FAILED, Status.INVALID) if s in seen), Status.VALID)
-
-
-def candidate_message(results: Iterable[tuple[str, Status, str | None]]) -> str | None:
-    """The message of a candidate from its evaluators' ``(name, status, message)``, in problem
-    order: each that is not ``valid``, with its status and message."""
-    reasons = [
-        f"{name} {status}: {message}"
-        for name, status, message in results
-        if status is not Status.VALID
-    ]
-    return "; ".join(reasons) or None
 
 
 @dataclass(frozen=True, slots=True)
 class CandidateRecord:
     """One candidate, measured by every evaluator of its problem.
 
-    ``records`` holds one :class:`EvaluationRecord` per evaluator, in the problem's order, with
-    only that evaluator's own work; ``stages`` holds the pipeline stages they read, each recorded
-    once, and ``reads`` the stages each evaluator read. ``owners`` maps every metric an objective
-    or constraint names to the evaluator that measures it. ``elapsed_seconds`` is the wall time
-    of the whole evaluation: the stages, the evaluator calls and k4opt's checks. Its mappings are
-    read-only copies, so a reader cannot change which evaluator owns a metric.
+    ``plan`` holds its tasks, and ``results`` the result of each, in plan order: its geometry,
+    the pipeline stages the evaluators read, each recorded once, and every evaluator, with only
+    that evaluator's own work. ``owners`` maps every metric an objective or constraint names to
+    the evaluator that measures it. ``elapsed_seconds`` is the wall time of the whole evaluation:
+    the tasks and k4opt's checks. Its mappings are read-only copies, so a reader cannot change
+    which evaluator owns a metric.
 
     ``represents_candidate`` is ``False`` when the caller supplied a stage that the parameters
     change (``k4opt evaluate --input simulation=FILE``): that file was not made from the
@@ -714,36 +705,54 @@ class CandidateRecord:
     """
 
     candidate_key: CandidateKey
-    records: tuple[EvaluationRecord, ...]
-    stages: StageRecords
+    plan: Plan
+    results: Mapping[TaskId, TaskResult]
     owners: Mapping[MetricKey, str]
-    reads: Mapping[str, tuple[str, ...]]
     elapsed_seconds: float
     represents_candidate: bool = True
     warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "records", tuple(self.records))
+        missing = [task.id.label for task in self.plan.tasks if task.id not in self.results]
+        if missing or len(self.results) != len(self.plan.tasks):
+            raise EvaluationContractError(
+                f"the results do not match the plan's tasks (missing: {', '.join(missing)})"
+            )
+        results = {task.id: self.results[task.id] for task in self.plan.tasks}
+        object.__setattr__(self, "results", FrozenMap(results))
         object.__setattr__(self, "owners", FrozenMap(self.owners))
-        reads = {name: tuple(stages) for name, stages in self.reads.items()}
-        object.__setattr__(self, "reads", FrozenMap(reads))
+
+    @property
+    def records(self) -> tuple[EvaluationRecord, ...]:
+        """The record of each evaluator, in problem order; a blocked one's was never called."""
+        return tuple(
+            record
+            for task in self.plan.of(Kind.EVALUATOR)
+            if (record := self.results[task.id].record) is not None
+        )
+
+    @property
+    def supplied(self) -> frozenset[str]:
+        """The stages the caller supplied as files."""
+        return frozenset(t.id.name for t in self.plan.of(Kind.STAGE) if t.given == "supplied")
+
+    def stage(self, name: str) -> TaskResult | None:
+        """The result of the stage ``name``, ``None`` if it was not planned."""
+        return self.results.get(stage_task(name))
 
     @property
     def status(self) -> Status:
-        """``failed`` if any evaluator failed (the evaluation is incomplete), otherwise
-        ``invalid`` if any found the result unusable, otherwise ``valid``.
+        """``failed`` if a task failed or was blocked (the evaluation is incomplete), otherwise
+        ``invalid`` if an evaluator found the result unusable, otherwise ``valid``.
 
         A candidate is thus only ever ``invalid`` after a complete evaluation.
         """
-        return candidate_status(record.result.status for record in self.records)
+        return candidate_status(result.status for result in self.results.values())
 
     @property
     def message(self) -> str | None:
-        """Every evaluator that is not ``valid``, with its status and message, in problem order."""
-        return candidate_message(
-            (record.evaluator_name, record.result.status, record.result.message)
-            for record in self.records
-        )
+        """Every task that failed or is invalid, with its message, then those they blocked."""
+        return candidate_message(self.results.values())
 
     def record(self, name: str) -> EvaluationRecord:
         """The record of the evaluator called ``name``; :class:`KeyError` if there is none."""
@@ -769,6 +778,11 @@ class CandidateRecord:
         )
 
 
+type MakeGeometry = Callable[[], tuple[Path, Mapping[str, Json]]]
+"""The work of the geometry task: ``(compact file, what to record of it)``; raises if the
+geometry cannot be made, which stops the candidate."""
+
+
 def _evaluate_candidate(
     spec: ProblemSpec,
     candidate: Mapping[str, Scalar],
@@ -785,52 +799,109 @@ def _evaluate_candidate(
     :class:`EvaluationContractError` for implementations that cannot be created or do not match
     the problem (missing, undeclared, given twice, another version), settings an evaluator's
     ``check()`` rejects, a stage that cannot run, or an objective or constraint metric that no
-    evaluator, or two, declare. The stages the evaluators read and ``inputs`` does not supply
-    then run once each (on ``inputs["geometry"]``, in ``workdir``); any other entry of
-    ``inputs`` supplies the file of the stage it is named after. An evaluator whose stage
-    failed, or whose stage output lacks the requested events, gets a ``failed`` result without
-    being called; the others are still called. An evaluator that raises
+    evaluator, or two, declare. ``inputs["geometry"]`` is the candidate's geometry, already
+    prepared; any other entry of ``inputs`` supplies the file of the stage it is named after. The
+    stages the evaluators read and ``inputs`` does not supply then run once each, in ``workdir``.
+    An evaluator whose stage failed, or whose stage output lacks the requested events, is
+    ``blocked`` and not called; the others are still called. An evaluator that raises
     :class:`EvaluationFailed` or :class:`EvaluationInvalid` gets that result; any other
     exception propagates, and so does an :class:`EvaluationContractError` for a result that
     breaks the contract.
     """
     started = time.perf_counter()
     values, key = _validate_candidate(spec, candidate)
-    inputs = dict(inputs or {})
-    plan = _preflight(_bind_problem(spec, implementations, inputs), values)
+    supplied = dict(inputs or {})
+    geometry = supplied.pop(GEOMETRY.name, None)
+    prepared = _preflight(_bind_problem(spec, implementations, supplied), values)
     checked = time.perf_counter() - started
-    return _execute_plan(spec, plan, key, inputs=inputs, workdir=workdir, checked_seconds=checked)
+    return _execute_plan(
+        spec,
+        prepared,
+        key,
+        supplied=supplied,
+        geometry=None if geometry is None else lambda: (geometry, {}),
+        workdir=workdir,
+        checked_seconds=checked,
+    )
 
 
 def _execute_plan(
     spec: ProblemSpec,
-    plan: _Plan,
+    prepared: _Prepared,
     key: CandidateKey,
     *,
-    inputs: Mapping[str, Path],
+    supplied: Mapping[str, Path],
+    geometry: MakeGeometry | None,
     workdir: Path | None,
     checked_seconds: float,
     timeout: float | None = None,
 ) -> CandidateRecord:
-    """Execute an already validated plan; evaluator checks and defaults are not repeated.
+    """Run the tasks of a prepared candidate; evaluator checks and defaults are not repeated.
 
+    ``supplied`` holds the files the caller supplies by stage, the ones the plan was made with;
+    ``geometry`` makes the candidate's geometry, and ``None`` gives none (to evaluators that need
+    none). Each task writes below ``workdir``, in the directory the plan gives it.
     ``checked_seconds``, the time the candidate's validation and preflight took, counts towards
     ``elapsed_seconds``, which thus covers k4opt's checks too (not what the caller does between).
     ``timeout`` limits each stage that runs a program (:attr:`StageContext.timeout`).
     """
     started = time.perf_counter() - checked_seconds
-    context = replace(plan.context, timeout=timeout)
-    stages = run_stages(context, *plan.targets, inputs=inputs, workdir=workdir)
+    binding = prepared.binding
+    context = replace(binding.context, timeout=timeout)
+    plan = binding.plan
+    stages = plan.of(Kind.STAGE)
+    check_run_inputs([t.id.name for t in stages if t.given is None], geometry is not None, workdir)
+    evaluators = {entry.name: (entry, evaluator) for entry, evaluator in prepared.evaluators}
     seen: dict[Path, tuple[str, ...] | str] = {}  # the collection names of each stage file
-    records = tuple(
-        _measure(spec, plan, key, entry, evaluator, stages, inputs, workdir, seen)
-        for entry, evaluator in plan.evaluators
+
+    def run(task: Task, reads: Mapping[TaskId, TaskResult]) -> TaskResult:
+        own = None if workdir is None or task.directory is None else workdir / task.directory
+        began = time.perf_counter()
+        if task.id.kind is Kind.GEOMETRY:
+            if geometry is None:
+                return TaskResult(task.id, DONE)
+            compact, recorded = geometry()
+            return TaskResult(
+                task.id, DONE, output=compact, provenance=recorded, elapsed_seconds=_since(began)
+            )
+        if task.id.kind is Kind.STAGE:
+            name = task.id.name
+            outcome, main = make_stage(
+                context, name, inputs=_inputs(reads), workdir=own, supplied=supplied.get(name)
+            )
+            return TaskResult(
+                task.id,
+                DONE if outcome.error is None else Status.FAILED,
+                outcome.error,
+                main,
+                outcome.artifacts,
+                outcome.provenance,
+                _since(began),
+            )
+        entry, evaluator = evaluators[task.id.name]
+        record = _measure(spec, prepared, key, entry, evaluator, reads, own, seen)
+        result = record.result
+        return TaskResult(
+            task.id, result.status, result.message, elapsed_seconds=_since(began), record=record
+        )
+
+    results = run_tasks(plan, run)
+    for task in plan.of(Kind.EVALUATOR):  # a blocked evaluator's record: what it would have got
+        held = results[task.id]
+        if held.status == Status.BLOCKED:
+            entry, _ = evaluators[task.id.name]
+            assert held.message is not None
+            outcome = EvaluationResult(Status.BLOCKED, message=held.message)
+            request = prepared.requests[entry.name]
+            record = EvaluationRecord(request, outcome, entry.name, entry.version, key, None)
+            results[task.id] = replace(held, record=record)
+    represents = not any(
+        changed_by_geometry(task.id.name) for task in stages if task.given == "supplied"
     )
-    reads = {
-        entry.name: tuple(stages.chain(_stage(evaluator))) for entry, evaluator in plan.evaluators
-    }
-    represents = not any(changed_by_geometry(name) for name in stages.supplied)
-    elapsed = time.perf_counter() - started
     return CandidateRecord(
-        key, records, stages, plan.owners, reads, elapsed, represents, plan.warnings
+        key, plan, results, binding.owners, _since(started), represents, binding.warnings
     )
+
+
+def _since(started: float) -> float:
+    return time.perf_counter() - started

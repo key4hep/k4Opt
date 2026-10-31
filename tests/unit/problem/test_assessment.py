@@ -379,12 +379,12 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_set("candidate", {RADIUS: 700.0}), "its candidate is not one of the problem's"),
         (_set("candidate", {RADIUS: 460.0}), "but its candidate is [['constants.Inner"),
         (_set("candidate_key.0.3", "1e0"), "candidate_key is [['constants.InnerTracker"),
-        (_set("status", "invalid"), "status is 'invalid', but its evaluators make it 'valid'"),
+        (_set("status", "invalid"), "status is 'invalid', but its tasks make it 'valid'"),
         (
             _set("evaluators.0.status", "failed"),
-            "a result that is failed needs a message saying why",
+            "a task that is failed needs a message saying why",
         ),
-        (_failed_with_reason, "status is 'valid', but its evaluators make it 'failed'"),
+        (_failed_with_reason, "status is 'valid', but its tasks make it 'failed'"),
         (_set("evaluators.0.message", 3), "message must be a string, got 3"),
         (_set("message", "test.echo valid: fine"), "message is 'test.echo valid: fine', but"),
         (_set("evaluators.0.status", "great"), "status 'great' is none of"),
@@ -405,7 +405,10 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_set("assessment.feasible", False), "its assessment is not the one"),
         (_set("assessment.limits.0.margin", -1.0), "its assessment is not the one"),
         (_set("assessment", None), "its assessment is not the one"),
-        (_set("represents_candidate", "yes"), "represents_candidate must be true or false"),
+        (_set("represents_candidate", "yes"), "represents_candidate is 'yes', but its supplied"),
+        (_set("supplied", ["simulation"]), "it supplied simulation, which no evaluator reads"),
+        (_set("stages", {"simulation": {}}), "its stages are ['simulation'], but the problem"),
+        (_set("represents_candidate", False), "represents_candidate is False, but its supplied"),
         (_set("problem.definition.parameters.0.bounds", [100.0, 700.0]), "parameters differ"),
         (_set("problem.definition.constraints.0.max", 600), "another problem: its constraints"),
     ],
@@ -437,10 +440,10 @@ def test_a_record_is_checked_against_the_problem_it_is_read_for(
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        (_set("evaluators.0.message", None), "a result that is invalid needs a message saying why"),
-        (_set("evaluators.0.message", "  "), "a result that is invalid needs a message saying why"),
-        (_set("message", "test.echo invalid: fine after all"), "but its evaluators make it"),
-        (_set("message", None), "message is None, but its evaluators make it"),
+        (_set("evaluators.0.message", None), "a task that is invalid needs a message saying why"),
+        (_set("evaluators.0.message", "  "), "a task that is invalid needs a message saying why"),
+        (_set("message", "test.echo invalid: fine after all"), "but its tasks make it"),
+        (_set("message", None), "message is None, but its tasks make it"),
     ],
 )
 def test_an_unusable_record_must_say_why(

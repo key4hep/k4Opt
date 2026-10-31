@@ -263,7 +263,7 @@ Who measures a candidate: one or more evaluators. Each entry:
 
 | Key | Meaning |
 | --- | --- |
-| `name` | Logical name of a versioned evaluator, e.g. `calo.photon`. It must equal the `name` of an evaluator that `k4opt evaluate --evaluator` loads. Unique within the problem; letters, digits, `.`, `_` and `-`, starting with a letter or digit, because it also names the evaluator's directory in a run. |
+| `name` | Logical name of a versioned evaluator, e.g. `calo.photon`. It must equal the `name` of an evaluator that `k4opt evaluate --evaluator` loads. Unique within the problem; letters, digits, `.`, `_` and `-`, starting with a letter or digit, because it also names the evaluator's directory in a run. Not `geometry` or a stage type (`generation`, `simulation`): a run's record names those steps beside the evaluators. |
 | `version` | Version of that evaluator's contract. A string. |
 | `stage` | The pipeline stage it reads, one of the `stages`. Required when the evaluator reads one, and absent when it reads none (a cost model working from the parameters alone needs no stage). It must equal the evaluator's own `stage`, so the problem file shows what each evaluator reads. |
 | `collections` | The collection of the stage's file that each role the evaluator declares reads, such as `hits: ECalBarrelCollection`. Roles with a default (`particles`, read from `MCParticles`) may be left out. Only with a `stage`. |

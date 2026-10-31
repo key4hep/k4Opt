@@ -36,7 +36,7 @@ from typing import Any, NoReturn, cast
 from k4opt.evaluation import units
 from k4opt.evaluation.edm4hep import Event, read_events
 from k4opt.evaluation.errors import EvaluationContractError, EvaluationFailed, EvaluationInvalid
-from k4opt.evaluation.models import EvaluationRequest, EvaluationResult, Measurement
+from k4opt.evaluation.models import EvaluationRequest, EvaluationResult, Measurement, Status
 from k4opt.frozen import Json
 
 _TYPE = re.compile(r"[A-Za-z_]\w*(::[A-Za-z_]\w*)?")
@@ -319,6 +319,12 @@ def metric_units(evaluator: object) -> dict[tuple[str, str], str] | None:
 def result_from(evaluator: object, returned: EvaluationResult | Values) -> EvaluationResult:
     """The result that ``evaluate`` returned, or the ``valid`` one its metric values stand for."""
     if isinstance(returned, EvaluationResult):
+        if returned.status is Status.BLOCKED:
+            raise EvaluationContractError(
+                "an evaluator never returns a blocked result: k4opt alone marks an evaluator "
+                "blocked, without calling it, when something it reads did not succeed; return "
+                "failed or invalid"
+            )
         return returned
     if not isinstance(returned, Mapping):
         raise EvaluationContractError(

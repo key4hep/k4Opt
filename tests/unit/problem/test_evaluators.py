@@ -20,8 +20,9 @@ from k4opt.evaluation import (
     Measurement,
     Status,
 )
-from k4opt.problem import ProblemSpec, _evaluate, _stages, parse_problem
+from k4opt.problem import ProblemSpec, _evaluate, parse_problem
 from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate
+from k4opt.problem._tasks import Kind, stage_task
 from tests.support import simulation
 from tests.support.evaluators import cell_count, hit_energy, implementations, parameter_echo
 from tests.support.simulation import COLLECTION, Event, Hits, Particle, Particles, events_with
@@ -38,6 +39,21 @@ ECHO = ("analysis", "candidate.first_value")  # test.parameter_echo
 COLLECTIONS = {
     name: {"hits": COLLECTION} for name in ("test.cell_count", "test.hit_energy", "test.busiest")
 }
+
+
+def stages(candidate: CandidateRecord) -> list[str]:
+    """The stages the candidate made, in the order they were planned."""
+    return [task.id.name for task in candidate.plan.of(Kind.STAGE)]
+
+
+def reads(candidate: CandidateRecord) -> dict[str, tuple[str, ...]]:
+    """The tasks each evaluator of the candidate reads, by evaluator."""
+    return {
+        task.id.name: tuple(need.label for need in task.needs)
+        for task in candidate.plan.of(Kind.EVALUATOR)
+    }
+
+
 # the stage each evaluator of these tests reads; the others read none
 STAGES = {
     "test.cell_count": "simulation",
@@ -159,7 +175,7 @@ def test_two_simulation_readers_share_one_ddsim_run(
     assert candidate.value(*CELLS).value == 3.0  # distinct cells per event: 3, 2, 4
     assert candidate.value(*ENERGY).value == pytest.approx(10 / 3)  # 1 GeV per hit: 4, 2, 4
     assert candidate.owners == {CELLS: "test.cell_count", ENERGY: "test.hit_energy"}
-    assert list(candidate.stages.provenance) == ["generation", "simulation"]
+    assert stages(candidate) == ["generation", "simulation"]
     assert sorted(p.name for p in (tmp_path / "run").iterdir()) == ["evaluators", "simulation"]
 
 
@@ -184,7 +200,7 @@ def test_an_evaluator_that_reads_no_stage_runs_no_simulation(
     assert spec.stages == {}
     candidate = evaluate(spec, [parameter_echo()], tmp_path, geometry)
     assert log == [] and not (tmp_path / "run" / "simulation").exists()
-    assert candidate.stages.provenance == {} and candidate.reads == {"test.parameter_echo": ()}
+    assert stages(candidate) == [] and reads(candidate) == {"test.parameter_echo": ("geometry",)}
     assert candidate.status is Status.VALID and candidate.value(*ECHO).value == 6
 
 
@@ -230,9 +246,9 @@ def test_each_evaluator_reads_the_files_of_the_stages_it_needs_and_no_others(
     # simulation needs generation, so its reader gets both files; the generation reader only its own
     assert set(cells.evaluated[0].inputs) == {"geometry", "generation", "simulation"}
     assert set(size.seen[0].inputs) == {"geometry", "generation"}
-    assert candidate.reads == {
-        "test.cell_count": ("generation", "simulation"),
-        "test.file_size": ("generation",),
+    assert reads(candidate) == {
+        "test.cell_count": ("geometry", "generation", "simulation"),
+        "test.file_size": ("geometry", "generation"),
     }
 
 
@@ -278,7 +294,7 @@ def test_supplied_stage_files_only_reach_the_evaluators_that_read_them(
     assert set(cells.evaluated[0].inputs) == {"geometry", "simulation"}
     assert set(size.seen[0].inputs) == {"geometry", "generation"}
     assert set(echo.evaluated[0].inputs) == {"geometry"}
-    assert result.reads[echo.name] == ()
+    assert reads(result)[echo.name] == ("geometry",)
 
 
 # --- a failure only concerns the evaluators that read the failed stage ---
@@ -292,14 +308,20 @@ def test_an_independent_evaluator_keeps_its_result_when_the_simulation_fails(
     candidate = evaluate(spec, [cell_count(), parameter_echo()], tmp_path, geometry)
     assert len(fake.calls) == 1
     cells, echo = candidate.records
-    assert cells.result.status is Status.FAILED and cells.elapsed_seconds is None
-    assert "ddsim exited with status 2" in (cells.result.message or "")
+    # the stage carries the failure; its reader is blocked, never called
+    assert cells.result.status is Status.BLOCKED and cells.elapsed_seconds is None
+    assert cells.result.message == "not run: simulation failed"
+    simulated = candidate.stage("simulation")
+    assert simulated is not None and simulated.status == "failed"
+    assert "ddsim exited with status 2" in (simulated.message or "")
     assert echo.result.status is Status.VALID and echo.elapsed_seconds is not None
     # the evaluation is incomplete, but the measurement that was made is kept
     assert candidate.status is Status.FAILED
     assert candidate.value(*CELLS) is None
     assert candidate.value(*ECHO).value == 6
-    assert (candidate.message or "").startswith("test.cell_count failed: ddsim exited")
+    message = candidate.message or ""
+    assert message.startswith("simulation failed: ddsim exited")
+    assert message.endswith("; blocked: test.cell_count")
     assert not (tmp_path / "run" / "evaluators" / "test.cell_count").exists()
 
 
@@ -317,7 +339,7 @@ def test_a_generation_reader_keeps_its_result_when_the_simulation_fails(
     size = FileSize()
     candidate = evaluate(in_directory(spec, tmp_path), [cell_count(), size], tmp_path, geometry)
     cells, sized = candidate.records
-    assert cells.result.status is Status.FAILED
+    assert cells.result.status is Status.BLOCKED
     assert sized.result.status is Status.VALID and set(size.seen[0].inputs) == {
         "geometry",
         "generation",
@@ -361,15 +383,17 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
     )
     assert "ddsim" not in log
     assert set(cells.evaluated[0].inputs) == {"simulation"}
-    assert candidate.reads["test.cell_count"] == ("simulation",)
+    # it reads the geometry task, which has no file to give without a geometry
+    assert reads(candidate)["test.cell_count"] == ("geometry", "simulation")
     counted, sized = candidate.records
     assert counted.result.status is Status.VALID
     assert candidate.value(*CELLS).value == 3.0
     if readable:
         assert sized.result.status is Status.VALID and candidate.status is Status.VALID
     else:
-        assert sized.result.status is Status.FAILED
-        assert f"cannot read {hepmc}: denied" in (sized.result.message or "")
+        assert sized.result.status is Status.BLOCKED
+        assert sized.result.message == "not run: generation failed"
+        assert f"generation failed: cannot read {hepmc}: denied" in (candidate.message or "")
 
 
 # --- the candidate's status: incomplete is never reported as scientifically invalid ---
@@ -643,7 +667,6 @@ def test_every_second_is_counted_once(
     doc: dict[str, Any], tmp_path: Path, geometry: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clock = Clock()
-    monkeypatch.setattr(_stages, "time", clock)
     monkeypatch.setattr(_evaluate, "time", clock)
     simulation.install(monkeypatch)
     fake = ddsim_run._execute
@@ -667,7 +690,10 @@ def test_every_second_is_counted_once(
     candidate: CandidateRecord = evaluate(
         spec, [Slow(cell_count(), []), Slow(hit_energy(), [])], tmp_path, geometry
     )
-    assert candidate.stages.seconds == {"generation": 0.0, "simulation": 10.0}
+    seconds = {
+        name: candidate.results[stage_task(name)].elapsed_seconds for name in stages(candidate)
+    }
+    assert seconds == {"generation": 0.0, "simulation": 10.0}
     assert [record.elapsed_seconds for record in candidate.records] == [1.0, 1.0]
     assert candidate.elapsed_seconds == 13.0  # with the two checks before anything ran
 
@@ -691,7 +717,7 @@ def test_analysis_metrics_need_no_analysis_stage(
 
     spec = problem(doc, "test.busiest", objectives=(("analysis", "ecal.max_hits"),))
     candidate = evaluate(spec, [Busiest()], tmp_path, geometry)
-    assert list(candidate.stages.provenance) == ["generation", "simulation"]
+    assert stages(candidate) == ["generation", "simulation"]
     assert candidate.value("analysis", "ecal.max_hits").value == 4
 
 

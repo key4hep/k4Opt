@@ -153,10 +153,10 @@ those.
 
 | Field | Meaning |
 | --- | --- |
-| `status` | a `Status`, a `StrEnum` whose values are `"valid"`, `"invalid"` and `"failed"`. `valid`: ran, result scientifically usable. `invalid`: ran, but the result is not usable (the evaluator's own checks failed). `failed`: the execution failed |
+| `status` | a `Status`, a `StrEnum` whose values are `"valid"`, `"invalid"`, `"failed"` and `"blocked"`. `valid`: ran, result scientifically usable. `invalid`: ran, but the result is not usable (the evaluator's own checks failed). `failed`: the execution failed. `blocked` is k4opt's alone, for an evaluator it did not call because something it reads did not succeed; an evaluator that returns it breaks the contract |
 | `measurements` | tuple of `Measurement`, mixing stages if needed. Independent of the status: an `invalid` result may keep diagnostic values (they are never objectives), and a `valid` one may have none if it only produced artifacts; a problem that asks for a metric still requires it from a `valid` result |
 | `artifacts` | role name to local output `Path`, possibly empty; a later evaluator can take them as `inputs`. Existence is not checked at construction |
-| `message` | explanation; required for `invalid` and `failed` |
+| `message` | explanation; required for `invalid`, `failed` and `blocked` |
 | `provenance` | optional JSON-compatible metadata the evaluator chose to supply |
 
 A `Measurement` is `stage`, `metric`, a finite `value` (booleans, NaN and infinity are
@@ -262,13 +262,20 @@ stage. A stage has named outputs; `inputs[stage]` is its main one (`events`), an
 (logs, the command) are its artifacts.
 
 A stage asks only for what it uses: `simulation` needs `inputs["geometry"]` and a `workdir`,
-`generation` neither, so an evaluator that reads only `generation` runs without a geometry, and
-one that reads none runs no stage at all. The stages a candidate needs form a graph, each with
-the stages it reads, and run in that order. A stage that fails (a file it cannot read, the tool
-missing, a nonzero exit, no output, an output without the requested events) makes every evaluator
-that reads it `failed` with the stage's message, without calling them, and the stages that read it
-do not run ("not run because the 'generation' stage failed"). Stages and evaluators that do not
-depend on it still run and keep their results.
+`generation` neither, and an evaluator that reads none runs no stage at all.
+
+The work of a candidate is a set of **tasks**, each run at most once: the candidate's
+`geometry`, every stage the evaluators read, and every evaluator. Each task names the tasks it
+reads, and nothing else orders it: a stage that runs reads the stages before it (and the
+geometry, if it is made from it), and every evaluator reads the geometry and its stage with the
+stages that one reads, even an evaluator that reads no stage. Each writes in a directory of its
+own (`simulation/`, `evaluators/<name>/`). A task runs only when every task it reads succeeded
+(a stage is `done`, an evaluator `valid`); otherwise it is **`blocked`** and not run, so the
+order in which the tasks run never changes a result. A stage that fails (a file it cannot read,
+the tool missing, a nonzero exit, no output, an output without the requested events) is `failed`
+with its message; every task that reads it is `blocked`, an evaluator too, without being called
+("not run: simulation failed"). A task is blocked by the tasks that failed, not by the blocked
+ones between them. Tasks that do not depend on it still run and keep their results.
 
 An `inputs[stage]` supplied by the caller (`k4opt evaluate --input simulation=FILE`) replaces
 running that stage and the ones only it needs, and it is authoritative: a supplied `generation`
@@ -285,7 +292,8 @@ while a campaign runs.
 
 The stages are recorded once per candidate, apart from the evaluators' results: what ran (the
 command, exit code and time limit), what was given or supplied, the files a ddsim option names (with their
-hashes), the events found, the error if any, the stage's files and the time spent on it. An
+hashes), the events found, its status (`done`, `failed`, `blocked`) and message, the tasks it
+reads and those that blocked it, the stage's files and the time spent on it. An
 evaluator's result holds only what it returned, so its artifact and provenance names cannot
 clash with the stages'. The stages take their conditions from the problem's `stages`, never from
 an evaluator, except a time limit, which is the caller's: a stage that runs a program (ddsim)
@@ -360,7 +368,7 @@ anything of the candidate is created. Setup that is expensive and the same for e
 | `EvaluationRecord` field | Source |
 | --- | --- |
 | `request` | the object the evaluator received |
-| `result` | what the evaluator returned, or the `failed` result that stands for it when a stage it reads failed |
+| `result` | what the evaluator returned, or the result that stands for it when it was not called: `blocked` when a stage it reads did not succeed, `failed` when its stage's file lacks a collection it declares |
 | `evaluator_name`, `evaluator_version` | the evaluator object that ran, checked against the problem before the call |
 | `candidate_key` | framework-computed, see below |
 | `elapsed_seconds` | wall-clock time of the single `evaluate()` call alone (`time.perf_counter()`), `None` if it was not called; not CPU time, memory or an estimate. The stages it read are timed once, with the stages |
@@ -411,18 +419,21 @@ In order, it:
    objective and constraint metric (see [problem](problem.md#evaluators);
    `EvaluationContractError` otherwise). A collection ddsim is not expected to write is a
    warning, kept with the candidate;
-4. makes every stage the evaluators read available once, unless `inputs` supplies its file:
-   it runs it on `inputs["geometry"]` in `workdir`, or takes the problem's `file`. The output of
+4. runs the candidate's [tasks](#stages), each after the tasks it reads, in this order: the
+   geometry (`inputs["geometry"]`, already prepared), every stage the evaluators read, once
+   each, then the evaluators in problem order. A stage whose file `inputs` supplies is not run,
+   and a stage the problem gives as a `file` is read; another runs in `workdir`. The output of
    the `simulation` stage, run or supplied, must hold exactly its `events` events (at least one
    when the problem gives the file), otherwise the stage fails ("incomplete simulation"); the
    number found is recorded as `events_read`;
-5. calls each evaluator's `evaluate()` once, in problem order, with a request built from the
-   validated candidate, its own `settings` (defaults filled in, quantities converted) and
-   `collections`, the `events` and `seed` of the stage it reads and the files of the stages it
-   reads, in its own `workdir/evaluators/<name>`. An evaluator whose stage failed gets that
-   stage's message as a `failed` result instead, and so does one whose stage's file lacks a
-   collection it declares (see [Collections](#collections)). `EvaluationFailed` and `EvaluationInvalid` become a `failed` or
-   `invalid` result; other exceptions of an evaluator propagate;
+5. calls each evaluator's `evaluate()` once with a request built from the validated candidate,
+   its own `settings` (defaults filled in, quantities converted) and `collections`, the
+   `events` and `seed` of the stage it reads and the files of the tasks it reads, in its own
+   `workdir/evaluators/<name>`. An evaluator whose stage did not succeed is `blocked` instead,
+   and one whose stage's file lacks a collection it declares (see
+   [Collections](#collections)) is `failed`; neither is called. `EvaluationFailed` and
+   `EvaluationInvalid` become a `failed` or `invalid` result; other exceptions of an evaluator
+   propagate;
 6. checks each result; a violation is an `EvaluationContractError`, an inconsistent evaluator
    rather than a violated constraint. A result must not report a metric another evaluator
    declares; a `valid` result must report every metric its evaluator owns (extra metrics are
@@ -431,28 +442,32 @@ In order, it:
    satisfies `min`/`max` is not judged here but by the session's
    [assessment](#assessment-objectives-limits-and-feasibility).
 
-The `CandidateRecord` holds one `EvaluationRecord` per evaluator in problem order, the stages
-(each recorded once), which evaluator owns each objective and constraint metric, and the time of
-the whole evaluation. Like the records it holds, it cannot be changed once made. Its `status` is
+The `CandidateRecord` holds the plan of its tasks and the result of each: the geometry, the
+stages (each recorded once) and one `EvaluationRecord` per evaluator in problem order
+(`records`), which evaluator owns each objective and constraint metric, and the time of the
+whole evaluation. Like the records it holds, it cannot be changed once made. Its `status` is
 the candidate's:
 
-| Evaluators | Candidate | Meaning |
+| Tasks | Candidate | Meaning |
 | --- | --- | --- |
-| all `valid` | `valid` | complete and usable; every objective and constraint has a value |
-| at least one `failed` | `failed` | technically incomplete: an evaluator did not run to the end |
-| no `failed`, at least one `invalid` | `invalid` | complete, and at least one evaluator found the result unusable |
+| every stage `done`, every evaluator `valid` | `valid` | complete and usable; every objective and constraint has a value |
+| at least one `failed` or `blocked` | `failed` | technically incomplete: a stage or an evaluator did not run to the end, or did not run |
+| none `failed` or `blocked`, at least one `invalid` | `invalid` | complete, and at least one evaluator found the result unusable |
 
 `failed` outranks `invalid`, so a candidate is `invalid` only after a complete evaluation, and an
-incomplete evaluation is never reported as a scientific verdict. Its `message` names every
-evaluator that is not `valid`, with its status, so a mixed outcome shows both. Every evaluator
+incomplete evaluation is never reported as a scientific verdict. Its `message` names every task
+that failed or is invalid, with its status and message, then the tasks they blocked
+(`simulation failed: ddsim exited with status 2 ...; blocked: calo.photon`), so a mixed outcome
+shows both. Every evaluator
 counts, also one that owns no objective (a validity check, say). `value(stage, metric)` gives an
 objective or constraint metric only from the `valid` result of the evaluator that owns it: a
 missing value is never made up, and the diagnostics of an `invalid` result never stand in for it.
 The measurements of the other evaluators are kept whatever happened to one of them.
 
 Every second is counted once: a stage's time (running it and checking its output) is recorded
-with the stage, an `EvaluationRecord`'s `elapsed_seconds` is its own `evaluate()` call, and the
-`CandidateRecord`'s is the whole evaluation, stages, evaluators and checks.
+with the stage, the geometry's with the geometry, an `EvaluationRecord`'s `elapsed_seconds` is
+its own `evaluate()` call, and the `CandidateRecord`'s is the whole evaluation: every task and
+the checks.
 
 ## Evaluating candidates: `EvaluationSession`
 

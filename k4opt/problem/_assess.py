@@ -13,18 +13,26 @@ that represents its candidate is called feasible or not.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 from k4opt.evaluation import EvaluationContractError, Measurement, Scalar, Status
-from k4opt.problem._evaluate import (
-    CandidateRecord,
-    MetricKey,
-    _validate_candidate,
+from k4opt.problem._evaluate import CandidateRecord, MetricKey, _validate_candidate
+from k4opt.problem._stages import STAGE_TYPES, changed_by_geometry
+from k4opt.problem._tasks import (
+    DONE,
+    GEOMETRY,
+    Kind,
+    TaskId,
+    TaskResult,
+    blocked,
     candidate_message,
     candidate_status,
+    evaluator_task,
+    plan_tasks,
+    stage_task,
 )
 from k4opt.problem.errors import CandidateError, RecordError
 from k4opt.problem.models import Constraint, ProblemSpec
@@ -112,18 +120,24 @@ class Assessment:
         """Recompute the assessment of a run record (``summary.json`` as read back) and check
         the record against it.
 
-        The candidate's status and message are recomputed from its evaluators' (``failed`` before
-        ``invalid`` before ``valid``), and each objective and constraint value is taken from the own
+        The candidate's tasks are planned again from the problem and the stages the record says
+        were ``supplied``: each must read what the plan says, be ``blocked`` exactly when a task
+        it reads did not succeed (by the tasks the plan makes it blocked by, with their message)
+        and otherwise have run. The candidate's status and message are recomputed from its tasks'
+        (``failed`` before ``invalid`` before ``valid``), and so is whether it represents its
+        candidate; each objective and constraint value is taken from the own
         measurements of the evaluator that ``metrics`` names as its owner, if that evaluator is
         ``valid``. The rules a live evaluation enforces are checked again: the candidate is in
         the problem's domains and ``candidate_key`` is its key, an ``invalid`` or
-        ``failed`` evaluator has a message, a measurement of a metric its evaluator declares carries
+        ``failed`` task has a message, a blocked evaluator measured nothing, a measurement of a
+        metric its evaluator declares carries
         the declared unit, each of several evaluators declares its metrics, no metric is declared
         twice or reported by an evaluator that does not declare it, the owner declares the metric it
         owns, and a constraint's unit is that of its metric. Raises
         :class:`~k4opt.problem.RecordError` if the record is malformed or breaks one of those rules,
         was made for another problem (its definition differs other than in ``name``), or if its
-        ``status``, ``message``, ``metrics`` or ``assessment`` disagree with the recomputation.
+        ``status``, ``message``, ``represents_candidate``, ``metrics`` or ``assessment`` disagree
+        with the recomputation.
         """
         record = _mapping(summary, "record")
         if record.get("schema") != SUMMARY_SCHEMA:
@@ -131,19 +145,24 @@ class Assessment:
         _check_problem(spec, record)
         _check_candidate(spec, record)
         evaluators = _evaluators(spec, record)
-        status = candidate_status(entry.status for entry in evaluators.values())
+        supplied = _supplied(record)
+        results = _results(spec, record, supplied, evaluators)
+        status = candidate_status(result.status for result in results)
         if record.get("status") != status:
             raise RecordError(
-                f"status is {record.get('status')!r}, but its evaluators make it {status.value!r}"
+                f"status is {record.get('status')!r}, but its tasks make it {status.value!r}"
             )
-        message = candidate_message((n, e.status, e.message) for n, e in evaluators.items())
+        message = candidate_message(results)
         if record.get("message") != message:
             raise RecordError(
-                f"message is {record.get('message')!r}, but its evaluators make it {message!r}"
+                f"message is {record.get('message')!r}, but its tasks make it {message!r}"
             )
-        represents = record.get("represents_candidate")
-        if not isinstance(represents, bool):
-            raise RecordError(f"represents_candidate must be true or false, got {represents!r}")
+        represents = not any(changed_by_geometry(stage) for stage in supplied)
+        if record.get("represents_candidate") is not represents:
+            raise RecordError(
+                f"represents_candidate is {record.get('represents_candidate')!r}, but its "
+                f"supplied stages make it {represents}"
+            )
         owners = _owners(spec, record, evaluators)
 
         def value(stage: str, metric: str) -> Measurement | None:
@@ -267,6 +286,29 @@ def _check_problem(spec: ProblemSpec, record: Mapping[str, object]) -> None:
         raise RecordError(f"it was made for another problem: its {', '.join(differ)} differ")
 
 
+class _Fragment(NamedTuple):
+    """A task's part of a record, as far as its status reads it."""
+
+    status: str
+    message: str | None
+    reads: list[object]
+    blocked_by: list[object]
+
+
+def _fragment(entry: Mapping[str, object], where: str, statuses: Collection[str]) -> _Fragment:
+    status = entry.get("status")
+    if not isinstance(status, str) or status not in statuses:
+        raise RecordError(f"{where}: status {status!r} is none of {', '.join(statuses)}")
+    message = entry.get("message")
+    if message is not None and not isinstance(message, str):
+        raise RecordError(f"{where}: message must be a string, got {message!r}")
+    if status not in (DONE, Status.VALID) and not (message and message.strip()):
+        raise RecordError(f"{where}: a task that is {status} needs a message saying why")
+    reads = _list(entry.get("reads"), f"{where}: reads")
+    causes = _list(entry.get("blocked_by"), f"{where}: blocked_by")
+    return _Fragment(status, message, reads, causes)
+
+
 @dataclass(frozen=True, slots=True)
 class _Evaluator:
     """One evaluator of a record, as far as the assessment reads it."""
@@ -275,6 +317,7 @@ class _Evaluator:
     message: str | None
     measured: Mapping[MetricKey, Measurement]  # its own measurements
     declared: Mapping[MetricKey, str] | None  # the metrics it declares, with their units
+    fragment: _Fragment  # its status, and the tasks it reads
 
 
 def _check_candidate(spec: ProblemSpec, record: Mapping[str, object]) -> None:
@@ -305,14 +348,7 @@ def _evaluators(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, _E
     evaluators: dict[str, _Evaluator] = {}
     for (name, _), entry in zip(expected, entries, strict=True):
         where = f"evaluator {name!r}"
-        status = entry.get("status")
-        if not isinstance(status, str) or status not in set(Status):
-            raise RecordError(f"{where}: status {status!r} is none of {', '.join(Status)}")
-        message = entry.get("message")
-        if message is not None and not isinstance(message, str):
-            raise RecordError(f"{where}: message must be a string, got {message!r}")
-        if status != Status.VALID and not (message and message.strip()):
-            raise RecordError(f"{where}: a result that is {status} needs a message saying why")
+        fragment = _fragment(entry, where, set(Status))
         declared = _declared(entry.get("metrics"), where)
         own: dict[MetricKey, Measurement] = {}
         for index, item in enumerate(_list(entry.get("measurements"), f"{where}: measurements")):
@@ -328,9 +364,86 @@ def _evaluators(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, _E
                     f"declares {declared[key]!r}"
                 )
             own[key] = measurement
-        evaluators[name] = _Evaluator(Status(status), message, own, declared)
+        if fragment.status == Status.BLOCKED and own:
+            raise RecordError(f"{where}: it is blocked, so it was never called, yet it measured")
+        status = Status(fragment.status)
+        evaluators[name] = _Evaluator(status, fragment.message, own, declared, fragment)
     _check_declarations(evaluators)
     return evaluators
+
+
+def _supplied(record: Mapping[str, object]) -> list[str]:
+    """The stages the caller supplied, as the record lists them: distinct stage types, sorted."""
+    supplied = _list(record.get("supplied"), "supplied")
+    if not all(isinstance(stage, str) and stage in STAGE_TYPES for stage in supplied):
+        raise RecordError(f"supplied {supplied!r} must list stages: {', '.join(STAGE_TYPES)}")
+    stages = cast(list[str], supplied)
+    if stages != sorted(set(stages)):
+        raise RecordError(f"supplied {stages!r} must list each stage once, in sorted order")
+    return stages
+
+
+_STAGE_STATUSES = (DONE, Status.FAILED, Status.BLOCKED)
+
+
+def _results(
+    spec: ProblemSpec,
+    record: Mapping[str, object],
+    supplied: Collection[str],
+    evaluators: Mapping[str, _Evaluator],
+) -> list[TaskResult]:
+    """The status of each task of the record, in plan order, checked against the plan of the
+    problem: what each task reads, and which are blocked and by what."""
+    plan = plan_tasks(
+        spec.stages, [(entry.name, entry.stage) for entry in spec.evaluators], supplied
+    )
+    planned = [task.id.name for task in plan.of(Kind.STAGE)]
+    unread = [stage for stage in supplied if stage not in planned]
+    if unread:
+        raise RecordError(f"it supplied {', '.join(unread)}, which no evaluator reads")
+    stages = _mapping(record.get("stages"), "stages")
+    if list(stages) != planned:
+        raise RecordError(f"its stages are {list(stages)}, but the problem makes {planned}")
+    geometry = _mapping(record.get("geometry"), "geometry")
+    if geometry.get("status") != DONE:
+        raise RecordError(f"geometry: status {geometry.get('status')!r}, but it is always done")
+    fragments: dict[TaskId, _Fragment] = {
+        stage_task(name): _fragment(
+            _mapping(entry, f"stages.{name}"), f"stage {name!r}", _STAGE_STATUSES
+        )
+        for name, entry in stages.items()
+    }
+    fragments |= {evaluator_task(name): e.fragment for name, e in evaluators.items()}
+    results: dict[TaskId, TaskResult] = {GEOMETRY: TaskResult(GEOMETRY, DONE)}
+    for task in plan.tasks:
+        if task.id == GEOMETRY:
+            continue
+        where = f"{task.id.kind} {task.id.label!r}"
+        fragment = fragments[task.id]
+        needs = [need.label for need in task.needs]
+        if fragment.reads != needs:
+            raise RecordError(
+                f"{where} reads {fragment.reads}, but the problem has it read {needs}"
+            )
+        expected = blocked(task, results)
+        if expected is None:
+            if fragment.status == Status.BLOCKED or fragment.blocked_by:
+                raise RecordError(f"{where} is blocked, but every task it reads succeeded")
+            results[task.id] = TaskResult(task.id, fragment.status, fragment.message)
+            continue
+        causes = [cause.label for cause in expected.blocked_by]
+        if (fragment.status, fragment.blocked_by, fragment.message) != (
+            Status.BLOCKED,
+            causes,
+            expected.message,
+        ):
+            raise RecordError(
+                f"{where} is {fragment.status} (blocked by {fragment.blocked_by}, message "
+                f"{fragment.message!r}), but what it reads makes it blocked by {causes} "
+                f"({expected.message!r})"
+            )
+        results[task.id] = expected
+    return list(results.values())
 
 
 def _check_declarations(evaluators: Mapping[str, _Evaluator]) -> None:

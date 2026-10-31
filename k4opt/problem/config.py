@@ -23,6 +23,7 @@ from k4opt.ddsim import DdsimError
 from k4opt.frozen import Json
 from k4opt.geometry import AmbiguousTargetError, GeometrySource, TargetError
 from k4opt.problem._stages import STAGE_TYPES, changed_by_geometry, executors, stage_reads
+from k4opt.problem._tasks import RESERVED_NAMES
 from k4opt.problem.errors import ProblemConfigError
 from k4opt.problem.models import (
     SCHEMA_VERSION,
@@ -435,6 +436,12 @@ def _evaluators(raw: object) -> tuple[EvaluatorSpec, ...]:
                 f"{path}.name",
                 f"{_show(name)} must start with a letter or digit and hold only letters, "
                 "digits, '.', '_' and '-'",
+            )
+        # records name the work of a candidate, its geometry, stages and evaluators, by name alone
+        if name in RESERVED_NAMES:
+            raise _fail(
+                f"{path}.name",
+                f"{name!r} names a step k4opt runs itself; reserved: {', '.join(RESERVED_NAMES)}",
             )
         if name in first:
             raise _fail(path, f"duplicates evaluators[{first[name]}] (name {name!r})")

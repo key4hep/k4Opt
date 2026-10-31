@@ -99,10 +99,10 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
     print(f"feasible:    {_FEASIBLE[outcome.assessment.feasible]}", file=out)
     if outcome.events_read is not None:  # None: no simulation output was inspected
         print(f"events:      {outcome.events_read} of {outcome.events_requested}", file=out)
-    for stage in sorted(candidate.stages.supplied):
-        print(
-            f"supplied:    {stage} from {candidate.stages.provenance[stage]['provided']}", file=out
-        )
+    for stage in sorted(candidate.supplied):
+        given = candidate.stage(stage)
+        assert given is not None  # a supplied stage is planned
+        print(f"supplied:    {stage} from {given.provenance['provided']}", file=out)
     if not candidate.represents_candidate:
         print(
             "note:        a supplied stage was not made with this candidate's geometry; "
@@ -111,7 +111,8 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
         )
     print(f"fingerprint: {outcome.fingerprint}", file=out)
     print(f"summary:     {outcome.summary_path}", file=out)
-    files = candidate.stages.artifacts.get("simulation", {})
+    simulation = candidate.stage("simulation")
+    files = {} if simulation is None else simulation.artifacts
     for role in ("stdout", "stderr", "edm4hep"):
         if role in files:
             print(f"{role + ':':12} {files[role]}", file=out)

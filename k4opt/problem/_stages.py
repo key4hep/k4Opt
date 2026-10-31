@@ -15,9 +15,10 @@ therefore never builds a command, starts a tool or handles that tool's failures.
   to.
 
 The stage types are described once, in ``_STAGES``; :mod:`k4opt.problem.config` checks a problem
-against the same table. A candidate's plan is a list of stage nodes with the nodes each reads,
-and :func:`run_stages` walks that list: a stage that fails blocks only the stages that depend on
-it. Each stage has named outputs (``events``); ``request.inputs[stage]`` is the main one.
+against the same table. Each stage of a candidate is one task (:mod:`k4opt.problem._tasks`),
+whose work :func:`make_stage` does in the task's own directory: a stage that fails blocks only
+the tasks that read it. Each stage has named outputs (``events``); ``request.inputs[stage]`` is
+the main one.
 
 The stages take their conditions from a :class:`StageContext`, never from the problem itself.
 
@@ -37,7 +38,6 @@ import contextlib
 import functools
 import hashlib
 import os
-import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,7 +50,7 @@ from k4opt.ddsim import (
     simulate,
 )
 from k4opt.evaluation import EvaluationContractError, EvaluationFailed, count_events
-from k4opt.frozen import FrozenMap, Json, freeze
+from k4opt.frozen import Json
 from k4opt.problem.models import ProblemSpec, Stage
 
 
@@ -213,7 +213,7 @@ def _run_simulation(
     read = {key: _identity_if_readable(path) for key, path in files.items()}  # before ddsim does
     run = simulate(
         compact=inputs["geometry"],
-        workdir=workdir / "simulation",
+        workdir=workdir,
         events=stage.events,
         seed=stage.seed,
         particle_gun=particle_gun,
@@ -314,6 +314,16 @@ def stage_reads(stage: str) -> tuple[str, ...]:
     return _STAGES[stage].needs
 
 
+def reads_geometry(stage: str) -> bool:
+    """Whether ``stage``, when it runs, reads the prepared geometry."""
+    return _STAGES[stage].geometry
+
+
+def writes_files(stage: str) -> bool:
+    """Whether ``stage``, when it runs, writes files, and so needs a directory of its own."""
+    return _STAGES[stage].writes
+
+
 def executors(stage: str) -> Mapping[str, _Executor]:
     """The executors that can run ``stage``, by name."""
     return _STAGES[stage].executors
@@ -358,7 +368,7 @@ def changed_by_geometry(stage: str) -> bool:
     return _STAGES[stage].geometry or any(changed_by_geometry(need) for need in stage_reads(stage))
 
 
-def _graph(targets: Collection[str], given: Collection[str]) -> list[tuple[str, tuple[str, ...]]]:
+def graph(targets: Collection[str], given: Collection[str]) -> list[tuple[str, tuple[str, ...]]]:
     """The nodes that make ``targets`` available, each with the nodes it reads, dependencies
     first. A node in ``given`` is a leaf: it is not run, so it reads nothing."""
     order: list[tuple[str, tuple[str, ...]]] = []
@@ -388,7 +398,7 @@ def plan_stages(*targets: str, provided: Collection[str] = ()) -> list[str]:
     Each stage appears once, however many targets need it. A stage whose name is in
     ``provided`` (a given file) is not run, and neither are the stages only it would need.
     """
-    return [name for name, _ in _graph(targets, provided) if name not in provided]
+    return [name for name, _ in graph(targets, provided) if name not in provided]
 
 
 def check_stages(context: StageContext, *targets: str, provided: Collection[str] = ()) -> list[str]:
@@ -403,7 +413,7 @@ def check_stages(context: StageContext, *targets: str, provided: Collection[str]
     plan = plan_stages(*targets, provided=given)
     for name in plan:
         _STAGES[name].check(context, given)
-    for name, _ in _graph(targets, given):
+    for name, _ in graph(targets, given):
         if name in files and not files[name].is_file():
             raise EvaluationContractError(f"stages.{name}.file: {files[name]} is not a file")
     return plan
@@ -420,7 +430,7 @@ def input_files(
     """
     files = {name: path for name, path in context.files().items() if name not in provided}
     named: dict[str, Path] = {}
-    for name, _ in _graph(targets, {*provided, *files}):
+    for name, _ in graph(targets, {*provided, *files}):
         stage = context.stages.get(name)  # each one is defined once check_stages() passed
         if name in files:
             named[f"stages.{name}.file"] = files[name]
@@ -430,11 +440,12 @@ def input_files(
     return named
 
 
-def check_run_inputs(plan: Collection[str], inputs: Collection[str], workdir: Path | None) -> None:
-    """Raise if a stage of ``plan`` lacks the geometry or workdir it needs; others need none."""
-    for name in plan:
+def check_run_inputs(run: Collection[str], geometry: bool, workdir: Path | None) -> None:
+    """Raise if a stage that is to ``run`` needs a geometry and there is none, or a directory and
+    there is no ``workdir`` to make it in; stages given as files need neither."""
+    for name in run:
         stage = _STAGES[name]
-        if stage.geometry and "geometry" not in inputs:
+        if stage.geometry and not geometry:
             raise EvaluationContractError(f"the {name!r} stage needs inputs['geometry']")
         if stage.writes and workdir is None:
             raise EvaluationContractError(f"the {name!r} stage needs a workdir")
@@ -443,144 +454,50 @@ def check_run_inputs(plan: Collection[str], inputs: Collection[str], workdir: Pa
 def run_stage(
     context: StageContext, stage: str, *, inputs: Mapping[str, Path], workdir: Path | None
 ) -> StageOutcome:
-    """Run one ``stage`` in ``workdir``; ``inputs`` holds the geometry and earlier outputs."""
+    """Run one ``stage`` in its own new directory ``workdir``; ``inputs`` holds the geometry and
+    the main output of each stage it reads, by name."""
     return _STAGES[stage].run(context, inputs, workdir)
 
 
-@dataclass(frozen=True, slots=True)
-class StageRecords:
-    """What the pipeline stages of one candidate left behind.
+def make_stage(
+    context: StageContext,
+    stage: str,
+    *,
+    inputs: Mapping[str, Path],
+    workdir: Path | None,
+    supplied: Path | None = None,
+) -> tuple[StageOutcome, Path | None]:
+    """Make ``stage`` available, the work of its task: ``(outcome, main output)``.
 
-    Each stage appears at most once, however many evaluators read it. ``provenance`` has an entry,
-    in pipeline order, for every stage that ran, that was given as a file (its path, size and
-    SHA-256 under ``file``, or under ``provided`` if the caller supplied it) or that could not
-    run, plus what its output shows (``events_read``). ``outputs`` maps a stage to its named
-    outputs (a particle gun has none), ``artifacts`` to its other files by role, ``errors`` to why
-    it cannot be read (it failed, its output is incomplete, or it did not run because a stage it
-    reads failed) and ``seconds`` to the wall time k4opt spent on it: running it and checking its
-    output. ``provided`` names the stages given as files, which do not depend on the stages before
-    them; ``supplied`` those of them the caller supplied rather than the problem. All of it is
-    stored as read-only copies.
+    A file the caller ``supplied`` stands in for the stage, then a ``file`` the problem gives
+    (hashed: its size and SHA-256 are recorded); otherwise the stage runs (:func:`run_stage`).
+    The main output, run or given, is then checked to hold what the stage promises (the requested
+    events of a simulation). ``outcome.error`` says why the stage cannot be read; the main output
+    is ``None`` then, and for a stage that gives no file (a particle gun).
+
+    ``context`` must already have passed :func:`check_stages`; the preflight of a candidate does
+    that before any file is prepared. It is not checked again here: a missing file is then a
+    failed stage, not a contract error.
     """
-
-    provenance: Mapping[str, Mapping[str, Json]] = field(default_factory=lambda: FrozenMap({}))
-    outputs: Mapping[str, Mapping[str, Path]] = field(default_factory=lambda: FrozenMap({}))
-    artifacts: Mapping[str, Mapping[str, Path]] = field(default_factory=lambda: FrozenMap({}))
-    errors: Mapping[str, str] = field(default_factory=lambda: FrozenMap({}))
-    seconds: Mapping[str, float] = field(default_factory=lambda: FrozenMap({}))
-    provided: frozenset[str] = frozenset()
-    supplied: frozenset[str] = frozenset()
-
-    def __post_init__(self) -> None:
-        provenance = freeze(self.provenance, "stage provenance", EvaluationContractError)
-        outputs = {name: FrozenMap(files) for name, files in self.outputs.items()}
-        artifacts = {name: FrozenMap(files) for name, files in self.artifacts.items()}
-        object.__setattr__(self, "provenance", provenance)
-        object.__setattr__(self, "outputs", FrozenMap(outputs))
-        object.__setattr__(self, "artifacts", FrozenMap(artifacts))
-        object.__setattr__(self, "errors", FrozenMap(self.errors))
-        object.__setattr__(self, "seconds", FrozenMap(self.seconds))
-        object.__setattr__(self, "provided", frozenset(self.provided))
-        object.__setattr__(self, "supplied", frozenset(self.supplied))
-
-    def chain(self, stage: str | None) -> list[str]:
-        """``stage`` and the recorded stages it needs, in pipeline order; empty for ``None``.
-
-        A given stage needs nothing: the stages before it are not in its chain, even if another
-        evaluator had them run.
-        """
-        if stage is None:
-            return []
-        return [name for name, _ in _graph([stage], self.provided) if name in self.provenance]
-
-    def error(self, stage: str | None) -> str | None:
-        """Why ``stage`` cannot be read: the first error along its chain, ``None`` if it can."""
-        return next((self.errors[name] for name in self.chain(stage) if name in self.errors), None)
-
-    def inputs(self, stage: str | None) -> dict[str, Path]:
-        """The main output of ``stage`` and of every stage it needs, by stage name.
-
-        An evaluator that reads a later stage (reconstruction, say) thus reads the earlier ones
-        (simulation) too.
-        """
-        main = {name: _STAGES[name].output for name in self.chain(stage)}
-        return {
-            name: self.outputs[name][output]
-            for name, output in main.items()
-            if output in self.outputs.get(name, {})
-        }
-
-
-def run_stages(
-    context: StageContext, *targets: str, inputs: Mapping[str, Path], workdir: Path | None
-) -> StageRecords:
-    """Make every stage of ``targets`` available, running each stage they need once.
-
-    ``inputs`` holds the prepared geometry and the stage files the caller supplies; stages write
-    below ``workdir`` (``workdir/simulation``). The stages run in dependency order; one whose
-    stage it reads failed or turned out unusable does not run, and the others still do. Raises
-    :class:`EvaluationContractError` before anything runs if a stage lacks the geometry or the
-    workdir it needs.
-
-    ``context`` must already have passed :func:`check_stages` for the same ``targets``, with the
-    stages ``inputs`` supplies as ``provided``; the preflight of a candidate does that before any
-    file is prepared. It is not checked again here: a missing file is then a failed stage, not
-    a contract error.
-    """
-    supplied = {name: path for name, path in inputs.items() if name in _STAGES}
-    files = {name: path for name, path in context.files().items() if name not in supplied}
-    graph = _graph(targets, {*supplied, *files})
-    check_run_inputs([name for name, _ in graph if name not in supplied | files], inputs, workdir)
-    available = dict(inputs)  # the geometry and the main output of each stage so far
-    provenance: dict[str, dict[str, Json]] = {}
-    outputs: dict[str, dict[str, Path]] = {}
-    artifacts: dict[str, dict[str, Path]] = {}
-    errors: dict[str, str] = {}
-    seconds: dict[str, float] = {}
-    blocked: dict[str, str] = {}  # stage -> the failed stage that keeps it from running
-    for name, reads in graph:
-        stage = _STAGES[name]
-        started = time.perf_counter()
-        root = next((blocked.get(need, need) for need in reads if need in errors), None)
-        if name in supplied:
-            provenance[name] = provided_provenance(supplied[name])
-            outputs[name] = {stage.output: supplied[name]}
-        elif name in files:
-            path = files[name]
-            try:
-                provenance[name] = {"file": str(path), **file_identity(path)}
-                outputs[name] = {stage.output: path}
-            except OSError as exc:
-                provenance[name] = {"file": str(path)}
-                errors[name] = f"cannot read {path}: {exc}"
-        elif root is not None:
-            provenance[name] = {}
-            errors[name] = f"not run because the {root!r} stage failed"
-            blocked[name] = root
-            continue
-        else:
-            outcome = stage.run(context, available, workdir)
-            outputs[name] = dict(outcome.outputs)
-            artifacts[name] = dict(outcome.artifacts)
-            provenance[name] = dict(outcome.provenance)
-            if outcome.error is not None:
-                errors[name] = outcome.error
-        main = outputs.get(name, {}).get(stage.output)
-        if main is not None:
-            available[name] = main
-        if name not in errors and main is not None and stage.inspect is not None:
-            observed, error = stage.inspect(context, main)
-            provenance[name] |= observed
-            if error is not None:
-                errors[name] = error
-        seconds[name] = time.perf_counter() - started
-    outputs = {name: files for name, files in outputs.items() if files}
-    return StageRecords(
-        provenance,
-        outputs,
-        artifacts,
-        errors,
-        seconds,
-        frozenset({*supplied, *files}),
-        frozenset(supplied),
-    )
+    spec = _STAGES[stage]
+    path = context.files().get(stage)
+    if supplied is not None:
+        outcome = StageOutcome({spec.output: supplied}, provenance=provided_provenance(supplied))
+    elif path is not None:
+        try:
+            outcome = StageOutcome(
+                {spec.output: path}, provenance={"file": str(path)} | file_identity(path)
+            )
+        except OSError as exc:
+            outcome = StageOutcome(
+                provenance={"file": str(path)}, error=f"cannot read {path}: {exc}"
+            )
+    else:
+        outcome = run_stage(context, stage, inputs=inputs, workdir=workdir)
+    main = outcome.outputs.get(spec.output)
+    if outcome.error is not None or main is None or spec.inspect is None:
+        return outcome, None if outcome.error is not None else main
+    observed, error = spec.inspect(context, main)
+    provenance = {**outcome.provenance, **observed}
+    outcome = StageOutcome(outcome.outputs, outcome.artifacts, provenance, error)
+    return outcome, None if error is not None else main
