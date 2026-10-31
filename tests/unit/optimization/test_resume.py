@@ -501,7 +501,7 @@ def test_a_left_record_that_does_not_hold_up_refuses_the_resume(
 
 @pytest.mark.parametrize(
     ("change", "state"),
-    [("remove", "is gone"), ("edit", "is not the record the optimizer was told")],
+    [("remove", "cannot be read"), ("edit", "is not the record the optimizer was told")],
 )
 def test_a_finished_trial_keeps_the_record_the_optimizer_was_told(
     tmp_path: Path, write_problem: Callable[..., Path], change: str, state: str
@@ -519,6 +519,36 @@ def test_a_finished_trial_keeps_the_record_the_optimizer_was_told(
         record.write_text(record.read_text() + " ")  # the same content to JSON, other bytes
     before = tree_digest(output)
     with pytest.raises(OptimizationError, match=rf"trial 1: .*summary\.json {state}"):
+        run(problem, output, 1, resume=True)
+    assert tree_digest(output) == before
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("values", r"trial 0: the optimizer holds the values \[1500\.0, 2000\.0\]"),
+        ("state", "trial 0 is FAIL, but its record is 'valid'"),
+        ("params", r"trial 0: trial-000000/summary\.json holds candidate"),
+    ],
+)
+def test_a_finished_trial_holds_what_its_record_gives_or_the_resume_refuses(
+    tmp_path: Path, write_problem: Callable[..., Path], change: str, message: str
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 2, seed=1)
+    journal = output / "study.journal"
+    operations = [json.loads(line) for line in journal.read_text().splitlines()]
+    (told,) = [op for op in operations if op.get("trial_id") == 0 and op.get("values")]
+    if change == "values":  # what TPE would learn from, with the record left as it is
+        told["values"] = [1500.0, 2000.0]
+    elif change == "state":
+        told["state"], told["values"] = TrialState.FAIL.value, None
+    else:
+        (asked,) = [op for op in operations if op.get("trial_id") == 0 and "param_name" in op]
+        asked["param_value_internal"] += 1.0
+    journal.write_text("".join(json.dumps(op) + "\n" for op in operations))
+    before = tree_digest(output)
+    with pytest.raises(OptimizationError, match=message):
         run(problem, output, 1, resume=True)
     assert tree_digest(output) == before
 

@@ -23,8 +23,8 @@ from k4opt.evaluation import load_evaluator
 from k4opt.optimization import StudyResults, load_study, optimize
 from k4opt.optimization._export import FORMATS, export
 from k4opt.optimization._render import Progress, render_study
-from k4opt.optimization._show import printable, render_results, render_trial
-from k4opt.terminal import color, interactive
+from k4opt.optimization._show import render_results, render_trial
+from k4opt.terminal import color, interactive, printable
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

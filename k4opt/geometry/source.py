@@ -45,17 +45,31 @@ def _expand(text: str) -> str:
     return expanded
 
 
-def _detect_root(compact_real: Path) -> Path:
+def _below(root_real: Path, path: Path) -> Path | None:
+    """``path`` relative to the first of its directories that is ``root_real``, spelled as given
+    from there on, or ``None`` when none is.
+
+    A symlink below the root stays a name rather than its target: relative includes resolve
+    against the directory a file is named in, so ``alias/main.xml`` (a link to
+    ``real/main.xml``) reads ``alias/child.xml``, however the path is spelled.
+    """
+    for parent in reversed(path.parents):  # from the top: as much as possible as spelled
+        if Path(os.path.realpath(parent)) == root_real:
+            return path.relative_to(parent)
+    return None
+
+
+def _detect_root(compact: Path) -> Path:
     """Root of an absolute path: $K4GEO if inside it, else its git checkout, else its directory."""
     k4geo = os.environ.get(K4GEO_ENV)
     if k4geo and Path(k4geo).is_dir():
         k4geo_real = Path(os.path.realpath(k4geo))
-        if _is_within(k4geo_real, compact_real):
+        if _below(k4geo_real, compact) is not None:
             return k4geo_real
-    top = git_toplevel(compact_real.parent)
-    if top is not None and _is_within(top, compact_real):
+    top = git_toplevel(compact.parent)
+    if top is not None and _below(top, compact) is not None:
         return top
-    return compact_real.parent
+    return Path(os.path.realpath(compact.parent))
 
 
 def resolve_geometry(
@@ -67,7 +81,9 @@ def resolve_geometry(
     * absolute ``compact`` without ``root``: root is ``$K4GEO`` when the file lies inside it,
       otherwise the enclosing git checkout, otherwise the file's directory;
     * with ``root``: ``compact`` is relative to ``root`` (or absolute and inside it).
-    Environment variables (``$K4GEO/...``) are expanded in both.
+    Environment variables (``$K4GEO/...``) are expanded in both. An absolute ``compact`` is
+    inside a root when one of the directories it is named in is that root; below it, the path
+    keeps its spelling, symlinks included, as a relative one does (:func:`_below`).
     """
     compact_text = _expand(os.fspath(compact)).replace("\\", "/")
     if not compact_text.strip():
@@ -90,19 +106,19 @@ def resolve_geometry(
             raise SourceError(f"${K4GEO_ENV}={k4geo!r} is not an existing directory")
         root_real = Path(os.path.realpath(k4geo))
     else:
-        compact_real = Path(os.path.realpath(compact_text))
-        if not compact_real.is_file():
+        if not Path(compact_text).is_file():
             raise SourceError(f"geometry {compact_text!r} not found")
-        root_real = _detect_root(compact_real)
+        root_real = _detect_root(Path(os.path.normpath(compact_text)))
 
     if absolute:
-        compact_real = Path(os.path.realpath(compact_text))
-        try:
-            relative = compact_real.relative_to(root_real)
-        except ValueError as exc:
+        below = _below(root_real, Path(os.path.normpath(compact_text)))
+        if below is None:
             raise SourceError(
-                f"geometry {compact_text!r} does not lie inside the root {root_real}"
-            ) from exc
+                f"geometry {compact_text!r} does not lie inside the root {root_real} as it is "
+                "named (a symlink to a file inside it does not, its includes are read from where "
+                "it is named)"
+            )
+        relative = below
     else:
         relative = Path(os.path.normpath(compact_text))
         if relative.parts and relative.parts[0] == "..":

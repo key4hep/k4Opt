@@ -75,7 +75,7 @@ def _check_told_values(frozen: FrozenTrial, result: TrialResult) -> None:
         )
 
 
-def _trial_result(
+def trial_result(
     directory: Path,
     document: Mapping[str, Any],
     spec: ProblemSpec,
@@ -91,6 +91,7 @@ def _trial_result(
     that a FAIL trial with a ``valid`` record and ``k4opt.error`` is ``error``, without a
     result: its values never reached the optimizer. A FAIL trial without a record is ``error``
     with ``k4opt.error`` and ``interrupted`` without; any other trial was not made by k4opt.
+    A resume checks each trial with it, before it recovers or proposes any.
     """
     number, attrs = frozen.number, frozen.user_attrs
     references = [parameter.geometry.canonical_target for parameter in spec.parameters]
@@ -149,7 +150,7 @@ def load(directory: str | os.PathLike[str], storage: str | None) -> StudyResults
         read: dict[str, tuple[int, object]] = {}
         held = sorted(study.get_trials(deepcopy=False), key=lambda frozen: frozen.number)
         for frozen in held:
-            result, notes = _trial_result(path, document, spec, frozen, read)
+            result, notes = trial_result(path, document, spec, frozen, read)
             trials.append(result)
             warnings += notes
     except Exception as exc:

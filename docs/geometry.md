@@ -75,6 +75,13 @@ To work on your own k4geo checkout give its root (`--root ../k4geo`, or `root=` 
 Python); the geometry is then relative to it. Includes may use `../` as long as
 they stay inside the root.
 
+An absolute path lies inside a root when one of the directories it is named
+through is that root (`$K4GEO` may itself be a symlink). Below the root it keeps
+its spelling, symlinks included, exactly like the relative path: relative includes
+resolve against the directory a file is named in, so `/tree/alias/main.xml`, a
+symlink to `real/main.xml`, reads `alias/child.xml` either way. A symlink outside
+the root to a file inside it is not inside the root.
+
 ### Python API
 
 ```python

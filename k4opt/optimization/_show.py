@@ -16,14 +16,9 @@ from typing import TextIO
 from k4opt.optimization._render import _paint, _value
 from k4opt.optimization._results import StudyResults, TrialResult
 from k4opt.problem import MetricRef, Parameter, ProblemSpec
-from k4opt.terminal import Style
+from k4opt.terminal import Style, printable
 
 LABEL = 12  # the width of a line's label
-
-
-def printable(text: object) -> str:
-    """``text`` with its control characters escaped (``\\x1b``, ``\\n``)."""
-    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode() for c in str(text))
 
 
 def _measured(value: object, unit: str | None, uncertainty: object = None, *, exact: bool) -> str:

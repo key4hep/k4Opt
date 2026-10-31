@@ -42,6 +42,11 @@ class Style:
         return self._wrap("90", text)
 
 
+def printable(text: object) -> str:
+    """``text`` with its control characters escaped (``\\x1b``, ``\\n``)."""
+    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode() for c in str(text))
+
+
 def is_tty(stream: TextIO) -> bool:
     try:
         return bool(stream.isatty())
