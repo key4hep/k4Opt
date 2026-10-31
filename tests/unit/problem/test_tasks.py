@@ -286,6 +286,25 @@ def test_a_made_file_is_named_by_its_task_and_hashed_only_if_asked(tmp_path: Pat
         Made.file(SIMULATION, "events", tmp_path, hashed=False)
 
 
+def test_a_file_replaced_while_it_is_hashed_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.problem import _tasks
+
+    path = tmp_path / "histogram.json"
+    path.write_bytes(b"old")
+    identity = _tasks.file_identity
+
+    def replaced(file: Path) -> dict[str, object]:
+        file.write_bytes(b"new, and longer")  # between the stat and the hash
+        return identity(file)
+
+    monkeypatch.setattr(_tasks, "file_identity", replaced)
+    # the size of one version with the hash of another, which changed() would then trust
+    with pytest.raises(OSError, match="changed while it was hashed"):
+        Made.file(evaluator_task("plot", "gamma"), "histogram", path, hashed=True)
+
+
 @pytest.mark.parametrize("hashed", [False, True])
 def test_a_made_file_is_changed_once_its_stat_or_its_bytes_are(
     tmp_path: Path, hashed: bool

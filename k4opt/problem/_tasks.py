@@ -232,12 +232,15 @@ class Made:
     @classmethod
     def file(cls, task: TaskId, name: str, path: Path, *, hashed: bool) -> Made:
         """The file ``path`` that ``task`` made as ``name``, with its SHA-256 if ``hashed``;
-        raises :class:`OSError` if it cannot be read."""
+        raises :class:`OSError` if it cannot be read, or if it changes while it is hashed (its
+        size and its hash would describe other versions of it)."""
         stat = _stat(path)
         if stat is None or not path.is_file():
             raise OSError(f"{path} is no file")
         sha256 = file_identity(path)["sha256"] if hashed else None
         assert sha256 is None or isinstance(sha256, str)
+        if hashed and _stat(path) != stat:
+            raise OSError(f"{path} changed while it was hashed")
         return cls(Artifact(f"{task.label}#{name}", path, stat[0], sha256), stat)
 
     def changed(self) -> bool:
