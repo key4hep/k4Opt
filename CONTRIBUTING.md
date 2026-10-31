@@ -10,7 +10,7 @@ and `optimization`.
       errors.py        error base classes shared by all components
       frozen.py        immutable copies of JSON-like data, shared by components that store it
       yamlio.py        strict YAML loading, shared by components that read YAML files
-      jsonio.py        atomic publication of complete JSON records without overwriting
+      jsonio.py        atomic publication of complete files (JSON records, exports) without overwriting
       revision.py      git revisions and the identity of k4opt's own code, for provenance
       terminal.py      colors and widths of terminal output, shared by the command lines
       cli.py           the `k4opt` command; each component adds a command group

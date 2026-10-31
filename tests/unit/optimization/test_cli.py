@@ -1,4 +1,5 @@
-"""``k4opt optimize``: what it prints, its exit codes, and k4opt without Optuna."""
+"""``k4opt optimize`` and ``k4opt study``: what they print, their exit codes, and k4opt without
+Optuna."""
 
 from __future__ import annotations
 
@@ -12,8 +13,9 @@ import pytest
 
 from k4opt.cli import main
 from k4opt.problem import load_problem
+from tests.support.common import tree_digest
 from tests.support.evaluators import TRADE_OFF
-from tests.unit.optimization.conftest import optuna_study
+from tests.unit.optimization.conftest import RADIUS, evaluator_from, optuna_study
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 
@@ -85,7 +87,7 @@ def test_a_resume_prints_the_trials_it_recovers_first(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
     pytest.importorskip("optuna")
-    from k4opt.optimization._optuna import search_space
+    from k4opt.optimization._optuna.space import search_space
 
     problem, output = write_problem(), tmp_path / "s"
     code, _, _ = optimize(str(problem), "--trials", "1", "--seed", "1", "--output", str(output))
@@ -128,7 +130,7 @@ def test_the_command_line_does_not_import_optuna() -> None:
     assert (run.returncode, run.stdout.strip()) == (0, "False"), run.stderr
 
 
-def test_without_optuna_only_optimize_needs_it(
+def test_without_optuna_only_optimize_and_study_need_it(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
     problem = write_problem()
@@ -141,6 +143,122 @@ def test_without_optuna_only_optimize_needs_it(
     assert run.returncode == 1
     assert "k4opt optimize needs Optuna, which is not installed: pip install" in run.stderr
     assert not (tmp_path / "s").exists()
-    for argv in (["--help"], ["evaluate", "--help"], ["optimize", "--help"]):
+    run = _python(blocked + f"sys.exit(main(['study', 'show', '{tmp_path}']))")
+    assert run.returncode == 1
+    assert "reading a study needs Optuna, which is not installed: pip install" in run.stderr
+    for argv in (
+        ["--help"],
+        ["evaluate", "--help"],
+        ["optimize", "--help"],
+        ["study", "--help"],
+        ["study", "export", "--help"],
+    ):
         run = _python(blocked + f"sys.exit(main({argv!r}))")
         assert run.returncode == 0, run.stderr
+
+
+# --- k4opt study -----------------------------------------------------------------------------
+
+
+def study(*argv: str) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    code = main(["study", *argv], stdout=out, stderr=err)
+    return code, out.getvalue(), err.getvalue()
+
+
+ODD = """
+    from k4opt.evaluation import Evaluator
+
+    class Probe(Evaluator):
+        name, version = "test.trade_off", "1"
+        metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
+
+        def evaluate(self, request):
+            x, *_ = request.candidate.values()
+            if x < 300:
+                self.invalid("\\x1b[31mred\\x1b[0m from a log")
+            return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
+"""
+
+
+def test_study_show_trial_and_export_read_a_study_and_change_nothing(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    pytest.importorskip("optuna")
+    from k4opt.optimization import optimize as run
+
+    constraints = [{"stage": "analysis", "metric": "a", "max": 400, "unit": "mm"}]
+    problem, output = write_problem(constraints=constraints), tmp_path / "s"
+    odd = evaluator_from(tmp_path / "evaluators", "odd", ODD)
+    run(problem, [odd], output, trials=6, seed=1)
+    # a session at work on the study, elsewhere: reading needs no lock and takes none
+    (output / ".lock").write_text('{"host": "elsewhere", "pid": 1, "started": "now"}\n')
+    before = tree_digest(output)
+
+    code, out, err = study("show", str(output))
+    assert (code, err) == (0, "")
+    lines = out.splitlines()
+    assert lines[0].startswith("study:      trade-")
+    assert lines[1].startswith("id:         ")
+    assert lines[2] == f"directory:  {output} (trials in study.journal)"
+    assert lines[3] == f"parameters: {RADIUS}  continuous [100.0, 600.0] mm"
+    assert lines[4:6] == [
+        "objectives: analysis/a  minimize  (mm)",
+        "            analysis/b  minimize  (1/mm)",
+    ]
+    assert lines[6] == "limits:     analysis/a:max  <= 400 mm"
+    assert lines[7].startswith("trials:     6: ") and "invalid" in lines[7]
+    assert lines[8].startswith("pareto:     ")
+    assert all(line.startswith("            trial ") for line in lines[9:])
+    assert "\x1b" not in out  # not a terminal: no color
+
+    code, out, err = study("trial", str(output), "0")
+    assert (code, err) == (0, "")
+    assert out.startswith("trial:      0: ")
+    assert f"candidate:  {RADIUS} = " in out and "record:     " in out
+    invalid = next(n for n in range(6) if '"status": "invalid"' in _record(output, n))
+    code, out, _ = study("trial", str(output), str(invalid))
+    assert "message:    test.trade_off invalid: \\x1b[31mred\\x1b[0m from a log" in out
+    assert "\x1b" not in out  # a record's escape sequence is shown, not run
+
+    code, out, err = study("export", str(output), "--format", "csv")
+    assert (code, err) == (0, "")
+    assert (
+        len(out.splitlines()) == 7 and out.startswith("study,trial,status,") and "\x1b" not in out
+    )
+    code, out, err = study(
+        "export", str(output), "--format", "json", "--output", str(tmp_path / "s.json")
+    )
+    assert (code, out, err) == (0, "", "")
+    assert (tmp_path / "s.json").read_text().startswith('{\n  "format": "k4opt.study-results/1"')
+    assert tree_digest(output) == before
+
+
+def _record(output: Path, number: int) -> str:
+    return (output / f"trial-{number:06d}" / "summary.json").read_text()
+
+
+def test_study_commands_say_what_they_cannot_read(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    pytest.importorskip("optuna")
+    output = tmp_path / "s"
+    code, _, _ = optimize(
+        str(write_problem()), "--trials", "2", "--seed", "1", "--output", str(output)
+    )
+    assert code == 0
+    code, out, err = study("trial", str(output), "7")
+    assert (code, out) == (1, "")
+    assert err == "k4opt: error: the study has no trial 7: it has trials 0 to 1\n"
+    code, out, err = study("show", str(tmp_path / "nothing"))
+    assert (code, out) == (1, "") and "is not a study directory" in err
+    code, out, err = study(
+        "export", str(output), "--format", "csv", "--output", str(output / "x.csv")
+    )
+    assert (code, out) == (1, "") and "is in the study directory" in err
+    (output / "trial-000099").mkdir()
+    code, out, err = study("show", str(output))
+    assert code == 0 and err.startswith("k4opt: warning: trial-000099 in ")
+    with pytest.raises(SystemExit) as info:
+        study("export", str(output))  # no --format
+    assert info.value.code == 2

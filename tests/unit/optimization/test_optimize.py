@@ -375,12 +375,12 @@ def test_a_failure_of_the_optimizer_or_its_storage_stops_the_study_as_an_error(
 def test_a_bug_of_k4opt_is_not_dressed_up_as_a_study_error(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from k4opt.optimization import _optuna
+    from k4opt.optimization._optuna import run
 
     def buggy(run: Any) -> Any:
         return 1 / 0
 
-    monkeypatch.setattr(_optuna, "_study_report", buggy)
+    monkeypatch.setattr(run, "_study_report", buggy)
     with pytest.raises(ZeroDivisionError):
         study(write_problem(), tmp_path / "s")
 
