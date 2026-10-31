@@ -235,6 +235,23 @@ def test_on_a_terminal_the_command_draws_the_bar_and_colors_the_output(
     assert code == 0 and "\x1b" not in text and "\r" not in text and len(text.splitlines()) == 5
 
 
+def test_a_running_study_cannot_send_the_terminal_a_control_sequence() -> None:
+    esc = "\x1b[2J\nfake"  # clears the screen and starts a line, were it printed as it is
+    out, err = io.StringIO(), io.StringIO()
+    with Progress(3, out, err, bar=False, color=False) as shown:
+        candidate, objectives = {f"x{esc}": f"c{esc}"}, {f"a{esc}": 1.0}
+        shown.trial(
+            TrialReport(0, Path("t"), candidate, "valid", feasible=True, objectives=objectives)
+        )
+        shown.trial(trial(1, "failed", record="r", message=f"ddsim{esc}"))
+        shown.trial(TrialReport(2, Path(f"trial{esc}"), {}, "interrupted"))
+        shown.warning(f"trial 1: careful{esc}")
+    lines = out.getvalue().splitlines()
+    assert "\x1b" not in out.getvalue() + err.getvalue() and len(lines) == 3
+    assert "".join(lines).count("\\x1b[2J\\nfake") == 5
+    assert err.getvalue() == "k4opt: warning: trial 1: careful\\x1b[2J\\nfake\n"
+
+
 def test_a_study_read_back_cannot_send_the_terminal_a_control_sequence() -> None:
     esc = "\x1b[2J"  # clears the screen, were it printed as it is
     evaluator = "test.trade_off"  # an evaluator name holds no control character

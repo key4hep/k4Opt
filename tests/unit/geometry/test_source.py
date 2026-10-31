@@ -76,6 +76,57 @@ def test_absolute_path_outside_git_and_k4geo_falls_back_to_its_directory(
     assert len(explicit.discover()) > 0
 
 
+def _aliased_tree(tmp_path: Path) -> Path:
+    """``alias/main.xml`` links to ``real/main.xml``, which includes ``child.xml``: another file
+    in each directory."""
+    tree = tmp_path / "tree"
+    for directory, constant in (("real", "A"), ("alias", "B")):
+        (tree / directory).mkdir(parents=True)
+        (tree / directory / "child.xml").write_text(
+            f'<lccdd><define><constant name="{constant}" value="1"/></define></lccdd>'
+        )
+    (tree / "real" / "main.xml").write_text(
+        '<lccdd><includes><gdmlFile ref="child.xml"/></includes></lccdd>'
+    )
+    (tree / "alias" / "main.xml").symlink_to("../real/main.xml")
+    (tree / "linked").symlink_to("real", target_is_directory=True)
+    return tree
+
+
+def test_an_absolute_path_keeps_its_symlinks_below_the_root_as_a_relative_one_does(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("K4GEO", raising=False)
+    tree = _aliased_tree(tmp_path)
+    for name, child in (("alias/main.xml", "alias/child.xml"), ("linked/main.xml", None)):
+        relative = GeometrySource(name, root=tree)
+        absolute = GeometrySource(str(tree / name), root=tree)
+        assert relative == absolute and absolute.compact == name
+        files = absolute.discover().files
+        assert files == relative.discover().files
+        assert files[1] == (child or "linked/child.xml")  # read where the entry point is named
+    if git_toplevel(tree) is None:  # the root found for it is the directory it is named in
+        found = GeometrySource(str(tree / "alias" / "main.xml"))
+        assert (found.root, found.compact) == (Path(os.path.realpath(tree / "alias")), "main.xml")
+
+
+def test_an_absolute_path_is_inside_k4geo_however_k4geo_is_spelled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "k4geo").symlink_to(REAL_MINI_GEO, target_is_directory=True)
+    monkeypatch.setenv("K4GEO", str(tmp_path / "k4geo"))
+    for spelled in (tmp_path / "k4geo", REAL_MINI_GEO):
+        source = GeometrySource(str(spelled / MINI_COMPACT))
+        assert (source.root, source.compact) == (REAL_MINI_GEO, MINI_COMPACT)
+
+
+def test_a_symlink_outside_the_root_to_a_file_inside_it_is_not_inside(tmp_path: Path) -> None:
+    tree = _aliased_tree(tmp_path)
+    (tmp_path / "main.xml").symlink_to(tree / "real" / "main.xml")
+    with pytest.raises(SourceError, match=r"does not lie inside the root .* as it is named"):
+        GeometrySource(str(tmp_path / "main.xml"), root=tree)
+
+
 def test_explicit_root_validation(tmp_path: Path) -> None:
     with pytest.raises(SourceError, match="not an existing directory"):
         GeometrySource("x.xml", root=tmp_path / "missing")

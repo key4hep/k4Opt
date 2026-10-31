@@ -38,6 +38,7 @@ from k4opt.optimization._optuna.optimizer import (
     new_document,
     open_optuna,
 )
+from k4opt.optimization._optuna.read import trial_result
 from k4opt.optimization._optuna.space import constraint_values, objective_values, search_space
 from k4opt.optimization._optuna.storage import close, leaving, open_storage
 from k4opt.optimization._results import limit_names
@@ -216,8 +217,10 @@ def _recover(run: _Study, progress: Progress) -> None:
     """Finish the trials a session left running, before any new one: one without a record is
     FAIL, its directory left as it is, and one with a record is told it; ``progress`` is called
     with each as it is finished. Before anything changes, the resume refuses if a trial
-    directory belongs to no trial, or if the record a finished trial was told is gone or was
-    changed (its SHA-256)."""
+    directory belongs to no trial, or if a finished trial does not hold what its record gives,
+    checked as :func:`~k4opt.optimization.load_study` checks it: its record is gone or was
+    changed, its state, status, candidate, values or constraint values are not the record's, or
+    k4opt did not make it."""
     trials = run.study.get_trials(deepcopy=False)
     known = {trial.user_attrs.get("k4opt.dir", trial_directory(trial.number)) for trial in trials}
     stray = [name for name in trial_directories(run.directory) if name not in known]
@@ -226,8 +229,15 @@ def _recover(run: _Study, progress: Progress) -> None:
             f"{', '.join(stray)} in {run.directory} belong(s) to no trial of the study; move "
             "them out of the study directory to resume it"
         )
-    for frozen in trials:  # the evidence of what the optimizer was told is still there
-        _check_told_record(run, frozen)
+    for frozen in sorted(trials, key=lambda frozen: frozen.number):
+        # the trials still to come must read what the earlier candidates' own references read
+        # (``run.read``); the warnings of a record were given when the optimizer was told it
+        try:
+            trial_result(run.directory, run.document, run.spec, frozen, run.read)
+        except OptimizationError as exc:
+            raise OptimizationError(
+                f"{exc}; the study resumes only with every trial as its record holds it"
+            ) from None
     for frozen in trials:
         if frozen.state != TrialState.RUNNING:
             continue
@@ -238,44 +248,6 @@ def _recover(run: _Study, progress: Progress) -> None:
             trial.set_user_attr("k4opt.recovered", True)
             finished = run.study.tell(trial, state=TrialState.FAIL)
         progress(_trial_report(run, finished))
-
-
-def _check_told_record(run: _Study, frozen: FrozenTrial) -> None:
-    """A trial the optimizer was told a record of still has that record, byte for byte, and
-    every other finished trial is one k4opt made: interrupted, or one that stopped the study.
-
-    k4opt marks each trial it asks for with ``k4opt.dir`` at once, and recovery marks one that
-    a killed session left without it (``k4opt.recovered``). A finished trial with a result but
-    no record, or with no mark of k4opt at all, was added by another client of the storage: it
-    would count among the study's trials (and so change the next session's seed) without being
-    one of its evaluations.
-    """
-    attrs = frozen.user_attrs
-    told = attrs.get("k4opt.record")
-    if frozen.state == TrialState.RUNNING:
-        return  # recovery decides about it
-    if not isinstance(told, Mapping):
-        ours = "k4opt.dir" in attrs or attrs.get("k4opt.recovered") is True
-        if frozen.state != TrialState.FAIL or "k4opt.status" in attrs or not ours:
-            raise OptimizationError(
-                f"trial {frozen.number} is {frozen.state.name} without the record k4opt tells a "
-                "trial with, or any mark of k4opt, so it was not made by k4opt optimize; resume "
-                "needs every trial to be one of the study's own"
-            )
-        return
-    path = run.directory / str(told.get("path"))
-    try:
-        data: bytes | None = path.read_bytes()
-    except OSError:
-        data = None
-    if data is None or _sha256(data) != told.get("sha256"):
-        state = "is gone" if data is None else "is not the record the optimizer was told"
-        raise OptimizationError(
-            f"trial {frozen.number}: {path} {state}, so nothing shows what its values rest on; "
-            "put the record back to resume the study"
-        )
-    # the trials still to come must read what its candidate's own references read
-    check_candidate_files(run.read, json.loads(data), frozen.number)
 
 
 def _trial_report(run: _Study, frozen: FrozenTrial) -> TrialReport:

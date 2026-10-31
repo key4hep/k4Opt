@@ -3,7 +3,9 @@
 On an interactive terminal the lines are colored and a progress bar of the trials stays on the
 last line, redrawn while the study runs; piped or written to a file, each trial is one plain
 line, fit for a log. A parameter value is shown to 6 significant digits; its record holds all of
-them. A trial a resume recovered is marked ``(recovered)``.
+them. A trial a resume recovered is marked ``(recovered)``. What comes from the study or its
+evaluators (names, values, paths, messages and warnings) is printed with its control characters
+escaped, so that it cannot move the cursor or break a line of the log.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from types import TracebackType
 from typing import Any, TextIO
 
 from k4opt.optimization._study import StudyReport, TrialReport
-from k4opt.terminal import Style, width
+from k4opt.terminal import Style, printable, width
 
 BAR_WIDTH = 40
 MIN_BAR_WIDTH = 20
@@ -35,7 +37,7 @@ def _paint(style: Style, outcome: str, text: str) -> str:
 
 
 def _value(value: Any) -> str:
-    return f"{value:.6g}" if isinstance(value, float) else str(value)
+    return f"{value:.6g}" if isinstance(value, float) else printable(value)
 
 
 def _outcome(trial: TrialReport) -> str:
@@ -52,17 +54,17 @@ def trial_line(trial: TrialReport, *, color: bool = False) -> str:
     if trial.objectives is not None:
         outcome = _outcome(trial)
         candidate = "  ".join(
-            style.dim(f"{name}=") + style.cyan(_value(value))
+            style.dim(f"{printable(name)}=") + style.cyan(_value(value))
             for name, value in trial.candidate.items()
         )
         values = "  ".join(
-            style.dim(f"{name}=") + style.bold(f"{value:.6g}")
+            style.dim(f"{printable(name)}=") + style.bold(f"{value:.6g}")
             for name, value in trial.objectives.items()
         )
         line = f"{head}{_paint(style, outcome, outcome.ljust(10))}  {candidate}  {values}"
     else:
         where = f"{trial.directory.name}/summary.json" if trial.record else trial.directory.name
-        line = f"{head}{trial.message or ''}  {style.dim(where)}"
+        line = f"{head}{printable(trial.message or '')}  {style.dim(printable(where))}"
     return f"{line}  {style.dim('(recovered)')}" if trial.recovered else line
 
 
@@ -82,8 +84,9 @@ def render_study(report: StudyReport, out: TextIO, *, color: bool = False) -> No
         if counts[outcome]
     ]
     print(
-        f"{style.dim('study:')}    {style.bold(report.name)}, {len(report.objectives)} "
-        f"objective(s), {len(report.constraints)} limit(s), {report.study_path}",
+        f"{style.dim('study:')}    {style.bold(printable(report.name))}, "
+        f"{len(report.objectives)} objective(s), {len(report.constraints)} limit(s), "
+        f"{printable(report.study_path)}",
         file=out,
     )
     print(f"{style.dim('trials:')}   {len(report.trials)}: {', '.join(parts)}", file=out)
@@ -178,7 +181,7 @@ class Progress:
 
     def warning(self, message: str) -> None:
         with self._lock:
-            self._print(f"k4opt: warning: {message}", self.err)
+            self._print(f"k4opt: warning: {printable(message)}", self.err)
 
     @property
     def per_trial(self) -> float | None:

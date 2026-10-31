@@ -27,8 +27,11 @@ trials:   30: 28 valid (28 feasible, 0 infeasible), 1 invalid, 1 failed
 pareto:   0, 4, 7, 12, 19
 ```
 
-A parameter value is shown to 6 significant digits; the trial's record holds all of them. On a
-terminal the lines are colored, and a progress bar stays under them while the study runs:
+A parameter value is shown to 6 significant digits; the trial's record holds all of them. Every
+text from the study or its evaluators (names, values, paths, messages, warnings) is printed with
+its control characters escaped (`\x1b`, `\n`), so each trial stays one line and nothing an
+evaluator reports can change the terminal. On a terminal the lines are colored, and a progress
+bar stays under them while the study runs:
 
 ```text
 ⠹ ━━━━━━━━━━━━━━━━━━╸─────────────────────   46%  14/30 trials  1:07:12 elapsed  ~1:16:48 left  4:48/trial  10 feasible  2 infeasible  2 failed
@@ -291,7 +294,10 @@ left running:
 
 Before that, every finished trial must still have the record the optimizer was told: the same
 bytes as the SHA-256 in its `k4opt.record`. A record that is gone or was changed makes the
-resume refuse, since nothing would show what the trial's values rest on. So does a trial
+resume refuse, since nothing would show what the trial's values rest on. So does a trial that
+does not hold what its record gives, checked as `load_study` checks it (its state, status,
+candidate, objective values, feasibility and constraint values): the sampler would learn from
+values no evaluation produced. So does a trial
 without any record, other than an interrupted one or one that stopped the study, and a trial
 without any mark of k4opt (each trial is marked with its directory when it is asked for, or as
 `k4opt.recovered`): another client of the storage added it, and it would count among the
