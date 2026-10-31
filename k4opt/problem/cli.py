@@ -1,7 +1,7 @@
 """Command-line interface of the problem component: ``k4opt evaluate``.
 
     k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] [--param REFERENCE=VALUE ...]
-        [--input STAGE=FILE ...] [--timeout SECONDS] --output DIR
+        [--input SAMPLE/STAGE=FILE ...] [--timeout SECONDS] --output DIR
 
 A thin wrapper over :func:`k4opt.problem._run.run_candidate`; :func:`register` plugs it into
 the top-level ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate,
@@ -16,6 +16,7 @@ from typing import TextIO
 from k4opt.evaluation import Status, load_evaluator
 from k4opt.problem._assess import Limit
 from k4opt.problem._run import RunOutcome, run_candidate
+from k4opt.problem._tasks import Kind
 
 _FEASIBLE = {True: "yes", False: "no", None: "not assessed"}
 
@@ -26,9 +27,9 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "evaluate",
         help="simulate one candidate of a problem and measure it",
         description=(
-            "Generate the geometry of one candidate, run the stages of the problem on it once "
-            "(ddsim) and measure the result with every evaluator of the problem. Needs the "
-            "Key4hep environment."
+            "Generate the geometry of one candidate, run the stages of each sample of the problem "
+            "on it once (ddsim) and measure the result with every evaluator of the problem. "
+            "Needs the Key4hep environment."
         ),
     )
     evaluate.add_argument("problem", help="path to a k4opt problem YAML file")
@@ -55,11 +56,12 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "--input",
         action="append",
         default=[],
-        metavar="STAGE=FILE",
+        metavar="SAMPLE/STAGE=FILE",
         help=(
-            "use FILE as the output of STAGE instead of running it, e.g. simulation=events.root "
-            "to try an evaluator on an existing file (repeatable). A simulation supplied this way "
-            "was not made with this candidate's geometry, and the summary says so"
+            "use FILE as the output of STAGE of SAMPLE instead of running it, e.g. "
+            "gamma/simulation=events.root to try an evaluator on an existing file (repeatable). "
+            "A simulation supplied this way was not made with this candidate's geometry, and the "
+            "summary says so"
         ),
     )
     evaluate.add_argument(
@@ -87,11 +89,15 @@ def _limit(limit: Limit) -> str:
 def _report(outcome: RunOutcome, out: TextIO) -> None:
     candidate = outcome.candidate
     print(f"status:      {candidate.status}", file=out)
-    for binding, record in candidate.evaluations.items():
+    for task in candidate.plan.of(Kind.EVALUATOR):
+        record = candidate.results[task.id].record
+        assert record is not None  # every evaluation has one, a blocked one too
         result = record.result
         name = f"{record.evaluator_name} {record.evaluator_version}"
-        if binding != record.evaluator_name:
-            name = f"{binding} ({name})"
+        if task.id.name != record.evaluator_name:
+            name = f"{task.id.name} ({name})"
+        if task.id.sample is not None:
+            name = f"{name} on {task.id.sample}"
         print(f"evaluator:   {name}: {result.status}", file=out)
         for m in result.measurements:
             error = "" if m.uncertainty is None else f" +- {m.uncertainty:.6g}"
@@ -100,12 +106,13 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
     for limit in outcome.assessment.limits:
         print(f"limit:       {_limit(limit)}", file=out)
     print(f"feasible:    {_FEASIBLE[outcome.assessment.feasible]}", file=out)
-    if outcome.events_read is not None:  # None: no simulation output was inspected
-        print(f"events:      {outcome.events_read} of {outcome.events_requested}", file=out)
-    for stage in sorted(candidate.supplied):
-        given = candidate.stage(stage)
-        assert given is not None  # a supplied stage is planned
-        print(f"supplied:    {stage} from {given.provenance['provided']}", file=out)
+    for sample, (read, requested) in outcome.events.items():
+        print(f"events:      {sample}: {read} of {requested}", file=out)
+    stages = candidate.plan.of(Kind.STAGE)
+    for task in stages:
+        if task.given == "supplied":
+            given = candidate.results[task.id].provenance["provided"]
+            print(f"supplied:    {task.id.label} from {given}", file=out)
     if not candidate.represents_candidate:
         print(
             "note:        a supplied stage was not made with this candidate's geometry; "
@@ -114,11 +121,11 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
         )
     print(f"fingerprint: {outcome.fingerprint}", file=out)
     print(f"summary:     {outcome.summary_path}", file=out)
-    simulation = candidate.stage("simulation")
-    files = {} if simulation is None else simulation.artifacts
-    for role in ("stdout", "stderr", "edm4hep"):
-        if role in files:
-            print(f"{role + ':':12} {files[role]}", file=out)
+    for simulation in (candidate.results[t.id] for t in stages if t.id.name == "simulation"):
+        files, at = simulation.artifacts, simulation.id.sample
+        for role in ("stdout", "stderr", "edm4hep"):
+            if role in files:
+                print(f"{role + ':':12} {at}: {files[role]}", file=out)
 
 
 def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:

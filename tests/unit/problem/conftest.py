@@ -19,23 +19,25 @@ _BASE: dict[str, object] = {
             "unit": "mm",
         }
     ],
-    "stages": {
-        "generation": {
-            "executor": "gun",
-            "particle": "gamma",
-            "energy": {"value": 10, "unit": "GeV"},
-            "direction": {
-                "distribution": "uniform",
-                "theta": [80, 100],
-                "phi": [0, 360],
-                "unit": "deg",
+    "samples": {
+        "gamma": {
+            "generation": {
+                "executor": "gun",
+                "particle": "gamma",
+                "energy": {"value": 10, "unit": "GeV"},
+                "direction": {
+                    "distribution": "uniform",
+                    "theta": [80, 100],
+                    "phi": [0, 360],
+                    "unit": "deg",
+                },
             },
-        },
-        "simulation": {
-            "executor": "ddsim",
-            "events": 1000,
-            "seed": 42,
-            "physics.list": "FTFP_BERT",
+            "simulation": {
+                "executor": "ddsim",
+                "events": 1000,
+                "seed": 42,
+                "physics.list": "FTFP_BERT",
+            },
         },
     },
     "evaluators": [

@@ -29,8 +29,9 @@ from k4opt.optimization import (
 from k4opt.optimization._export import columns, export, to_csv, to_json
 from k4opt.optimization._show import render_results
 from k4opt.problem import Assessment, ObjectiveValue, parse_problem
+from tests.support import simulation
 from tests.support.common import tree_digest
-from tests.support.evaluators import trade_off
+from tests.support.evaluators import cell_count, trade_off
 from tests.unit.optimization.conftest import RADIUS, evaluator_from, problem_document, summary
 
 
@@ -144,6 +145,39 @@ def test_two_bindings_of_one_metric_are_two_columns_and_two_lines_of_show(
         "objectives: test.trade_off/analysis/a  minimize  (mm)",
         "            strict/analysis/a  maximize  (mm)",
         "limits:     strict/analysis/b:max  <= 1",
+    ]
+
+
+def test_the_samples_name_the_objective_and_time_columns_and_the_lines_of_show(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    output = tmp_path / "s"
+    run(sampled_problem, output, 2, evaluators=[cell_count()])
+    study = load_study(output)
+    header = columns(study)
+    cells = "test.cell_count/simulation/ecal_barrel.mean_hit_cells"
+    assert [c for c in header if c.startswith("objective:") and ":" not in c[10:]] == [
+        f"objective:gamma/{cells}",
+        f"objective:pion/{cells}",
+    ]
+    assert [c for c in header if c.startswith("stage:")] == [
+        f"stage:{label}:elapsed_seconds"
+        for label in ("gamma/generation", "gamma/simulation", "pion/generation", "pion/simulation")
+    ]
+    rows = list(csv.DictReader(io.StringIO(to_csv(study))))
+    for trial, row in zip(study.trials, rows, strict=True):
+        record = summary(output, trial.number)
+        seconds = record["samples"]["pion"]["stages"]["simulation"]["elapsed_seconds"]
+        assert float(row["stage:pion/simulation:elapsed_seconds"]) == seconds
+        assert float(row[f"objective:pion/{cells}"]) == 1.5  # 2 and 1 cells
+    shown = io.StringIO()
+    render_results(study, shown)
+    lines = shown.getvalue().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("objectives:"))
+    assert lines[start : start + 2] == [
+        f"objectives: gamma/{cells}  minimize  (1)",
+        f"            pion/{cells}  maximize  (1)",
     ]
 
 

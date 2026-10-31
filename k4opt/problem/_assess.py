@@ -31,6 +31,7 @@ from k4opt.problem._tasks import (
     blocked,
     candidate_message,
     candidate_status,
+    evaluations,
     evaluator_task,
     plan_tasks,
     stage_task,
@@ -49,7 +50,8 @@ _BOUNDS: tuple[Bound, ...] = ("min", "max")
 @dataclass(frozen=True, slots=True)
 class ObjectiveValue:
     """The value of one objective for a candidate: its metric, its direction and the measurement
-    of that metric by the evaluator the objective names, with its unit and uncertainty."""
+    of that metric by the evaluator the objective names, on its ``sample`` (``None`` for an
+    evaluator that measures the candidate), with its unit and uncertainty."""
 
     evaluator: str
     stage: str
@@ -58,19 +60,22 @@ class ObjectiveValue:
     value: int | float
     unit: str | None = None
     uncertainty: int | float | None = None
+    sample: str | None = None
 
     @property
     def ref(self) -> MetricRef:
-        return MetricRef(self.evaluator, self.stage, self.metric)
+        return MetricRef(self.evaluator, self.stage, self.metric, self.sample)
 
     @property
     def label(self) -> str:
-        """``evaluator/stage/metric``, as the optimizer and the exports name the objective."""
+        """``[sample/]evaluator/stage/metric``, as the optimizer and the exports name the
+        objective."""
         return self.ref.label
 
     def to_dict(self) -> dict[str, object]:
         return {
             "evaluator": self.evaluator,
+            "sample": self.sample,
             "stage": self.stage,
             "metric": self.metric,
             "direction": self.direction,
@@ -84,7 +89,9 @@ class ObjectiveValue:
 class Limit:
     """One bound of a constraint, and how the candidate's measurement compares with it.
 
-    ``evaluator``, ``stage`` and ``metric`` name the metric the constraint limits. ``limit`` is
+    ``evaluator``, ``stage`` and ``metric`` name the metric the constraint limits, and ``sample``
+    the sample it is measured on (``None`` for an evaluator that measures the candidate).
+    ``limit`` is
     the bound as the problem declares it, and ``unit`` the unit of the measurement (the
     constraint's own when there is no measurement). ``margin`` is ``value - max`` or
     ``min - value`` in that unit, zero or below when the limit is ``satisfied``: equality
@@ -104,25 +111,28 @@ class Limit:
     uncertainty: int | float | None = None
     margin: float | None = None
     satisfied: bool | None = None
+    sample: str | None = None
 
     @property
     def ref(self) -> MetricRef:
-        return MetricRef(self.evaluator, self.stage, self.metric)
+        return MetricRef(self.evaluator, self.stage, self.metric, self.sample)
 
     @property
     def label(self) -> str:
-        """``evaluator/stage/metric`` of the metric it limits."""
+        """``[sample/]evaluator/stage/metric`` of the metric it limits."""
         return self.ref.label
 
     @property
     def name(self) -> str:
-        """``evaluator/stage/metric:bound``, such as
-        ``calo.photon/simulation/ecal_barrel.angular_residual:max``; unique within a problem."""
+        """``[sample/]evaluator/stage/metric:bound``, such as
+        ``gamma/calo.photon/simulation/ecal_barrel.angular_residual:max``; unique within a
+        problem."""
         return f"{self.label}:{self.bound}"
 
     def to_dict(self) -> dict[str, object]:
         return {
             "evaluator": self.evaluator,
+            "sample": self.sample,
             "stage": self.stage,
             "metric": self.metric,
             "bound": self.bound,
@@ -168,23 +178,26 @@ class Assessment:
         the record against it.
 
         The record's ``implementations`` must be those the problem binds, with its versions and
-        stages, and its ``evaluations`` its bindings, each of the implementation the problem binds
-        it to, with the settings (``declared``) and collections the problem gives it.
-        The candidate's tasks are planned again from the problem and the stages the record says
-        were ``supplied``: each must read what the plan says, be ``blocked`` exactly when a task
+        stages; its ``samples`` the problem's, each with the evaluations of the bindings that
+        measure it, and its ``evaluations`` those of the bindings that measure the candidate, each
+        of the implementation the problem binds it to, with the settings (``declared``) and
+        collections the problem gives it. The candidate's tasks are planned again from the problem
+        and the stages the record says were ``supplied``: each must read what the plan says, be
+        ``blocked`` exactly when a task
         it reads did not succeed (by the tasks the plan makes it blocked by, with their message)
         and otherwise have run. The candidate's status and message are recomputed from its tasks'
         (``failed`` before ``invalid`` before ``valid``), and so is whether it represents its
         candidate; each objective and constraint value is taken from the own measurements of the
-        binding it names, if that binding is ``valid``. The rules a live evaluation enforces are
-        checked again: the candidate is in the problem's domains and ``candidate_key`` is its
-        key, an ``invalid`` or ``failed`` task has a message, a blocked evaluator measured
-        nothing, a measurement of a metric its implementation declares carries the declared
-        unit, a binding whose implementation declares metrics declares those named of it, and a
-        constraint's unit is that of its metric. Raises :class:`~k4opt.problem.RecordError` if
-        the record is malformed or breaks one of those rules, was made for another problem (its
-        definition differs other than in ``name``), or if its ``status``, ``message``,
-        ``represents_candidate``, ``metrics`` or ``assessment`` disagree with the recomputation.
+        evaluation it names, if that evaluation is ``valid``. The rules a live evaluation
+        enforces are checked again: the candidate is in the problem's domains and
+        ``candidate_key`` is its key, an ``invalid`` or ``failed`` task has a message, a blocked
+        evaluator measured nothing, a measurement of a metric its implementation declares carries
+        the declared unit, a binding whose implementation declares metrics declares those named
+        of it, and a constraint's unit is that of its metric. Raises
+        :class:`~k4opt.problem.RecordError` if the record is malformed or breaks one of those
+        rules, was made for another problem (its definition differs other than in ``name``), or if
+        its ``status``, ``message``, ``represents_candidate``, ``metrics`` or ``assessment``
+        disagree with the recomputation.
         """
         record = _mapping(summary, "record")
         if record.get("schema") != SUMMARY_SCHEMA:
@@ -192,9 +205,10 @@ class Assessment:
         _check_problem(spec, record)
         _check_candidate(spec, record)
         declared = _implementations(spec, record)
-        evaluations = _evaluations(spec, record, declared)
-        supplied = _supplied(record)
-        results = _results(spec, record, supplied, evaluations)
+        samples = _samples(spec, record)
+        evaluators = _evaluations(spec, record, samples, declared)
+        supplied = _supplied(spec, record)
+        results = _results(spec, record, samples, supplied, evaluators)
         status = candidate_status(result.status for result in results)
         if record.get("status") != status:
             raise RecordError(
@@ -205,31 +219,31 @@ class Assessment:
             raise RecordError(
                 f"message is {record.get('message')!r}, but its tasks make it {message!r}"
             )
-        represents = not any(changed_by_geometry(stage) for stage in supplied)
+        represents = not any(changed_by_geometry(task.name) for task in supplied)
         if record.get("represents_candidate") is not represents:
             raise RecordError(
                 f"represents_candidate is {record.get('represents_candidate')!r}, but its "
                 f"supplied stages make it {represents}"
             )
         for ref in spec.references:
-            metrics = evaluations[ref.evaluator].declared
+            metrics = evaluators[_task(ref)].declared
             if metrics is not None and (ref.stage, ref.metric) not in metrics:
                 raise RecordError(f"metric {ref.label}: its evaluator does not declare it")
 
         def value(ref: MetricRef) -> Measurement | None:
-            owner = evaluations[ref.evaluator]
+            owner = evaluators[_task(ref)]
             if owner.status is not Status.VALID:
                 return None
             found = owner.measured.get((ref.stage, ref.metric))
             if found is None:
                 raise RecordError(
-                    f"evaluator {ref.evaluator!r} is valid but did not measure "
+                    f"evaluator {ref.invocation!r} is valid but did not measure "
                     f"{ref.stage}/{ref.metric}, which the problem names"
                 )
             return found
 
         _check_metrics(spec, record, value)
-        _check_units(spec, evaluations, value)
+        _check_units(spec, evaluators, value)
         assessment = _judge(spec, status, represents, value)
         if record.get("assessment") != _plain(assessment.to_dict()):
             raise RecordError(
@@ -242,6 +256,11 @@ class Assessment:
 def assess(spec: ProblemSpec, candidate: CandidateRecord) -> Assessment:
     """The assessment of a candidate just evaluated."""
     return _judge(spec, candidate.status, candidate.represents_candidate, candidate.value)
+
+
+def _task(ref: MetricRef) -> TaskId:
+    """The evaluation that measures the metric ``ref``."""
+    return evaluator_task(ref.evaluator, ref.sample)
 
 
 def _judge(spec: ProblemSpec, status: Status, represents: bool, value: _Lookup) -> Assessment:
@@ -277,6 +296,7 @@ def _objective(objective: Objective, m: Measurement) -> ObjectiveValue:
         m.value,
         m.unit,
         m.uncertainty,
+        objective.sample,
     )
 
 
@@ -285,7 +305,7 @@ def _limit(constraint: Constraint, bound: Bound, measurement: Measurement | None
     assert limit is not None
     ref = (constraint.evaluator, constraint.stage, constraint.metric)
     if measurement is None:
-        return Limit(*ref, bound, limit, constraint.unit)
+        return Limit(*ref, bound, limit, constraint.unit, sample=constraint.sample)
     # exact: Fraction holds every float and int, and float() rounds the difference once
     excess = Fraction(measurement.value) - Fraction(limit)
     if bound == "min":
@@ -303,6 +323,7 @@ def _limit(constraint: Constraint, bound: Bound, measurement: Measurement | None
         measurement.uncertainty,
         margin,
         excess <= 0,
+        constraint.sample,
     )
 
 
@@ -374,7 +395,7 @@ def _fragment(entry: Mapping[str, object], where: str, statuses: Collection[str]
 
 @dataclass(frozen=True, slots=True)
 class _Evaluator:
-    """One binding of a record, as far as the assessment reads it."""
+    """One evaluation of a record, as far as the assessment reads it."""
 
     status: Status
     message: str | None
@@ -430,25 +451,41 @@ def _implementations(
     return declared
 
 
+def _samples(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
+    """The part of the record of each sample, which must be the problem's, in its order."""
+    samples = _mapping(record.get("samples"), "samples")
+    if list(samples) != list(spec.samples):
+        raise RecordError(
+            f"its samples are {list(samples)}, but the problem's are {list(spec.samples)}"
+        )
+    return {name: _mapping(part, f"samples.{name}") for name, part in samples.items()}
+
+
 def _evaluations(
     spec: ProblemSpec,
     record: Mapping[str, object],
+    samples: Mapping[str, Mapping[str, object]],
     declared: Mapping[str, Mapping[MetricKey, str] | None],
-) -> dict[str, _Evaluator]:
-    """Each binding of the record by name, in problem order, checked as a live result is: of the
+) -> dict[TaskId, _Evaluator]:
+    """Each evaluation of the record, in plan order, checked as a live result is: of the
     implementation the problem binds it to, with the settings and collections the problem gives
-    it."""
-    evaluations = _mapping(record.get("evaluations"), "evaluations")
-    bindings = [entry.binding for entry in spec.evaluators]
-    if list(evaluations) != bindings:
-        raise RecordError(
-            f"its evaluations are {list(evaluations)}, but the problem's evaluators are {bindings}"
-        )
-    evaluators: dict[str, _Evaluator] = {}
-    for spec_entry in spec.evaluators:
-        name = spec_entry.binding
-        where = f"evaluator {name!r}"
-        entry = _mapping(evaluations[name], where)
+    it. Those of each sample are in its part of the record, those of the candidate in
+    ``evaluations``, each by binding in problem order."""
+    held: dict[str | None, Mapping[str, object]] = {
+        name: _mapping(part.get("evaluations"), f"samples.{name}.evaluations")
+        for name, part in samples.items()
+    }
+    held[None] = _mapping(record.get("evaluations"), "evaluations")
+    planned = evaluations(spec.samples, spec.evaluators)
+    for sample, found in held.items():
+        expected = [entry.binding for task, entry in planned if task.sample == sample]
+        if list(found) != expected:
+            where = "its evaluations" if sample is None else f"samples.{sample}.evaluations"
+            raise RecordError(f"{where} are {list(found)}, but the problem's are {expected}")
+    evaluators: dict[TaskId, _Evaluator] = {}
+    for task, spec_entry in planned:
+        where = f"evaluator {task.label!r}"
+        entry = _mapping(held[task.sample][spec_entry.binding], where)
         if entry.get("implementation") != spec_entry.name:
             raise RecordError(
                 f"{where}: implementation {entry.get('implementation')!r}, but the problem binds "
@@ -488,19 +525,27 @@ def _evaluations(
         if fragment.status == Status.BLOCKED and own:
             raise RecordError(f"{where}: it is blocked, so it was never called, yet it measured")
         status = Status(fragment.status)
-        evaluators[name] = _Evaluator(status, fragment.message, own, metrics, fragment)
+        evaluators[task] = _Evaluator(status, fragment.message, own, metrics, fragment)
     return evaluators
 
 
-def _supplied(record: Mapping[str, object]) -> list[str]:
-    """The stages the caller supplied, as the record lists them: distinct stage types, sorted."""
+def _supplied(spec: ProblemSpec, record: Mapping[str, object]) -> list[TaskId]:
+    """The stages the caller supplied, as the record lists them: distinct stages of the
+    problem's samples (``gamma/simulation``), sorted."""
     supplied = _list(record.get("supplied"), "supplied")
-    if not all(isinstance(stage, str) and stage in STAGE_TYPES for stage in supplied):
-        raise RecordError(f"supplied {supplied!r} must list stages: {', '.join(STAGE_TYPES)}")
-    stages = cast(list[str], supplied)
-    if stages != sorted(set(stages)):
-        raise RecordError(f"supplied {stages!r} must list each stage once, in sorted order")
-    return stages
+    tasks = []
+    for label in supplied:
+        sample, _, stage = label.partition("/") if isinstance(label, str) else ("", "", "")
+        if sample not in spec.samples or stage not in STAGE_TYPES:
+            raise RecordError(
+                f"supplied {supplied!r} must list stages of the problem's samples, as "
+                f"SAMPLE/STAGE with a stage of {', '.join(STAGE_TYPES)}"
+            )
+        tasks.append(stage_task(stage, sample))
+    labels = cast(list[str], supplied)
+    if labels != sorted(set(labels)):
+        raise RecordError(f"supplied {labels!r} must list each stage once, in sorted order")
+    return tasks
 
 
 _STAGE_STATUSES = (DONE, Status.FAILED, Status.BLOCKED)
@@ -509,31 +554,33 @@ _STAGE_STATUSES = (DONE, Status.FAILED, Status.BLOCKED)
 def _results(
     spec: ProblemSpec,
     record: Mapping[str, object],
-    supplied: Collection[str],
-    evaluators: Mapping[str, _Evaluator],
+    samples: Mapping[str, Mapping[str, object]],
+    supplied: Collection[TaskId],
+    evaluators: Mapping[TaskId, _Evaluator],
 ) -> list[TaskResult]:
     """The status of each task of the record, in plan order, checked against the plan of the
     problem: what each task reads, and which are blocked and by what."""
-    plan = plan_tasks(
-        spec.stages, [(entry.binding, entry.stage) for entry in spec.evaluators], supplied
-    )
-    planned = [task.id.name for task in plan.of(Kind.STAGE)]
-    unread = [stage for stage in supplied if stage not in planned]
+    plan = plan_tasks(spec.samples, spec.evaluators, supplied)
+    planned = [task.id for task in plan.of(Kind.STAGE)]
+    unread = [task.label for task in supplied if task not in planned]
     if unread:
         raise RecordError(f"it supplied {', '.join(unread)}, which no evaluator reads")
-    stages = _mapping(record.get("stages"), "stages")
-    if list(stages) != planned:
-        raise RecordError(f"its stages are {list(stages)}, but the problem makes {planned}")
+    fragments: dict[TaskId, _Fragment] = {}
+    for sample, part in samples.items():
+        where = f"samples.{sample}.stages"
+        stages = _mapping(part.get("stages"), where)
+        made = [task.name for task in planned if task.sample == sample]
+        if list(stages) != made:
+            raise RecordError(f"{where} are {list(stages)}, but the problem makes {made}")
+        for name, entry in stages.items():
+            made_by = stage_task(name, sample)
+            fragments[made_by] = _fragment(
+                _mapping(entry, f"{where}.{name}"), f"stage {made_by.label!r}", _STAGE_STATUSES
+            )
     geometry = _mapping(record.get("geometry"), "geometry")
     if geometry.get("status") != DONE:
         raise RecordError(f"geometry: status {geometry.get('status')!r}, but it is always done")
-    fragments: dict[TaskId, _Fragment] = {
-        stage_task(name): _fragment(
-            _mapping(entry, f"stages.{name}"), f"stage {name!r}", _STAGE_STATUSES
-        )
-        for name, entry in stages.items()
-    }
-    fragments |= {evaluator_task(name): e.fragment for name, e in evaluators.items()}
+    fragments |= {task: e.fragment for task, e in evaluators.items()}
     results: dict[TaskId, TaskResult] = {GEOMETRY: TaskResult(GEOMETRY, DONE)}
     for task in plan.tasks:
         if task.id == GEOMETRY:
@@ -600,7 +647,9 @@ def _measured(item: Mapping[str, object], where: str) -> Measurement:
         raise RecordError(f"{where}: {exc}") from None
 
 
-def _check_units(spec: ProblemSpec, evaluations: Mapping[str, _Evaluator], value: _Lookup) -> None:
+def _check_units(
+    spec: ProblemSpec, evaluations: Mapping[TaskId, _Evaluator], value: _Lookup
+) -> None:
     """A constraint that declares a unit is in the unit its evaluator declares for the metric,
     and so is a valid measurement of it, as a live evaluation enforces: a record consistent in
     another unit would compare its value with a limit in the wrong one."""
@@ -608,7 +657,7 @@ def _check_units(spec: ProblemSpec, evaluations: Mapping[str, _Evaluator], value
         if constraint.unit is None:
             continue
         where = f"{constraint.label}: its constraint declares {constraint.unit!r}"
-        declared = evaluations[constraint.evaluator].declared
+        declared = evaluations[_task(constraint.ref)].declared
         key = (constraint.stage, constraint.metric)
         if declared is not None and declared[key] != constraint.unit:
             raise RecordError(f"{where}, but its evaluator declares {declared[key]!r}")
@@ -617,7 +666,7 @@ def _check_units(spec: ProblemSpec, evaluations: Mapping[str, _Evaluator], value
             raise RecordError(f"{where}, but it is measured in {measurement.unit!r}")
 
 
-_NAMED = ("evaluator", "stage", "metric", "label")
+_NAMED = ("evaluator", "sample", "stage", "metric", "label")
 
 
 def _check_metrics(spec: ProblemSpec, record: Mapping[str, object], value: _Lookup) -> None:
@@ -628,7 +677,9 @@ def _check_metrics(spec: ProblemSpec, record: Mapping[str, object], value: _Look
         for i, entry in enumerate(_list(record.get("metrics"), "metrics"))
     ]
     found = [[entry.get(key) for key in _NAMED] for entry in entries]
-    wanted = [[ref.evaluator, ref.stage, ref.metric, ref.label] for ref in spec.references]
+    wanted = [
+        [ref.evaluator, ref.sample, ref.stage, ref.metric, ref.label] for ref in spec.references
+    ]
     if found != wanted:
         raise RecordError(f"its metrics are {found}, but the problem names {wanted}")
     for ref, entry in zip(spec.references, entries, strict=True):

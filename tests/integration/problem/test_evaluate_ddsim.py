@@ -1,14 +1,15 @@
 """``k4opt evaluate`` on the real CLD geometry with the real ddsim (needs the Key4hep stack).
 
 Skipped without ``$K4GEO``, ``ddsim`` and ``podio``. Runs two candidates of a few events each,
-and one more with two evaluators that share its simulation; about a minute each, mostly ddsim
-start-up. Verify by hand with::
+one more with two evaluators that share its simulation, and one of two samples (photons of 10 and
+50 GeV); about a minute per simulation, mostly ddsim start-up. Verify by hand with::
 
     source setup.sh && pytest tests/integration/problem -m integration -s
 """
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import io
 import json
@@ -32,6 +33,7 @@ EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ec
 CELL = "constants.ECal_cell_size"
 COLLECTION = "ECalBarrelCollection"
 EVENTS = 4
+SAMPLE = "gamma_10gev"  # the example's one sample
 RESIDUAL_LIMIT = {
     "stage": "simulation",
     "metric": "ecal_barrel.angular_residual",
@@ -52,7 +54,7 @@ def stack() -> None:
 @pytest.fixture(scope="module")
 def problem(tmp_path_factory: pytest.TempPathFactory, stack: None) -> Path:
     doc = yaml.safe_load(EXAMPLE.read_text())
-    doc["stages"]["simulation"]["events"] = EVENTS
+    doc["samples"]["gamma_10gev"]["simulation"]["events"] = EVENTS
     doc["constraints"] = [RESIDUAL_LIMIT]  # the one of docs/problem.md
     path = tmp_path_factory.mktemp("problem") / "problem.yaml"
     path.write_text(yaml.safe_dump(doc))
@@ -117,7 +119,7 @@ def test_the_installed_geometry_is_untouched(
 
 def test_ddsim_simulated_the_materialized_geometry(runs: dict[str, dict[str, Any]]) -> None:
     for run in runs.values():
-        log = Path(run["paths"]["simulation.stdout"]).read_text()
+        log = Path(run["paths"][f"{SAMPLE}/simulation.stdout"]).read_text()
         assert run["geometry"]["compact"] in log
         assert run["geometry"]["source_root"] not in log  # nothing loaded from the original
 
@@ -127,13 +129,13 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
 
     for run in runs.values():
         assert run["status"] == "valid"
-        assert run["events"] == {"requested": EVENTS, "observed": EVENTS}
-        (evaluator,) = run["evaluations"].values()
+        assert run["samples"][SAMPLE]["stages"]["simulation"]["events_read"] == EVENTS
+        (evaluator,) = run["samples"][SAMPLE]["evaluations"].values()
         collection = evaluator["collections"]["hits"]
         assert evaluator["settings"]["used"] == {"threshold": 70e-6}  # 70 keV, in GeV
         assert run["warnings"] == []  # CLD has the ECAL barrel readout the evaluator reads
         counts = []
-        for event in get_reader(run["paths"]["simulation.edm4hep"]).get("events"):
+        for event in get_reader(run["paths"][f"{SAMPLE}/simulation.edm4hep"]).get("events"):
             (photon,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
             if not photon.isDecayedInTracker():
                 counts.append(sum(hit.getEnergy() >= 70e-6 for hit in event.get(collection)))
@@ -146,9 +148,9 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
         assert cells["unit"] == "1"
         assert residual["unit"] == "mrad"
         assert 0 < residual["value"] < 20  # a 10 GeV photon: about a mrad
-        assert Path(run["paths"]["simulation.stderr"]).is_file()
+        assert Path(run["paths"][f"{SAMPLE}/simulation.stderr"]).is_file()
         assert run["environment"]["declared"]["version"] == "2026-10-20"
-        assert run["stages"]["simulation"]["returncode"] == 0
+        assert run["samples"]["gamma_10gev"]["stages"]["simulation"]["returncode"] == 0
 
 
 @pytest.fixture(scope="module")
@@ -176,15 +178,16 @@ def test_two_evaluators_read_one_simulation(shared: dict[str, Any]) -> None:
 
     run_dir = Path(shared["paths"]["run_dir"])
     assert len(list(run_dir.glob("**/ddsim.json"))) == 1  # ddsim ran once
-    photon, cells = shared["evaluations"].values()
+    photon, cells = shared["samples"][SAMPLE]["evaluations"].values()
     assert (photon["implementation"], photon["status"]) == ("calo.photon", "valid")
     assert (cells["implementation"], cells["status"]) == ("test.cell_count", "valid")
-    assert photon["reads"] == cells["reads"] == ["geometry", "generation", "simulation"]
-    assert shared["stages"]["simulation"]["status"] == "done"
+    chain = ["geometry", f"{SAMPLE}/generation", f"{SAMPLE}/simulation"]
+    assert photon["reads"] == cells["reads"] == chain
+    assert shared["samples"]["gamma_10gev"]["stages"]["simulation"]["status"] == "done"
     # the test evaluator's value, recomputed from the one file both read
     per_event = [
         len({hit.getCellID() for hit in event.get(COLLECTION)})
-        for event in get_reader(shared["paths"]["simulation.edm4hep"]).get("events")
+        for event in get_reader(shared["paths"][f"{SAMPLE}/simulation.edm4hep"]).get("events")
     ]
     (measurement,) = cells["measurements"]
     assert measurement["value"] == pytest.approx(statistics.fmean(per_event))
@@ -205,8 +208,59 @@ def test_the_records_hold_the_assessment_their_measurements_give(
         (limit,) = assessment.limits
         residual = assessment.objectives[0].value
         assert (limit.name, limit.value, limit.unit) == (
-            "calo.photon/simulation/ecal_barrel.angular_residual:max",
+            f"{SAMPLE}/calo.photon/simulation/ecal_barrel.angular_residual:max",
             residual,
             "mrad",
         )
         assert assessment.feasible is (residual <= 1.0)  # four photons: either can happen
+
+
+@pytest.fixture(scope="module")
+def two_samples(problem: Path, tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """One candidate measured by the example evaluator on photons of 10 and of 50 GeV."""
+    doc = yaml.safe_load(problem.read_text())
+    harder = copy.deepcopy(doc["samples"][SAMPLE])
+    harder["generation"]["energy"]["value"] = 50
+    harder["simulation"]["seed"] = 43
+    doc["samples"]["gamma_50gev"] = harder
+    doc["evaluators"][0]["samples"] = [SAMPLE, "gamma_50gev"]
+    objectives = doc["objectives"]
+    doc["objectives"] = [o | {"sample": s} for s in (SAMPLE, "gamma_50gev") for o in objectives]
+    doc["constraints"][0]["sample"] = SAMPLE
+    path = problem.with_name("two-samples.yaml")
+    path.write_text(yaml.safe_dump(doc))
+    return evaluate(path, "6.0", tmp_path_factory.mktemp("samples") / "run")
+
+
+def test_two_samples_are_simulated_on_one_geometry_and_measured_each_on_its_own(
+    two_samples: dict[str, Any],
+) -> None:
+    from podio.reading import get_reader
+
+    run_dir = Path(two_samples["paths"]["run_dir"])
+    assert sorted(
+        p.parent.parent.name for p in run_dir.glob("samples/*/simulation/ddsim.json")
+    ) == [
+        "gamma_10gev",
+        "gamma_50gev",
+    ]
+    assert len(list(run_dir.glob("**/k4opt-manifest.json"))) == 1  # one geometry for both
+    for sample, energy in ((SAMPLE, 10.0), ("gamma_50gev", 50.0)):
+        part = two_samples["samples"][sample]
+        assert part["stages"]["simulation"]["events_read"] == EVENTS
+        (evaluator,) = part["evaluations"].values()
+        assert evaluator["status"] == "valid"
+        assert evaluator["reads"] == ["geometry", f"{sample}/generation", f"{sample}/simulation"]
+        # each sample's file holds its own photons
+        for event in get_reader(two_samples["paths"][f"{sample}/simulation.edm4hep"]).get("events"):
+            (photon,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
+            assert photon.getEnergy() == pytest.approx(energy, rel=1e-4)  # stored as floats
+    assert [m["label"] for m in two_samples["metrics"]][:4] == [
+        f"{sample}/calo.photon/simulation/ecal_barrel.{metric}"
+        for sample in (SAMPLE, "gamma_50gev")
+        for metric in ("angular_residual", "fired_cells")
+    ]
+    assessment = Assessment.from_summary(
+        parse_problem(two_samples["problem"]["definition"]), two_samples
+    )
+    assert assessment.objectives is not None and len(assessment.objectives) == 4

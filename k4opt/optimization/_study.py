@@ -329,13 +329,17 @@ def _get(data: object, *keys: str) -> Any:
 
 
 def _recorded_input(summary: Mapping[str, Any], label: str) -> Mapping[str, Any] | None:
-    """The size and SHA-256 a record holds for the file ``label`` names, ``None`` if its stage
-    did not get as far as reading it."""
-    _, stage, rest = label.split(".", 2)
+    """The size and SHA-256 a record holds for the file ``label`` names
+    (``samples.<sample>.<stage>.file`` or ``.<option>``), ``None`` if its stage did not get as
+    far as reading it."""
+    parts = label.split(".", 3)
+    if len(parts) != 4 or parts[0] != "samples":
+        return None  # a supplied file: a study supplies none
+    _, sample, stage, rest = parts
     if rest == "file":
-        entry = _get(summary, "stages", stage)
+        entry = _get(summary, "samples", sample, "stages", stage)
     else:
-        entry = _get(summary, "stages", stage, "files", rest)
+        entry = _get(summary, "samples", sample, "stages", stage, "files", rest)
     if not isinstance(entry, Mapping) or "sha256" not in entry:
         return None
     return entry

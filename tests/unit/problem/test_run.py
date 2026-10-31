@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import io
@@ -91,7 +92,7 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["geometry"] = MINI_COMPACT
     doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
     doc["parameters"][0]["bounds"] = [100.0, 600.0]
-    doc["stages"]["simulation"].update(events=3, seed=5)
+    doc["samples"]["gamma"]["simulation"].update(events=3, seed=5)
     doc["evaluators"] = [
         {
             "name": "test.cell_count",
@@ -189,8 +190,12 @@ def test_summary_is_written_and_truthful(
     (implementation,) = on_disk["implementations"].values()
     assert list(on_disk["implementations"]) == ["test.cell_count"]
     assert (implementation["version"], implementation["stage"]) == ("1", "simulation")
-    (evaluator,) = on_disk["evaluations"].values()
-    assert list(on_disk["evaluations"]) == ["test.cell_count"]
+    # its sample, with the stages and the evaluations of the sample; none of the candidate
+    assert list(on_disk["samples"]) == ["gamma"]
+    assert list(on_disk["samples"]["gamma"]) == ["stages", "evaluations"]
+    assert on_disk["evaluations"] == {}
+    (evaluator,) = on_disk["samples"]["gamma"]["evaluations"].values()
+    assert list(on_disk["samples"]["gamma"]["evaluations"]) == ["test.cell_count"]
     assert evaluator["implementation"] == "test.cell_count"
     assert (evaluator["status"], evaluator["message"]) == ("valid", None)
     (measurement,) = evaluator["measurements"]
@@ -200,13 +205,15 @@ def test_summary_is_written_and_truthful(
     assert on_disk["metrics"] == [
         {
             "evaluator": "test.cell_count",
+            "sample": "gamma",
             "stage": "simulation",
             "metric": "ecal_barrel.mean_hit_cells",
-            "label": "test.cell_count/simulation/ecal_barrel.mean_hit_cells",
+            "label": "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
         }
         | {k: measurement[k] for k in ("value", "unit", "uncertainty")}
     ]
-    assert on_disk["events"] == {"requested": 3, "observed": 3}
+    assert "events" not in on_disk  # each simulation says what it read
+    assert outcome.events == {"gamma": (3, 3)}
     assert on_disk["geometry"]["fingerprint"] == outcome.fingerprint
     assert on_disk["geometry"]["status"] == "done"
     assert Path(on_disk["geometry"]["manifest"]).is_file()
@@ -214,14 +221,14 @@ def test_summary_is_written_and_truthful(
         {"target": RADIUS, "old_value": "400*mm", "new_value": "450.0*mm"}
     ]
     # the stages, recorded once, apart from the evaluators that read them
-    assert list(on_disk["stages"]) == ["generation", "simulation"]
-    simulated = on_disk["stages"]["simulation"]
+    assert list(on_disk["samples"]["gamma"]["stages"]) == ["generation", "simulation"]
+    simulated = on_disk["samples"]["gamma"]["stages"]["simulation"]
     assert simulated["argv"][0] == "/stack/bin/ddsim"
     assert (simulated["returncode"], simulated["events_read"]) == (0, 3)
     # each a task: how it ended, and the tasks it read
     assert (simulated["status"], simulated["message"]) == ("done", None)
-    assert (simulated["reads"], simulated["blocked_by"]) == (["geometry", "generation"], [])
-    assert on_disk["stages"]["generation"]["reads"] == []
+    assert (simulated["reads"], simulated["blocked_by"]) == (["geometry", "gamma/generation"], [])
+    assert on_disk["samples"]["gamma"]["stages"]["generation"]["reads"] == []
     assert evaluator["settings"] == {"declared": {}, "used": {}}
     assert evaluator["collections"] == {"hits": COLLECTION}
     (warning,) = on_disk["warnings"]
@@ -232,21 +239,25 @@ def test_summary_is_written_and_truthful(
     assert implementation["source"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert implementation["source"]["executed"] is True  # loaded as FILE.py:Class
     assert evaluator["provenance"] == {} and evaluator["artifacts"] == {}  # none of its own
-    assert evaluator["reads"] == ["geometry", "generation", "simulation"]
+    assert evaluator["reads"] == ["geometry", "gamma/generation", "gamma/simulation"]
     assert evaluator["blocked_by"] == []
-    assert evaluator["workdir"] == str(tmp_path / "a" / "evaluators" / "test.cell_count")
+    workdir = tmp_path / "a" / "samples" / "gamma" / "evaluators" / "test.cell_count"
+    assert evaluator["workdir"] == str(workdir)
     # every second once: the geometry, each stage, the evaluator's own call, and the candidate
     # around them
-    seconds = [stage["elapsed_seconds"] for stage in on_disk["stages"].values()]
+    seconds = [stage["elapsed_seconds"] for stage in on_disk["samples"]["gamma"]["stages"].values()]
     seconds += [on_disk["geometry"]["elapsed_seconds"], evaluator["elapsed_seconds"]]
     assert min(seconds) >= 0 and sum(seconds) <= on_disk["elapsed_seconds"]
-    # the files of the stages, named <stage>.<role>: what the real-ddsim test reads back
+    # the files of the stages, named <sample>/<stage>.<role>: what the real-ddsim test reads back
     paths = on_disk["paths"]
     assert paths["run_dir"] == str(tmp_path / "a")
     for role in ("stdout", "stderr", "command", "edm4hep"):
-        assert Path(paths[f"simulation.{role}"]).is_file()
+        path = Path(paths[f"gamma/simulation.{role}"])
+        assert path.is_file() and path.parent == tmp_path / "a" / "samples" / "gamma" / "simulation"
     assert {"stdout", "stderr", "edm4hep"}.isdisjoint(paths)  # no unprefixed leftovers
-    assert on_disk["stages"]["generation"]["particle_gun"]["particle"] == "gamma"
+    assert (
+        on_disk["samples"]["gamma"]["stages"]["generation"]["particle_gun"]["particle"] == "gamma"
+    )
     assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
     assert on_disk["environment"]["observed"]["ddsim"] == "/stack/bin/ddsim"
     assert on_disk["environment"]["observed"]["k4opt"] == __version__
@@ -262,6 +273,7 @@ def test_summary_is_written_and_truthful(
         "objectives": [
             {
                 "evaluator": "test.cell_count",
+                "sample": "gamma",
                 "stage": "simulation",
                 "metric": "ecal_barrel.mean_hit_cells",
                 "direction": "minimize",
@@ -326,7 +338,7 @@ def test_a_conflicting_ddsim_option_is_rejected_before_any_side_effect(
     guard: list[str],
 ) -> None:
     doc = yaml.safe_load(problem_file.read_text())
-    doc["stages"]["simulation"]["numberOfEvents"] = 5
+    doc["samples"]["gamma"]["simulation"]["numberOfEvents"] = 5
     problem_file.write_text(yaml.safe_dump(doc))
     with pytest.raises(ProblemConfigError, match=r"numberOfEvents: .* set events instead"):
         run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
@@ -560,18 +572,19 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
     summary = json.loads(outcome.summary_path.read_text())
     assert summary["status"] == "failed"
     # the stage that failed, then what it kept from running
-    assert summary["message"].startswith("simulation failed: ddsim exited with status 2")
-    assert summary["message"].endswith("G4Exception: bad volume; blocked: test.cell_count")
-    (evaluator,) = summary["evaluations"].values()
-    assert (evaluator["status"], evaluator["message"]) == ("blocked", "not run: simulation failed")
-    assert evaluator["blocked_by"] == ["simulation"]
+    assert summary["message"].startswith("gamma/simulation failed: ddsim exited with status 2")
+    assert summary["message"].endswith("G4Exception: bad volume; blocked: gamma/test.cell_count")
+    (evaluator,) = summary["samples"]["gamma"]["evaluations"].values()
+    blocked = ("blocked", "not run: gamma/simulation failed")
+    assert (evaluator["status"], evaluator["message"]) == blocked
+    assert evaluator["blocked_by"] == ["gamma/simulation"]
     assert evaluator["measurements"] == [] and evaluator["elapsed_seconds"] is None
     assert evaluator["workdir"] is None  # not called, so no directory was made for it
     assert summary["metrics"][0]["value"] is None  # never a made-up number
-    assert summary["stages"]["simulation"]["returncode"] == 2
-    assert summary["stages"]["simulation"]["status"] == "failed"
-    assert "bad volume" in summary["stages"]["simulation"]["message"]
-    assert "bad volume" in Path(summary["paths"]["simulation.stderr"]).read_text()
+    assert summary["samples"]["gamma"]["stages"]["simulation"]["returncode"] == 2
+    assert summary["samples"]["gamma"]["stages"]["simulation"]["status"] == "failed"
+    assert "bad volume" in summary["samples"]["gamma"]["stages"]["simulation"]["message"]
+    assert "bad volume" in Path(summary["paths"]["gamma/simulation.stderr"]).read_text()
 
 
 @pytest.mark.parametrize(
@@ -626,8 +639,8 @@ def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> Non
     )
     # the objectives leave the one evaluator out, and name it once read
     assert [o.label for o in problem.objectives] == [
-        "calo.photon/simulation/ecal_barrel.angular_residual",
-        "calo.photon/simulation/ecal_barrel.fired_cells",
+        "gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual",
+        "gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells",
     ]
     assert metric_units(evaluator) == {
         ("simulation", "ecal_barrel.angular_residual"): "mrad",
@@ -665,10 +678,10 @@ def test_command_prints_the_result_and_exits_zero(
     )
     assert code == 0, err
     assert "status:      valid" in out
-    assert "evaluator:   test.cell_count 1: valid" in out
+    assert "evaluator:   test.cell_count 1 on gamma: valid" in out
     assert "simulation/ecal_barrel.mean_hit_cells = 3 +- 0.57735 [1]" in out
     assert "feasible:    yes" in out and "limit:" not in out  # the problem has no constraints
-    assert "events:      3 of 3" in out
+    assert "events:      gamma: 3 of 3" in out
     assert "fingerprint: " in out
     assert f"summary:     {tmp_path / 'a' / SUMMARY_NAME}" in out
     assert "ddsim.stderr.log" in out
@@ -686,8 +699,8 @@ def test_command_exits_nonzero_for_a_failed_run(
     assert "status:      failed" in out
     assert "feasible:    not assessed" in out
     assert "events:" not in out  # ddsim wrote no file, so no events were counted
-    assert "k4opt: evaluation failed: simulation failed: ddsim exited with status 1" in err
-    assert "evaluator:   test.cell_count 1: blocked" in out
+    assert "k4opt: evaluation failed: gamma/simulation failed: ddsim exited with status 1" in err
+    assert "evaluator:   test.cell_count 1 on gamma: blocked" in out
 
 
 def test_command_exits_nonzero_for_an_invalid_run(
@@ -728,14 +741,14 @@ def test_a_generation_file_is_simulated_and_its_hash_recorded(
     hepmc = tmp_path / "zh.hepmc"
     hepmc.write_bytes(b"HepMC::Version 3\n")
     doc = yaml.safe_load(problem_file.read_text(encoding="utf-8"))
-    doc["stages"]["generation"] = {"file": "zh.hepmc"}  # next to the problem file
+    doc["samples"]["gamma"]["generation"] = {"file": "zh.hepmc"}  # next to the problem file
     problem_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
 
     outcome = run_candidate(problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "s")
 
     ((argv, _),) = fake.calls
     assert f"--inputFiles={hepmc}" in argv and not any(a.startswith("--gun") for a in argv)
-    generation = outcome.summary["stages"]["generation"]  # type: ignore[index]
+    generation = outcome.summary["samples"]["gamma"]["stages"]["generation"]  # type: ignore[index]
     assert generation["file"] == str(hepmc)
     assert generation["sha256"] == hashlib.sha256(hepmc.read_bytes()).hexdigest()
     assert outcome.candidate.status == "valid" and outcome.candidate.represents_candidate
@@ -745,10 +758,10 @@ def test_a_missing_generation_file_is_a_clean_error_before_any_side_effect(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     doc = yaml.safe_load(problem_file.read_text(encoding="utf-8"))
-    doc["stages"]["generation"] = {"file": "gone.hepmc"}
+    doc["samples"]["gamma"]["generation"] = {"file": "gone.hepmc"}
     problem_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
     output = tmp_path / "runs" / "s"
-    with pytest.raises(EvaluationContractError, match=r"stages\.generation\.file"):
+    with pytest.raises(EvaluationContractError, match=r"samples\.gamma\.generation\.file"):
         run_candidate(problem_file, [f"{RADIUS}=450.0"], output)
     assert not output.exists() and fake.calls == []
 
@@ -766,18 +779,19 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
         "--param",
         f"{RADIUS}=450",
         "--input",
-        f"simulation={events_file}",
+        f"gamma/simulation={events_file}",
         "--output",
         str(tmp_path / "a"),
     )
     assert code == 0, err
     assert fake.calls == []  # nothing was simulated
-    assert f"supplied:    simulation from {events_file}" in out
+    assert f"supplied:    gamma/simulation from {events_file}" in out
     assert "this is no evaluation of the candidate" in out
     assert "feasible:    not assessed" in out  # whatever it measured
     summary = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
-    assert (summary["represents_candidate"], summary["supplied"]) == (False, ["simulation"])
-    assert summary["stages"] == {
+    supplied = (False, ["gamma/simulation"])
+    assert (summary["represents_candidate"], summary["supplied"]) == supplied
+    assert summary["samples"]["gamma"]["stages"] == {
         "simulation": {
             "status": "done",
             "message": None,
@@ -787,7 +801,9 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
             "events_read": 3,
             "reads": [],  # it is given, so it reads nothing
             "blocked_by": [],
-            "elapsed_seconds": summary["stages"]["simulation"]["elapsed_seconds"],
+            "elapsed_seconds": summary["samples"]["gamma"]["stages"]["simulation"][
+                "elapsed_seconds"
+            ],
         }
     }
     assert summary["metrics"][0]["value"] == 3.0
@@ -796,10 +812,17 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
 @pytest.mark.parametrize(
     ("given", "message"),
     [
-        ("simulation", "expected STAGE=FILE"),
-        ("reconstruction={file}", "unknown stage; use generation, simulation"),
-        ("simulation={missing}", "is not a file"),
-        ("generation={file}", "no evaluator of the problem reads that stage"),
+        ("gamma/simulation", "expected SAMPLE/STAGE=FILE"),
+        ("gamma/reconstruction={file}", "unknown stage; use generation, simulation"),
+        ("gamma/simulation={missing}", "is not a file"),
+        ("gamma/generation={file}", "no evaluator of the problem reads that stage of gamma"),
+        # a stage of which sample: the problem says, even with only one
+        (
+            "simulation={file}",
+            "input 'simulation': name the sample too, as SAMPLE/simulation; the problem's "
+            "samples are gamma",
+        ),
+        ("pion/simulation={file}", "unknown sample 'pion'; the samples are gamma"),
     ],
 )
 def test_unusable_inputs_are_rejected_before_any_side_effect(
@@ -815,7 +838,7 @@ def test_unusable_inputs_are_rejected_before_any_side_effect(
     argument = given.format(file=supplied, missing=tmp_path / "gone.root")
     if message.startswith("no evaluator"):
         # the evaluator reads the simulation, which the caller supplies too: generation is unused
-        argument = [argument, f"simulation={supplied}"]
+        argument = [argument, f"gamma/simulation={supplied}"]
     output = tmp_path / "a"
     with pytest.raises(RunError, match=message):
         run_candidate(
@@ -835,7 +858,7 @@ def test_an_input_given_twice_is_rejected(tmp_path: Path, problem_file: Path) ->
             problem_file,
             [f"{RADIUS}=450"],
             tmp_path / "a",
-            inputs=[f"simulation={supplied}", f"simulation={supplied}"],
+            inputs=[f"gamma/simulation={supplied}", f"gamma/simulation={supplied}"],
         )
 
 
@@ -900,9 +923,11 @@ def test_the_evaluator_provenance_is_saved_in_the_summary(
         problem_file, [f"{RADIUS}=450.0"], tmp_path / "runs" / "a", evaluators=[Annotating()]
     )
     on_disk = json.loads(outcome.summary_path.read_text())
-    (evaluator,) = on_disk["evaluations"].values()
+    (evaluator,) = on_disk["samples"]["gamma"]["evaluations"].values()
     assert evaluator["provenance"] == {"selection": "barrel", "algo": [2, 1]}
-    assert on_disk["stages"]["simulation"]["returncode"] == 0  # the stage's record stays apart
+    assert (
+        on_disk["samples"]["gamma"]["stages"]["simulation"]["returncode"] == 0
+    )  # the stage's record stays apart
 
 
 def test_the_preflight_request_has_the_conditions_the_evaluation_gets(
@@ -948,7 +973,7 @@ def test_a_plain_evaluator_is_validated_before_materialization(
             [f"{RADIUS}=450"],
             tmp_path / "a",
             evaluators=[Plain()],
-            inputs=[f"simulation={supplied}"],
+            inputs=[f"gamma/simulation={supplied}"],
         )
     assert not (tmp_path / "a").exists() and fake.calls == []
 
@@ -1089,28 +1114,28 @@ def test_the_command_measures_with_several_evaluators_on_one_simulation(
     )
     assert code == 0, err
     assert len(fake.calls) == 1  # one simulation for both
-    assert sorted(p.name for p in output.iterdir()) == [
+    assert sorted(p.name for p in output.iterdir()) == ["geometry", "samples", SUMMARY_NAME]
+    assert sorted(p.name for p in (output / "samples" / "gamma").iterdir()) == [
         "evaluators",
-        "geometry",
         "simulation",
-        SUMMARY_NAME,
     ]
-    assert sorted(p.name for p in (output / "evaluators").iterdir()) == [
+    assert sorted(p.name for p in (output / "samples" / "gamma" / "evaluators").iterdir()) == [
         "test.cell_count",
         "test.hit_energy",
     ]
-    assert out.index("evaluator:   test.cell_count 1: valid") < out.index(
-        "evaluator:   test.hit_energy 1: valid"
+    assert out.index("evaluator:   test.cell_count 1 on gamma: valid") < out.index(
+        "evaluator:   test.hit_energy 1 on gamma: valid"
     )
     summary = json.loads((output / SUMMARY_NAME).read_text())
     assert summary["status"] == "valid"
-    assert list(summary["evaluations"]) == ["test.cell_count", "test.hit_energy"]
+    evaluations = summary["samples"]["gamma"]["evaluations"]
+    assert list(evaluations) == ["test.cell_count", "test.hit_energy"]
     assert [m["label"] for m in summary["metrics"]] == [
-        "test.cell_count/simulation/ecal_barrel.mean_hit_cells",
-        "test.hit_energy/simulation/ecal_barrel.mean_hit_energy",
+        "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
+        "gamma/test.hit_energy/simulation/ecal_barrel.mean_hit_energy",
     ]
     assert summary["metrics"][1]["value"] == pytest.approx(10 / 3)  # 4, 2 and 4 hits of 1 GeV
-    assert list(summary["stages"]) == ["generation", "simulation"]
+    assert list(summary["samples"]["gamma"]["stages"]) == ["generation", "simulation"]
 
 
 def test_the_command_reports_each_binding_of_an_implementation_given_once(
@@ -1127,13 +1152,13 @@ def test_the_command_reports_each_binding_of_an_implementation_given_once(
     )
     assert code == 0, err
     assert len(fake.calls) == 1
-    assert "evaluator:   test.cell_count 1: valid" in out
-    assert "evaluator:   cells_again (test.cell_count 1): valid" in out
+    assert "evaluator:   test.cell_count 1 on gamma: valid" in out
+    assert "evaluator:   cells_again (test.cell_count 1) on gamma: valid" in out
     # two bindings that measure the same twice are worth a word, not a refusal
     assert "evaluators 'test.cell_count' and 'cells_again' bind test.cell_count" in err
     summary = json.loads((output / SUMMARY_NAME).read_text())
-    assert list(summary["evaluations"]) == ["test.cell_count", "cells_again"]
-    assert sorted(p.name for p in (output / "evaluators").iterdir()) == [
+    assert list(summary["samples"]["gamma"]["evaluations"]) == ["test.cell_count", "cells_again"]
+    assert sorted(p.name for p in (output / "samples" / "gamma" / "evaluators").iterdir()) == [
         "cells_again",
         "test.cell_count",
     ]
@@ -1154,16 +1179,19 @@ def test_a_failed_simulation_keeps_the_result_of_an_evaluator_that_needs_none(
         str(output),
     )
     assert code == 1
-    assert errors(err).startswith("k4opt: evaluation failed: simulation failed: ddsim exited")
+    assert errors(err).startswith("k4opt: evaluation failed: gamma/simulation failed: ddsim exited")
     assert "evaluator:   test.parameter_echo 1: valid" in out
     summary = json.loads((output / SUMMARY_NAME).read_text())
     assert summary["status"] == "failed"
-    cells, echo = summary["evaluations"].values()
+    (cells,) = summary["samples"]["gamma"]["evaluations"].values()
+    (echo,) = summary["evaluations"].values()
     assert (cells["status"], cells["elapsed_seconds"], cells["workdir"]) == ("blocked", None, None)
     assert echo["status"] == "valid" and echo["measurements"][0]["value"] == 450.0
     # the measurement that was made is kept; the missing one is missing, not made up
     assert [m["value"] for m in summary["metrics"]] == [None, 450.0]
-    assert summary["stages"]["simulation"]["message"].startswith("ddsim exited with status 2")
+    assert summary["samples"]["gamma"]["stages"]["simulation"]["message"].startswith(
+        "ddsim exited with status 2"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1251,7 +1279,7 @@ def test_a_misspelled_collection_warns_before_the_run_and_fails_after_it(
     )
     assert code == 1 and len(fake.calls) == 1
     summary = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
-    (evaluator,) = summary["evaluations"].values()
+    (evaluator,) = summary["samples"]["gamma"]["evaluations"].values()
     assert (evaluator["status"], evaluator["elapsed_seconds"]) == ("failed", None)
     assert evaluator["message"] == (
         "collection 'InnerTrackerBarelCollection' (hits) is not in events.edm4hep.root, which "
@@ -1269,7 +1297,7 @@ def test_a_setting_with_a_unit_is_recorded_as_written_and_as_received(
     gated = type("Gated", (cell_count(),), {"settings": {"threshold": Quantity("GeV")}})
     outcome = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[gated])
     on_disk = json.loads(outcome.summary_path.read_text())
-    (evaluator,) = on_disk["evaluations"].values()
+    (evaluator,) = on_disk["samples"]["gamma"]["evaluations"].values()
     assert evaluator["settings"] == {
         "declared": {"threshold": {"value": 70, "unit": "keV"}},
         "used": {"threshold": 70e-6},
@@ -1461,8 +1489,8 @@ def named_files(tmp_path: Path, problem_file: Path) -> tuple[Path, Path]:
     hepmc.write_bytes(b"HepMC::Version 3\n")
     table.write_bytes(b"22 gamma\n")
     doc = yaml.safe_load(problem_file.read_text())
-    doc["stages"]["generation"] = {"file": hepmc.name}  # next to the problem file
-    doc["stages"]["simulation"]["physics.pdgfile"] = table.name
+    doc["samples"]["gamma"]["generation"] = {"file": hepmc.name}  # next to the problem file
+    doc["samples"]["gamma"]["simulation"]["physics.pdgfile"] = table.name
     problem_file.write_text(yaml.safe_dump(doc))
     return hepmc, table
 
@@ -1478,12 +1506,12 @@ def test_the_identity_of_a_session_is_what_it_evaluates_with(
         "definition": session.spec.to_dict(),
     }
     assert identity["inputs"] == {
-        "stages.generation.file": {
+        "samples.gamma.generation.file": {
             "path": str(hepmc),
             "bytes": hepmc.stat().st_size,
             "sha256": hashlib.sha256(hepmc.read_bytes()).hexdigest(),
         },
-        "stages.simulation.physics.pdgfile": {
+        "samples.gamma.simulation.physics.pdgfile": {
             "path": str(table),
             "bytes": table.stat().st_size,
             "sha256": hashlib.sha256(table.read_bytes()).hexdigest(),
@@ -1529,7 +1557,7 @@ def test_a_file_that_changes_stops_the_session_before_its_next_candidate(
     else:
         hepmc.unlink()
         now = "unreadable now"
-    message = rf"stages\.generation\.file: {hepmc} changed after the session opened .*{now}"
+    message = rf"samples\.gamma\.generation\.file: {hepmc} changed after the session opened .*{now}"
     with pytest.raises(RunError, match=message):
         session.verify_inputs()
     with pytest.raises(RunError, match=message):
@@ -1659,13 +1687,14 @@ def test_what_changes_while_a_candidate_runs_leaves_it_without_a_record(
 
     monkeypatch.setattr(ddsim_run, "_execute", changing)
     message = {
-        "generation file": rf"stages\.generation\.file: {hepmc} changed after the session",
+        "generation file": rf"samples\.gamma\.generation\.file: {hepmc} changed after the session",
         "external file": r"geometry: \$\{DD4hepINSTALL\}/.*detector_types\.xml does not read",
         "k4opt code": "k4opt's code changed on disk",
     }[change]
     with pytest.raises(RunError, match=rf"{message}.*while the candidate in .*/a ran"):
         session.evaluate({RADIUS: 450.0}, tmp_path / "a")
-    assert (tmp_path / "a" / "simulation").is_dir() and len(fake.calls) == 1
+    simulated = tmp_path / "a" / "samples" / "gamma" / "simulation"
+    assert simulated.is_dir() and len(fake.calls) == 1
     assert not (tmp_path / "a" / SUMMARY_NAME).exists()
     with pytest.raises(RunError, match=message):  # nor is the next candidate evaluated
         session.evaluate({RADIUS: 500.0}, tmp_path / "b")
@@ -1737,10 +1766,10 @@ def test_a_simulation_that_runs_out_of_time_fails_its_candidate(
     assert "ddsim ran longer than 90 s and was killed" in (outcome.candidate.message or "")
     ((_, kwargs),) = fake.calls
     assert kwargs["timeout"] == 90.0
-    simulated = outcome.summary["stages"]["simulation"]  # type: ignore[index]
+    simulated = outcome.summary["samples"]["gamma"]["stages"]["simulation"]  # type: ignore[index]
     assert (simulated["timeout"], simulated["returncode"]) == (90.0, None)
     assert "ran longer than 90 s" in simulated["message"]
-    assert (tmp_path / "a" / "simulation" / "ddsim.stderr.log").is_file()
+    assert (tmp_path / "a" / "samples" / "gamma" / "simulation" / "ddsim.stderr.log").is_file()
 
 
 def test_a_session_without_a_timeout_lets_ddsim_run(
@@ -1750,7 +1779,7 @@ def test_a_session_without_a_timeout_lets_ddsim_run(
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     ((_, kwargs),) = fake.calls
     assert kwargs["timeout"] is None
-    assert outcome.summary["stages"]["simulation"]["timeout"] is None  # type: ignore[index]
+    assert outcome.summary["samples"]["gamma"]["stages"]["simulation"]["timeout"] is None  # type: ignore[index]
 
 
 @pytest.mark.parametrize("timeout", [0, -5.0, float("nan"), float("inf"), True, "60"])
@@ -1794,9 +1823,13 @@ def test_a_run_reference_is_recorded_as_given(
 @pytest.mark.parametrize(
     ("inputs", "message"),
     [
-        ({"reconstruction": "{file}"}, "input 'reconstruction': unknown stage"),
-        ({"simulation": "{missing}"}, "is not a file"),
-        ({"generation": "{file}", "simulation": "{file}"}, "input generation: no evaluator"),
+        ({"gamma/reconstruction": "{file}"}, "input 'gamma/reconstruction': unknown stage"),
+        ({"gamma/simulation": "{missing}"}, "is not a file"),
+        (
+            {"gamma/generation": "{file}", "gamma/simulation": "{file}"},
+            "input gamma/generation: no evaluator",
+        ),
+        ({"simulation": "{file}"}, "input 'simulation': name the sample too"),
     ],
 )
 def test_unusable_inputs_of_a_session_are_refused_when_it_opens(
@@ -1826,7 +1859,7 @@ def test_command_prints_each_limit_and_whether_the_candidate_is_feasible(
         str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
     )
     assert code == 0, err  # a valid evaluation, whatever the limits say
-    limit = "limit:       test.cell_count/simulation/ecal_barrel.mean_hit_cells"
+    limit = "limit:       gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells"
     assert f"{limit} >= 1: satisfied, margin -2 [1]" in out
     assert f"{limit} <= 2: violated, margin 1 [1]" in out
     assert "feasible:    no" in out
@@ -1846,10 +1879,8 @@ def test_command_reports_limits_it_could_not_judge(
         str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
     )
     assert code == 1
-    assert (
-        "limit:       test.cell_count/simulation/ecal_barrel.mean_hit_cells <= 2: not assessed"
-        in out
-    )
+    limit = "limit:       gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells"
+    assert f"{limit} <= 2: not assessed" in out
     assert "feasible:    not assessed" in out
 
 
@@ -1858,10 +1889,10 @@ def test_a_supplied_file_that_changes_stops_the_session_before_its_next_candidat
 ) -> None:
     events_file = tmp_path / "earlier.edm4hep.root"
     events_file.write_bytes(b"fake")
-    supplied = {"simulation": events_file}
+    supplied = {"gamma/simulation": events_file}
     session = EvaluationSession.open(problem_file, [cell_count()], inputs=supplied)
     assert session.identity()["inputs"] == {
-        "supplied.simulation": {
+        "supplied.gamma.simulation": {
             "path": str(events_file),
             "bytes": 4,
             "sha256": hashlib.sha256(b"fake").hexdigest(),
@@ -1869,7 +1900,9 @@ def test_a_supplied_file_that_changes_stops_the_session_before_its_next_candidat
     }
     session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     events_file.write_bytes(b"other events")  # the same path, other events
-    with pytest.raises(RunError, match=r"supplied\.simulation: .* changed after the session"):
+    with pytest.raises(
+        RunError, match=r"supplied\.gamma\.simulation: .* changed after the session"
+    ):
         session.evaluate({RADIUS: 500.0}, tmp_path / "b")
     assert not (tmp_path / "b").exists() and fake.calls == []
 
@@ -1928,7 +1961,7 @@ def test_the_record_does_not_depend_on_the_order_the_tasks_ran_in(
     second = session.evaluate({RADIUS: 450.0}, tmp_path / "b")
     planned = [task.id.label for task in second.candidate.plan.tasks]
     assert order != planned and sorted(order) == sorted(planned)
-    assert order[:2] == ["generation", "geometry"]  # the gun first: it reads no geometry
+    assert order[:2] == ["gamma/generation", "geometry"]  # the gun first: it reads no geometry
     assert seen == [True, True]
     assert comparable(second.summary, tmp_path / "b") == comparable(first.summary, tmp_path / "a")
     assert second.summary["status"] == ("valid" if not ddsim else "failed")
@@ -1954,7 +1987,12 @@ def test_the_record_is_assembled_from_the_task_results_alone(
         session._process,
     )
     assert json.loads(json.dumps(again)) == written
-    tasks = [written["geometry"], *written["stages"].values(), *written["evaluations"].values()]
+    tasks = [
+        written["geometry"],
+        *written["samples"]["gamma"]["stages"].values(),
+        *written["samples"]["gamma"]["evaluations"].values(),
+    ]
+    assert len(tasks) == 4 and written["evaluations"] == {}  # no evaluation of the candidate
     assert all(task["status"] in ("done", "valid") for task in tasks)
 
 
@@ -1970,68 +2008,88 @@ def change(data: dict[str, Any], path: str, value: Any) -> None:
         data[last] = value
 
 
+CELLED = "samples/gamma/evaluations/test.cell_count"
+SIMULATED = "samples/gamma/stages/simulation"
+
+
 @pytest.mark.parametrize(
     ("path", "value", "message"),
     [
         # what is blocked, by what, and why: re-derived from what each task reads
         (
-            "evaluations/test.cell_count/status",
+            f"{CELLED}/status",
             "failed",
-            "evaluator 'test.cell_count' is failed (blocked by ['simulation'], message 'not run: "
-            "simulation failed'), but what it reads makes it blocked by ['simulation']",
+            "evaluator 'gamma/test.cell_count' is failed (blocked by ['gamma/simulation'], "
+            "message 'not run: gamma/simulation failed'), but what it reads makes it blocked by "
+            "['gamma/simulation']",
         ),
-        ("evaluations/test.cell_count/blocked_by", [], "is blocked (blocked by [], message"),
+        (f"{CELLED}/blocked_by", [], "is blocked (blocked by [], message"),
         (
-            "evaluations/test.cell_count/blocked_by",
-            ["generation"],
-            "is blocked (blocked by ['generation']",
+            f"{CELLED}/blocked_by",
+            ["gamma/generation"],
+            "is blocked (blocked by ['gamma/generation']",
         ),
+        (f"{CELLED}/message", "not run: gamma/generation failed", "but what it reads makes it"),
         (
-            "evaluations/test.cell_count/message",
-            "not run: generation failed",
-            "but what it reads makes it",
-        ),
-        (
-            "stages/simulation/status",
+            f"{SIMULATED}/status",
             "done",
-            "evaluator 'test.cell_count' is blocked, but every task it reads succeeded",
+            "evaluator 'gamma/test.cell_count' is blocked, but every task it reads succeeded",
         ),
         (
-            "stages/simulation/status",
+            f"{SIMULATED}/status",
             "blocked",
-            "stage 'simulation' is blocked, but every task it reads succeeded",
+            "stage 'gamma/simulation' is blocked, but every task it reads succeeded",
         ),
-        ("stages/simulation/message", None, "stage 'simulation': a task that is failed needs a"),
-        ("stages/simulation/status", "crashed", "status 'crashed' is none of done, failed"),
+        (f"{SIMULATED}/message", None, "stage 'gamma/simulation': a task that is failed needs a"),
+        (f"{SIMULATED}/status", "crashed", "status 'crashed' is none of done, failed"),
         (
             "evaluations/test.parameter_echo/blocked_by",
-            ["simulation"],
+            ["gamma/simulation"],
             "is blocked, but every task it reads",
         ),
         # what each task reads is the problem's, not the record's to say
         (
-            "evaluations/test.cell_count/reads",
-            ["geometry", "simulation"],
-            "evaluator 'test.cell_count' reads ['geometry', 'simulation'], but the problem has it "
-            "read ['geometry', 'generation', 'simulation']",
+            f"{CELLED}/reads",
+            ["geometry", "gamma/simulation"],
+            "evaluator 'gamma/test.cell_count' reads ['geometry', 'gamma/simulation'], but the "
+            "problem has it read ['geometry', 'gamma/generation', 'gamma/simulation']",
         ),
-        ("stages/simulation/reads", ["geometry"], "stage 'simulation' reads ['geometry'], but"),
-        ("stages/generation", None, "stages.generation must be a mapping"),
+        (f"{SIMULATED}/reads", ["geometry"], "stage 'gamma/simulation' reads ['geometry'], but"),
+        ("samples/gamma/stages/generation", None, "samples.gamma.stages.generation must be a map"),
+        ("samples/gamma/stages", {}, "samples.gamma.stages are [], but the problem makes"),
+        ("samples/gamma", None, "samples.gamma must be a mapping"),
+        ("samples", {}, "its samples are [], but the problem's are ['gamma']"),
         ("geometry/status", "failed", "geometry: status 'failed', but it is always done"),
-        ("supplied", ["simulation"], "but the problem makes ['simulation']"),
+        ("supplied", ["gamma/simulation"], "but the problem makes ['simulation']"),
+        ("supplied", ["simulation"], "supplied ['simulation'] must list stages of the problem's"),
+        ("supplied", ["pion/simulation"], "must list stages of the problem's samples"),
         ("supplied", ["geometry"], "supplied ['geometry'] must list stages"),
-        ("supplied", ["simulation", "simulation"], "must list each stage once"),
+        ("supplied", ["gamma/simulation"] * 2, "must list each stage once"),
+        # where an evaluation is recorded says what it measured: a sample, or the candidate
+        (
+            "samples/gamma/evaluations",
+            {},
+            "samples.gamma.evaluations are [], but the problem's are ['test.cell_count']",
+        ),
+        (
+            "evaluations/test.cell_count",
+            {},
+            "its evaluations are ['test.parameter_echo', 'test.cell_count'], but the problem's "
+            "are ['test.parameter_echo']",
+        ),
+        ("metrics/0/sample", None, "its metrics are [['test.cell_count', None, "),
         # what a binding was configured with is the problem's, not the record's to say
         (
-            "evaluations/test.cell_count/collections/hits",
+            f"{CELLED}/collections/hits",
             "OtherCollection",
-            "evaluator 'test.cell_count': collections {'hits': 'OtherCollection'}, but the "
+            "evaluator 'gamma/test.cell_count': collections {'hits': 'OtherCollection'}, but the "
             "problem gives {'hits': ",
         ),
         (
-            "evaluations/test.cell_count/settings/declared",
+            f"{CELLED}/settings/declared",
             {"threshold": 1},
-            "evaluator 'test.cell_count': settings.declared {'threshold': 1}, but the problem",
+            "evaluator 'gamma/test.cell_count': settings.declared {'threshold': 1}, but the "
+            "problem",
         ),
         (
             "implementations/test.cell_count/stage",
@@ -2039,7 +2097,7 @@ def change(data: dict[str, Any], path: str, value: Any) -> None:
             "implementation 'test.cell_count': stage 'generation', but the problem has it read "
             "'simulation'",
         ),
-        ("message", "simulation failed: boom", "but its tasks make it"),
+        ("message", "gamma/simulation failed: boom", "but its tasks make it"),
         ("status", "valid", "status is 'valid', but its tasks make it 'failed'"),
     ],
 )
@@ -2057,7 +2115,9 @@ def test_a_record_whose_tasks_disagree_with_its_plan_is_refused(
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     data = json.loads(outcome.summary_path.read_text())
     Assessment.from_summary(session.spec, data)  # as written, it holds up
-    assert [e["status"] for e in data["evaluations"].values()] == ["blocked", "valid"]
+    # the sample's evaluation, blocked by its simulation, then the candidate's
+    assert [e["status"] for e in data["samples"]["gamma"]["evaluations"].values()] == ["blocked"]
+    assert [e["status"] for e in data["evaluations"].values()] == ["valid"]
     change(data, path, value)
     with pytest.raises(RecordError, match=re.escape(message)):
         Assessment.from_summary(session.spec, data)
@@ -2069,9 +2129,209 @@ def test_a_blocked_evaluator_that_measured_is_refused(
     simulation.install(monkeypatch, returncode=2)
     session = EvaluationSession.open(problem_file, [cell_count()])
     data = json.loads(session.evaluate({RADIUS: 450.0}, tmp_path / "a").summary_path.read_text())
-    data["evaluations"]["test.cell_count"]["measurements"] = [
+    data["samples"]["gamma"]["evaluations"]["test.cell_count"]["measurements"] = [
         {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells", "value": 3.0}
         | {"unit": "1", "uncertainty": None}
     ]
     with pytest.raises(RecordError, match="it is blocked, so it was never called, yet it measured"):
         Assessment.from_summary(session.spec, data)
+
+
+# --- several samples: each simulated once, on one geometry, measured on its own -------------
+
+
+def two_samples(problem_file: Path, **pion: Any) -> dict[str, Any]:
+    """Give the problem a second sample, ``pion`` (negative pions, unless ``pion`` says other
+    stages), which the evaluator measures too, with an objective on each sample; the document."""
+    doc = yaml.safe_load(problem_file.read_text())
+    stages = copy.deepcopy(doc["samples"]["gamma"])
+    stages["generation"]["particle"] = "pi-"
+    stages["simulation"]["seed"] = 6
+    doc["samples"]["pion"] = pion or stages
+    doc["evaluators"][0]["samples"] = ["gamma", "pion"]
+    objective = doc["objectives"][0]
+    doc["objectives"] = [objective | {"sample": "gamma"}, objective | {"sample": "pion"}]
+    problem_file.write_text(yaml.safe_dump(doc))
+    return doc
+
+
+def particle(argv: list[str]) -> str:
+    """The particle a ddsim command line fires."""
+    return next(a for a in argv if a.startswith("--gun.particle=")).partition("=")[2]
+
+
+def test_each_sample_is_simulated_once_on_the_one_geometry_and_measured_on_its_own(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
+) -> None:
+    two_samples(problem_file)
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert guard == ["discover", "materialize"]  # one geometry for both
+    assert [particle(argv) for argv, _ in fake.calls] == ["gamma", "pi-"]
+    compact = str(tmp_path / "a" / "geometry" / MINI_COMPACT)
+    assert all(f"--compactFile={compact}" in argv for argv, _ in fake.calls)
+    # each sample's stages and evaluations in a directory of its own
+    for sample in ("gamma", "pion"):
+        made = tmp_path / "a" / "samples" / sample
+        assert sorted(p.name for p in made.iterdir()) == ["evaluators", "simulation"]
+        assert (made / "evaluators" / "test.cell_count").is_dir()
+    record = outcome.candidate
+    assert record.status == "valid"
+    assert list(record.evaluations) == ["gamma/test.cell_count", "pion/test.cell_count"]
+    gamma, pion = record.records
+    assert gamma.request.seed == 5 and pion.request.seed == 6  # each its own sample's
+    assert gamma.request.inputs["simulation"] != pion.request.inputs["simulation"]
+    summary = outcome.summary
+    assert list(summary["samples"]) == ["gamma", "pion"]  # type: ignore[call-overload]
+    assert [m["label"] for m in summary["metrics"]] == [  # type: ignore[attr-defined]
+        "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
+        "pion/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
+    ]
+    assert [o.label for o in outcome.assessment.objectives or ()] == [
+        m["label"]
+        for m in summary["metrics"]  # type: ignore[attr-defined]
+    ]
+    assert outcome.events == {"gamma": (3, 3), "pion": (3, 3)}
+    written = json.loads(outcome.summary_path.read_text())
+    assert Assessment.from_summary(session.spec, written) == outcome.assessment
+    # one warning for the binding, however many samples ddsim simulates for it
+    assert len([w for w in session.warnings if w.startswith(UNEXPECTED)]) == 1
+
+
+def test_the_command_reports_each_evaluation_with_its_sample(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    two_samples(problem_file)
+    code, out, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
+    )
+    assert code == 0, err
+    assert out.index("evaluator:   test.cell_count 1 on gamma: valid") < out.index(
+        "evaluator:   test.cell_count 1 on pion: valid"
+    )
+    assert "events:      gamma: 3 of 3" in out and "events:      pion: 3 of 3" in out
+    stdout = tmp_path / "a" / "samples" / "pion" / "simulation" / "ddsim.stdout.log"
+    assert f"stdout:      pion: {stdout}" in out
+
+
+def test_a_sample_whose_simulation_fails_blocks_only_its_own_evaluations(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch, events_with([1, 1, 2, 3], [4, 5], [6, 7, 8, 9]))
+
+    def pions_crash(argv: list[str], **kwargs: Any) -> Any:
+        code = fake(argv, **kwargs)
+        return 2 if particle(argv) == "pi-" else code
+
+    monkeypatch.setattr(ddsim_run, "_execute", pions_crash)
+    doc = two_samples(problem_file)
+    doc["evaluators"].append({"name": "test.parameter_echo", "version": "1"})
+    doc["objectives"].append(
+        {"evaluator": "test.parameter_echo", "stage": ECHO[0], "metric": ECHO[1]}
+        | {"direction": "minimize"}
+    )
+    problem_file.write_text(yaml.safe_dump(doc))
+    session = EvaluationSession.open(problem_file, [cell_count(), parameter_echo()])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    record = outcome.candidate
+    statuses = {label: r.result.status for label, r in record.evaluations.items()}
+    assert statuses == {
+        "gamma/test.cell_count": "valid",
+        "pion/test.cell_count": "blocked",
+        "test.parameter_echo": "valid",
+    }
+    assert record.status == "failed"
+    message = record.message or ""
+    assert message.startswith("pion/simulation failed: ddsim exited with status 2")
+    assert message.endswith("; blocked: pion/test.cell_count")
+    # what was measured is kept, and nothing stands in for what was not
+    assert [m["value"] for m in outcome.summary["metrics"]] == [3.0, None, 450.0]  # type: ignore[attr-defined]
+    assert outcome.assessment.objectives is None
+    written = json.loads(outcome.summary_path.read_text())
+    assert written["samples"]["pion"]["evaluations"]["test.cell_count"]["blocked_by"] == [
+        "pion/simulation"
+    ]
+    assert written["samples"]["gamma"]["stages"]["simulation"]["status"] == "done"
+    Assessment.from_summary(session.spec, written)  # and the record holds up
+
+
+def test_a_file_read_by_two_samples_is_hashed_once_and_named_for_each(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    from k4opt.problem._stages import _sha256
+
+    hepmc = tmp_path / "zh.hepmc"  # next to the problem file
+    hepmc.write_bytes(b"HepMC::Version 3\n")
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["samples"]["gamma"]["generation"] = {"file": hepmc.name}
+    pion = copy.deepcopy(doc["samples"]["gamma"]) | {"simulation": {"executor": "ddsim"}}
+    pion["simulation"] |= {"events": 3, "seed": 6}
+    problem_file.write_text(yaml.safe_dump(doc))
+    two_samples(problem_file, **pion)
+    _sha256.cache_clear()
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    inputs = session.identity()["inputs"]
+    assert list(inputs) == ["samples.gamma.generation.file", "samples.pion.generation.file"]
+    assert inputs["samples.gamma.generation.file"] == inputs["samples.pion.generation.file"]
+    assert _sha256.cache_info().misses == 1  # read once
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert [f"--inputFiles={hepmc}" in argv for argv, _ in fake.calls] == [True, True]
+    assert outcome.candidate.status == "valid"
+
+
+def test_a_supplied_stage_of_one_sample_leaves_the_other_simulated(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    two_samples(problem_file)
+    events_file = tmp_path / "earlier.edm4hep.root"
+    events_file.write_bytes(b"fake")
+    outcome = run_candidate(
+        problem_file, [f"{RADIUS}=450"], tmp_path / "a", inputs=[f"pion/simulation={events_file}"]
+    )
+    assert [particle(argv) for argv, _ in fake.calls] == ["gamma"]
+    summary = outcome.summary
+    assert (summary["represents_candidate"], summary["supplied"]) == (False, ["pion/simulation"])
+    assert list(summary["samples"]["pion"]["stages"]) == ["simulation"]  # type: ignore[index]
+    gamma = summary["samples"]["gamma"]["stages"]  # type: ignore[index]
+    assert list(gamma) == ["generation", "simulation"]
+    assert outcome.assessment.feasible is None  # measured, but not judged
+
+
+def test_a_file_that_changes_while_the_second_sample_runs_leaves_no_record(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch, events_with([1], [2], [3]))
+    hepmc = tmp_path / "zh.hepmc"
+    hepmc.write_bytes(b"HepMC::Version 3\n")
+    doc = two_samples(problem_file)
+    doc["samples"]["gamma"]["generation"] = {"file": hepmc.name}
+    problem_file.write_text(yaml.safe_dump(doc))
+
+    def rewriting(argv: list[str], **kwargs: Any) -> Any:
+        if len(fake.calls) == 1:  # the second simulation, of pion, after gamma read the file
+            hepmc.write_bytes(b"HepMC::Version 3\nE 1\n")
+        return fake(argv, **kwargs)
+
+    monkeypatch.setattr(ddsim_run, "_execute", rewriting)
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    with pytest.raises(RunError, match=r"samples\.gamma\.generation\.file: .* changed after"):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert len(fake.calls) == 2
+    assert not (tmp_path / "a" / SUMMARY_NAME).exists()
+    for sample in ("gamma", "pion"):  # what ran is kept, to look at
+        assert (tmp_path / "a" / "samples" / sample / "simulation").is_dir()
+
+
+def test_samples_with_identical_stages_are_a_warning(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text())
+    two_samples(problem_file, **doc["samples"]["gamma"])
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    assert (
+        "samples gamma and pion have identical stages; each is simulated separately"
+        in session.warnings
+    )
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert len(fake.calls) == 2  # each all the same
+    assert outcome.candidate.status == "valid"

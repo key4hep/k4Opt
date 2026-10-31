@@ -1,11 +1,12 @@
 """Internal: the pipeline stages evaluators can read, each run at most once per candidate.
 
-A problem's ``stages`` say how each stage is made: run by an executor (``gun`` for
+Each sample of a problem says how each of its stages is made: run by an executor (``gun`` for
 ``generation``, ``ddsim`` for ``simulation``) or given as a file. An evaluator names the stage it
-reads with ``stage`` (``"simulation"``); the framework makes that stage and the stages it
-depends on available and hands the evaluator the files of all of them as
-``request.inputs[stage]``. However many evaluators read a stage, it runs once. An evaluator
-therefore never builds a command, starts a tool or handles that tool's failures.
+reads with ``stage`` (``"simulation"``); the framework makes that stage of each sample it
+measures, and the stages it depends on, available and hands the evaluator the files of all of
+them as ``request.inputs[stage]``. However many evaluators read a stage of a sample, it runs
+once. An evaluator therefore never builds a command, starts a tool or handles that tool's
+failures.
 
 * ``generation``: where the primary particles come from. The ``gun`` executor has no file of
   its own (``ddsim`` fires it); a generation given as a file (an event file such as HepMC) is
@@ -20,7 +21,8 @@ whose work :func:`make_stage` does in the task's own directory: a stage that fai
 the tasks that read it. Each stage has named outputs (``events``); ``request.inputs[stage]`` is
 the main one.
 
-The stages take their conditions from a :class:`StageContext`, never from the problem itself.
+The stages of a sample take their conditions from its :class:`StageContext`, never from the
+problem itself.
 
 Pipeline stages are steps that run. The ``stage`` of a measurement, objective or constraint
 only classifies a metric: an evaluator may report ``analysis`` metrics without an ``analysis``
@@ -56,23 +58,28 @@ from k4opt.problem.models import ProblemSpec, Stage
 
 @dataclass(frozen=True, slots=True)
 class StageContext:
-    """The conditions the pipeline stages run under: the problem's ``stages``.
+    """The conditions the pipeline stages of one sample run under: its ``stages``.
 
     ``directory`` is where a relative stage ``file`` (or a file named in an option, such as
     ``physics.pdgfile``) is read from: the directory of the problem file, the current one if it
     is ``None``. ``timeout`` is how many seconds a stage that runs a program (ddsim) may take
     before the program is killed and the stage fails; ``None`` for no limit. It is the caller's,
-    not the problem's.
+    not the problem's. ``sample`` names the sample in messages and labels.
     """
 
     stages: Mapping[str, Stage] = field(default_factory=dict)
     directory: Path | None = None
     timeout: float | None = None
+    sample: str | None = None
 
     @classmethod
-    def of(cls, spec: ProblemSpec) -> StageContext:
-        """The stages of ``spec``."""
-        return cls(spec.stages, spec._directory)
+    def of(cls, spec: ProblemSpec, sample: str) -> StageContext:
+        """The stages of the sample ``sample`` of ``spec``."""
+        return cls(spec.samples[sample].stages, spec._directory, sample=sample)
+
+    def where(self, stage: str) -> str:
+        """Where the problem defines ``stage``: ``samples.<sample>.<stage>``."""
+        return stage if self.sample is None else f"samples.{self.sample}.{stage}"
 
     def path(self, value: str) -> Path:
         """The absolute path ``value`` stands for, a relative one taken from ``directory``."""
@@ -157,8 +164,8 @@ def _check_generation(context: StageContext, provided: Collection[str]) -> None:
     stage = context.stages.get("generation")
     if stage is None:
         raise EvaluationContractError(
-            "stages.generation: the problem has no generation stage to say where the particles "
-            "come from"
+            f"{context.where('generation')}: the sample has no generation stage to say where the "
+            "particles come from"
         )
     if stage.executor is not None:
         check_particle_gun(stage.options)
@@ -183,10 +190,12 @@ def _option_files(context: StageContext, options: Mapping[str, Json]) -> dict[st
 def _check_simulation(context: StageContext, provided: Collection[str]) -> None:
     stage = context.stages.get("simulation")
     if stage is None or stage.executor is None:
-        raise EvaluationContractError("stages.simulation: the problem has no simulation to run")
+        raise EvaluationContractError(
+            f"{context.where('simulation')}: the sample has no simulation to run"
+        )
     if stage.events is None:
         raise EvaluationContractError(
-            "stages.simulation.events: ddsim needs the events to simulate"
+            f"{context.where('simulation')}.events: ddsim needs the events to simulate"
         )
     given = "generation" in provided or "generation" in context.files()
     particle_gun, input_file = _primaries(context, Path("generation") if given else None)
@@ -199,7 +208,9 @@ def _check_simulation(context: StageContext, provided: Collection[str]) -> None:
     )
     for key, path in _option_files(context, stage.options).items():
         if not path.is_file():
-            raise EvaluationContractError(f"stages.simulation.{key}: {path} is not a file")
+            raise EvaluationContractError(
+                f"{context.where('simulation')}.{key}: {path} is not a file"
+            )
 
 
 def _run_simulation(
@@ -348,7 +359,7 @@ def no_edm4hep_file(
         readable = " or ".join(_PODIO_SUFFIXES)
         return (
             f"its file {path.name} is no EDM4hep file that podio reads ({readable}); read the "
-            "collections from a stage that writes one, such as stages.simulation"
+            f"collections from a stage that writes one, such as {context.where('simulation')}"
         )
     spec = context.stages.get(stage)
     if spec is None or spec.executor is None:
@@ -357,8 +368,9 @@ def no_edm4hep_file(
     if inside is None:
         return None
     return (
-        f"executor {spec.executor!r} runs inside stages.{inside} and writes no file of its own; "
-        f"read the collections from stages.{inside}, or give stages.{stage} as a file"
+        f"executor {spec.executor!r} runs inside {context.where(inside)} and writes no file of "
+        f"its own; read the collections from {context.where(inside)}, or give "
+        f"{context.where(stage)} as a file"
     )
 
 
@@ -415,7 +427,9 @@ def check_stages(context: StageContext, *targets: str, provided: Collection[str]
         _STAGES[name].check(context, given)
     for name, _ in graph(targets, given):
         if name in files and not files[name].is_file():
-            raise EvaluationContractError(f"stages.{name}.file: {files[name]} is not a file")
+            raise EvaluationContractError(
+                f"{context.where(name)}.file: {files[name]} is not a file"
+            )
     return plan
 
 
@@ -424,19 +438,20 @@ def input_files(
 ) -> dict[str, Path]:
     """Every file the problem names that the stages of ``targets`` read, by where it is named.
 
-    ``stages.<stage>.file`` for a stage given as a file, ``stages.<stage>.<option>`` for a file an
-    executor option names (``stages.simulation.physics.pdgfile``). The stages in ``provided``, and
-    those only they need, read none: the caller supplies their files.
+    ``samples.<sample>.<stage>.file`` for a stage given as a file,
+    ``samples.<sample>.<stage>.<option>`` for a file an executor option names
+    (``samples.gamma.simulation.physics.pdgfile``). The stages in ``provided``, and those only
+    they need, read none: the caller supplies their files.
     """
     files = {name: path for name, path in context.files().items() if name not in provided}
     named: dict[str, Path] = {}
     for name, _ in graph(targets, {*provided, *files}):
         stage = context.stages.get(name)  # each one is defined once check_stages() passed
         if name in files:
-            named[f"stages.{name}.file"] = files[name]
+            named[f"{context.where(name)}.file"] = files[name]
         elif name not in provided and stage is not None:
             options = _option_files(context, stage.options)
-            named |= {f"stages.{name}.{key}": path for key, path in options.items()}
+            named |= {f"{context.where(name)}.{key}": path for key, path in options.items()}
     return named
 
 

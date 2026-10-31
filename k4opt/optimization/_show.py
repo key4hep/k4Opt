@@ -46,7 +46,7 @@ def _domain(parameter: Parameter) -> str:
 
 
 def _units(results: StudyResults) -> dict[MetricRef, str]:
-    """The unit each binding of the study measures each metric in, as its implementation
+    """The unit each evaluation of the study measures each metric in, as its implementation
     declares it."""
     units: dict[MetricRef, str] = {}
     implementations = results.document.get("implementations")
@@ -59,7 +59,8 @@ def _units(results: StudyResults) -> dict[MetricRef, str]:
             if isinstance(metric, Mapping):
                 stage, name, unit = metric.get("stage"), metric.get("metric"), metric.get("unit")
                 if isinstance(stage, str) and isinstance(name, str) and isinstance(unit, str):
-                    units[MetricRef(entry.binding, stage, name)] = unit
+                    for sample in entry.samples or (None,):
+                        units[MetricRef(entry.binding, stage, name, sample)] = unit
     return units
 
 

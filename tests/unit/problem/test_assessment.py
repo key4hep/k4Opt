@@ -243,7 +243,7 @@ def test_the_assessment_is_plain_json() -> None:
     data = assessment.to_dict()
     assert json.loads(json.dumps(data, allow_nan=False)) == data
     measured = {"value": 1.0, "unit": "mrad", "uncertainty": 0.1}
-    metric = {"evaluator": "test.fixed", "stage": "analysis", "metric": "a"}
+    metric = {"evaluator": "test.fixed", "sample": None, "stage": "analysis", "metric": "a"}
     assert data == {
         "feasible": True,
         "objectives": [metric | {"direction": "minimize"} | measured],
@@ -459,8 +459,13 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_set("assessment/limits/0/margin", -1.0), "its assessment is not the one"),
         (_set("assessment", None), "its assessment is not the one"),
         (_set("represents_candidate", "yes"), "represents_candidate is 'yes', but its supplied"),
-        (_set("supplied", ["simulation"]), "it supplied simulation, which no evaluator reads"),
-        (_set("stages", {"simulation": {}}), "its stages are ['simulation'], but the problem"),
+        (
+            _set("supplied", ["simulation"]),
+            "supplied ['simulation'] must list stages of the problem's samples, as SAMPLE/STAGE",
+        ),
+        (_set("supplied", ["gamma/simulation"]), "must list stages of the problem's samples"),
+        (_set("samples", {"gamma": {}}), "its samples are ['gamma'], but the problem's are []"),
+        (_set("samples", []), "samples must be a mapping"),
         (_set("represents_candidate", False), "represents_candidate is False, but its supplied"),
         (_set("problem/definition/parameters/0/bounds", [100.0, 700.0]), "parameters differ"),
         (_set("problem/definition/constraints/0/max", 600), "another problem: its constraints"),
@@ -532,7 +537,10 @@ def _owner_changed(data: dict[str, Any]) -> None:
     ("change", "message"),
     [
         (_moved, "evaluator 'test.echo' is valid but did not measure analysis/candidate.first"),
-        (_owner_changed, "its metrics are [['test.cost', 'analysis', 'candidate.first_value'"),
+        (
+            _owner_changed,
+            "its metrics are [['test.cost', None, 'analysis', 'candidate.first_value'",
+        ),
         (_set("implementations/test.cost/metrics", []), "its evaluator does not declare it"),
     ],
 )

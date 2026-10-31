@@ -3,7 +3,7 @@
 k4opt ships no evaluators: an evaluator is an ordinary class, usually a subclass of `Evaluator`
 ([how to write one](evaluation.md#writing-an-evaluator)), written by the physicist. An evaluator
 only reads: the framework makes the pipeline [stage](evaluation.md#stages) it reads (its `stage`)
-available, as the problem's `stages` say.
+of each sample it measures available, as the problem's `samples` say.
 [`examples/evaluators/calo_photon.py`](../examples/evaluators/calo_photon.py)
 is a complete, working one to copy from. There is no registry: `k4opt evaluate` is told which
 evaluators to use, and their names and versions must be those the problem declares.
@@ -21,18 +21,20 @@ k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
 evaluator the problem's `evaluators` name, in any order, however many entries bind it. The file is executed as ordinary Python
 ([`load_evaluator`](evaluation.md#loading-an-evaluator)), so name only code you trust.
 
-`--input STAGE=FILE` (repeatable) uses an existing file as the output of a stage instead of
-running it, to try an evaluator on a simulation made earlier, say:
-`--input simulation=runs/cld-ecal-10mm/simulation/events.edm4hep.root`. The stages only it would
-need do not run either. Its path, size and SHA-256 are recorded, and a supplied stage that the
+`--input SAMPLE/STAGE=FILE` (repeatable) uses an existing file as the output of a stage of a
+sample instead of running it, to try an evaluator on a simulation made earlier, say:
+`--input gamma_10gev/simulation=runs/cld-ecal-10mm/samples/gamma_10gev/simulation/events.edm4hep.root`.
+The sample is always named, also in a problem with one. The stages of the sample only it would
+need do not run either; the other samples run as the problem says. Its path, size and SHA-256 are recorded, and a supplied stage that the
 parameters change (the simulation, when they vary the geometry) was not made with this
 candidate's geometry: the command says so, and `summary.json` records
 `represents_candidate: false`, so such a run never counts as an evaluation of the candidate.
 
 `--timeout SECONDS` kills `ddsim` if it runs longer than that, for a geometry on which Geant4
 stalls: the simulation stage fails with the tail of ddsim's standard error, its logs stay in
-`simulation/`, and the candidate is `failed`. The limit is recorded with the stage
-(`stages.simulation.timeout`, `null` without one). It is not part of the problem: how long a
+`samples/<sample>/simulation/`, and the candidate is `failed`. The limit applies to each
+simulation on its own and is recorded with it (`samples.<sample>.stages.simulation.timeout`,
+`null` without one). It is not part of the problem: how long a
 simulation takes depends on the machine as much as on the candidate.
 
 One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`); from
@@ -42,23 +44,26 @@ evaluates many candidates of a problem the same way.
 each declared parameter. `--output` must not exist. Before anything is created, the candidate
 (keys, types, bounds), the supplied inputs, the evaluators (each one the problem names given
 once, with its version and the stage it reads, and no other), the settings and collections of
-each binding and the metrics the objectives and constraints name of it (see
-[problem](problem.md#evaluators)) are validated; an error exits with status 1 and creates
+each binding, the stages of each sample, and the metrics the objectives and constraints name of
+each evaluation (see [problem](problem.md#evaluators)) are validated; an error exits with status 1 and creates
 nothing. A collection that ddsim is not expected to write for the geometry is printed as a
 warning (`k4opt: warning: ...`, with the closest expected name) before anything runs, and so
-are two bindings that measure the same twice; the run goes on ([why only a warning](evaluation.md#collections)). Then, in order:
+are two bindings that measure the same twice on a sample and two samples written alike; the run
+goes on ([why only a warning](evaluation.md#collections)). Then, in order:
 
 1. the candidate becomes `Override`s (`6.0` with unit `mm` is written `6.0*mm`; units are limited
    to `um mm cm m mrad rad deg MeV GeV TeV`, expressions are not interpreted), and the geometry
    task materializes the geometry into `<output>/geometry` from the catalog that
    `load_problem()` discovered;
-2. the stages the evaluators read are made available once each: a generation `file` is checked
-   and hashed, and the `simulation` stage runs `ddsim` on that snapshot in
-   `<output>/simulation`. Then each evaluator, in the order of the problem, reads the files of
-   the stages it needs and may write in `<output>/evaluators/<binding>`. Each of these is a
-   [task](evaluation.md#stages) that runs only when what it reads succeeded: if a stage fails
-   or its output lacks events, the stage is `failed` and the evaluators that read it are
-   `blocked`, not called; the others still are. An evaluator whose stage's file lacks a
+2. for each sample, in the order of the problem, the stages its evaluators read are made
+   available once each: a generation `file` is checked and hashed, and the `simulation` stage
+   runs `ddsim` on that snapshot in `<output>/samples/<sample>/simulation`. Then each evaluator
+   that measures the sample, in the order of the problem, reads the files of the sample's stages
+   it needs and may write in `<output>/samples/<sample>/evaluators/<binding>`; last, each
+   evaluator of the candidate, which reads no stage, in `<output>/evaluators/<binding>`. Each of
+   these is a [task](evaluation.md#stages) that runs only when what it reads succeeded: if a
+   stage fails or its output lacks events, the stage is `failed` and the evaluations that read
+   it are `blocked`, not called; the others still are, those of the other samples too. An evaluator whose stage's file lacks a
    collection it declares, or holds it with another type, is `failed` without being called: the
    message lists what the file holds;
 3. the candidate is [assessed](evaluation.md#assessment-objectives-limits-and-feasibility)
@@ -70,10 +75,12 @@ are two bindings that measure the same twice; the run goes on ([why only a warni
      for this run, including parameter domains, objective directions and constraint limits;
    - `status` and `message` of the candidate ([how they follow from its tasks'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
      the candidate and its key, whether the run `represents_candidate`, which stages were
-     `supplied` with `--input`, and the `warnings` printed before the run;
+     `supplied` with `--input` (`gamma_10gev/simulation`), and the `warnings` printed before the
+     run;
    - `metrics`: every objective and constraint metric, named by its `evaluator` (a binding),
-     `stage`, `metric` and `label` (`calo.photon/simulation/ecal_barrel.fired_cells`), and its
-     value, unit and uncertainty, which are `null` unless that binding's result is `valid`;
+     `sample` (`null` for an evaluator of the candidate), `stage`, `metric` and `label`
+     (`gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells`), and its value, unit and
+     uncertainty, which are `null` unless that evaluation's result is `valid`;
    - `assessment`: the objective values in the problem's order, each with its metric and
      direction, each bound of each constraint
      (`limits`, with the value, its margin to the limit and whether it is `satisfied`), and
@@ -85,42 +92,49 @@ are two bindings that measure the same twice; the run goes on ([why only a warni
      `executed`, and the `revision` of the git checkout that tracks it;
      [details](evaluation.md#loading-an-evaluator)) and the metrics it declares with their units
      (`metrics`, `null` if it declares none);
-   - `evaluations`, each binding by its name, in problem order: the `implementation` it binds,
-     status, message, settings (`declared` as the problem wrote them, `used` as the evaluator
-     received them, with defaults and quantities in the declared unit), the collection of each
-     role, the tasks it `reads` (`geometry` and the stages) and those it was `blocked_by`, its
-     measurements with uncertainty, the artifacts and provenance it returned, its directory and
-     the time of its `evaluate()` call (`null` if it was not called);
-   - `stages`, each once and in pipeline order: its `status` (`done`, `failed` or `blocked`) and
-     `message`; the particle gun, or the size and SHA-256 of a given or supplied file; the exact
-     `ddsim` command, directory and exit code, the files its options name, with their hashes;
-     the events found, the tasks it `reads` and those it was `blocked_by`, and the time spent on
-     it (`null` if it did not run);
+   - `samples`, each sample of the problem by its name, in problem order, with its `stages` and
+     its `evaluations`:
+     - `stages`, each once and in pipeline order: its `status` (`done`, `failed` or `blocked`)
+       and `message`; the particle gun, or the size and SHA-256 of a given or supplied file; the
+       exact `ddsim` command, directory and exit code, the files its options name, with their
+       hashes; the events found (`events_read`), the tasks it `reads` (labeled
+       `gamma_10gev/generation`, and `geometry`) and those it was `blocked_by`, and the time
+       spent on it (`null` if it did not run);
+     - `evaluations`, each binding that measures the sample by its name, in problem order: the
+       `implementation` it binds, status, message, settings (`declared` as the problem wrote
+       them, `used` as the evaluator received them, with defaults and quantities in the declared
+       unit), the collection of each role, the tasks it `reads` (`geometry` and the sample's
+       stages) and those it was `blocked_by`, its measurements with uncertainty, the artifacts
+       and provenance it returned, its directory and the time of its `evaluate()` call (`null` if
+       it was not called);
+   - `evaluations`: those of the bindings that measure the candidate, which read no stage, the
+     same way;
    - `geometry`: its `status` (always `done`: a geometry that cannot be made stops the run), the
      time spent making it, the geometry fingerprint and manifest, the path and SHA-256 of each file its external
      references read (`externals`) and of each file only this candidate's values name
-     (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), requested and
-     observed events, the time of the whole
-     evaluation, the files of the stages under `paths`, and the environment (`declared`: the
+     (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), the time of the
+     whole evaluation, the files of the stages under `paths` (`gamma_10gev/simulation.stdout`),
+     and the environment (`declared`: the
      problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git
      checkout (`null` when it is installed rather than checked out), `KEY4HEP_STACK` and `K4GEO`
      (those the session opened with, checked before each candidate) and the `ddsim` that was
      started; the pin and the stack are not compared).
 
-The command prints the candidate's status, each binding's status and metrics with their
-uncertainty (a binding named with `as` beside its evaluator: `photon_200kev (calo.photon 1)`), each limit with its verdict and margin, whether the candidate is feasible, the
-events, the fingerprint and the paths. For the 10 mm candidate of the
+The command prints the candidate's status, each evaluation's status and metrics with their
+uncertainty (a binding named with `as` beside its evaluator, and the sample it measures:
+`photon_200kev (calo.photon 1) on gamma_10gev`), each limit with its verdict and margin, whether
+the candidate is feasible, the events of each sample, the fingerprint and the paths. For the 10 mm candidate of the
 [example study](#the-example-study), with the
 [1 mrad constraint](problem.md#constraints) added to the problem (abridged, values rounded):
 
 ```text
 status:      valid
-evaluator:   calo.photon 1: valid
+evaluator:   calo.photon 1 on gamma_10gev: valid
 metric:      simulation/ecal_barrel.angular_residual = 0.946 +- 0.034 [mrad]
-limit:       calo.photon/simulation/ecal_barrel.angular_residual <= 1.0: satisfied, margin -0.054 [mrad]
+limit:       gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual <= 1.0: satisfied, margin -0.054 [mrad]
 feasible:    yes
-events:      1000 of 1000
+events:      gamma_10gev: 1000 of 1000
 ```
 
 The exit status is 0 for a `valid` candidate, feasible or not; otherwise the message (each
@@ -137,7 +151,7 @@ next to the example evaluator, an evaluator of your own that needs no simulation
 cost computed from the cell size (`my_cost.py` and `my.readout_cost` are illustrative):
 
 ```yaml
-# stages as in the example
+# samples as in the example
 evaluators:
   - name: calo.photon
     version: "1"
@@ -152,10 +166,12 @@ evaluators:
     version: "1"
 
 objectives:
-  - stage: simulation
+  - evaluator: calo.photon  # on the one sample
+    stage: simulation
     metric: ecal_barrel.angular_residual
     direction: minimize
-  - stage: analysis
+  - evaluator: my.readout_cost  # of the candidate
+    stage: analysis
     metric: ecal.readout_cost
     direction: minimize
 ```
@@ -167,8 +183,9 @@ k4opt evaluate problem.yaml \
   --param constants.ECal_cell_size=10.0 --output runs/cost-10mm
 ```
 
-All evaluators of a problem read the same `stages`. A study that needs another sample or event
-count for some evaluator is a separate problem for now.
+An evaluator that needs other events, another event count or seed measures another sample of the
+same problem ([problem](problem.md#samples)); each sample is simulated once per candidate, on the
+one geometry.
 
 ## The example evaluator `calo.photon` version 1
 
@@ -252,6 +269,6 @@ separation in particle flow does, and measuring it needs reconstruction.
 
 ## Not done
 
-Reconstruction, other metrics, evaluator lookup by name, several samples or event counts in one
-problem, branches of the stages, aggregation over seeds, retries, a persistent store of runs and
+Reconstruction, other metrics, evaluator lookup by name, evaluators that combine several
+samples, stage configuration shared by samples, branches of the stages, aggregation over seeds, retries, a persistent store of runs and
 an environment check against the pin.

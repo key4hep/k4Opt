@@ -194,7 +194,8 @@ def test_values_keep_their_units_and_uncertainties_and_trials_their_recorded_tim
         ],
     )
     document = __import__("yaml").safe_load(problem.read_text())
-    document["stages"] = {
+    document["samples"] = {"gamma": {}}
+    document["samples"]["gamma"] = {
         "generation": {
             "executor": "gun",
             "particle": "gamma",
@@ -214,9 +215,11 @@ def test_values_keep_their_units_and_uncertainties_and_trials_their_recorded_tim
         assert measured[0][2] == pytest.approx(0.5)  # the standard error of their mean
         assert trial.elapsed_seconds == record["elapsed_seconds"]
         timed = {
-            s: e["elapsed_seconds"] for s, e in record["stages"].items() if "elapsed_seconds" in e
+            f"gamma/{s}": e["elapsed_seconds"]
+            for s, e in record["samples"]["gamma"]["stages"].items()
+            if "elapsed_seconds" in e
         }
-        assert dict(trial.stage_seconds) == timed and "simulation" in timed
+        assert dict(trial.stage_seconds) == timed and "gamma/simulation" in timed
 
 
 def test_a_resumed_study_reads_back_with_every_session_and_its_recovered_trial(
