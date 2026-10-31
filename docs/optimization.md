@@ -78,7 +78,8 @@ values are written into the geometry as they are, with nothing rounded or snappe
 **Objectives.** The optimizer is told each objective's value, in the problem's order and with
 its `direction`. One objective and several take the same path. Each is named by its label,
 `evaluator/stage/metric`, with the binding that measures it
-(`calo.photon/simulation/ecal_barrel.fired_cells`). The values are those of the run's
+(`calo.photon/simulation/ecal_barrel.fired_cells`; a `%` or `/` within a part is
+percent-escaped, so two objectives never share a label). The values are those of the run's
 [assessment](evaluation.md#assessment-objectives-limits-and-feasibility): that binding's
 measurement, as a float. A value that no float holds exactly (an integer beyond 2**53) stops
 the study rather than being told as another value.

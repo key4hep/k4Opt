@@ -302,7 +302,9 @@ evaluators:
 **Metrics and their evaluators.** Every objective and constraint names the binding that
 measures its metric (`evaluator`); in a problem with one binding it may leave it out. Two
 bindings may report a metric of the same name: their objectives are different references,
-labeled `evaluator/stage/metric` (`photon_200kev/simulation/ecal_barrel.fired_cells`). If the
+labeled `evaluator/stage/metric` (`photon_200kev/simulation/ecal_barrel.fired_cells`; a `%` or
+`/` within a part is percent-escaped, so the stage `analysis/x` with the metric `y` is
+`e/analysis%2Fx/y` and never the stage `analysis` with the metric `x/y`). If the
 evaluator declares its `metrics` ([evaluation](evaluation.md#writing-an-evaluator)), the metric
 must be among them and a constraint's `unit` must be the unit it declares; `k4opt evaluate`
 checks this before anything is created. An evaluator that declares none is checked when its

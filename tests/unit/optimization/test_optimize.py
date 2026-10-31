@@ -490,3 +490,41 @@ def test_evaluators_that_read_the_simulation_share_one_ddsim_run_per_trial(
     assert [t.status for t in report.trials] == ["valid"] * 3
     # each unexpected collection is warned about once, not once per trial
     assert len([w for w in log.warnings if "is not expected to write" in w]) == 2
+
+
+SLASHED = """
+    from k4opt.evaluation import Evaluator
+
+    class Probe(Evaluator):
+        name, version = "test.slashed", "1"
+        metrics = {("analysis/x", "y"): "1", ("analysis", "x/y"): "1"}
+
+        def evaluate(self, request):
+            x, *_ = request.candidate.values()
+            return {("analysis/x", "y"): x, ("analysis", "x/y"): -x}
+"""
+
+
+def test_metrics_whose_names_hold_a_slash_are_told_and_reported_apart(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    # joined with "/" as they are, both would be test.slashed/analysis/x/y
+    problem = write_problem(
+        evaluators=[{"name": "test.slashed", "version": "1"}],
+        objectives=[("analysis/x", "y", "minimize"), ("analysis", "x/y", "minimize")],
+        constraints=[
+            {"stage": "analysis/x", "metric": "y", "max": 1000, "unit": "1"},
+            {"stage": "analysis", "metric": "x/y", "max": 1000, "unit": "1"},
+        ],
+    )
+    slashed = evaluator_from(tmp_path / "evaluators", "slashed", SLASHED)
+    report = optimize(problem, [slashed], tmp_path / "s", trials=2, seed=1)
+    assert report.objectives == ("test.slashed/analysis%2Fx/y", "test.slashed/analysis/x%2Fy")
+    assert report.constraints == (
+        "test.slashed/analysis%2Fx/y:max",
+        "test.slashed/analysis/x%2Fy:max",
+    )
+    for trial in report.trials:
+        assert trial.objectives is not None
+        (x,) = trial.candidate.values()
+        assert list(trial.objectives.values()) == [x, -x]  # neither overwrites the other

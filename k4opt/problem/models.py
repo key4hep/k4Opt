@@ -200,6 +200,11 @@ class Stage:
         return data | options
 
 
+def _escaped(part: str) -> str:
+    """A part of a label, with ``%`` and ``/`` percent-escaped."""
+    return part.replace("%", "%25").replace("/", "%2F")
+
+
 @dataclass(frozen=True, slots=True)
 class MetricRef:
     """A metric of one evaluator: the identity of every value an objective or a constraint names.
@@ -216,8 +221,13 @@ class MetricRef:
     @property
     def label(self) -> str:
         """``evaluator/stage/metric``, such as ``calo.photon/simulation/ecal_barrel.fired_cells``;
-        records, exports and the optimizer name the value by it."""
-        return f"{self.evaluator}/{self.stage}/{self.metric}"
+        records, exports and the optimizer name the value by it.
+
+        A stage or metric name may hold ``/``, so each part has its ``%`` and ``/``
+        percent-escaped (``analysis%2Fx/y``; ``urllib.parse.unquote`` reverses it): two
+        references never share a label.
+        """
+        return "/".join(_escaped(part) for part in (self.evaluator, self.stage, self.metric))
 
 
 @dataclass(frozen=True, slots=True)
