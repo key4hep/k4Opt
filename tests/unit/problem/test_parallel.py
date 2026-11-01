@@ -279,6 +279,131 @@ def test_concurrent_candidates_each_write_and_record_only_their_own_files(
     assert len(ids) == 3
 
 
+def threaded(path: Path, threads: int) -> Path:
+    """``path``'s problem with the gamma simulation run on ``threads`` threads."""
+    document = yaml.safe_load(path.read_text())
+    document["samples"]["gamma"]["simulation"]["numberOfThreads"] = threads
+    path.write_text(yaml.safe_dump(document))
+    return path
+
+
+def test_a_simulation_on_several_threads_holds_as_many_jobs(
+    tmp_path: Path,
+    doc: dict[str, Any],
+    marks: Path,
+    session_of: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem = threaded(write_problem(tmp_path / "threads.yaml", doc), 2)
+    stack.install(monkeypatch, marks, **{"*": {"await": 2}})  # each waits for the other
+    outcome = session_of(3, problem).evaluate({RADIUS: 450.0}, tmp_path / "a")  # 2 + 1 slots
+    assert outcome.candidate.status == "valid", outcome.candidate.message
+    simulated = verified(outcome)["samples"]["gamma"]["stages"]["simulation"]
+    assert "--numberOfThreads=2" in simulated["argv"]
+
+    stack.install(monkeypatch, marks)
+    session = session_of(2, problem)  # the gamma simulation takes both jobs: it runs alone
+    assert not [warning for warning in session.warnings if "threads" in warning]
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert outcome.candidate.status == "valid", outcome.candidate.message
+    times = {name: (marks / f"b.{name}.started").stat().st_mtime_ns for name in ("gamma", "pion")}
+    ended = {name: (marks / f"b.{name}.ended").stat().st_mtime_ns for name in times}
+    first, second = sorted(times, key=times.__getitem__)
+    assert ended[first] <= times[second]  # one after the other
+    warned = [warning for warning in session_of(1, problem).warnings if "threads" in warning]
+    assert warned == [
+        "gamma/simulation simulates with 2 threads, more than the 1 job(s) of the session: it "
+        "runs alone, on 2 processors"
+    ]
+
+
+# --- how much memory each task took ------------------------------------------------------------
+
+MIB = 1 << 20
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/clear_refs is Linux's")
+def test_each_task_records_its_own_peak_memory_in_reused_workers(
+    tmp_path: Path,
+    doc: dict[str, Any],
+    marks: Path,
+    session_of: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
+    stack.install(monkeypatch, marks, **{"a.gamma": {"allocate": 300}})
+    probe(monkeypatch, **{"a.p": {"allocate": 200}})
+    session = session_of(2, problem)
+    big = verified(session.evaluate({RADIUS: 450.0}, tmp_path / "a"))
+    small = verified(session.evaluate({RADIUS: 450.0}, tmp_path / "b"))  # the same two workers
+    for summary in (big, small):
+        for sample in ("gamma", "pion"):
+            simulated = summary["samples"][sample]["stages"]["simulation"]["peak_memory_bytes"]
+            assert simulated["process"] > 0 and simulated["program"] > 0
+        assert summary["geometry"]["peak_memory_bytes"]["program"] is None
+    stages = {
+        run: summary["samples"]["gamma"]["stages"]["simulation"]["peak_memory_bytes"]["program"]
+        for run, summary in (("a", big), ("b", small))
+    }
+    assert stages["a"] >= 300 * MIB > stages["b"] + 200 * MIB  # ddsim, and only ddsim
+    probed = {
+        run: summary["samples"]["gamma"]["evaluations"]["p"]["peak_memory_bytes"]
+        for run, summary in (("a", big), ("b", small))
+    }
+    assert probed["a"]["process"] >= 200 * MIB > probed["b"]["process"] + 100 * MIB
+    assert probed["a"]["program"] is None
+    # what the worker held while ddsim ran is its own, not ddsim's
+    simulated = big["samples"]["gamma"]["stages"]["simulation"]["peak_memory_bytes"]
+    assert simulated["process"] < 300 * MIB
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/clear_refs is Linux's")
+def test_what_making_and_checking_the_instance_took_counts_in_a_worker(
+    tmp_path: Path,
+    doc: dict[str, Any],
+    session_of: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
+    stack.install(monkeypatch)
+    probe(monkeypatch, p={"check_allocate": 300})  # in check(), released before evaluate()
+    summary = verified(session_of(2, problem).evaluate({RADIUS: 450.0}, tmp_path / "a"))
+    memory = summary["samples"]["gamma"]["evaluations"]["p"]["peak_memory_bytes"]
+    assert memory["process"] >= 300 * MIB
+
+
+def test_what_making_and_checking_the_instance_took_counts_in_the_tasks_time(
+    tmp_path: Path,
+    doc: dict[str, Any],
+    session_of: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
+    stack.install(monkeypatch)
+    probe(monkeypatch, p={"check_sleep": 0.5})
+    outcome = session_of(2, problem).evaluate({RADIUS: 450.0}, tmp_path / "a")
+    (result,) = [r for r in outcome.candidate.results.values() if r.id.label == "gamma/p"]
+    assert result.record is not None and result.record.elapsed_seconds is not None
+    assert result.elapsed_seconds is not None and result.elapsed_seconds >= 0.5  # the task
+    assert result.record.elapsed_seconds < 0.5  # its evaluate() call alone
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/clear_refs is Linux's")
+def test_with_one_job_the_session_records_its_own_peak_memory(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch, **{"gamma": {"allocate": 200}})
+    summary = verified(session_of(1).evaluate({RADIUS: 450.0}, tmp_path / "a"))
+    memory = {
+        sample: summary["samples"][sample]["stages"]["simulation"]["peak_memory_bytes"]
+        for sample in ("gamma", "pion")
+    }
+    assert memory["gamma"]["program"] >= 200 * MIB > memory["pion"]["program"]
+    assert summary["samples"]["gamma"]["evaluations"]["test.cell_count"]["peak_memory_bytes"][
+        "process"
+    ] == pytest.approx(memory["pion"]["process"], rel=0.5)  # this process, not ddsim
+
+
 # --- what fails where ---------------------------------------------------------------------------
 
 
@@ -479,15 +604,18 @@ def test_the_command_evaluates_with_several_jobs(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    stack.install(monkeypatch)
+    stack.install(monkeypatch, **{"pion": {"allocate": 300}})
     output = tmp_path / "a"
     argv = ["evaluate", str(problem), "--evaluator", CELL_COUNT, "--param", f"{RADIUS}=450"]
     assert main([*argv, "-j", "2", "--output", str(output)]) == 0, capsys.readouterr().err
+    if sys.platform.startswith("linux"):  # the task that needs most: the pions' ddsim
+        line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("memory:"))
+        assert " per task (estimate), for pion/simulation (k4opt " in line and ", ddsim 3" in line
     summary = json.loads((output / SUMMARY_NAME).read_text())
     assert summary["environment"]["observed"]["execution"] == {"backend": "local", "jobs": 2}
     assert stack.workers() == []  # the command's session closed its workers
     assert main([*argv, "--jobs", "0", "--output", str(tmp_path / "b")]) == 1
-    assert "jobs must be a positive integer, got 0" in capsys.readouterr().err
+    assert "jobs must be a positive integer or 'auto', got 0" in capsys.readouterr().err
 
 
 # --- what the workers must share with the session ---------------------------------------------
@@ -633,12 +761,6 @@ def test_the_session_keeps_the_preflight_instances_only_when_it_evaluates_with_t
     assert run.prepared is not None
     assert len(run.prepared.entries) == len(run.prepared.requests) == 2  # for the records
     assert len(run.prepared.instances) == (2 if jobs == 1 else 0)
-
-
-@pytest.mark.parametrize("jobs", [0, -2, True, 1.5, "2"])
-def test_jobs_must_be_a_positive_integer(problem: Path, jobs: object) -> None:
-    with pytest.raises(RunError, match="jobs must be a positive integer"):
-        EvaluationSession.open(problem, [cell_count()], jobs=jobs)  # type: ignore[arg-type]
 
 
 def test_an_evaluator_a_worker_cannot_load_again_is_refused_when_the_session_opens(

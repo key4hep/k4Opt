@@ -16,8 +16,9 @@ from typing import TextIO
 
 from k4opt.evaluation import Status, load_evaluator
 from k4opt.problem._assess import Limit
-from k4opt.problem._run import RunOutcome, run_candidate
+from k4opt.problem._run import RunOutcome, peak_memory, run_candidate
 from k4opt.problem._tasks import Kind
+from k4opt.terminal import size
 
 _FEASIBLE = {True: "yes", False: "no", None: "not assessed"}
 
@@ -74,19 +75,32 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     evaluate.add_argument(
         "-j",
         "--jobs",
-        type=int,
+        type=_jobs,
         default=1,
         metavar="N",
         help=(
             "run at most N tasks at once (simulations of different samples, evaluators, the "
-            "geometry), each in a worker process; it bounds what k4opt starts, not the threads "
-            "or memory of each task. Default 1: one after another"
+            "geometry), each in a worker process; a simulation with numberOfThreads holds as "
+            "many. 'auto': as many as the processors this process may use. It bounds what k4opt "
+            "starts, not the memory of each task. Default 1: one after another"
         ),
     )
     evaluate.add_argument(
         "--output", required=True, help="new directory for the geometry, simulation and summary"
     )
     evaluate.set_defaults(func=cmd_evaluate)
+
+
+def _jobs(text: str) -> int | str:
+    """``--jobs``: a number (checked by the session) or ``auto``."""
+    if text == "auto":
+        return text
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a number of jobs or auto, got {text!r}"
+        ) from None
 
 
 def _limit(limit: Limit) -> str:
@@ -139,6 +153,15 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
             file=out,
         )
     print(f"fingerprint: {outcome.fingerprint}", file=out)
+    measured = [(m.per_task, label, m) for label, m in peak_memory(outcome.summary).items()]
+    if needed := [entry for entry in measured if entry[0] is not None]:
+        most, label, memory = max(needed, key=lambda entry: entry[0] or 0)
+        parts = [f"k4opt {size(memory.process)}"] if memory.process is not None else []
+        parts += [f"ddsim {size(memory.program)}"] if memory.program is not None else []
+        print(
+            f"memory:      {size(most or 0)} per task (estimate), for {label} ({', '.join(parts)})",
+            file=out,
+        )
     print(f"summary:     {outcome.summary_path}", file=out)
     for simulation in (candidate.results[t.id] for t in stages if t.id.name == "simulation"):
         files, at = dict(simulation.artifacts), simulation.id.sample

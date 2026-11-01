@@ -77,6 +77,8 @@ _REFUSED = {
 # options whose value is a file ddsim reads; the caller passes an absolute path and records it
 FILE_OPTIONS = ("physics.pdgfile",)
 
+THREADS = "numberOfThreads"  # Geant4's worker threads: what k4opt counts against --jobs
+
 _NESTED = (
     "write each option under its full ddsim name (physics.list: FTFP_BERT), not as a nested mapping"
 )
@@ -268,7 +270,7 @@ def _check_option_name(key: object, path: str) -> str:
     for refused, reason in _REFUSED.items():
         if refused.startswith(key):  # ddsim also accepts a prefix of an option's name
             raise _fail(path, f"--{refused} is not supported: {reason}")
-    known = (*_FLAGS, *_REPEATED, *_SEVERAL, *FILE_OPTIONS)
+    known = (*_FLAGS, *_REPEATED, *_SEVERAL, *FILE_OPTIONS, THREADS)
     longer = [name for name in known if name.startswith(key) and name != key]
     if longer:
         raise _fail(path, f"write the full option name ({', '.join(longer)})")
@@ -343,8 +345,23 @@ def option_args(options: Mapping[str, Json]) -> tuple[str, ...]:
                 "ddsim's command line expects it",
             )
         else:
+            if key == THREADS:
+                _threads(value, path)
             args.append(f"--{key}={_option_text(value, path)}")
     return tuple(args)
+
+
+def _threads(value: Json, path: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise _fail(path, f"must be a positive integer of threads, got {value!r}")
+    return value
+
+
+def threads(options: Mapping[str, Json]) -> int:
+    """How many threads ddsim simulates with, given ``options`` (checked by
+    :func:`option_args`): its ``numberOfThreads``, 1 without it."""
+    value = options.get(THREADS)
+    return 1 if value is None else _threads(value, f"simulation.{THREADS}")
 
 
 def ddsim_arguments(

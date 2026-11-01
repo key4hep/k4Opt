@@ -26,7 +26,7 @@ Typical use::
     print(run.error or run.output)
 """
 
-from k4opt.ddsim.command import DIRECTION_DISTRIBUTIONS, FILE_OPTIONS, output_collections
+from k4opt.ddsim.command import DIRECTION_DISTRIBUTIONS, FILE_OPTIONS, output_collections, threads
 from k4opt.ddsim.errors import DdsimError
 from k4opt.ddsim.run import (
     LOG_FILES,
@@ -48,4 +48,5 @@ __all__ = [
     "check_particle_gun",
     "output_collections",
     "simulate",
+    "threads",
 ]

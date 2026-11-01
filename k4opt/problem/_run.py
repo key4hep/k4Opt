@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from types import TracebackType
+from typing import Literal
 
 from k4opt import __version__
 from k4opt.evaluation import (
@@ -43,7 +44,9 @@ from k4opt.geometry import Override
 from k4opt.jsonio import write_json
 from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
 from k4opt.problem._backends import Backend, InlineBackend, ProcessBackend
+from k4opt.problem._cpus import AUTO, usable_cpus
 from k4opt.problem._evaluate import (
+    Activity,
     CandidateRecord,
     _bind_problem,
     _Binding,
@@ -54,6 +57,7 @@ from k4opt.problem._evaluate import (
     _Prepared,
     _Run,
     _validate_candidate,
+    task_cpus,
 )
 from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import STAGE_TYPES, file_identity, input_files, plan_stages
@@ -61,6 +65,7 @@ from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
     Made,
+    PeakMemory,
     Task,
     TaskId,
     TaskResult,
@@ -78,7 +83,7 @@ from k4opt.problem._work import (
 )
 from k4opt.problem._worker import session_spec
 from k4opt.problem.config import load_problem
-from k4opt.problem.errors import CandidateError, RunError
+from k4opt.problem.errors import CandidateError, RecordError, RunError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
 from k4opt.revision import code_identity, code_unchanged
 
@@ -354,6 +359,13 @@ def _artifact(made: Made, run_dir: Path) -> dict[str, object]:
     }
 
 
+def _memory(result: TaskResult) -> dict[str, object]:
+    """A task's peak memory as its record says it, in bytes: of the k4opt process that did its
+    work (``process``) and of the program a stage ran (``program``); ``null`` for one that did
+    not run. How it ran, never what was evaluated."""
+    return {"peak_memory_bytes": None if result.memory is None else result.memory.to_dict()}
+
+
 def _fragment(result: TaskResult) -> dict[str, object]:
     """What every task's part of the summary says first: how it ended, and why."""
     return {"status": result.status, "message": result.message}
@@ -382,6 +394,7 @@ def _stage(task: Task, result: TaskResult, run_dir: Path) -> dict[str, object]:
         }
         | _reads(task, result)
         | {"elapsed_seconds": result.elapsed_seconds}
+        | _memory(result)
     )
 
 
@@ -415,6 +428,7 @@ def _evaluation(
         # what it printed while it was called in a worker process; none in the caller's process
         "log": _relative(log, run_dir) if (log := result.artifacts.get("log")) else None,
         "elapsed_seconds": record.elapsed_seconds,
+        **_memory(result),
     }
 
 
@@ -515,7 +529,8 @@ def assemble(
         "elapsed_seconds": candidate.elapsed_seconds,
         "geometry": {"status": geometry.status}
         | made
-        | {"elapsed_seconds": geometry.elapsed_seconds},
+        | {"elapsed_seconds": geometry.elapsed_seconds}
+        | _memory(geometry),
         "environment": {
             # declared by the problem: a pin, not a check of what ran
             "declared": spec.environment.to_dict()["key4hep"],
@@ -532,6 +547,36 @@ def assemble(
             },
         },
     }
+
+
+def peak_memory(summary: Mapping[str, object]) -> dict[str, PeakMemory]:
+    """The peak memory of each task a ``summary.json`` records, by the task's label
+    (``geometry``, ``gamma/simulation``, ``gamma/calo.photon``, ``pi0_rejection``), for the tasks
+    that ran; read as the record holds it, in bytes. Raises
+    :class:`~k4opt.problem.RecordError` for one that is not a peak memory."""
+    entries: dict[str, object] = {"geometry": summary.get("geometry")}
+    samples = summary.get("samples")
+    for sample, part in (samples if isinstance(samples, Mapping) else {}).items():
+        for kind in ("stages", "evaluations"):
+            tasks = part.get(kind) if isinstance(part, Mapping) else None
+            for name, entry in (tasks if isinstance(tasks, Mapping) else {}).items():
+                entries[f"{sample}/{name}"] = entry
+    evaluations = summary.get("evaluations")
+    entries |= dict(evaluations) if isinstance(evaluations, Mapping) else {}
+    found: dict[str, PeakMemory] = {}
+    for label, entry in entries.items():
+        value = entry.get("peak_memory_bytes") if isinstance(entry, Mapping) else None
+        if value is None:
+            continue
+        if not isinstance(value, Mapping) or set(value) != {"process", "program"}:
+            raise RecordError(f"{label}: peak_memory_bytes is no process and program: {value!r}")
+        for key, count in value.items():
+            if count is not None and (
+                isinstance(count, bool) or not isinstance(count, int) or count < 0
+            ):
+                raise RecordError(f"{label}: peak_memory_bytes.{key} is no number of bytes")
+        found[label] = PeakMemory(value["process"], value["program"])
+    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,7 +730,7 @@ class EvaluationSession:
         *,
         inputs: Mapping[str, str | os.PathLike[str]] | None = None,
         timeout: float | None = None,
-        jobs: int = 1,
+        jobs: int | Literal["auto"] = 1,
     ) -> EvaluationSession:
         """Load the problem file ``problem_path`` to evaluate its candidates with
         ``implementations``.
@@ -703,7 +748,10 @@ class EvaluationSession:
         of one candidate and of several (:meth:`evaluate_each`); with more than one, each runs
         in a worker process that loads the implementations again by their references, so they
         must be loaded by :func:`~k4opt.evaluation.load_evaluator`, and one worker is started
-        and checked now. Close a session (:meth:`close`, or ``with``) to stop its workers.
+        and checked now. ``"auto"`` is as many jobs as the processors this process may use (its
+        affinity, at most its cgroup's quota). A simulation on several threads
+        (``numberOfThreads``) holds as many jobs while it runs. Close a session
+        (:meth:`close`, or ``with``) to stop its workers.
         Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
         stage or input (an :class:`~k4opt.evaluation.EvaluationContractError` for an
         implementation that cannot be created, too), and :class:`~k4opt.problem.RunError` if
@@ -712,7 +760,7 @@ class EvaluationSession:
         """
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         limit = _timeout(timeout)
-        _jobs(jobs)
+        jobs, usable = _jobs(jobs), usable_cpus()
         spec = load_problem(path)
         supplied = _supplied(spec, inputs or {})
         binding = _bind_problem(spec, implementations, supplied)
@@ -760,6 +808,17 @@ class EvaluationSession:
         )
         _check_code()
         assert isinstance(process, Mapping)
+        crowded = [
+            f"{task.id.label} simulates with {cpus} threads, more than the {jobs} job(s) of the "
+            f"session: it runs alone, on {cpus} processors"
+            for task in binding.plan.tasks
+            if (cpus := task_cpus(binding, task)) > jobs
+        ]
+        if jobs > usable:
+            crowded.append(
+                f"{jobs} jobs, more than the {usable} processors this process may use: tasks "
+                "will share processors"
+            )
         return cls(
             path.absolute(),
             spec,
@@ -768,7 +827,7 @@ class EvaluationSession:
             files,
             externals,
             taken,
-            binding.warnings,
+            (*binding.warnings, *crowded),
             process,
             limit,
             jobs,
@@ -787,8 +846,9 @@ class EvaluationSession:
     @property
     def warnings(self) -> tuple[str, ...]:
         """Collections an evaluator reads that the simulation is not expected to write; the
-        simulation's output decides, so they do not stop an evaluation. Each summary keeps
-        them too."""
+        simulation's output decides, so they do not stop an evaluation (each summary keeps them
+        too). Then how the session's jobs suit what it runs: a simulation on more threads than
+        there are jobs, more jobs than processors (how it ran: no summary keeps these)."""
         return self._warnings
 
     @property
@@ -952,7 +1012,12 @@ class EvaluationSession:
                 return result
         raise AssertionError("the candidate was never evaluated")  # pragma: no cover
 
-    def evaluate_each(self, requests: Iterable[RunRequest]) -> Evaluations:
+    def evaluate_each(
+        self,
+        requests: Iterable[RunRequest],
+        *,
+        activity: Callable[[Activity], None] | None = None,
+    ) -> Evaluations:
         """Evaluate the candidate of each of ``requests``, as :meth:`evaluate` does, and give
         each ``(request, outcome)`` as its candidate ends; the outcome is the exception that
         stopped it instead, if one did (nothing else is then written for it).
@@ -964,11 +1029,12 @@ class EvaluationSession:
         yielded before the next is taken; with more, the candidates end in any order, each
         with its own record. Close what this returns (``with``) when done with it: that stops
         whatever still runs, as leaving the loop early does not by itself. One at a time per
-        session.
+        session. ``activity`` is told what runs (:class:`~k4opt.problem.Activity`) whenever that
+        changes, in this thread.
         """
         if self._open is not None:
             raise RunError("the session is evaluating already; close that evaluation first")
-        evaluations = Evaluations(self, self._evaluations(iter(requests)))
+        evaluations = Evaluations(self, self._evaluations(iter(requests), activity))
         self._open = evaluations
         return evaluations
 
@@ -994,7 +1060,7 @@ class EvaluationSession:
         self.close()
 
     def _evaluations(
-        self, requests: Iterator[RunRequest]
+        self, requests: Iterator[RunRequest], activity: Callable[[Activity], None] | None
     ) -> Generator[tuple[RunRequest, RunOutcome | Exception]]:
         runs: dict[str, _Run] = {}
         backend: Backend = self._backend or InlineBackend(
@@ -1012,7 +1078,7 @@ class EvaluationSession:
             except Exception as exc:  # before anything was created
                 return _Run(Workspace("", None), None, error=exc, request=request)
 
-        driven = _drive(Scheduler(backend.capacity), backend, runs, pull, self._checked)
+        driven = _drive(Scheduler(backend.capacity), backend, runs, pull, self._checked, activity)
         try:
             for run in driven:
                 request = run.request
@@ -1162,10 +1228,14 @@ def _plain(value: object) -> object:
     return thaw(freeze(value, "geometry", RunError))
 
 
-def _jobs(value: int) -> None:
-    """:class:`RunError` unless ``value`` is a positive number of jobs."""
+def _jobs(value: int | Literal["auto"]) -> int:
+    """The number of jobs ``value`` says: itself, or for ``"auto"`` the processors this process
+    may use. :class:`RunError` unless it is a positive integer or ``"auto"``."""
+    if value == AUTO:
+        return usable_cpus()
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise RunError(f"jobs must be a positive integer, got {value!r}")
+        raise RunError(f"jobs must be a positive integer or 'auto', got {value!r}")
+    return value
 
 
 def _described(identity: Mapping[str, Json] | None) -> str:
@@ -1182,7 +1252,7 @@ def run_candidate(
     implementations: Sequence[type[EvaluatorProtocol]],
     inputs: Sequence[str] = (),
     timeout: float | None = None,
-    jobs: int = 1,
+    jobs: int | Literal["auto"] = 1,
     warn: Callable[[str], None] | None = None,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.

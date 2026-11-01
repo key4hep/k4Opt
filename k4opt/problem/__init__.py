@@ -30,7 +30,15 @@ Typical use::
 """
 
 from k4opt.problem._assess import Assessment, Limit, ObjectiveValue
-from k4opt.problem._run import Evaluations, EvaluationSession, RunOutcome, RunRequest
+from k4opt.problem._evaluate import Activity
+from k4opt.problem._run import (
+    Evaluations,
+    EvaluationSession,
+    RunOutcome,
+    RunRequest,
+    peak_memory,
+)
+from k4opt.problem._tasks import PeakMemory
 from k4opt.problem._work import SUMMARY_NAME
 from k4opt.problem.config import load_problem, parse_problem
 from k4opt.problem.errors import CandidateError, ProblemConfigError, RecordError, RunError
@@ -53,6 +61,7 @@ from k4opt.problem.models import (
 __all__ = [
     "SCHEMA_VERSION",
     "SUMMARY_NAME",
+    "Activity",
     "Assessment",
     "CandidateError",
     "Constraint",
@@ -67,6 +76,7 @@ __all__ = [
     "Objective",
     "ObjectiveValue",
     "Parameter",
+    "PeakMemory",
     "ProblemConfigError",
     "ProblemSpec",
     "RecordError",
@@ -78,4 +88,5 @@ __all__ = [
     "Stage",
     "load_problem",
     "parse_problem",
+    "peak_memory",
 ]

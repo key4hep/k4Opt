@@ -5,13 +5,15 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import resource
 import shutil
 import signal
 import subprocess
 import sys
+import time
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO
 
@@ -38,7 +40,9 @@ class SimulationRun:
     ``error`` is ``None`` only if ``ddsim`` exited with status 0 and wrote ``output``; otherwise
     it says what went wrong. ``returncode`` is ``None`` if the process never ran, or was killed
     because it ran out of time. The files ``stdout``, ``stderr``, ``command`` and ``output`` exist
-    only if the process got that far.
+    only if the process got that far. ``peak_memory_bytes`` is the largest peak resident memory of
+    ddsim and of the processes it started and waited for, each on its own (``None`` if it is not
+    known: ddsim did not end by itself, or the system does not say).
     """
 
     argv: tuple[str, ...]
@@ -49,6 +53,7 @@ class SimulationRun:
     stderr: Path
     command: Path
     error: str | None
+    peak_memory_bytes: int | None = None
 
     @property
     def files(self) -> dict[str, Path]:
@@ -126,6 +131,35 @@ def _launched(argv: list[str], die_with_parent: bool) -> list[str]:
     return [sys.executable, "-I", str(_LAUNCHER), str(os.getpid()), *argv]
 
 
+def _peak(usage: resource.struct_rusage | None) -> int | None:
+    """The peak resident memory in ``usage``, in bytes (Linux counts it in KiB)."""
+    if usage is None or usage.ru_maxrss <= 0:
+        return None
+    return usage.ru_maxrss * 1024 if sys.platform.startswith("linux") else usage.ru_maxrss
+
+
+def _reap(process: subprocess.Popen[bytes], timeout: float | None) -> tuple[int, int | None]:
+    """Wait for ``process`` to end, as ``process.wait(timeout)`` does: its exit status and its
+    peak resident memory in bytes, the largest of it and of each process it waited for, as the
+    kernel kept it (``wait4``)."""
+    deadline = None if timeout is None else time.monotonic() + timeout
+    delay = 0.0005
+    while True:
+        try:
+            pid, status, usage = os.wait4(process.pid, 0 if deadline is None else os.WNOHANG)
+        except ChildProcessError:  # reaped elsewhere: its status is Popen's to say
+            return process.wait(), None
+        if pid:
+            process.returncode = os.waitstatus_to_exitcode(status)
+            return process.returncode, _peak(usage)
+        assert deadline is not None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout or 0)
+        delay = min(delay * 2, remaining, 0.05)
+        time.sleep(delay)
+
+
 def _execute(
     argv: list[str],
     *,
@@ -134,6 +168,7 @@ def _execute(
     stderr: IO[bytes],
     timeout: float | None,
     started: Callable[[int], None] | None = None,
+    measured: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
 ) -> int | None:
     """Run ``argv`` to its end: its exit status, ``None`` if it ran longer than ``timeout``.
@@ -141,7 +176,9 @@ def _execute(
     It runs in a process group of its own, which is killed as a whole when its time runs out or
     this process is interrupted (Ctrl-C, SIGTERM), so nothing a wrapper script started (a shell
     script without ``exec``, a container) outlives it; a process that leaves the group does.
-    ``started`` is told the id of that group as soon as it exists. With ``die_with_parent`` the
+    ``started`` is told the id of that group as soon as it exists, and ``measured`` the peak
+    resident memory in bytes of the program, and of the processes it started and waited for, once
+    it ended by itself (where the system says). With ``die_with_parent`` the
     program is killed when this thread ends, even by SIGKILL (on Linux; through a launcher that
     fails the run, with the reason in ``stderr``, if the system refuses that).
     """
@@ -156,7 +193,10 @@ def _execute(
         try:
             if started is not None:
                 started(process.pid)  # the leader of its own group: the group's id
-            return process.wait(timeout=timeout)
+            returncode, peak = _reap(process, timeout)
+            if measured is not None and peak is not None:
+                measured(peak)
+            return returncode
         except BaseException as exc:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
@@ -187,7 +227,8 @@ def simulate(
     paths are taken from the current directory; option values are passed unchanged and ddsim runs in
     ``workdir``, so a file named in an option (``physics.pdgfile``) must be absolute.
     ``workdir`` receives ``events.edm4hep.root``, ``ddsim.stdout.log``, ``ddsim.stderr.log``
-    and ``ddsim.json`` (command, directory, exit code, time limit). A ``ddsim`` that runs longer
+    and ``ddsim.json`` (command, directory, exit code, time limit, peak memory). A ``ddsim`` that
+    runs longer
     than ``timeout`` seconds is killed with every process it started, and the run fails with its
     logs kept. ``started`` is told the id of the process group ddsim runs in once it started, and
     ``die_with_parent`` kills ddsim when the calling thread ends, even by SIGKILL (see
@@ -229,6 +270,7 @@ def simulate(
         return run((), None, "ddsim not found on PATH (is the Key4hep environment set up?)")
     # a relative PATH entry would no longer resolve from inside workdir
     argv = (os.path.abspath(found), *arguments)
+    peaks: list[int] = []
     try:
         with stdout.open("wb") as out, stderr.open("wb") as err:
             # None: killed when its time ran out
@@ -239,6 +281,7 @@ def simulate(
                 stderr=err,
                 timeout=timeout,
                 started=started,
+                measured=peaks.append,
                 die_with_parent=die_with_parent,
             )
     except OSError as exc:
@@ -251,10 +294,17 @@ def simulate(
         error = f"ddsim exited with status {returncode} (logs in {workdir}):\n" + _tail(stderr)
     elif not output.is_file():
         error = f"ddsim finished but wrote no {output.name} (logs in {workdir})"
-    record = {"argv": argv, "cwd": str(workdir), "returncode": returncode, "timeout": timeout}
+    peak = peaks[0] if peaks else None
+    record = {
+        "argv": argv,
+        "cwd": str(workdir),
+        "returncode": returncode,
+        "timeout": timeout,
+        "peak_memory_bytes": peak,
+    }
     try:
         write_json(command, record)
     except OSError as exc:
         failure = f"cannot record ddsim command in {command}: {exc}"
         error = failure if error is None else f"{error}\n{failure}"
-    return run(argv, returncode, error)
+    return replace(run(argv, returncode, error), peak_memory_bytes=peak)

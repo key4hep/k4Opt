@@ -87,13 +87,14 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     parser.add_argument(
         "-j",
         "--jobs",
-        type=int,
+        type=_jobs,
         default=1,
         metavar="N",
         help=(
             "run at most N tasks at once, of one trial and of several, each in a worker process; "
-            "it bounds what k4opt starts, not the threads or memory of each task, and is not part "
-            "of the study. Default 1: one trial after another"
+            "a simulation with numberOfThreads holds as many. 'auto': as many as the processors "
+            "this process may use. It bounds what k4opt starts, not the memory of each task, "
+            "and is not part of the study. Default 1: one trial after another"
         ),
     )
     parser.set_defaults(func=cmd_optimize)
@@ -158,6 +159,18 @@ def _register_study(commands: argparse._SubParsersAction[argparse.ArgumentParser
     exported.set_defaults(func=cmd_export)
 
 
+def _jobs(text: str) -> int | str:
+    """``--jobs``: a number (checked by the study) or ``auto``."""
+    if text == "auto":
+        return text
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a number of jobs or auto, got {text!r}"
+        ) from None
+
+
 def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     implementations = [load_evaluator(reference) for reference in args.evaluator]
     try:
@@ -174,6 +187,7 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 jobs=args.jobs,
                 warn=progress.warning,
                 progress=progress.trial,
+                activity=progress.activity,
             )
     except KeyboardInterrupt:
         print(

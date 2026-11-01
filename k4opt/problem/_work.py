@@ -53,7 +53,18 @@ from k4opt.evaluation import (
 from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.geometry import GeometryError, GeometrySource, Override
 from k4opt.problem._stages import StageContext, make_stage, stage_output
-from k4opt.problem._tasks import DONE, GEOMETRY, Kind, Made, Stat, Task, TaskId, TaskResult, Tree
+from k4opt.problem._tasks import (
+    DONE,
+    GEOMETRY,
+    Kind,
+    Made,
+    PeakMemory,
+    Stat,
+    Task,
+    TaskId,
+    TaskResult,
+    Tree,
+)
 from k4opt.problem.errors import RunError
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
 
@@ -162,7 +173,8 @@ class TaskOutcome:
     evaluation, whose request the coordinator made: ``result`` is what the evaluator returned (its
     artifacts relative to the workspace), ``workdir`` the evaluation's own directory if it was
     called, and ``call_seconds`` the time of its call. ``own_refs`` says whether the geometry a
-    geometry task made has ``ref`` attributes the candidate changed.
+    geometry task made has ``ref`` attributes the candidate changed. ``memory`` is its peak memory
+    where it ran.
 
     Only the files are named so that they hold wherever the workspace is. ``provenance`` says how
     the task ran where it ran (the command of a stage, with the absolute paths it was given) and
@@ -181,6 +193,7 @@ class TaskOutcome:
     workdir: Path | None = None
     call_seconds: float | None = None
     own_refs: bool = False
+    memory: PeakMemory | None = None
 
 
 def portable(path: Path, root: Path | None) -> Path:
@@ -242,20 +255,69 @@ def execute_task(
     seen: Observations,
     instance: EvaluatorProtocol | None = None,
     output: Output | None = None,
+    *,
+    make: Callable[[], EvaluatorProtocol] | None = None,
 ) -> tuple[TaskOutcome, Observations]:
     """Do the work of the task ``spec`` in the workspace whose directory is ``root`` here
     (``None``: the candidate has no directory, so no task of it writes).
 
     ``seen`` holds the stats taken of the files the task's reads made, which it checks before and
     after it runs. An evaluation calls ``instance``, within ``output`` of its own directory if
-    given (a worker process points the evaluator's output at a log there). Returns what the task
-    left behind and the
+    given (a worker process points the evaluator's output at a log there), or the instance
+    ``make`` returns, which the task makes first (a worker: a new instance, checked), so that
+    making it counts as the task's work. Returns what the task left behind and the
     stats of what it made. Raises what the work of the task raises: a geometry that cannot be
     made, an :class:`~k4opt.evaluation.EvaluationContractError` for a result that breaks the
     evaluation contract, or any exception of an evaluator other than
     :class:`~k4opt.evaluation.EvaluationFailed` and :class:`~k4opt.evaluation.EvaluationInvalid`.
+    The outcome holds the time and the peak memory of this process while it did the task, the
+    making of its instance included, and the peak memory of the program a stage ran.
     """
-    began = time.perf_counter()
+    began, measuring = time.perf_counter(), _reset_peak()
+    if make is not None:
+        instance = make()
+    outcome, observed = _run_task(context, spec, root, seen, instance, output, began)
+    program = None if outcome.memory is None else outcome.memory.program
+    process = _process_peak() if measuring else None
+    return replace(outcome, memory=PeakMemory(process, program)), observed
+
+
+_STATUS = Path("/proc/self/status")
+_CLEAR_REFS = Path("/proc/self/clear_refs")
+
+
+def _reset_peak() -> bool:
+    """Start this process's peak resident memory afresh, at what it holds now (Linux); whether
+    it could."""
+    try:
+        _CLEAR_REFS.write_text("5")  # 5: reset the peak RSS (proc(5))
+    except OSError:
+        return False
+    return True
+
+
+def _process_peak() -> int | None:
+    """This process's peak resident memory in bytes since :func:`_reset_peak` (``VmHWM``)."""
+    try:
+        lines = _STATUS.read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("VmHWM:"):
+            value, unit = line.split()[1:3]
+            return int(value) * 1024 if unit == "kB" else None
+    return None
+
+
+def _run_task(
+    context: SessionContext,
+    spec: TaskSpec,
+    root: Path | None,
+    seen: Observations,
+    instance: EvaluatorProtocol | None,
+    output: Output | None,
+    began: float,
+) -> tuple[TaskOutcome, Observations]:
     kind = spec.task.id.kind
     if kind is Kind.GEOMETRY:
         return _geometry(context, spec, root, began)
@@ -393,6 +455,7 @@ def _stage(
         outcome.provenance,
         _since(began),
         made=made,
+        memory=PeakMemory(program=outcome.peak_memory_bytes),
     ), Observations(made=stats)
 
 
@@ -684,6 +747,7 @@ def to_result(
         outcome.elapsed_seconds,
         made=made,
         tree=tree,
+        memory=outcome.memory,
     )
 
 

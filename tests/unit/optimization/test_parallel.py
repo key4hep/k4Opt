@@ -26,7 +26,7 @@ from optuna.exceptions import StorageInternalError
 from optuna.trial import TrialState
 
 from k4opt.optimization import OptimizationError, load_study, optimize
-from k4opt.problem import Evaluations
+from k4opt.problem import Activity, Evaluations
 from tests.support import stack
 from tests.support.stack import alive, eventually
 from tests.unit.optimization.conftest import evaluator_from, optuna_study
@@ -136,9 +136,15 @@ def test_trials_run_at_once_and_the_optimizer_is_asked_only_for_an_idle_job(
     monkeypatch.setattr(optuna.Study, "tell", counted_tell)
     gate(monkeypatch, marks, gate=3)  # the first three trials wait for each other
     output = tmp_path / "s"
-    report = optimize(write_problem(), [gated], output, trials=7, seed=1, jobs=3)
+    seen: list[Activity] = []
+    report = optimize(
+        write_problem(), [gated], output, trials=7, seed=1, jobs=3, activity=seen.append
+    )
     assert [trial.status for trial in report.trials] == ["valid"] * 7
     assert max(in_flight) == 3
+    assert {activity.capacity for activity in seen} == {3}
+    assert max(activity.candidates for activity in seen) == 3
+    assert all(activity.busy <= 3 for activity in seen) and seen[-1].candidates == 0
     assert sorted(told) == list(range(7))
     assert len(set(started(marks).values())) == 3  # one worker per job, reused
     results = load_study(output)  # every record verifies as the study's

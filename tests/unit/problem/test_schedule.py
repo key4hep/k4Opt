@@ -185,6 +185,62 @@ def test_a_task_costs_its_slots_but_never_more_than_there_are() -> None:
     assert scheduler.next() == ("a", Task(PI_GEN)) and scheduler.busy == 4  # all of them
 
 
+def test_later_tasks_that_fit_start_while_a_heavier_one_waits_but_only_capacity_of_them() -> None:
+    scheduler = Scheduler(4)
+    scheduler.add("big", Plan((Task(GEOMETRY), Task(SIM, (GEOMETRY,)))), {SIM: 4})  # 4 threads
+    small = [f"s{n}" for n in range(1, 10)]
+    for key in small:
+        scheduler.add(key, Plan((Task(GEOMETRY),)))
+
+    def started() -> list[str]:
+        keys = []
+        while (item := scheduler.next()) is not None:
+            keys.append(str(item[0]))
+        return keys
+
+    assert started() == ["big", "s1", "s2", "s3"]
+    scheduler.finished("big", ok(GEOMETRY))  # SIM is first now, and needs all four slots
+    assert started() == ["s4"]  # one free slot: a later task passes it
+    passed = ["s4"]
+    for key in ("s1", "s2", "s3"):
+        scheduler.finished(key, ok(GEOMETRY))
+        passed += started()
+    assert passed == ["s4", "s5", "s6", "s7"]  # as many as the capacity, then no more
+    scheduler.finished("s4", ok(GEOMETRY))
+    assert started() == [] and not scheduler.idle  # it waits for its slots, not idle
+    for key in ("s5", "s6"):
+        scheduler.finished(key, ok(GEOMETRY))
+        assert started() == []
+    scheduler.finished("s7", ok(GEOMETRY))
+    assert scheduler.next() == ("big", Task(SIM, (GEOMETRY,))) and scheduler.busy == 4
+    scheduler.finished("big", ok(SIM))
+    assert started() == ["s8", "s9"]
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_weighted_tasks_never_exceed_the_capacity_and_every_task_starts(seed: int) -> None:
+    pick = random.Random(seed)
+    capacity = pick.randint(1, 8)
+    scheduler = Scheduler(capacity)
+    candidates = pick.randint(1, 4)
+    for key in range(candidates):
+        costs = {task.id: pick.randint(1, 10) for task in two_samples().tasks}
+        scheduler.add(f"c{key}", two_samples(), costs)
+    started = run_all(scheduler, pick=pick)  # asserts busy <= capacity after every start
+    assert len(started) == len(set(started)) == candidates * len(two_samples().tasks)
+
+
+def test_with_unit_costs_no_task_ever_passes_another() -> None:
+    scheduler = Scheduler(3)
+    for key in ("a", "b"):
+        scheduler.add(key, two_samples())
+    started = run_all(scheduler)
+    reference = Scheduler(3)
+    for key in ("a", "b"):
+        reference.add(key, two_samples(), {task.id: 1 for task in two_samples().tasks})
+    assert run_all(reference) == started
+
+
 def test_misuse_is_refused() -> None:
     with pytest.raises(ValueError, match="capacity"):
         Scheduler(0)

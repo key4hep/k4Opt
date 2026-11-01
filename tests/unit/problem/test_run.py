@@ -843,6 +843,13 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
             "elapsed_seconds": summary["samples"]["gamma"]["stages"]["simulation"][
                 "elapsed_seconds"
             ],
+            # what k4opt held while it read the file; no program ran
+            "peak_memory_bytes": {
+                "process": summary["samples"]["gamma"]["stages"]["simulation"]["peak_memory_bytes"][
+                    "process"
+                ],
+                "program": None,
+            },
         }
     }
     assert summary["metrics"][0]["value"] == 3.0

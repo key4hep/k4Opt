@@ -239,6 +239,41 @@ def test_an_interrupted_ddsim_is_killed_with_what_it_started(tmp_path: Path, wra
     assert _ended(int(wrapped.read_text())), "the wrapper's child outlived it"
 
 
+# a ddsim that holds 200 MiB and writes its output, in a process of its own or behind a wrapper
+# script that does not exec it
+ALLOCATING = """\
+import sys
+held = bytearray(200 << 20)
+held[:: 1 << 12] = b"x" * len(held[:: 1 << 12])
+out = [a.split("=", 1)[1] for a in sys.argv if a.startswith("--outputFile=")][0]
+open(out, "w").close()
+"""
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="ru_maxrss in KiB is Linux's")
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_the_peak_memory_of_ddsim_and_what_it_waited_for_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrapped: bool
+) -> None:
+    program = tmp_path / "allocating.py"
+    program.write_text(ALLOCATING)
+    ddsim = tmp_path / "bin" / "ddsim"
+    ddsim.parent.mkdir()
+    start = "" if wrapped else "exec "
+    ddsim.write_text(f'#!/bin/sh\n{start}"{sys.executable}" "{program}" "$@"\n')
+    ddsim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{ddsim.parent}{os.pathsep}{os.environ['PATH']}")
+    run = _simulate(tmp_path, timeout=60)
+    assert run.error is None, run.error
+    assert run.peak_memory_bytes is not None and run.peak_memory_bytes >= 200 << 20
+    assert json.loads(run.command.read_text())["peak_memory_bytes"] == run.peak_memory_bytes
+
+
+def test_a_ddsim_killed_at_its_time_limit_has_no_peak_memory(tmp_path: Path, sleeper: Path) -> None:
+    run = _simulate(tmp_path, timeout=0.3)
+    assert run.returncode is None and run.peak_memory_bytes is None
+
+
 # a ddsim that says where it runs and never ends
 SLEEPER = """\
 #!/bin/sh

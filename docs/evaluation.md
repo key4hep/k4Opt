@@ -644,6 +644,32 @@ with the stage, the geometry's with the geometry, an `EvaluationRecord`'s `elaps
 its own `evaluate()` call, and the `CandidateRecord`'s is the whole evaluation: every task and
 the checks.
 
+Each task that ran also records its peak memory, in bytes, as `peak_memory_bytes` (`null` for one
+that did not run):
+
+- `process`: the peak resident memory of the k4opt process that did the task's work (a worker
+  process, or the session's own with one job) while it did it, all it held included (Python,
+  podio, ROOT, the evaluator). It is measured per task: the process's high-water mark is reset
+  before each task (`/proc/self/clear_refs`, Linux), so a worker that is reused does not carry
+  one task's peak into the next. A worker resets it before it creates the evaluator's instance,
+  so the instance's creation and its `check()` count too; with one job they ran in the preflight,
+  before the task, and do not. `null` where the system cannot reset it.
+- `program`: for a stage that ran a program (ddsim), that program's peak, as the kernel kept it
+  when it ended (`wait4`): the largest of ddsim's own and of each process it started and waited
+  for (a wrapper script's child), each on its own, never their sum. `null` for every other task,
+  and for a program that did not end by itself (killed at its time limit).
+
+`peak_memory(summary)` reads them back, by task label, as `PeakMemory(process, program)`; its
+`per_task` is both added: an **estimate** of what the task needs while it runs, however many
+jobs it holds (a simulation's threads share its memory), not a bound. The
+two peaks need not come at once, which makes it high; a program that runs several processes at
+once is counted by the largest of them, which makes it low (ddsim is one process, its Geant4
+threads share its memory). A true bound of a process tree needs the kernel's accounting of a
+cgroup, which k4opt does not set up. `k4opt evaluate` prints the task that needs most
+(`memory:      1.93 GiB per task (estimate), for gamma_10gev/simulation (k4opt 312 MiB, ddsim
+1.62 GiB)`). Like the times, they say how the candidate ran, never what was evaluated: no
+comparison of records reads them.
+
 ## Evaluating candidates: `EvaluationSession`
 
 `k4opt.problem.EvaluationSession` evaluates candidates of one problem file,
@@ -745,9 +771,27 @@ with EvaluationSession.open(problem, [CaloPhoton], jobs=4) as session:  # stops 
   loads the evaluators again by their references and refuses to start (`RunError`) unless they,
   k4opt's code, `KEY4HEP_STACK` and `K4GEO` are the session's. The session itself then only
   checks, assesses and writes the records, and it alone writes them.
-- **N bounds what k4opt starts**, not the threads or the memory of a task: a CLD ddsim takes 1-2
-  GB, threaded libraries (ROOT, BLAS) start threads of their own. Choose N for the memory as
-  much as for the cores; a shared machine (lxplus) is not yours alone.
+- **A job is a processor.** A simulation that ddsim runs on several threads (`numberOfThreads: 4`
+  in its stage) holds as many jobs while it runs, so `--jobs 8` runs two such simulations at
+  once, or one and four single-threaded tasks. One with more threads than there are jobs holds
+  them all and runs alone (the session warns). While such a simulation waits for its jobs,
+  later tasks that fit may start instead, at most N of them, so it never waits for ever; with
+  only single-threaded tasks this never happens, and the order is that of one job per task.
+  Threads a library starts of its own (ROOT's implicit multi-threading, BLAS) are not counted.
+- **`auto`** (`jobs="auto"`, `--jobs auto`) is the processors this process may use: its affinity
+  (a Slurm allocation, `taskset`), at most the `cpu.max` quota of its cgroup v2 and of those above
+  it (a container, a systemd unit with `CPUQuota`), rounded up. It knows nothing of other users:
+  on lxplus it is every core of the node (256), which the node's other users share, so give a
+  number there. An HTCondor job without CPU affinity gets the whole machine too: give
+  `--jobs $(request_cpus)`. More jobs than usable processors are warned about.
+- **N bounds what k4opt starts, not the memory.** Each record holds the peak memory of every task
+  (above), and `k4opt evaluate` prints an estimate of what the task that needs most takes while
+  it runs. Memory goes with the tasks running at once, not with the jobs: N single-threaded
+  simulations need about N times that, but simulations on 4 threads hold 4 jobs each, so at most
+  N/4 of them run, and each needs its memory once (its threads share it). Add the session's own
+  process. Measure one candidate first, then choose N for the memory as much as for the
+  processors, with some room, since it is an estimate; a shared machine (lxplus) is not yours
+  alone. k4opt sets no memory limit of its own.
 - **Records** are the same whatever N: each task gets the same configuration (geometry, stage
   options and seeds, requests), each record holds its results in plan order with the same
   statuses, blocking and diagnostics, and deterministic evaluators measure the same. Every
@@ -766,9 +810,36 @@ with EvaluationSession.open(problem, [CaloPhoton], jobs=4) as session:  # stops 
   and the simulations they run; a worker also dies when the session's process does (Linux), and
   nothing is published once the evaluations are closed.
 
+- **Watching.** `evaluate_each(requests, activity=...)` calls `activity` in the session's thread
+  whenever what runs changes, with an `Activity`: the `candidates` under way and the `busy` of
+  the `capacity` job slots (`k4opt optimize` shows them in its progress bar).
+
 A summary is published only after the references only a candidate's geometry names are checked
 again against the candidates recorded meanwhile, so two candidates that ran at once never both
 get a record that says they read different files.
+
+**Measured** with `tests/benchmarks/parallel.py`, which runs one fixed set of candidates at
+several numbers of jobs and checks that every record says what the one-job run says (all but
+how it ran). On the fake stack of the tests (8 candidates of two samples, each simulation 2 s of
+processor time; lxplus, 2026-11-01):
+
+| jobs | wall s | speedup | efficiency | processors busy | occupancy | records |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 35.4 | 1.00 | 100% | 0.98 | 99% | same |
+| 2 | 18.9 | 1.88 | 94% | 1.92 | 95% | same |
+| 4 | 10.1 | 3.51 | 88% | 3.69 | 88% | same |
+| 8 | 5.7 | 6.26 | 78% | 6.93 | 79% | same |
+
+What is lost goes to starting the workers (each imports k4opt, then podio when it first reads a
+file) and to the few candidates at the end, when fewer tasks than jobs are left. Run it with
+`--stack real` on the CLD example for the numbers of real simulations, memory included.
+
+**Beyond this machine.** Every task is described as plain data and done by one task program, and
+a record verifies without the session that made it, so a batch system can later run tasks, or
+whole candidates (each a session with its own jobs on one batch node), without a change to the
+problem, the evaluators or the records. Nothing of that exists yet. It would still need the
+files moved to where the tasks run and back, the stack and the evaluators' code provided there
+and checked, credentials on the batch nodes, and its own memory and processor requests.
 
 ### Assessment: objectives, limits and feasibility
 

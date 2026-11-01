@@ -63,7 +63,8 @@ class Backend(Protocol):
     """Executes the tasks of candidates.
 
     ``capacity`` is how many slots the scheduler may keep busy with this backend, and
-    :meth:`cost` how many a task holds. A task is submitted only once the workspace of its
+    :meth:`cost` how many a task holds that keeps ``cpus`` processors busy (its
+    :attr:`~k4opt.problem._work.TaskSpec.cpus`). A task is submitted only once the workspace of its
     candidate is open; ``seen`` are the stats of the files the task's reads made, taken where
     they were made. :meth:`wait` returns the tasks that ended, with what each left behind and the
     stats of what it made, or the exception that stops its candidate. :meth:`cancel` returns
@@ -73,7 +74,7 @@ class Backend(Protocol):
     @property
     def capacity(self) -> int: ...
 
-    def cost(self, spec: TaskSpec) -> int: ...
+    def cost(self, cpus: int) -> int: ...
 
     def open(self, workspace: Workspace) -> None: ...
 
@@ -105,7 +106,7 @@ class InlineBackend:
         self._roots: dict[str, Path | None] = {}
         self._ended: list[Completion] = []
 
-    def cost(self, spec: TaskSpec) -> int:
+    def cost(self, cpus: int) -> int:
         return 1
 
     def open(self, workspace: Workspace) -> None:
@@ -193,8 +194,9 @@ class ProcessBackend:
     def capacity(self) -> int:
         return self._jobs
 
-    def cost(self, spec: TaskSpec) -> int:
-        return min(max(spec.cpus, 1), self._jobs)
+    def cost(self, cpus: int) -> int:
+        """A slot per processor, all of them for a task that keeps more busy (it runs alone)."""
+        return min(max(cpus, 1), self._jobs)
 
     def start(self) -> None:
         """Start a worker and wait until it is set up; :class:`~k4opt.problem.RunError` if it
