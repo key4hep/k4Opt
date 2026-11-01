@@ -806,6 +806,17 @@ def _result(run: _Run, task: Task, outcome: TaskOutcome, observed: Observations)
     return replace(result, record=record)
 
 
+@dataclass(frozen=True, slots=True)
+class Activity:
+    """What runs at a moment of :meth:`~k4opt.problem.EvaluationSession.evaluate_each`: the
+    ``candidates`` under way, and the ``busy`` of the ``capacity`` job slots their running tasks
+    hold (a simulation on several threads holds as many)."""
+
+    candidates: int
+    busy: int
+    capacity: int
+
+
 type Check = Callable[[_Run, TaskOutcome, TaskResult], None]
 """What the coordinator checks of each result as it comes, raising to stop its candidate."""
 
@@ -818,6 +829,7 @@ def _drive(
     runs: dict[str, _Run],
     pull: Callable[[], _Run | None],
     check: Check | None = None,
+    activity: Callable[[Activity], None] | None = None,
 ) -> Generator[_Run]:
     """Run the tasks of candidates until there are none left; yield each candidate once all its
     tasks ended (``results``), or once its work raised (``error``: its other tasks are stopped).
@@ -826,9 +838,17 @@ def _drive(
     scheduler is idle, after every candidate that ended was yielded, so with one slot the
     candidates run one after another, each in plan order. ``runs`` holds the candidates under
     way, by workspace. Leaving the loop early (``close()``, an exception) stops every task still
-    running.
+    running. ``activity`` is told what runs whenever that changed.
     """
     pulling = True
+    told: Activity | None = None
+
+    def tell() -> None:
+        nonlocal told
+        now = Activity(len(runs), scheduler.busy, scheduler.capacity)
+        if activity is not None and now != told:
+            told = now
+            activity(now)
 
     def stop(run: _Run, error: Exception) -> None:
         run.error = error
@@ -852,6 +872,7 @@ def _drive(
                 except Exception as exc:
                     stop(run, exc)
                     ended.append(run)
+            tell()
             for handle, outcome, observed in backend.wait(_WAIT) if scheduler.running else []:
                 found = runs.get(handle.workspace)
                 if found is None:  # stopped meanwhile
@@ -875,6 +896,7 @@ def _drive(
                     backend.close_workspace(handle.workspace)
                     del runs[handle.workspace]
                     ended.append(run)
+            tell()
             yield from ended
             if pulling and scheduler.idle:
                 pulled = pull()

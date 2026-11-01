@@ -90,8 +90,7 @@ def test_more_jobs_than_processors_are_warned_about(
     monkeypatch.setattr(_run, "usable_cpus", lambda: 1)
     with EvaluationSession.open(problem_file, [cell_count()], jobs=2) as session:
         assert [w for w in session.warnings if "processors" in w] == [
-            "2 jobs, more than the 1 processors this process may use: tasks will share "
-            "processors"
+            "2 jobs, more than the 1 processors this process may use: tasks will share processors"
         ]
 
 

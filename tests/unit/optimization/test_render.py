@@ -15,7 +15,7 @@ from k4opt.frozen import FrozenMap
 from k4opt.optimization import StudyResults, TrialReport, TrialResult
 from k4opt.optimization._render import BAR_WIDTH, Progress, trial_line
 from k4opt.optimization._show import render_results, render_trial
-from k4opt.problem import Assessment, Limit, ObjectiveValue, parse_problem
+from k4opt.problem import Activity, Assessment, Limit, ObjectiveValue, parse_problem
 from tests.support.evaluators import TRADE_OFF
 from tests.unit.optimization.conftest import RADIUS, problem_document
 
@@ -104,20 +104,48 @@ def test_the_bar_shows_the_share_of_trials_that_ended_and_the_time() -> None:
     assert "1:05:12 elapsed" in shown.line(140)
 
 
-def test_a_trial_takes_the_mean_time_without_the_setup_and_the_time_left_counts_down() -> None:
+def test_a_trial_takes_the_time_so_far_per_trial_ended_and_the_time_left_counts_down() -> None:
     clock = Clock()
     shown = progress(10, clock)
-    for clock.now in (100.0, 160.0, 240.0):  # the first trial holds the setup
+    for clock.now in (100.0, 160.0, 240.0):
         shown.trial(trial(0))
-    assert shown.per_trial == 70.0
-    assert shown.left == 7 * 70.0
-    clock.now = 260.0  # the running trial has had 20 s
-    assert shown.left == 50.0 + 6 * 70.0 and "~7:50 left" in shown.line(140)
-    clock.now = 400.0  # it runs longer than a trial takes: the others are still to come
-    assert shown.left == 6 * 70.0
-    for clock.now in (410.0, 480.0, 550.0, 620.0, 690.0, 760.0, 830.0):
+    assert shown.per_trial == 80.0
+    assert shown.left == 7 * 80.0
+    clock.now = 260.0  # 20 s since the last trial ended
+    assert shown.left == 7 * 80.0 - 20 and "~9:00 left" in shown.line(140)
+    clock.now = 900.0  # longer than all the rest should take: nothing left to count
+    assert shown.left == 0.0
+    for clock.now in (910.0, 980.0, 1050.0, 1120.0, 1190.0, 1260.0, 1330.0):
         shown.trial(trial(0))
     assert shown.left == 0.0 and " 100%  10/10 trials" in shown.line(140)
+
+
+def test_trials_that_end_together_count_as_often_as_they_end() -> None:
+    clock = Clock()
+    shown = progress(20, clock)
+    shown.activity(Activity(candidates=4, busy=8, capacity=8))
+    for clock.now in (600.0, 601.0, 602.0, 603.0):  # four jobs, each trial 10 min
+        shown.trial(trial(0))
+    assert shown.per_trial == pytest.approx(150.75)
+    assert shown.left == pytest.approx(16 * 150.75)  # 40 min, not 16 s apart each
+    line = shown.line(160)
+    assert "4 running  8/8 slots  2:30/trial" in line
+
+
+def test_with_one_job_the_bar_shows_no_running_trials_nor_slots() -> None:
+    shown = progress(5, Clock())
+    shown.activity(Activity(candidates=1, busy=1, capacity=1))
+    assert "running" not in shown.line(200) and "slots" not in shown.line(200)
+
+
+def test_running_trials_and_slots_give_way_to_the_times_but_not_to_the_rest() -> None:
+    clock = Clock()
+    shown = progress(30, clock)
+    shown.activity(Activity(candidates=3, busy=4, capacity=4))
+    clock.now = 100.0
+    shown.trial(trial(0))
+    assert ANSI.sub("", shown.line(120)).endswith("~48:20 left  3 running  4/4 slots")
+    assert ANSI.sub("", shown.line(60)).endswith("~48:20 left  3 running")  # and no bar
 
 
 def test_the_percentage_reaches_100_only_with_the_last_trial() -> None:
@@ -135,7 +163,7 @@ def test_recovered_trials_are_printed_but_do_not_advance_the_bar() -> None:
         shown.trial(trial(7, "interrupted", recovered=True))
         clock.now = 65.0
         shown.trial(trial(8))
-    assert shown.durations == [60.0] and "1/3 trials" in shown.line(140)
+    assert shown.ended == 1 and shown.per_trial == 65.0 and "1/3 trials" in shown.line(140)
     assert screen(out.getvalue())[0] == "trial 7:   interrupted  trial-000007  (recovered)"
 
 

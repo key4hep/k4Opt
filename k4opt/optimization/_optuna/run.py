@@ -64,6 +64,7 @@ from k4opt.optimization._study import (
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import (
     SUMMARY_NAME,
+    Activity,
     Assessment,
     EvaluationSession,
     ProblemSpec,
@@ -79,6 +80,9 @@ type Warn = Callable[[str], None]
 
 
 type Progress = Callable[[TrialReport], None]
+
+
+type Watch = Callable[[Activity], None]
 
 
 @contextlib.contextmanager
@@ -275,6 +279,7 @@ def _run_trials(
     seed: int,
     trials: int,
     progress: Progress,
+    activity: Watch | None = None,
 ) -> None:
     """Run ``trials`` new trials, as many at once as the session has jobs, each told as it ends.
 
@@ -286,7 +291,7 @@ def _run_trials(
     in_flight: dict[int, tuple[Trial, Path]] = {}
     try:
         requests = _requests(run, space, seed, trials, in_flight)
-        with session.evaluate_each(requests) as evaluations:
+        with session.evaluate_each(requests, activity=activity) as evaluations:
             for request, result in evaluations:
                 assert isinstance(request.run, Mapping)
                 number = request.run["trial"]
@@ -385,6 +390,7 @@ def optimize(
     jobs: int | Literal["auto"],
     warn: Warn,
     progress: Progress,
+    activity: Watch | None = None,
 ) -> StudyReport:
     if isinstance(trials, bool) or not isinstance(trials, int) or trials < 1:
         raise OptimizationError(f"trials must be a positive integer, got {trials!r}")
@@ -409,6 +415,7 @@ def optimize(
             storage=storage,
             warn=warn,
             progress=progress,
+            activity=activity,
         )
 
 
@@ -422,6 +429,7 @@ def _run_study(
     storage: str | None,
     warn: Warn,
     progress: Progress,
+    activity: Watch | None,
 ) -> StudyReport:
     # everything that can be checked before a file is created
     spec = session.spec
@@ -477,7 +485,7 @@ def _run_study(
             study.sampler = optuna.samplers.TPESampler(
                 seed=seed_now, n_startup_trials=STARTUP_TRIALS, constant_liar=CONSTANT_LIAR
             )
-            _run_trials(run, session, space, seed_now, trials, progress)
+            _run_trials(run, session, space, seed_now, trials, progress, activity)
             return _study_report(run)
     except Exception as exc:
         replacement, secret = leaving(exc, storage)

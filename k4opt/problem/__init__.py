@@ -30,6 +30,7 @@ Typical use::
 """
 
 from k4opt.problem._assess import Assessment, Limit, ObjectiveValue
+from k4opt.problem._evaluate import Activity
 from k4opt.problem._run import (
     Evaluations,
     EvaluationSession,
@@ -60,6 +61,7 @@ from k4opt.problem.models import (
 __all__ = [
     "SCHEMA_VERSION",
     "SUMMARY_NAME",
+    "Activity",
     "Assessment",
     "CandidateError",
     "Constraint",

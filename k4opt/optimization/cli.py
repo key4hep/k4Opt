@@ -187,6 +187,7 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 jobs=args.jobs,
                 warn=progress.warning,
                 progress=progress.trial,
+                activity=progress.activity,
             )
     except KeyboardInterrupt:
         print(

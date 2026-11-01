@@ -46,6 +46,7 @@ from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
 from k4opt.problem._backends import Backend, InlineBackend, ProcessBackend
 from k4opt.problem._cpus import AUTO, usable_cpus
 from k4opt.problem._evaluate import (
+    Activity,
     CandidateRecord,
     _bind_problem,
     _Binding,
@@ -1011,7 +1012,12 @@ class EvaluationSession:
                 return result
         raise AssertionError("the candidate was never evaluated")  # pragma: no cover
 
-    def evaluate_each(self, requests: Iterable[RunRequest]) -> Evaluations:
+    def evaluate_each(
+        self,
+        requests: Iterable[RunRequest],
+        *,
+        activity: Callable[[Activity], None] | None = None,
+    ) -> Evaluations:
         """Evaluate the candidate of each of ``requests``, as :meth:`evaluate` does, and give
         each ``(request, outcome)`` as its candidate ends; the outcome is the exception that
         stopped it instead, if one did (nothing else is then written for it).
@@ -1023,11 +1029,12 @@ class EvaluationSession:
         yielded before the next is taken; with more, the candidates end in any order, each
         with its own record. Close what this returns (``with``) when done with it: that stops
         whatever still runs, as leaving the loop early does not by itself. One at a time per
-        session.
+        session. ``activity`` is told what runs (:class:`~k4opt.problem.Activity`) whenever that
+        changes, in this thread.
         """
         if self._open is not None:
             raise RunError("the session is evaluating already; close that evaluation first")
-        evaluations = Evaluations(self, self._evaluations(iter(requests)))
+        evaluations = Evaluations(self, self._evaluations(iter(requests), activity))
         self._open = evaluations
         return evaluations
 
@@ -1053,7 +1060,7 @@ class EvaluationSession:
         self.close()
 
     def _evaluations(
-        self, requests: Iterator[RunRequest]
+        self, requests: Iterator[RunRequest], activity: Callable[[Activity], None] | None
     ) -> Generator[tuple[RunRequest, RunOutcome | Exception]]:
         runs: dict[str, _Run] = {}
         backend: Backend = self._backend or InlineBackend(
@@ -1071,7 +1078,7 @@ class EvaluationSession:
             except Exception as exc:  # before anything was created
                 return _Run(Workspace("", None), None, error=exc, request=request)
 
-        driven = _drive(Scheduler(backend.capacity), backend, runs, pull, self._checked)
+        driven = _drive(Scheduler(backend.capacity), backend, runs, pull, self._checked, activity)
         try:
             for run in driven:
                 request = run.request

@@ -18,6 +18,7 @@ from types import TracebackType
 from typing import Any, TextIO
 
 from k4opt.optimization._study import StudyReport, TrialReport
+from k4opt.problem import Activity
 from k4opt.terminal import Style, printable, width
 
 BAR_WIDTH = 40
@@ -108,16 +109,17 @@ class Progress:
     """Prints the trials of a study as they end and, when ``bar``, a progress bar under them.
 
     The bar shows the new trials that ended against ``trials``, as a bar and a percentage, the
-    time since the study began, the time left, the time a trial takes and how the trials ended.
+    time since the study began, the time left, the time a trial takes and how the trials ended;
+    with more than one job (:meth:`activity`), also the trials running and the busy job slots.
     It is redrawn every ``interval`` seconds and after each line printed above it, and left in
     place when the study ends, marked ``✔``, or ``✘`` when it was stopped; a study stopped
     before any of its new trials ended (one that could not start) leaves none. Trials a resume
     recovers are printed but do not advance it.
 
-    A trial takes the mean time from the end of one trial to the end of the next. The first
-    trial of a session counts only until another has ended, since its time holds the study's
-    setup. The time left is that of the trials still to run, less the time the running one has
-    had, so it counts down between the ends of trials.
+    A trial takes the time from the start of the study to the end of the last trial, divided by
+    the trials that ended: with several jobs, trials end together, and this is how often one
+    ends. The time left is that of the trials still to run, less the time since the last one
+    ended, so it counts down between the ends of trials.
     """
 
     def __init__(
@@ -139,7 +141,9 @@ class Progress:
         self.interval = interval
         self.clock = clock
         self.outcomes: Counter[str] = Counter()
-        self.durations: list[float] = []  # of the new trials, each since the one before ended
+        self.ended = 0  # new trials that ended
+        self.running = 0  # trials under way, as the last activity said
+        self.busy, self.capacity = 0, 1  # job slots
         self._style = Style(color)
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -165,7 +169,7 @@ class Progress:
             self._ticker.join()
             with self._lock:
                 self._ended = kind is None
-                if kind is None or self.durations:
+                if kind is None or self.ended:
                     self._draw()
                     self.out.write("\n")
                 else:  # nothing ran that the bar could tell of: the error alone says why
@@ -178,9 +182,15 @@ class Progress:
             now = self.clock()
             if not trial.recovered:
                 self.outcomes[_outcome(trial)] += 1
-                self.durations.append(now - self._last)
-            self._last = now
+                self.ended += 1
+                self._last = now
             self._print(trial_line(trial, color=self.color), self.out)
+
+    def activity(self, activity: Activity) -> None:
+        """Take what runs now: the trials under way and the busy job slots."""
+        with self._lock:
+            self.running, self.busy = activity.candidates, activity.busy
+            self.capacity = activity.capacity
 
     def warning(self, message: str) -> None:
         with self._lock:
@@ -188,18 +198,16 @@ class Progress:
 
     @property
     def per_trial(self) -> float | None:
-        """The time a trial takes, once one has ended."""
-        measured = self.durations[1:] or self.durations
-        return sum(measured) / len(measured) if measured else None
+        """How often a trial ends, once one has."""
+        return (self._last - self._start) / self.ended if self.ended else None
 
     @property
     def left(self) -> float | None:
         """The time until the last trial ends, once one has ended."""
-        remaining = self.trials - len(self.durations)
+        remaining = self.trials - self.ended
         if self.per_trial is None or remaining <= 0:
             return None if self.per_trial is None else 0.0
-        running = self.clock() - self._last
-        return max(self.per_trial - running, 0.0) + (remaining - 1) * self.per_trial
+        return max(remaining * self.per_trial - (self.clock() - self._last), 0.0)
 
     def _print(self, text: str, stream: TextIO) -> None:
         if self.bar:
@@ -230,7 +238,7 @@ class Progress:
     def line(self, columns: int | None) -> str:
         """The bar, fit to ``columns``: the least telling parts are left out first."""
         style = self._style
-        done = len(self.durations)
+        done = self.ended
         fraction = min(done / max(self.trials, 1), 1.0)
         elapsed = self.clock() - self._start
         if self._ended is None:
@@ -244,13 +252,18 @@ class Progress:
         if self._ended is None:
             left = "--:-- left" if self.left is None else f"~{_duration(self.left)} left"
             parts.append((7, left, style.bold(left)))
+        if self.capacity > 1:
+            running = f"{self.running} running"
+            parts.append((5, running, style.cyan(running)))
+            slots = f"{self.busy}/{self.capacity} slots"
+            parts.append((4, slots, style.dim(slots)))
         if self.per_trial is not None:
             each = f"{_duration(self.per_trial)}/trial"
-            parts.append((4, each, style.dim(each)))
+            parts.append((3, each, style.dim(each)))
         counts = [(o, f"{self.outcomes[o]} {o}") for o in OUTCOMES if self.outcomes[o]]
         if counts:  # all of them or none
             plain = "  ".join(text for _, text in counts)
-            parts.append((3, plain, "  ".join(_paint(style, o, text) for o, text in counts)))
+            parts.append((2, plain, "  ".join(_paint(style, o, text) for o, text in counts)))
 
         # the parts above BAR_PRIORITY take their room first, then the bar, then the others in
         # what is left, so the bar keeps its width as they come and go

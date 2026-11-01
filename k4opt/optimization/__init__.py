@@ -37,6 +37,7 @@ from k4opt.evaluation import EvaluatorProtocol
 from k4opt.optimization._results import StudyResults, TrialResult
 from k4opt.optimization._study import STUDY_NAME, StudyReport, TrialReport
 from k4opt.optimization.errors import OptimizationError
+from k4opt.problem import Activity
 
 __all__ = [
     "STUDY_NAME",
@@ -78,6 +79,7 @@ def optimize(
     jobs: int | Literal["auto"] = 1,
     warn: Callable[[str], None] | None = None,
     progress: Callable[[TrialReport], None] | None = None,
+    activity: Callable[[Activity], None] | None = None,
 ) -> StudyReport:
     """Run ``trials`` new trials of a study of the problem file ``problem`` in ``output``.
 
@@ -99,13 +101,14 @@ def optimize(
     not part of the study.
 
     ``warn`` is called with each warning, ``progress`` with each trial as it ends, the trials a
-    resume finishes first (``recovered``). Invalid and failed candidates are FAIL trials and the
-    study goes on. Raises :class:`OptimizationError` for a study that cannot start or resume,
-    and when a trial stops it (a broken evaluation contract, a record that does not hold up); a
-    :class:`~k4opt.errors.K4OptError` for an invalid problem or evaluator, before anything is
-    created. Ctrl-C and SIGTERM end the running trials (FAIL, or told their records), remove the
-    lock and raise :class:`KeyboardInterrupt`; a trial that stops the study ends the others the
-    same way.
+    resume finishes first (``recovered``), and ``activity`` with what runs whenever that changes
+    (:class:`~k4opt.problem.Activity`: trials under way, busy job slots). Invalid and failed
+    candidates are FAIL trials and the study goes on. Raises :class:`OptimizationError` for a
+    study that cannot start or resume, and when a trial stops it (a broken evaluation contract,
+    a record that does not hold up); a :class:`~k4opt.errors.K4OptError` for an invalid problem
+    or evaluator, before anything is created. Ctrl-C and SIGTERM end the running trials (FAIL,
+    or told their records), remove the lock and raise :class:`KeyboardInterrupt`; a trial that
+    stops the study ends the others the same way.
     """
     with _needs_optuna("k4opt optimize"):
         from k4opt.optimization import _optuna
@@ -121,6 +124,7 @@ def optimize(
         jobs=jobs,
         warn=warn or (lambda message: None),
         progress=progress or (lambda trial: None),
+        activity=activity,
     )
 
 
