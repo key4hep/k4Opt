@@ -16,8 +16,9 @@ from typing import TextIO
 
 from k4opt.evaluation import Status, load_evaluator
 from k4opt.problem._assess import Limit
-from k4opt.problem._run import RunOutcome, run_candidate
+from k4opt.problem._run import RunOutcome, peak_memory, run_candidate
 from k4opt.problem._tasks import Kind
+from k4opt.terminal import size
 
 _FEASIBLE = {True: "yes", False: "no", None: "not assessed"}
 
@@ -139,6 +140,15 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
             file=out,
         )
     print(f"fingerprint: {outcome.fingerprint}", file=out)
+    measured = [(m.per_job, label, m) for label, m in peak_memory(outcome.summary).items()]
+    if needed := [entry for entry in measured if entry[0] is not None]:
+        most, label, memory = max(needed, key=lambda entry: entry[0] or 0)
+        parts = [f"k4opt {size(memory.process)}"] if memory.process is not None else []
+        parts += [f"ddsim {size(memory.program)}"] if memory.program is not None else []
+        print(
+            f"memory:      {size(most or 0)} per job at most, for {label} ({', '.join(parts)})",
+            file=out,
+        )
     print(f"summary:     {outcome.summary_path}", file=out)
     for simulation in (candidate.results[t.id] for t in stages if t.id.name == "simulation"):
         files, at = dict(simulation.artifacts), simulation.id.sample

@@ -343,6 +343,30 @@ def changed_files(results: Iterable[TaskResult]) -> list[str]:
 
 
 @dataclass(frozen=True, slots=True)
+class PeakMemory:
+    """The peak resident memory of a task, in bytes, ``None`` where it is not known.
+
+    ``process`` is that of the k4opt process that did the task's work (a worker process, or the
+    session's own with one job) while it did it, all it held included; ``program`` that of the
+    program a stage ran (ddsim), the largest of it and of each process it started and waited for.
+    """
+
+    process: int | None = None
+    program: int | None = None
+
+    @property
+    def per_job(self) -> int | None:
+        """What one job needs for the task: both peaks added, as if they came at once (they
+        may not, so this is at most what it held); ``None`` if neither is known."""
+        if self.process is None and self.program is None:
+            return None
+        return (self.process or 0) + (self.program or 0)
+
+    def to_dict(self) -> dict[str, int | None]:
+        return {"process": self.process, "program": self.program}
+
+
+@dataclass(frozen=True, slots=True)
 class TaskResult:
     """What one task left behind.
 
@@ -356,7 +380,8 @@ class TaskResult:
     which its record identifies together. ``blocked_by`` holds the tasks that did not
     succeed and kept a ``blocked`` one from running; ``record`` the evaluator's record, blocked
     ones included. ``elapsed_seconds`` is
-    the wall time k4opt spent on it, ``None`` if it did not run.
+    the wall time k4opt spent on it, ``None`` if it did not run; ``memory`` its peak memory,
+    ``None`` if it did not run.
     """
 
     id: TaskId
@@ -370,6 +395,7 @@ class TaskResult:
     record: EvaluationRecord | None = None
     made: Mapping[str, Made] = field(default_factory=lambda: FrozenMap({}))
     tree: Tree | None = None
+    memory: PeakMemory | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifacts", FrozenMap(self.artifacts))

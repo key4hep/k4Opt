@@ -42,6 +42,17 @@ class Style:
         return self._wrap("90", text)
 
 
+def size(count: int) -> str:
+    """A number of bytes in binary units, to three significant digits: ``1.62 GiB``,
+    ``312 MiB``."""
+    value, unit = float(count), "B"
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            break
+        value /= 1024
+    return f"{count} B" if unit == "B" else f"{value:.3g} {unit}"
+
+
 def printable(text: object) -> str:
     """``text`` with its control characters escaped (``\\x1b``, ``\\n``)."""
     return "".join(c if c.isprintable() else c.encode("unicode_escape").decode() for c in str(text))

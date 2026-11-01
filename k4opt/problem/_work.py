@@ -53,7 +53,18 @@ from k4opt.evaluation import (
 from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.geometry import GeometryError, GeometrySource, Override
 from k4opt.problem._stages import StageContext, make_stage, stage_output
-from k4opt.problem._tasks import DONE, GEOMETRY, Kind, Made, Stat, Task, TaskId, TaskResult, Tree
+from k4opt.problem._tasks import (
+    DONE,
+    GEOMETRY,
+    Kind,
+    Made,
+    PeakMemory,
+    Stat,
+    Task,
+    TaskId,
+    TaskResult,
+    Tree,
+)
 from k4opt.problem.errors import RunError
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
 
@@ -162,7 +173,8 @@ class TaskOutcome:
     evaluation, whose request the coordinator made: ``result`` is what the evaluator returned (its
     artifacts relative to the workspace), ``workdir`` the evaluation's own directory if it was
     called, and ``call_seconds`` the time of its call. ``own_refs`` says whether the geometry a
-    geometry task made has ``ref`` attributes the candidate changed.
+    geometry task made has ``ref`` attributes the candidate changed. ``memory`` is its peak memory
+    where it ran.
 
     Only the files are named so that they hold wherever the workspace is. ``provenance`` says how
     the task ran where it ran (the command of a stage, with the absolute paths it was given) and
@@ -181,6 +193,7 @@ class TaskOutcome:
     workdir: Path | None = None
     call_seconds: float | None = None
     own_refs: bool = False
+    memory: PeakMemory | None = None
 
 
 def portable(path: Path, root: Path | None) -> Path:
@@ -254,7 +267,51 @@ def execute_task(
     made, an :class:`~k4opt.evaluation.EvaluationContractError` for a result that breaks the
     evaluation contract, or any exception of an evaluator other than
     :class:`~k4opt.evaluation.EvaluationFailed` and :class:`~k4opt.evaluation.EvaluationInvalid`.
+    The outcome holds the peak memory of this process while it did the task, and that of the
+    program a stage ran.
     """
+    measuring = _reset_peak()
+    outcome, observed = _run_task(context, spec, root, seen, instance, output)
+    program = None if outcome.memory is None else outcome.memory.program
+    process = _process_peak() if measuring else None
+    return replace(outcome, memory=PeakMemory(process, program)), observed
+
+
+_STATUS = Path("/proc/self/status")
+_CLEAR_REFS = Path("/proc/self/clear_refs")
+
+
+def _reset_peak() -> bool:
+    """Start this process's peak resident memory afresh, at what it holds now (Linux); whether
+    it could."""
+    try:
+        _CLEAR_REFS.write_text("5")  # 5: reset the peak RSS (proc(5))
+    except OSError:
+        return False
+    return True
+
+
+def _process_peak() -> int | None:
+    """This process's peak resident memory in bytes since :func:`_reset_peak` (``VmHWM``)."""
+    try:
+        lines = _STATUS.read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("VmHWM:"):
+            value, unit = line.split()[1:3]
+            return int(value) * 1024 if unit == "kB" else None
+    return None
+
+
+def _run_task(
+    context: SessionContext,
+    spec: TaskSpec,
+    root: Path | None,
+    seen: Observations,
+    instance: EvaluatorProtocol | None,
+    output: Output | None,
+) -> tuple[TaskOutcome, Observations]:
     began = time.perf_counter()
     kind = spec.task.id.kind
     if kind is Kind.GEOMETRY:
@@ -393,6 +450,7 @@ def _stage(
         outcome.provenance,
         _since(began),
         made=made,
+        memory=PeakMemory(program=outcome.peak_memory_bytes),
     ), Observations(made=stats)
 
 
@@ -684,6 +742,7 @@ def to_result(
         outcome.elapsed_seconds,
         made=made,
         tree=tree,
+        memory=outcome.memory,
     )
 
 

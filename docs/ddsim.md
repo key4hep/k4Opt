@@ -42,7 +42,14 @@ the kernel's OOM killer ends.
 `check_arguments` does the first
 part alone, `check_particle_gun` and `check_options` check a gun or options on their own (the
 problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`,
-`ddsim.stderr.log` and `ddsim.json` (argument list, directory, exit code, time limit).
+`ddsim.stderr.log` and `ddsim.json` (argument list, directory, exit code, time limit, peak
+memory).
+
+`SimulationRun.peak_memory_bytes` is ddsim's peak resident memory, as the kernel kept it when
+ddsim ended (`wait4`): the largest of ddsim's own and of each process it started and waited for,
+each on its own, not their sum. A wrapper script that runs ddsim is measured with ddsim; Geant4's
+threads share ddsim's memory and are counted once. It is `None` when ddsim did not end by itself
+(killed at its time limit or interrupted) or the system does not say (not Linux or macOS).
 
 An unwritable simulation directory or command record is also reported in `SimulationRun.error`.
 If the process already ran, its actual exit code and existing output and logs remain available.

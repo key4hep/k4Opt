@@ -61,6 +61,7 @@ from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
     Made,
+    PeakMemory,
     Task,
     TaskId,
     TaskResult,
@@ -78,7 +79,7 @@ from k4opt.problem._work import (
 )
 from k4opt.problem._worker import session_spec
 from k4opt.problem.config import load_problem
-from k4opt.problem.errors import CandidateError, RunError
+from k4opt.problem.errors import CandidateError, RecordError, RunError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
 from k4opt.revision import code_identity, code_unchanged
 
@@ -354,6 +355,13 @@ def _artifact(made: Made, run_dir: Path) -> dict[str, object]:
     }
 
 
+def _memory(result: TaskResult) -> dict[str, object]:
+    """A task's peak memory as its record says it, in bytes: of the k4opt process that did its
+    work (``process``) and of the program a stage ran (``program``); ``null`` for one that did
+    not run. How it ran, never what was evaluated."""
+    return {"peak_memory_bytes": None if result.memory is None else result.memory.to_dict()}
+
+
 def _fragment(result: TaskResult) -> dict[str, object]:
     """What every task's part of the summary says first: how it ended, and why."""
     return {"status": result.status, "message": result.message}
@@ -382,6 +390,7 @@ def _stage(task: Task, result: TaskResult, run_dir: Path) -> dict[str, object]:
         }
         | _reads(task, result)
         | {"elapsed_seconds": result.elapsed_seconds}
+        | _memory(result)
     )
 
 
@@ -415,6 +424,7 @@ def _evaluation(
         # what it printed while it was called in a worker process; none in the caller's process
         "log": _relative(log, run_dir) if (log := result.artifacts.get("log")) else None,
         "elapsed_seconds": record.elapsed_seconds,
+        **_memory(result),
     }
 
 
@@ -515,7 +525,8 @@ def assemble(
         "elapsed_seconds": candidate.elapsed_seconds,
         "geometry": {"status": geometry.status}
         | made
-        | {"elapsed_seconds": geometry.elapsed_seconds},
+        | {"elapsed_seconds": geometry.elapsed_seconds}
+        | _memory(geometry),
         "environment": {
             # declared by the problem: a pin, not a check of what ran
             "declared": spec.environment.to_dict()["key4hep"],
@@ -532,6 +543,36 @@ def assemble(
             },
         },
     }
+
+
+def peak_memory(summary: Mapping[str, object]) -> dict[str, PeakMemory]:
+    """The peak memory of each task a ``summary.json`` records, by the task's label
+    (``geometry``, ``gamma/simulation``, ``gamma/calo.photon``, ``pi0_rejection``), for the tasks
+    that ran; read as the record holds it, in bytes. Raises
+    :class:`~k4opt.problem.RecordError` for one that is not a peak memory."""
+    entries: dict[str, object] = {"geometry": summary.get("geometry")}
+    samples = summary.get("samples")
+    for sample, part in (samples if isinstance(samples, Mapping) else {}).items():
+        for kind in ("stages", "evaluations"):
+            tasks = part.get(kind) if isinstance(part, Mapping) else None
+            for name, entry in (tasks if isinstance(tasks, Mapping) else {}).items():
+                entries[f"{sample}/{name}"] = entry
+    evaluations = summary.get("evaluations")
+    entries |= dict(evaluations) if isinstance(evaluations, Mapping) else {}
+    found: dict[str, PeakMemory] = {}
+    for label, entry in entries.items():
+        value = entry.get("peak_memory_bytes") if isinstance(entry, Mapping) else None
+        if value is None:
+            continue
+        if not isinstance(value, Mapping) or set(value) != {"process", "program"}:
+            raise RecordError(f"{label}: peak_memory_bytes is no process and program: {value!r}")
+        for key, count in value.items():
+            if count is not None and (
+                isinstance(count, bool) or not isinstance(count, int) or count < 0
+            ):
+                raise RecordError(f"{label}: peak_memory_bytes.{key} is no number of bytes")
+        found[label] = PeakMemory(value["process"], value["program"])
+    return found
 
 
 @dataclass(frozen=True, slots=True)

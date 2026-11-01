@@ -5,7 +5,8 @@ which no monkeypatch reaches. Reads the simulation stage (none of its collection
 What else it does is said by the environment variable ``WORKER_PROBE``, a JSON object keyed by
 the binding, and by ``<run>.<binding>`` for one run directory alone (a worker keeps the
 environment it started with): ``mark`` writes a file first, ``await`` waits until each file of
-a list exists, ``print`` prints that text to stdout and stderr, ``raise`` raises a
+a list exists, ``allocate`` holds that many MiB for a moment, ``print`` prints that text to
+stdout and stderr, ``raise`` raises a
 ``ValueError`` with that text, ``contract`` an ``EvaluationContractError``, ``kill`` sends
 its own process SIGKILL, and ``stall`` writes the start of an answer to the coordinator and
 never the rest."""
@@ -47,6 +48,10 @@ class WorkerProbe(Evaluator):
             if time.monotonic() > deadline:
                 raise TimeoutError(f"still waiting for {told['await']}")
             time.sleep(0.01)
+        if "allocate" in told:
+            held = bytearray(told["allocate"] << 20)
+            held[:: 1 << 12] = b"x" * len(held[:: 1 << 12])  # every page resident
+            del held
         if "print" in told:
             print(told["print"], flush=True)
             print(told["print"], file=sys.stderr, flush=True)

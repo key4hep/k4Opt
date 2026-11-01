@@ -41,7 +41,7 @@ import functools
 import hashlib
 import os
 from collections.abc import Callable, Collection, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from k4opt.ddsim import (
@@ -116,13 +116,16 @@ class StageOutcome:
 
     ``outputs`` holds what later stages and evaluators read (``events``); ``artifacts`` the other
     files (logs, the command), never an output. ``error`` is ``None`` only if the stage did what
-    it should; otherwise it says what failed.
+    it should; otherwise it says what failed. ``peak_memory_bytes`` is that of the program it ran
+    (:attr:`~k4opt.ddsim.SimulationRun.peak_memory_bytes`), ``None`` if it ran none or it is not
+    known.
     """
 
     outputs: Mapping[str, Path] = field(default_factory=dict)
     artifacts: Mapping[str, Path] = field(default_factory=dict)
     provenance: Mapping[str, Json] = field(default_factory=dict)
     error: str | None = None
+    peak_memory_bytes: int | None = None
 
 
 @functools.lru_cache(maxsize=32)
@@ -259,9 +262,12 @@ def _run_simulation(
                 error = changed if error is None else f"{error}\n{changed}"
         provenance["files"] = recorded
     logs = {role: path for role, path in run.files.items() if role != "edm4hep"}
+    peak = run.peak_memory_bytes
     if error is not None:
-        return StageOutcome(artifacts=logs, provenance=provenance, error=error)
-    return StageOutcome({"events": run.output}, logs, provenance)
+        return StageOutcome(
+            artifacts=logs, provenance=provenance, error=error, peak_memory_bytes=peak
+        )
+    return StageOutcome({"events": run.output}, logs, provenance, peak_memory_bytes=peak)
 
 
 def _identity_if_readable(path: Path) -> dict[str, Json] | None:
@@ -539,5 +545,5 @@ def make_stage(
         return outcome, None if outcome.error is not None else main
     observed, error = spec.inspect(context, main)
     provenance = {**outcome.provenance, **observed}
-    outcome = StageOutcome(outcome.outputs, outcome.artifacts, provenance, error)
+    outcome = replace(outcome, provenance=provenance, error=error)
     return outcome, None if error is not None else main
