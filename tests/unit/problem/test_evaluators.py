@@ -22,7 +22,7 @@ from k4opt.evaluation import (
     Role,
     Status,
 )
-from k4opt.problem import MetricRef, ProblemSpec, _evaluate, parse_problem
+from k4opt.problem import MetricRef, ProblemSpec, _evaluate, _work, parse_problem
 from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate
 from k4opt.problem._tasks import Kind, stage_task
 from tests.support import simulation
@@ -727,6 +727,7 @@ def test_every_second_is_counted_once(
 ) -> None:
     clock = Clock()
     monkeypatch.setattr(_evaluate, "time", clock)
+    monkeypatch.setattr(_work, "time", clock)
     simulation.install(monkeypatch)
     fake = ddsim_run._execute
 
@@ -824,13 +825,13 @@ def test_the_collections_of_a_file_are_listed_once_for_all_its_readers(
 ) -> None:
     simulation.install(monkeypatch)
     listed: list[Path] = []
-    real = _evaluate.available_collections
+    real = _work.available_collections
 
     def counting(path: Path) -> tuple[str, ...]:
         listed.append(path)
         return real(path)
 
-    monkeypatch.setattr(_evaluate, "available_collections", counting)
+    monkeypatch.setattr(_work, "available_collections", counting)
     spec = problem(doc, "test.cell_count", "test.hit_energy", objectives=(CELLS, ENERGY))
     candidate = evaluate(spec, [cell_count(), hit_energy()], tmp_path, geometry)
     assert candidate.status is Status.VALID

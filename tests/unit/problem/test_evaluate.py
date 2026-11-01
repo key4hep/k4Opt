@@ -82,15 +82,15 @@ def test_success_builds_request_and_record(spec: ProblemSpec, tmp_path: Path) ->
     record = evaluate_one(spec, {CELL: 6}, toy, inputs={"geometry": geometry}, workdir=tmp_path)
     assert len(toy.calls) == 1
     request = toy.calls[0]
-    assert record.request is request
+    assert record.request == request  # what it was asked, as plain data
     assert dict(request.candidate) == {CELL: 6}
     # it reads no stage, so it has no events or seed of one
     assert request.events is None and request.seed is None
     assert dict(request.settings) == dict(spec.evaluators[0].settings)
-    assert request.inputs["geometry"] is geometry
+    assert request.inputs["geometry"] == geometry
     # each evaluator writes in a directory of its own, created for the call
     assert request.workdir == tmp_path / "evaluators" / Toy.name and request.workdir.is_dir()
-    assert record.result is toy.result
+    assert record.result == toy.result
     assert (record.evaluator_name, record.evaluator_version) == (Toy.name, Toy.version)
     assert record.elapsed_seconds is not None and record.elapsed_seconds >= 0
     assert record.candidate_key == ((CELL, "continuous", "num", "6e0"),)
@@ -262,14 +262,14 @@ def test_constraint_value_is_not_judged(spec: ProblemSpec) -> None:
         "valid",
         (Measurement("simulation", "a.rms", 1.0), Measurement("simulation", "a.cells", 1e9)),
     )
-    assert evaluate_one(spec, {CELL: 5.0}, Toy(result)).result is result
+    assert evaluate_one(spec, {CELL: 5.0}, Toy(result)).result == result
 
 
 @pytest.mark.parametrize("status", ["invalid", "failed"])
 def test_non_valid_results_are_preserved(spec: ProblemSpec, status: Any) -> None:
     result = EvaluationResult(status, message="boom", provenance={"k": 1})
     record = evaluate_one(spec, {CELL: 5.0}, Toy(result))
-    assert record.result is result
+    assert record.result == result
     assert record.result.status == status and record.result.measurements == ()
 
 

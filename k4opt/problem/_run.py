@@ -17,16 +17,16 @@ given as ``REFERENCE=VALUE`` strings.
 
 from __future__ import annotations
 
-import contextlib
 import math
 import os
 import re
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from types import TracebackType
 
 from k4opt import __version__
 from k4opt.evaluation import (
@@ -38,19 +38,23 @@ from k4opt.evaluation import (
     evaluator_source,
 )
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
-from k4opt.geometry import GeometryError, GeometrySource, MaterializationResult, Override
+from k4opt.geometry import Override
 from k4opt.jsonio import write_json
 from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
+from k4opt.problem._backends import InlineBackend
 from k4opt.problem._evaluate import (
     CandidateRecord,
-    MetricKey,
     _bind_problem,
     _Binding,
-    _execute_plan,
+    _context,
+    _drive,
+    _finish_plan,
     _preflight,
     _Prepared,
+    _Run,
     _validate_candidate,
 )
+from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import STAGE_TYPES, file_identity, input_files, plan_stages
 from k4opt.problem._tasks import (
     GEOMETRY,
@@ -62,12 +66,22 @@ from k4opt.problem._tasks import (
     evaluations,
     stage_task,
 )
+from k4opt.problem._work import (
+    SUMMARY_NAME,
+    GeometryWork,
+    MetricKey,
+    TaskOutcome,
+    Workspace,
+    candidate_externals,
+    content,
+)
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
 from k4opt.revision import code_identity, code_unchanged
 
-SUMMARY_NAME = "summary.json"
+LOCAL: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": 1})
+"""How a session of this k4opt executes its tasks: one after another, in its own process."""
 
 # Units that are written into a DD4hep expression (``6.0*mm``); anything else is refused
 # rather than passed on unchecked.
@@ -411,6 +425,7 @@ def assemble(
     taken: Mapping[str, Mapping[str, Json]],
     run: object,
     process: Mapping[str, Json],
+    execution: Mapping[str, Json] = LOCAL,
 ) -> dict[str, object]:
     """The summary of a candidate, made from its task results and nothing else that ran.
 
@@ -421,7 +436,8 @@ def assemble(
     :meth:`Assessment.from_summary` derives them again.
     ``record_id`` is the record's identity; the rest is what the session holds: the problem,
     what it recorded of each implementation (``taken``: its version, stage, source and metrics)
-    and of the process (``process``).
+    and of the process (``process``), and how it executed the tasks (``execution``: provenance,
+    which no identity or comparison of records reads).
     """
     plan, results = candidate.plan, candidate.results
     environment = thaw(process["environment"])
@@ -507,9 +523,54 @@ def assemble(
                 # the session's, which the process still had when this candidate started
                 **environment,
                 "ddsim": started[0][0] if started else None,
+                # where and how the tasks ran: provenance, never part of what was evaluated
+                "execution": thaw(execution),
             },
         },
     }
+
+
+@dataclass(frozen=True, slots=True)
+class RunRequest:
+    """A candidate to evaluate into the new directory ``output``, as
+    :meth:`EvaluationSession.evaluate` takes it; ``run`` is recorded as the summary's ``run``."""
+
+    candidate: Mapping[str, Scalar]
+    output: str | os.PathLike[str]
+    run: Mapping[str, Json] | None = None
+
+
+class Evaluations:
+    """The candidates of :meth:`EvaluationSession.evaluate_each`, each ``(request, outcome)`` as it
+    ends. :meth:`close` (or leaving its ``with``) stops whatever still runs; it is never left to
+    the garbage collector."""
+
+    def __init__(
+        self,
+        session: EvaluationSession,
+        generator: Generator[tuple[RunRequest, RunOutcome | Exception]],
+    ) -> None:
+        self._generator = generator
+
+    def __iter__(self) -> Evaluations:
+        return self
+
+    def __next__(self) -> tuple[RunRequest, RunOutcome | Exception]:
+        return next(self._generator)
+
+    def close(self) -> None:
+        self._generator.close()
+
+    def __enter__(self) -> Evaluations:
+        return self
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        error: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
 
 class EvaluationSession:
@@ -529,14 +590,17 @@ class EvaluationSession:
     code changed, which :meth:`evaluate` checks again before it writes the record. A candidate
     whose values change a ``ref`` can name an external file of its own; what it reads is
     recorded, and must not change while the candidate runs nor between the candidates that name
-    it. One candidate at a time; a session is not thread-safe.
+    it. A session coordinates its candidates from one thread: it is not thread-safe.
     """
 
     __slots__ = (
         "_binding",
+        "_context",
+        "_execution",
         "_externals",
         "_files",
         "_inputs",
+        "_open",
         "_path",
         "_process",
         "_read",
@@ -572,6 +636,10 @@ class EvaluationSession:
         self._timeout = timeout
         # what the external references only candidates have read, by reference, without the path
         self._read: dict[str, Json] = {}
+        # what every task needs, wherever it runs
+        self._context = _context(spec, binding, timeout, externals)
+        self._execution = LOCAL
+        self._open: Evaluations | None = None
 
     @classmethod
     def open(
@@ -768,30 +836,11 @@ class EvaluationSession:
                     f"(now {path}); the candidates of a session start from one geometry"
                 )
 
-    def _candidate_externals(self, snapshot: MaterializationResult) -> dict[str, dict[str, Json]]:
-        """What the external references of a candidate's geometry read that those of the
-        session's do not: a ``ref`` the candidate changes can name another file
-        (``${CAD}/other.stl``)."""
-        if not any(change.attribute == "ref" and change.changed for change in snapshot.changes):
-            return {}
-        assert self._spec._source is not None
-        try:
-            now = GeometrySource(
-                self._spec._source.compact, root=snapshot.output_root
-            ).external_files()
-        except GeometryError as exc:
-            raise RunError(f"geometry: {exc}") from exc
-        opened = thaw(self._externals)
-        assert isinstance(opened, dict)
-        return {
-            ref: entry for ref, entry in now.items() if _content(entry) != _content(opened.get(ref))
-        }
-
     def _check_read(self, externals: Mapping[str, Mapping[str, Json]]) -> None:
         """Raise :class:`~k4opt.problem.RunError` if a reference only candidates name reads other
         files than it did for an earlier candidate of the session."""
         for ref, entry in externals.items():
-            if ref in self._read and self._read[ref] != _content(entry):
+            if ref in self._read and self._read[ref] != content(entry):
                 raise RunError(
                     f"geometry: {ref} does not read the files it read for an earlier candidate "
                     f"(now {entry.get('path') or 'no file'}); the candidates of a session start "
@@ -852,61 +901,133 @@ class EvaluationSession:
         candidate ran: that raises a :class:`~k4opt.problem.RunError`, since the record could not
         say which files or code the candidate was evaluated with.
         """
-        spec = self._spec
-        assert spec._source is not None
-        assert spec._catalog is not None
-        reference = _run_reference(run)
-        started = time.perf_counter()
-        values, key, prepared, overrides = self._prepare(candidate)
-        # the checks are part of the candidate's time, as its tasks are, the geometry's too
-        checked = time.perf_counter() - started
+        with self.evaluate_each([RunRequest(candidate, output, run)]) as evaluations:
+            for _, result in evaluations:
+                if isinstance(result, Exception):
+                    raise result
+                return result
+        raise AssertionError("the candidate was never evaluated")  # pragma: no cover
 
-        run_dir = Path(os.path.abspath(output))
+    def evaluate_each(self, requests: Iterable[RunRequest]) -> Evaluations:
+        """Evaluate the candidate of each of ``requests``, as :meth:`evaluate` does, and give
+        each ``(request, outcome)`` as its candidate ends; the outcome is the exception that
+        stopped it instead, if one did (nothing else is then written for it).
+
+        The next request is taken from ``requests`` only once the candidates before it leave
+        room: one candidate at a time, each yielded before the next is taken, so whatever makes
+        the requests (an optimizer) can learn from every outcome before it proposes again.
+        Close what this returns (``with``) when done with it: that stops whatever still runs,
+        as leaving the loop early does not by itself. One at a time per session.
+        """
+        if self._open is not None:
+            raise RunError("the session is evaluating already; close that evaluation first")
+        evaluations = Evaluations(self, self._evaluations(iter(requests)))
+        self._open = evaluations
+        return evaluations
+
+    def close(self) -> None:
+        """Stop whatever an open :meth:`evaluate_each` still runs."""
+        if self._open is not None:
+            self._open.close()
+
+    def __enter__(self) -> EvaluationSession:
+        return self
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        error: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def _evaluations(
+        self, requests: Iterator[RunRequest]
+    ) -> Generator[tuple[RunRequest, RunOutcome | Exception]]:
+        runs: dict[str, _Run] = {}
+        backend = InlineBackend(
+            self._context, lambda workspace, task: _prepared(runs[workspace]).evaluators[task][1]
+        )
+
+        def pull() -> _Run | None:
+            request = next(requests, None)
+            if request is None:
+                return None
+            try:
+                return self._start(request)
+            except Exception as exc:  # before anything was created
+                return _Run(Workspace("", None), None, error=exc, request=request)
+
+        driven = _drive(Scheduler(backend.capacity), backend, runs, pull, self._checked)
+        try:
+            for run in driven:
+                request = run.request
+                assert isinstance(request, RunRequest)
+                if run.error is not None:
+                    yield request, run.error
+                    continue
+                try:
+                    outcome = self._finish(run)
+                except Exception as exc:
+                    yield request, exc
+                    continue
+                yield request, outcome
+        finally:
+            driven.close()
+            backend.close()
+            self._open = None
+
+    def _start(self, request: RunRequest) -> _Run:
+        """A candidate checked and prepared as :meth:`check` does, with its own new run directory
+        (not yet created) as its workspace."""
+        if not isinstance(request, RunRequest):
+            raise RunError(f"expected a RunRequest, got {type(request).__name__}")
+        reference = _run_reference(request.run)
+        started = time.perf_counter()
+        values, key, prepared, overrides = self._prepare(request.candidate)
+        run_dir = Path(os.path.abspath(request.output))
         if run_dir.exists() or run_dir.is_symlink():
             raise RunError(f"output {run_dir} already exists; choose a new directory")
-        source, catalog = spec._source, spec._catalog
-        made: list[tuple[MaterializationResult, dict[str, dict[str, Json]]]] = []
-
-        def geometry() -> tuple[Path, Mapping[str, Json]]:
-            """The work of the geometry task: the candidate's geometry, in ``run_dir``."""
-            # materialize() validates the location (not inside the geometry source) before it
-            # creates run_dir, so a rejected location leaves nothing behind
-            try:
-                snapshot = source.materialize(overrides, run_dir / "geometry", catalog=catalog)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    run_dir.rmdir()  # created by the failed attempt; only removed while empty
-                raise
-            try:
-                externals = self._candidate_externals(snapshot)
-                self._check_read(externals)
-            except RunError as exc:
-                raise RunError(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
-            made.append((snapshot, externals))
-            return snapshot.compact_path, {
-                "fingerprint": snapshot.fingerprint,
-                "compact": _relative(snapshot.compact_path, run_dir),
-                "manifest": _relative(snapshot.manifest_path, run_dir),
-                "source_root": str(snapshot.source_root),
-                "changes": tuple(
-                    {"target": c.target, "old_value": c.old_value, "new_value": c.new_value}
-                    for c in snapshot.changes
-                ),
-                "externals": self._externals,
-                "candidate_externals": externals,
-            }
-
-        record = _execute_plan(
-            spec,
+        return _Run(
+            Workspace(str(uuid.uuid4()), run_dir),
             prepared,
             key,
-            supplied=self._inputs,
-            geometry=geometry,
-            workdir=run_dir,
-            checked_seconds=checked,
-            timeout=self._timeout,
+            self._inputs,
+            GeometryWork(tuple(overrides)),
+            started,
+            request=request,
+            values=values,
+            reference=reference,
         )
-        ((snapshot, externals),) = made  # the geometry task runs once
+
+    def _checked(self, run: _Run, outcome: TaskOutcome, result: TaskResult) -> None:
+        """What is checked of each result as it comes: that the references only the candidate's
+        geometry names read what they read for the candidates already recorded."""
+        if result.id != GEOMETRY:
+            return
+        run.own_refs = outcome.own_refs
+        try:
+            self._check_read(_externals(result))
+        except RunError as exc:
+            run_dir = run.workspace.root
+            raise RunError(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
+
+    def _finish(self, run: _Run) -> RunOutcome:
+        """The record of a candidate whose tasks all ended, checked and published.
+
+        Nothing is published, and nothing is remembered of the candidate, if what the session
+        verifies changed while it ran, a file a task made is no longer what its record says, or
+        a reference only its geometry names reads other files than for a candidate recorded
+        meanwhile. Those checks, the record and what the session remembers of it come one
+        candidate after another."""
+        spec = self._spec
+        source = spec._source
+        assert source is not None
+        run_dir = run.workspace.root
+        assert run_dir is not None
+        record = _finish_plan(run)
+        geometry = record.results[GEOMETRY]
+        externals = _externals(geometry)
         try:
             self._verify()  # the record names what the stages and evaluators read
             changed = record.changed()
@@ -915,37 +1036,44 @@ class EvaluationSession:
                     f"{', '.join(changed)} changed after it was made, so the record could not "
                     "say what it holds"
                 )
-            now = self._candidate_externals(snapshot)
-            if now != externals:
+            now = candidate_externals(
+                source.compact, run_dir / GEOMETRY.name, run.own_refs, self._externals
+            )
+            if _plain(now) != _plain(externals):
                 refs = dict.fromkeys([*externals, *now])
                 changed = [ref for ref in refs if now.get(ref) != externals.get(ref)]
                 raise RunError(
                     f"geometry: {', '.join(changed)} does not read the files it read when the "
                     "candidate started"
                 )
+            # again, now: a candidate recorded while this one ran may have read other files
+            self._check_read(externals)
         except RunError as exc:
             raise RunError(
                 f"{exc} (while the candidate in {run_dir} ran, which has no {SUMMARY_NAME})"
             ) from None
-        self._read |= {ref: _content(entry) for ref, entry in externals.items()}
         assessment = assess(spec, record)
         summary = assemble(
-            str(uuid.uuid4()),
+            run.workspace.id,
             self._path,
             spec,
-            values,
+            run.values,
             record,
             assessment,
             run_dir,
             self._taken,
-            reference,
+            run.reference,
             self._process,
+            self._execution,
         )
         try:
             write_json(run_dir / SUMMARY_NAME, summary)
         except OSError as exc:
             raise RunError(f"cannot write summary in {run_dir}: {exc}") from exc
-        return RunOutcome(record, summary, run_dir, snapshot.fingerprint, assessment)
+        self._read |= {ref: content(entry) for ref, entry in externals.items()}
+        fingerprint = geometry.provenance["fingerprint"]
+        assert isinstance(fingerprint, str)
+        return RunOutcome(record, summary, run_dir, fingerprint, assessment)
 
     def _prepare(
         self, candidate: Mapping[str, Scalar]
@@ -959,12 +1087,22 @@ class EvaluationSession:
         return values, key, prepared, overrides
 
 
-def _content(entry: object) -> Json:
-    """What an external reference reads (:func:`~k4opt.geometry.includes.external_files`),
-    without where the files are: the same files in another snapshot read alike."""
-    if not isinstance(entry, Mapping):
-        return None
-    return {key: value for key, value in entry.items() if key != "path"}
+def _prepared(run: _Run) -> _Prepared:
+    assert run.prepared is not None
+    return run.prepared
+
+
+def _externals(geometry: TaskResult) -> dict[str, dict[str, Json]]:
+    """What the references only the candidate's geometry names read, as its geometry task
+    recorded it."""
+    externals = thaw(geometry.provenance.get("candidate_externals") or {})
+    assert isinstance(externals, dict)
+    return externals
+
+
+def _plain(value: object) -> object:
+    """``value`` as plain JSON data, as a record holds it."""
+    return thaw(freeze(value, "geometry", RunError))
 
 
 def _described(identity: Mapping[str, Json] | None) -> str:

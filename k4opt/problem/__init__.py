@@ -30,7 +30,8 @@ Typical use::
 """
 
 from k4opt.problem._assess import Assessment, Limit, ObjectiveValue
-from k4opt.problem._run import SUMMARY_NAME, EvaluationSession, RunOutcome
+from k4opt.problem._run import Evaluations, EvaluationSession, RunOutcome, RunRequest
+from k4opt.problem._work import SUMMARY_NAME
 from k4opt.problem.config import load_problem, parse_problem
 from k4opt.problem.errors import CandidateError, ProblemConfigError, RecordError, RunError
 from k4opt.problem.models import (
@@ -57,6 +58,7 @@ __all__ = [
     "Constraint",
     "Environment",
     "EvaluationSession",
+    "Evaluations",
     "EvaluatorSpec",
     "GeometrySelector",
     "Key4hepStack",
@@ -71,6 +73,7 @@ __all__ = [
     "Reference",
     "RunError",
     "RunOutcome",
+    "RunRequest",
     "Sample",
     "Stage",
     "load_problem",

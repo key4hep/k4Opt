@@ -35,13 +35,14 @@ representing the candidate.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
 import math
 import time
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Generator, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import NamedTuple
@@ -51,8 +52,6 @@ from k4opt.evaluation import (
     Artifact,
     CandidateKey,
     EvaluationContractError,
-    EvaluationFailed,
-    EvaluationInvalid,
     EvaluationRecord,
     EvaluationRequest,
     EvaluationResult,
@@ -62,38 +61,33 @@ from k4opt.evaluation import (
     RoleInput,
     Scalar,
     Status,
-    available_collections,
     check_settings,
     collection_names,
-    collection_types,
     declared_artifacts,
     declared_collections,
     declared_roles,
     metric_units,
-    result_from,
     with_defaults,
 )
 from k4opt.frozen import FrozenMap, Json, thaw
+from k4opt.problem._backends import Backend, Handle, InlineBackend
+from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import (
     STAGE_TYPES,
     StageContext,
     changed_by_geometry,
     check_run_inputs,
     check_stages,
-    make_stage,
     no_edm4hep_file,
     stage_output,
 )
 from k4opt.problem._tasks import (
-    DONE,
     GEOMETRY,
     Kind,
-    Made,
     Plan,
     Task,
     TaskId,
     TaskResult,
-    Tree,
     candidate_message,
     candidate_status,
     changed_files,
@@ -102,14 +96,26 @@ from k4opt.problem._tasks import (
     plan_tasks,
     read_stages,
     reference_task,
-    run_tasks,
     stage_task,
+)
+from k4opt.problem._work import (
+    GeometryWork,
+    Measuring,
+    MetricKey,
+    Observations,
+    SessionContext,
+    TaskOutcome,
+    TaskSpec,
+    Workspace,
+    asked,
+    portable,
+    portable_artifact,
+    record_of,
+    show,
+    to_result,
 )
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import EvaluatorSpec, MetricRef, Parameter, ProblemSpec, Reference
-
-type MetricKey = tuple[str, str]
-"""A metric as an evaluator declares and measures it: ``(stage, metric)``."""
 
 
 def _is_number(value: object) -> bool:
@@ -195,27 +201,6 @@ def _validate_candidate(
         values[reference] = value
         key.append((reference, parameter.kind, tag, canonical))
     return values, tuple(key)
-
-
-def _check_units(
-    evaluator: EvaluatorProtocol,
-    declared: Mapping[MetricKey, str] | None,
-    result: EvaluationResult,
-) -> None:
-    """Every measurement of a metric the evaluator ``declared`` must carry the declared unit.
-
-    Whatever the status: diagnostic values of an ``invalid`` result are recorded too. An
-    evaluator that declares no ``metrics``, and metrics it does not declare, are not checked.
-    """
-    if declared is None:
-        return
-    for m in result.measurements:
-        unit = declared.get((m.stage, m.metric))
-        if (m.stage, m.metric) in declared and m.unit != unit:
-            raise EvaluationContractError(
-                f"measurement {m.stage}/{m.metric} has unit {m.unit!r} but evaluator "
-                f"{evaluator.name!r} declares {unit!r}"
-            )
 
 
 def _stage(evaluator: EvaluatorProtocol) -> str | None:
@@ -397,7 +382,7 @@ def _bind(
 
 
 def _show(metrics: Collection[MetricKey]) -> str:
-    return ", ".join(f"{stage}/{metric}" for stage, metric in metrics)
+    return show(list(metrics))
 
 
 def _check_references(
@@ -586,47 +571,6 @@ def _unexpected_collections(
     return tuple(warnings)
 
 
-def _collection_error(
-    evaluator: EvaluatorProtocol,
-    request: EvaluationRequest,
-    seen: dict[Path, tuple[str, ...] | str],
-) -> str | None:
-    """Why the file of the evaluator's stage lacks a collection it declares, or holds it with
-    another type; ``None`` if every one is there. Only the declared collections are read, so one
-    the evaluator does not read cannot fail it. ``seen`` keeps the collection names of each file
-    (or why they cannot be listed), so a file read by several evaluators is listed once."""
-    declared = declared_collections(evaluator)
-    stage = _stage(evaluator)
-    if not declared or stage is None or stage not in request.inputs:
-        return None
-    path = request.inputs[stage]
-    if path not in seen:
-        try:
-            seen[path] = available_collections(path)
-        except EvaluationFailed as exc:
-            seen[path] = str(exc)
-    available = seen[path]
-    if isinstance(available, str):
-        return available
-    names = {role: request.collections[role] for role in declared}
-    for role, name in names.items():
-        if name not in available:
-            listing = ", ".join(available) or "no collections"
-            return f"collection {name!r} ({role}) is not in {path.name}, which holds: {listing}"
-    try:
-        types = collection_types(path, names.values())
-    except EvaluationFailed as exc:
-        return str(exc)
-    for role, collection in declared.items():
-        name, held = names[role], types.get(names[role])
-        if held != collection.podio_type:
-            return (
-                f"collection {name!r} ({role}) holds {held!r}, but the evaluator reads "
-                f"{collection.podio_type!r}"
-            )
-    return None
-
-
 @dataclass(frozen=True, slots=True)
 class _Binding:
     """What holds for every candidate: the implementations bound to the problem, the stages of
@@ -747,33 +691,6 @@ def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
     return _Prepared(binding, FrozenMap(evaluators), FrozenMap(requests))
 
 
-def _check_result(
-    spec: ProblemSpec, task: TaskId, result: EvaluationResult, demanded: Sequence[MetricKey] = ()
-) -> None:
-    """A ``valid`` result of the evaluation ``task`` must report every metric an objective or a
-    constraint names of it, in the unit a constraint declares, and every metric ``demanded`` of
-    it by the roles that read it."""
-    if result.status is not Status.VALID:
-        return
-    measured = {(m.stage, m.metric): m for m in result.measurements}
-    owned = [(r.stage, r.metric) for r in spec.references if r.invocation == task.label]
-    missing = [key for key in dict.fromkeys([*owned, *demanded]) if key not in measured]
-    if missing:
-        raise EvaluationContractError(
-            f"evaluator {task.label!r} returned a valid result without required metric(s): "
-            f"{_show(missing)}"
-        )
-    for constraint in spec.constraints:
-        if constraint.ref.invocation != task.label:
-            continue
-        unit = measured[(constraint.stage, constraint.metric)].unit
-        if constraint.unit is not None and unit != constraint.unit:
-            raise EvaluationContractError(
-                f"constraint on {constraint.label} declares unit {constraint.unit!r} but the "
-                f"measurement has unit {unit!r}"
-            )
-
-
 def _request(
     context: StageContext | None,
     values: Mapping[str, Scalar],
@@ -800,22 +717,30 @@ def _request(
     )
 
 
-def _inputs(reads: Mapping[TaskId, TaskResult]) -> dict[str, Path]:
-    """What a task is given of the tasks it reads: the main output of each, by its name."""
-    return {task.name: result.output for task, result in reads.items() if result.output is not None}
+def _inputs(reads: Mapping[TaskId, TaskResult], root: Path | None) -> dict[str, Path]:
+    """What a task is given of the tasks it reads: the main output of each, by its name, named
+    in the candidate's workspace (:func:`~k4opt.problem._work.portable`)."""
+    return {
+        task.name: portable(result.output, root)
+        for task, result in reads.items()
+        if result.output is not None
+    }
 
 
 def _role_inputs(
-    binding: _Binding, entry: EvaluatorSpec, reads: Mapping[TaskId, TaskResult]
+    binding: _Binding, entry: EvaluatorSpec, reads: Mapping[TaskId, TaskResult], root: Path | None
 ) -> dict[str, tuple[RoleInput, ...]]:
-    """What each role of a combined evaluator reads, from the results of the tasks it reads."""
+    """What each role of a combined evaluator reads, from the results of the tasks it reads, its
+    files named in the candidate's workspace."""
     return {
-        role: tuple(_role_input(binding, item, reads[reference_task(item)]) for item in items)
+        role: tuple(_role_input(binding, item, reads[reference_task(item)], root) for item in items)
         for role, items in entry.roles.items()
     }
 
 
-def _role_input(binding: _Binding, item: Reference, result: TaskResult) -> RoleInput:
+def _role_input(
+    binding: _Binding, item: Reference, result: TaskResult, root: Path | None
+) -> RoleInput:
     """One item of a role, from the result of its task, which succeeded: an evaluation with what
     it measured and made, or a stage with its file."""
     properties = binding.properties[item.sample]
@@ -826,7 +751,9 @@ def _role_input(binding: _Binding, item: Reference, result: TaskResult) -> RoleI
             item.sample,
             binding=item.evaluator,
             measurements=record.result.measurements,
-            artifacts={name: made.artifact for name, made in result.made.items()},
+            artifacts={
+                name: portable_artifact(made.artifact, root) for name, made in result.made.items()
+            },
             events=record.request.events,
             seed=record.request.seed,
             properties=properties,
@@ -851,7 +778,7 @@ def _role_input(binding: _Binding, item: Reference, result: TaskResult) -> RoleI
     return RoleInput(
         item.sample,
         stage=item.stage,
-        artifacts={item.stage: artifact},
+        artifacts={item.stage: portable_artifact(artifact, root)},
         events=events,
         seed=seed,
         properties=properties,
@@ -859,152 +786,192 @@ def _role_input(binding: _Binding, item: Reference, result: TaskResult) -> RoleI
     )
 
 
-def _measure(
+def _context(
     spec: ProblemSpec,
-    prepared: _Prepared,
-    key: CandidateKey,
-    task: TaskId,
-    reads: Mapping[TaskId, TaskResult],
-    workdir: Path | None,
-    seen: dict[Path, tuple[str, ...] | str],
-) -> tuple[EvaluationRecord, dict[str, Made]]:
-    """The record of one evaluation, its evaluator called once on the outputs of the tasks it
-    ``reads``, which all succeeded, and the artifacts it made (:func:`_artifacts`).
-
-    An evaluator whose stage's file lacks a collection it declares (or holds it with another
-    type), or reads a file that changed since its task made it, gets a ``failed`` result saying
-    so and is not called. Its own directory ``workdir`` is created just before the call;
-    ``elapsed_seconds`` is the time of the call alone. A file it reads that changes during the
-    call fails it too: the record could not say what it read.
-    """
-    entry, evaluator = prepared.evaluators[task]
-    binding = prepared.binding
-    declared = dict(binding.evaluations)[task].declaration
-    demanded = binding.demands.get(task, ())
-    if task.sample is None:  # the geometry, and what its roles read: no stage of its own
-        given = _inputs({need: result for need, result in reads.items() if need == GEOMETRY})
-        request = replace(
-            prepared.requests[task], inputs=given, roles=_role_inputs(binding, entry, reads)
-        )
-    else:
-        request = replace(prepared.requests[task], inputs=_inputs(reads))
-    changed = changed_files(reads.values())
-    if changed:
-        result = EvaluationResult.failed(_changed_before(changed))
-        return _record(
-            spec, task, entry, evaluator, declared, key, request, result, None, demanded
-        ), {}
-    error = _collection_error(evaluator, request, seen)
-    if error is not None:
-        result = EvaluationResult.failed(error)
-        return _record(
-            spec, task, entry, evaluator, declared, key, request, result, None, demanded
-        ), {}
-    if workdir is not None:
-        try:
-            workdir.mkdir(parents=True)
-        except OSError as exc:  # not called, so its request has no directory
-            result = EvaluationResult.failed(f"cannot create evaluator directory {workdir}: {exc}")
-            return _record(
-                spec, task, entry, evaluator, declared, key, request, result, None, demanded
-            ), {}
-    request = replace(request, workdir=workdir)
-    started = time.perf_counter()
-    try:
-        result = result_from(evaluator, evaluator.evaluate(request))
-    except EvaluationFailed as exc:
-        result = EvaluationResult.failed(str(exc))
-    except EvaluationInvalid as exc:
-        result = EvaluationResult.invalid(str(exc))
-    elapsed = time.perf_counter() - started
-    record = _record(
-        spec, task, entry, evaluator, declared, key, request, result, elapsed, demanded
+    binding: _Binding,
+    timeout: float | None = None,
+    externals: Mapping[str, Json] | None = None,
+) -> SessionContext:
+    """What every task of the candidates of ``binding`` needs (:class:`SessionContext`), with
+    ``timeout`` for every stage that runs a program and the session geometry's ``externals``."""
+    return SessionContext(
+        spec,
+        FrozenMap({name: replace(c, timeout=timeout) for name, c in binding.contexts.items()}),
+        FrozenMap(
+            {
+                task: Measuring(
+                    bound.entry,
+                    bound.declaration.metrics,
+                    bound.declaration.artifacts,
+                    binding.demands.get(task, ()),
+                )
+                for task, bound in binding.evaluations
+            }
+        ),
+        FrozenMap(externals or {}),
     )
-    # what it declared when bound, which the record holds, not what it declares now
-    made = _artifacts(task, declared.artifacts, result, workdir)
-    changed = changed_files(reads.values())
-    if changed:  # what it returned stays, as diagnostics of a failed result
-        result = EvaluationResult.failed(
-            _changed_during(changed),
-            result.measurements,
-            artifacts=result.artifacts,
-            provenance=result.provenance,
-        )
-        record = replace(record, result=result)
-    return record, made
 
 
-def _changed_before(refs: Sequence[str]) -> str:
-    return f"not run: {', '.join(refs)} changed after it was made"
+@dataclass(slots=True)
+class _Run:
+    """One candidate under way, as its coordinator follows it: its workspace, what its preflight
+    prepared, its key, the files the caller supplied for its stages and how its geometry is made.
+    ``started`` is when its evaluation began, its checks included; ``specs`` holds the
+    description of each task handed out, ``results`` its results once all its tasks ended, and
+    ``error`` what stopped it, if anything did. ``request``, ``values`` and ``reference`` (what
+    its record says it was made for) are the caller's."""
+
+    workspace: Workspace
+    prepared: _Prepared | None
+    key: CandidateKey = ()
+    supplied: Mapping[TaskId, Path] = field(default_factory=dict)
+    geometry: GeometryWork | None = None
+    started: float = 0.0
+    specs: dict[TaskId, TaskSpec] = field(default_factory=dict)
+    results: dict[TaskId, TaskResult] = field(default_factory=dict)
+    error: Exception | None = None
+    own_refs: bool = False
+    request: object = None
+    values: Mapping[str, Scalar] = field(default_factory=dict)
+    reference: object = None
 
 
-def _changed_during(refs: Sequence[str]) -> str:
-    return f"{', '.join(refs)} changed while it ran, so the record cannot say what it read"
+def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> TaskSpec:
+    """The description of ``task`` of ``run``, from the results of the tasks it reads."""
+    assert run.prepared is not None
+    binding, root = run.prepared.binding, run.workspace.root
+    reads = {need: results[need] for need in task.needs}
+    watched = tuple(
+        portable_artifact(made.artifact, root)
+        for result in reads.values()
+        for made in result.made.values()
+    )
+    trees = [result.tree for result in reads.values() if result.tree is not None]
+    tree = None if not trees else portable(trees[0].root, root)
+    workspace = run.workspace.id
+    if task.id.kind is Kind.GEOMETRY:
+        return TaskSpec(workspace, task, watched=watched, tree=tree, geometry=run.geometry)
+    if task.id.kind is Kind.STAGE:
+        given, supplied = _inputs(reads, root), run.supplied.get(task.id)
+        return TaskSpec(workspace, task, given, watched, tree, supplied=supplied)
+    entry, _ = run.prepared.evaluators[task.id]
+    if task.id.sample is None:  # the geometry, and what its roles read: no stage of its own
+        given = _inputs({need: result for need, result in reads.items() if need == GEOMETRY}, root)
+        roles = _role_inputs(binding, entry, reads, root)
+    else:
+        given, roles = _inputs(reads, root), {}
+    request = run.prepared.requests[task.id]
+    return TaskSpec(workspace, task, given, watched, tree, request=request, roles=roles)
 
 
-def _artifacts(
-    task: TaskId,
-    declared: Mapping[str, str] | None,
-    result: EvaluationResult,
-    workdir: Path | None,
-) -> dict[str, Made]:
-    """The artifacts of the result of the evaluation ``task``, each hashed once, now.
+def _seen(task: Task, results: Mapping[TaskId, TaskResult]) -> Observations:
+    """The stats taken of the files the tasks ``task`` reads made, where they were made."""
+    reads = [results[need] for need in task.needs]
+    made = {m.artifact.ref: m.stat for result in reads for m in result.made.values()}
+    trees = [result.tree.stats for result in reads if result.tree is not None]
+    return Observations(FrozenMap(made), trees[0] if trees else None)
 
-    Each must be a file in the evaluation's own directory ``workdir``, its links resolved. An
-    evaluator that ``declared`` artifacts returns no other, and a ``valid`` result of it every
-    one. Raises :class:`EvaluationContractError`.
+
+def _result(run: _Run, task: Task, outcome: TaskOutcome, observed: Observations) -> TaskResult:
+    """The coordinator's result of ``task`` of ``run`` from what it left behind; the record of an
+    evaluation holds the request it was asked, its files where the workspace is here."""
+    assert run.prepared is not None
+    record = None
+    if task.id.kind is Kind.EVALUATOR:
+        entry, _ = run.prepared.evaluators[task.id]
+        record = record_of(asked(run.specs[task.id], run.workspace.root), entry, run.key)
+    return to_result(task, outcome, observed, run.workspace.root, record)
+
+
+type Check = Callable[[_Run, TaskOutcome, TaskResult], None]
+"""What the coordinator checks of each result as it comes, raising to stop its candidate."""
+
+_WAIT = 0.2  # seconds the coordinator waits for a task to end before it looks around again
+
+
+def _drive(
+    scheduler: Scheduler,
+    backend: Backend,
+    runs: dict[str, _Run],
+    pull: Callable[[], _Run | None],
+    check: Check | None = None,
+) -> Generator[_Run]:
+    """Run the tasks of candidates until there are none left; yield each candidate once all its
+    tasks ended (``results``), or once its work raised (``error``: its other tasks are stopped).
+
+    ``pull`` gives the next candidate, or ``None`` once there is none; it is called only when the
+    scheduler is idle, after every candidate that ended was yielded, so with one slot the
+    candidates run one after another, each in plan order. ``runs`` holds the candidates under
+    way, by workspace. Leaving the loop early (``close()``, an exception) stops every task still
+    running.
     """
-    where = f"evaluator {task.label!r}"
-    if declared is not None:
-        unknown = [name for name in result.artifacts if name not in declared]
-        if unknown:
-            raise EvaluationContractError(
-                f"{where} returned the artifact(s) {', '.join(unknown)}, which it does not "
-                f"declare; it declares {', '.join(declared) or 'none'}"
-            )
-        missing = [name for name in declared if name not in result.artifacts]
-        if missing and result.status is Status.VALID:
-            raise EvaluationContractError(
-                f"{where} returned a valid result without its declared artifact(s) "
-                f"{', '.join(missing)}"
-            )
-    made: dict[str, Made] = {}
-    for name, path in result.artifacts.items():
-        if workdir is None:
-            raise EvaluationContractError(
-                f"{where}: artifact {name!r}: the evaluation has no directory of its own to "
-                "write it in"
-            )
-        own, resolved = workdir.resolve(), path.resolve()
-        if resolved == own or not resolved.is_relative_to(own):
-            raise EvaluationContractError(
-                f"{where}: artifact {name!r} ({path}) is not in its own directory {workdir}; "
-                "write it in request.workdir"
-            )
-        try:
-            made[name] = Made.file(task, name, resolved, hashed=True)
-        except OSError as exc:
-            raise EvaluationContractError(
-                f"{where}: artifact {name!r} ({path}) is no file it can read: {exc}"
-            ) from None
-    return made
+    pulling = True
 
+    def stop(run: _Run, error: Exception) -> None:
+        run.error = error
+        key = run.workspace.id
+        running = scheduler.drop(key)
+        backend.cancel([Handle(key, task) for task in running])
+        backend.close_workspace(key)
+        runs.pop(key, None)
 
-def _record(
-    spec: ProblemSpec,
-    task: TaskId,
-    entry: EvaluatorSpec,
-    evaluator: EvaluatorProtocol,
-    declared: _Declaration,
-    key: CandidateKey,
-    request: EvaluationRequest,
-    result: EvaluationResult,
-    elapsed: float | None = None,
-    demanded: Sequence[MetricKey] = (),
-) -> EvaluationRecord:
-    _check_units(evaluator, declared.metrics, result)
-    _check_result(spec, task, result, demanded)
-    return EvaluationRecord(request, result, entry.name, entry.version, key, elapsed)
+    try:
+        while True:
+            ended: list[_Run] = []
+            while (item := scheduler.next()) is not None:
+                key, task = item
+                run = runs[str(key)]
+                try:
+                    results = scheduler.results(key)
+                    spec = _task_spec(run, task, results)
+                    run.specs[task.id] = spec
+                    backend.submit(spec, _seen(task, results))
+                except Exception as exc:
+                    stop(run, exc)
+                    ended.append(run)
+            for handle, outcome, observed in backend.wait(_WAIT) if scheduler.running else []:
+                found = runs.get(handle.workspace)
+                if found is None:  # stopped meanwhile
+                    continue
+                run = found
+                assert run.prepared is not None
+                task = run.prepared.binding.plan[handle.task]
+                try:
+                    result = _result(run, task, outcome, observed)
+                    if check is not None:
+                        check(run, outcome, result)
+                    scheduler.finished(handle.workspace, result)
+                except Exception as exc:
+                    stop(run, exc)
+                    ended.append(run)
+                    continue
+                if scheduler.done(handle.workspace):
+                    run.results = scheduler.remove(handle.workspace)
+                    backend.close_workspace(handle.workspace)
+                    del runs[handle.workspace]
+                    ended.append(run)
+            yield from ended
+            if pulling and scheduler.idle:
+                pulled = pull()
+                if pulled is None:
+                    pulling = False
+                elif pulled.prepared is None:  # it failed before anything was created
+                    yield pulled
+                else:
+                    runs[pulled.workspace.id] = pulled
+                    backend.open(pulled.workspace)
+                    scheduler.add(pulled.workspace.id, pulled.prepared.binding.plan)
+                continue
+            if not runs:  # and nothing more to pull: a free slot would have pulled
+                return
+            # each candidate under way has a task running or ready (a free slot takes it)
+            assert scheduler.running or not scheduler.idle
+    finally:
+        for run in list(runs.values()):
+            key = run.workspace.id
+            backend.cancel([Handle(key, task) for task in scheduler.drop(key)])
+            backend.close_workspace(key)
+        runs.clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1112,11 +1079,6 @@ class CandidateRecord:
         )
 
 
-type MakeGeometry = Callable[[], tuple[Path, Mapping[str, Json]]]
-"""The work of the geometry task: ``(compact file, what to record of it)``; raises if the
-geometry cannot be made, which stops the candidate."""
-
-
 def _evaluate_candidate(
     spec: ProblemSpec,
     candidate: Mapping[str, Scalar],
@@ -1172,7 +1134,7 @@ def _evaluate_candidate(
         prepared,
         key,
         supplied=supplied,
-        geometry=None if geometry is None else lambda: (geometry, {}),
+        geometry=None if geometry is None else GeometryWork(given=geometry),
         workdir=workdir,
         checked_seconds=checked,
     )
@@ -1184,104 +1146,62 @@ def _execute_plan(
     key: CandidateKey,
     *,
     supplied: Mapping[TaskId, Path],
-    geometry: MakeGeometry | None,
+    geometry: GeometryWork | None,
     workdir: Path | None,
     checked_seconds: float,
     timeout: float | None = None,
 ) -> CandidateRecord:
-    """Run the tasks of a prepared candidate; evaluator checks and defaults are not repeated.
+    """Run the tasks of a prepared candidate, one after another in plan order, in this thread;
+    evaluator checks and defaults are not repeated.
 
     ``supplied`` holds the files the caller supplies by stage task, the ones the plan was made with;
-    ``geometry`` makes the candidate's geometry, and ``None`` gives none (to evaluators that need
-    none). Each task writes below ``workdir``, in the directory the plan gives it.
+    ``geometry`` says how the candidate's geometry is made, and ``None`` gives none (to evaluators
+    that need none). Each task writes below ``workdir``, in the directory the plan gives it.
     ``checked_seconds``, the time the candidate's validation and preflight took, counts towards
     ``elapsed_seconds``, which thus covers k4opt's checks too (not what the caller does between).
     ``timeout`` limits each stage that runs a program (:attr:`StageContext.timeout`).
     """
     started = time.perf_counter() - checked_seconds
     binding = prepared.binding
-    contexts = {name: replace(c, timeout=timeout) for name, c in binding.contexts.items()}
-    plan = binding.plan
-    stages = plan.of(Kind.STAGE)
+    stages = binding.plan.of(Kind.STAGE)
     check_run_inputs([t.id.name for t in stages if t.given is None], geometry is not None, workdir)
-    seen: dict[Path, tuple[str, ...] | str] = {}  # the collection names of each stage file
+    run = _Run(Workspace("candidate", workdir), prepared, key, supplied, geometry, started)
+    backend = InlineBackend(
+        _context(spec, binding, timeout), lambda workspace, task: prepared.evaluators[task][1]
+    )
+    pulled = iter([run])
+    driven = _drive(Scheduler(backend.capacity), backend, {}, lambda: next(pulled, None))
+    with contextlib.closing(driven):
+        for ended in driven:
+            if ended.error is not None:
+                raise ended.error
+            return _finish_plan(ended)
+    raise AssertionError("the candidate never ended")  # pragma: no cover
 
-    def run(task: Task, reads: Mapping[TaskId, TaskResult]) -> TaskResult:
-        own = None if workdir is None or task.directory is None else workdir / task.directory
-        began = time.perf_counter()
-        if task.id.kind is Kind.GEOMETRY:
-            if geometry is None:
-                return TaskResult(task.id, DONE)
-            compact, recorded = geometry()
-            # every simulation of every sample reads these files: watched like what a stage made
-            tree = Tree.of(own) if own is not None and own.is_dir() else None
-            return TaskResult(
-                task.id,
-                DONE,
-                output=compact,
-                provenance=recorded,
-                elapsed_seconds=_since(began),
-                tree=tree,
-            )
-        if task.id.kind is Kind.STAGE:
-            assert task.id.sample is not None
-            changed = changed_files(reads.values())
-            if changed:
-                return TaskResult(task.id, Status.FAILED, _changed_before(changed))
-            outcome, main = make_stage(
-                contexts[task.id.sample],
-                task.id.name,
-                inputs=_inputs(reads),
-                workdir=own,
-                supplied=supplied.get(task.id),
-            )
-            error, made = outcome.error, {}
-            if error is None and main is not None and task.given is None:
-                name = stage_output(task.id.name)  # made in its directory: never hashed
-                try:
-                    made[name] = Made.file(task.id, name, main, hashed=False)
-                except OSError as exc:
-                    error, main = f"cannot read its output: {exc}", None
-            changed = changed_files(reads.values())
-            if changed and error is None:
-                error, main, made = _changed_during(changed), None, {}
-            return TaskResult(
-                task.id,
-                DONE if error is None else Status.FAILED,
-                error,
-                main,
-                outcome.artifacts,
-                outcome.provenance,
-                _since(began),
-                made=made,
-            )
-        record, made = _measure(spec, prepared, key, task.id, reads, own, seen)
-        result = record.result
-        return TaskResult(
-            task.id,
-            result.status,
-            result.message,
-            elapsed_seconds=_since(began),
-            record=record,
-            made=made,
-        )
 
-    results = run_tasks(plan, run)
-    for task in plan.of(Kind.EVALUATOR):  # a blocked evaluator's record: what it would have got
+def _finish_plan(run: _Run) -> CandidateRecord:
+    """The record of a candidate whose tasks all ended. A blocked evaluator's record holds what it
+    would have been asked."""
+    prepared = run.prepared
+    assert prepared is not None
+    plan, results = prepared.binding.plan, dict(run.results)
+    for task in plan.of(Kind.EVALUATOR):
         held = results[task.id]
         if held.status == Status.BLOCKED:
             entry, _ = prepared.evaluators[task.id]
             assert held.message is not None
             outcome = EvaluationResult(Status.BLOCKED, message=held.message)
             request = prepared.requests[task.id]
-            record = EvaluationRecord(request, outcome, entry.name, entry.version, key, None)
+            record = EvaluationRecord(request, outcome, entry.name, entry.version, run.key, None)
             results[task.id] = replace(held, record=record)
     represents = not any(
         changed_by_geometry(task.id.name)
-        for task in stages
+        for task in plan.of(Kind.STAGE)
         if task.given == "supplied" and task.required
     )
-    return CandidateRecord(key, plan, results, _since(started), represents, binding.warnings)
+    return CandidateRecord(
+        run.key, plan, results, _since(run.started), represents, prepared.binding.warnings
+    )
 
 
 def _since(started: float) -> float:

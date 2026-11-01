@@ -631,7 +631,7 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
     events_file = tmp_path / "run/samples/gamma/simulation/events.edm4hep.root"
     assert reader.calls[0].inputs["simulation"] == events_file
     (record,) = candidate.records
-    assert record.request is reader.calls[0]
+    assert record.request == reader.calls[0]
     result = record.result
     assert result.status is Status.VALID
     # the result is the evaluator's own; the stage's files and record are the candidate's

@@ -688,7 +688,33 @@ run is not recorded as the code that ran (a hash cannot prove which code Python 
 narrow the gap). k4opt's code is hashed once per process, since Python runs the modules it
 imported; a session does not open, and does not evaluate or record a candidate, once k4opt's
 files have changed since then, because no hash would then say which code runs. A session
-evaluates one candidate at a time and is not thread-safe.
+coordinates its candidates from one thread and is not thread-safe.
+
+Whatever proposes candidates (a person, an optimizer) can hand them over one by one:
+
+```python
+from k4opt.problem import RunRequest
+
+requests = (RunRequest({"constants.ECal_cell_size": v}, f"runs/{v}mm") for v in (5.0, 7.0))
+with session.evaluate_each(requests) as evaluations:
+    for request, outcome in evaluations:  # outcome: a RunOutcome, or the exception that stopped it
+        ...
+```
+
+The next request is taken only once the candidates before it leave room, and every outcome is
+given back before it; `evaluate()` is one request through the same path. Close what
+`evaluate_each` returns (`with`): that stops whatever still runs, which leaving the loop early
+does not by itself.
+
+**Execution.** Each task of a candidate is described as plain data (its planned task, the files
+it reads named relative to the candidate's workspace, an evaluation's request) and done by one
+task program, whatever executes it; a scheduler decides from what each task reads which tasks may
+start, within a budget of slots. Today every task runs in the session's own thread, one at a
+time, in plan order, with the evaluator instances the candidate's preflight checked. Every
+summary records how its tasks ran under `environment.observed.execution` (`{"backend": "local",
+"jobs": 1}`): provenance only, never part of what was evaluated or of any comparison of records.
+A summary is published only after the references only a candidate's geometry names are checked
+again against the candidates recorded meanwhile.
 
 ### Assessment: objectives, limits and feasibility
 
