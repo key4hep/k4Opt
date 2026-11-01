@@ -3,12 +3,13 @@ as the local backend does."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from k4opt.problem._backends import ProcessBackend
-from tests.benchmarks.parallel import held
+from tests.benchmarks.parallel import held, main
 
 SIMULATION = {"argv": ["/bin/ddsim", "--numberOfEvents=10", "--numberOfThreads=4"]}
 
@@ -27,3 +28,13 @@ def test_other_tasks_hold_one_slot_and_a_task_that_did_not_run_none() -> None:
     assert held({"elapsed_seconds": 3.0}, 4) == 3.0
     assert held({"argv": ["/bin/ddsim"], "elapsed_seconds": 3.0}, 4) == 3.0
     assert held({"elapsed_seconds": None}, 4) == 0.0
+
+
+def test_speedup_is_over_one_job_measured(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    with pytest.raises(SystemExit) as info:
+        main(["--jobs", "2", "4", "--output", str(tmp_path / "bench")])
+    assert info.value.code == 2  # before anything runs
+    assert "the first of --jobs must be 1" in capsys.readouterr().err
+    assert not (tmp_path / "bench").exists()

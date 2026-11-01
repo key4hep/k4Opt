@@ -7,7 +7,9 @@ Not a test (pytest does not collect it) and no thresholds: it prints, and writes
 - the processor time used, by k4opt and by everything it started and waited for (workers,
   ddsim), how many processors that kept busy on average, and the share of the jobs it used;
 - the occupancy of the job slots: the time the tasks took, each times the slots it held, over
-  jobs x wall time (what the scheduling leaves idle);
+  jobs x wall time (what the scheduling leaves idle). A task's time is what its record holds:
+  for an evaluation its ``evaluate()`` call alone, so the occupancy leaves out what an
+  evaluation spends around that call (making and checking its instance, hashing artifacts);
 - the peak memory the records hold: what one job needed at most (k4opt's process and its
   program added), ddsim's and k4opt's own, and the session's process;
 - whether every record says what the one-job run says of its candidate (all but how it ran).
@@ -177,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--burn", type=float, default=5.0, help="processor s per fake ddsim")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.jobs[0] != 1:  # speedup and efficiency are over one job, measured
+        parser.error("the first of --jobs must be 1: speedup and efficiency are over one job")
     args.output.mkdir(parents=True)
     if args.stack == "real":
         path, evaluators, parameter, grid = _real(args.output, args.events, args.threads)
@@ -188,14 +192,14 @@ def main(argv: list[str] | None = None) -> int:
         directory = args.output / f"jobs{jobs}"
         results.append(run(jobs, path, evaluators, parameter, values, directory))
         print(f"jobs {jobs}: {results[-1]['wall_seconds']:.1f} s", file=sys.stderr, flush=True)
-    base = results[0]
+    base = results[0]  # one job
     print(
         "| jobs | wall s | speedup | efficiency | CPU s | processors busy | utilization | "
         "occupancy | GiB per job | ddsim GiB | k4opt task GiB | session GiB | records |"
     )
     print("|" + " --- |" * 13)
     for result in results:
-        speedup = base["wall_seconds"] / result["wall_seconds"] * base["jobs"]
+        speedup = base["wall_seconds"] / result["wall_seconds"]
         same = result["candidates"] == base["candidates"]
         memory = result["peak_memory_bytes"]
         result |= {"speedup": speedup, "efficiency": speedup / result["jobs"], "same": same}
