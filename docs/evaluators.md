@@ -42,8 +42,9 @@ evaluations of a simulation, each in a worker process of its own
 ([execution](evaluation.md#execution-jobs-and-worker-processes)); a simulation on several
 threads (`numberOfThreads`) holds as many jobs, and `--jobs auto` takes as many jobs as the
 processors the command may use. It bounds the processors k4opt keeps busy, not the memory each
-task takes: the command prints an estimate of what one job needs (`memory:`), and each task's
-peak is in the summary, so choose N for the memory as much as for the processors. The default,
+task takes: the command prints an estimate of what a task needs while it runs (`memory:`), and
+each task's peak is in the summary. Memory goes with the tasks running at once (at most N, fewer
+when simulations hold several jobs), so choose N for the memory as much as for the processors. The default,
 1, runs them one after another in the command's own process. Like `--timeout`, it is not part of
 the problem, and `summary.json` records it as provenance only (`environment.observed.execution`).
 

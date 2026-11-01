@@ -10,8 +10,8 @@ Not a test (pytest does not collect it) and no thresholds: it prints, and writes
   jobs x wall time (what the scheduling leaves idle). A task's time is what its record holds:
   for an evaluation its ``evaluate()`` call alone, so the occupancy leaves out what an
   evaluation spends around that call (making and checking its instance, hashing artifacts);
-- the peak memory the records hold: what one job needed at most (k4opt's process and its
-  program added), ddsim's and k4opt's own, and the session's process;
+- the peak memory the records hold: what a task needed at most (k4opt's process and its
+  program added, an estimate), ddsim's and k4opt's own, and the session's process;
 - whether every record says what the one-job run says of its candidate (all but how it ran).
 
 The candidates are a fixed grid, not proposals, so that every run evaluates the same ones. With
@@ -144,7 +144,7 @@ def run(
     used = _cpu() - cpu
     used_slots = sum(held(entry, jobs) for s in summaries for entry in _tasks(s))
     memories = [m for s in summaries for m in peak_memory(s).values()]
-    per_job = max((m.per_job or 0 for m in memories), default=0)
+    per_task = max((m.per_task or 0 for m in memories), default=0)
     programs = max((m.program or 0 for m in memories), default=0)
     processes = max((m.process or 0 for m in memories), default=0)
     session = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
@@ -156,7 +156,7 @@ def run(
         "utilization": used / wall / jobs,
         "occupancy": used_slots / (jobs * wall),
         "peak_memory_bytes": {
-            "per_job": per_job,
+            "per_task": per_task,
             "ddsim": programs,
             "k4opt_task_process": processes,
             "session_process": session if jobs > 1 else None,  # one job: it ran the tasks
@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     base = results[0]  # one job
     print(
         "| jobs | wall s | speedup | efficiency | CPU s | processors busy | utilization | "
-        "occupancy | GiB per job | ddsim GiB | k4opt task GiB | session GiB | records |"
+        "occupancy | GiB per task | ddsim GiB | k4opt task GiB | session GiB | records |"
     )
     print("|" + " --- |" * 13)
     for result in results:
@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             f"| {result['jobs']} | {result['wall_seconds']:.1f} | {speedup:.2f} | "
             f"{speedup / result['jobs']:.0%} | {result['cpu_seconds']:.1f} | "
             f"{result['processors_busy']:.2f} | {result['utilization']:.0%} | "
-            f"{result['occupancy']:.0%} | {_gib(memory['per_job'])} | {_gib(memory['ddsim'])} | "
+            f"{result['occupancy']:.0%} | {_gib(memory['per_task'])} | {_gib(memory['ddsim'])} | "
             f"{_gib(memory['k4opt_task_process'])} | {_gib(memory['session_process'])} | "
             f"{'same' if same else 'DIFFER'} |"
         )

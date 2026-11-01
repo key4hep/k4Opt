@@ -660,12 +660,13 @@ that did not run):
   and for a program that did not end by itself (killed at its time limit).
 
 `peak_memory(summary)` reads them back, by task label, as `PeakMemory(process, program)`; its
-`per_job` is both added: an **estimate** of what one job needs for that task, not a bound. The
+`per_task` is both added: an **estimate** of what the task needs while it runs, however many
+jobs it holds (a simulation's threads share its memory), not a bound. The
 two peaks need not come at once, which makes it high; a program that runs several processes at
 once is counted by the largest of them, which makes it low (ddsim is one process, its Geant4
 threads share its memory). A true bound of a process tree needs the kernel's accounting of a
 cgroup, which k4opt does not set up. `k4opt evaluate` prints the task that needs most
-(`memory:      1.93 GiB per job (estimate), for gamma_10gev/simulation (k4opt 312 MiB, ddsim
+(`memory:      1.93 GiB per task (estimate), for gamma_10gev/simulation (k4opt 312 MiB, ddsim
 1.62 GiB)`). Like the times, they say how the candidate ran, never what was evaluated: no
 comparison of records reads them.
 
@@ -784,10 +785,13 @@ with EvaluationSession.open(problem, [CaloPhoton], jobs=4) as session:  # stops 
   number there. An HTCondor job without CPU affinity gets the whole machine too: give
   `--jobs $(request_cpus)`. More jobs than usable processors are warned about.
 - **N bounds what k4opt starts, not the memory.** Each record holds the peak memory of every task
-  (above), and `k4opt evaluate` prints an estimate of what one job needs: N jobs need about N
-  times as much, plus the session's own process. Measure one candidate first, then choose N for
-  the memory as much as for the processors, with some room, since it is an estimate; a shared
-  machine (lxplus) is not yours alone. k4opt sets no memory limit of its own.
+  (above), and `k4opt evaluate` prints an estimate of what the task that needs most takes while
+  it runs. Memory goes with the tasks running at once, not with the jobs: N single-threaded
+  simulations need about N times that, but simulations on 4 threads hold 4 jobs each, so at most
+  N/4 of them run, and each needs its memory once (its threads share it). Add the session's own
+  process. Measure one candidate first, then choose N for the memory as much as for the
+  processors, with some room, since it is an estimate; a shared machine (lxplus) is not yours
+  alone. k4opt sets no memory limit of its own.
 - **Records** are the same whatever N: each task gets the same configuration (geometry, stage
   options and seeds, requests), each record holds its results in plan order with the same
   statuses, blocking and diagnostics, and deterministic evaluators measure the same. Every

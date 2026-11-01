@@ -270,13 +270,13 @@ def execute_task(
     made, an :class:`~k4opt.evaluation.EvaluationContractError` for a result that breaks the
     evaluation contract, or any exception of an evaluator other than
     :class:`~k4opt.evaluation.EvaluationFailed` and :class:`~k4opt.evaluation.EvaluationInvalid`.
-    The outcome holds the peak memory of this process while it did the task, the making of its
-    instance included, and that of the program a stage ran.
+    The outcome holds the time and the peak memory of this process while it did the task, the
+    making of its instance included, and the peak memory of the program a stage ran.
     """
-    measuring = _reset_peak()
+    began, measuring = time.perf_counter(), _reset_peak()
     if make is not None:
         instance = make()
-    outcome, observed = _run_task(context, spec, root, seen, instance, output)
+    outcome, observed = _run_task(context, spec, root, seen, instance, output, began)
     program = None if outcome.memory is None else outcome.memory.program
     process = _process_peak() if measuring else None
     return replace(outcome, memory=PeakMemory(process, program)), observed
@@ -316,8 +316,8 @@ def _run_task(
     seen: Observations,
     instance: EvaluatorProtocol | None,
     output: Output | None,
+    began: float,
 ) -> tuple[TaskOutcome, Observations]:
-    began = time.perf_counter()
     kind = spec.task.id.kind
     if kind is Kind.GEOMETRY:
         return _geometry(context, spec, root, began)

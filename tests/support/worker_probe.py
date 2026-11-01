@@ -6,7 +6,7 @@ What else it does is said by the environment variable ``WORKER_PROBE``, a JSON o
 the binding, and by ``<run>.<binding>`` for one run directory alone (a worker keeps the
 environment it started with): ``mark`` writes a file first, ``await`` waits until each file of
 a list exists, ``allocate`` holds that many MiB for a moment (``check_allocate`` in ``check()``,
-by binding alone), ``print`` prints that text to
+by binding alone, as ``check_sleep`` sleeps that many seconds there), ``print`` prints that text to
 stdout and stderr, ``raise`` raises a
 ``ValueError`` with that text, ``contract`` an ``EvaluationContractError``, ``kill`` sends
 its own process SIGKILL, and ``stall`` writes the start of an answer to the coordinator and
@@ -40,6 +40,7 @@ class WorkerProbe(Evaluator):
             held = bytearray(told["check_allocate"] << 20)
             held[:: 1 << 12] = b"x" * len(held[:: 1 << 12])  # every page resident
             del held
+        time.sleep(told.get("check_sleep", 0))
         self.checked = True
 
     def evaluate(self, request):
