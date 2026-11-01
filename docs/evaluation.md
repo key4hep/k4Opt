@@ -724,7 +724,8 @@ Each task of a candidate (its geometry, a stage of a sample, an evaluation) is d
 data (its planned task, the files it reads named relative to the candidate's run directory, an
 evaluation's request) and done by one task program, wherever it runs; a scheduler decides from
 what each task reads which tasks may start. `EvaluationSession.open(..., jobs=N)` (`k4opt
-evaluate --jobs N`) lets up to N tasks run at once, of one candidate (the simulations of its
+evaluate --jobs N`, and [`k4opt optimize --jobs N`](optimization.md#trials-at-once---jobs) for
+the trials of a study) lets up to N tasks run at once, of one candidate (the simulations of its
 samples, the evaluations of a simulation) and of several (`evaluate_each`), the oldest
 candidate's first:
 

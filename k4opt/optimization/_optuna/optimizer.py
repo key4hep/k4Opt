@@ -31,7 +31,8 @@ from k4opt.optimization._study import (
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import MetricRef, ProblemSpec
 
-STARTUP_TRIALS = 10  # random proposals before TPE models the trials
+STARTUP_TRIALS = 10  # random proposals until this many trials are COMPLETE
+CONSTANT_LIAR = True  # trials still running count as bad ones, so trials at once spread out
 
 
 def new_document(
@@ -71,6 +72,7 @@ def _optimizer(
             "name": "TPESampler",
             "seed": seed,
             "n_startup_trials": STARTUP_TRIALS,
+            "constant_liar": CONSTANT_LIAR,
             "seeding": "per session, from the seed and the number of trials",
         },
         "directions": [o.direction for o in spec.objectives],

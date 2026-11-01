@@ -1,7 +1,8 @@
 """``k4opt optimize`` on the CLD example with the real ddsim (needs the Key4hep stack and Optuna).
 
 Skipped without ``$K4GEO``, ``ddsim``, ``podio`` or Optuna. Runs a study of two candidates of a
-few events each, then resumes it for one more; about three minutes, mostly ddsim start-up.
+few events each, then resumes it for one more; then one of four candidates two at a time, resumed
+with one job; about six minutes, mostly ddsim start-up.
 Verify by hand with::
 
     source setup.sh && pytest tests/integration/optimization -m integration -s
@@ -101,3 +102,22 @@ def test_a_study_of_the_example_runs_resumes_and_tells_the_optimizer_its_records
             == summary["samples"]["gamma_10gev"]["stages"]["simulation"]["elapsed_seconds"]
         )
     assert [m["uncertainty"] is not None for m in entry["assessment"]["objectives"]] == [True, True]
+
+
+def test_a_study_runs_trials_at_once_and_resumes_with_another_number_of_jobs(
+    problem: Path, tmp_path: Path
+) -> None:
+    output = tmp_path / "study"
+    first = optimize(problem, output, "--trials", "4", "--seed", "2", "--jobs", "2")
+    assert "trials:   4: 4 valid" in first
+    resumed = optimize(problem, output, "--trials", "1", "--resume", "--jobs", "1")
+    assert resumed.startswith("trial 4:") and "trials:   5: 5 valid" in resumed
+    spec = load_problem(problem)
+    for number, jobs in ((0, 2), (1, 2), (2, 2), (3, 2), (4, 1)):
+        summary = json.loads((output / f"trial-{number:06d}" / "summary.json").read_text())
+        assert summary["environment"]["observed"]["execution"] == {"backend": "local", "jobs": jobs}
+        assert summary["samples"]["gamma_10gev"]["stages"]["simulation"]["events_read"] == 4
+        Assessment.from_summary(spec, summary)
+    shown = io.StringIO()
+    assert main(["study", "show", str(output)], stdout=shown, stderr=io.StringIO()) == 0
+    assert "trials:     5: 5 valid" in shown.getvalue()

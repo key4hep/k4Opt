@@ -57,6 +57,7 @@ color off.
 | `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)) |
 | `--storage URL` | an Optuna database URL (SQLite on a local disk, PostgreSQL) in place of the journal file in `DIR`; it needs SQLAlchemy, and the same URL on every resume |
 | `--timeout SECONDS` | kill `ddsim` if a trial's simulation runs longer than that: the candidate is `failed`, the trial FAIL, and the study goes on. No limit without it. It is recorded in each trial's record and is not part of the study, so a resume may give another one |
+| `--jobs N`, `-j N` | run up to N tasks at once, of one trial and of several, each in a worker process ([Trials at once](#trials-at-once---jobs)). Default 1: one trial after another, each task in turn. Not part of the study: a resume may give another one |
 
 The exit status is 0 once every trial asked for has ended, even if candidates were `invalid` or
 `failed`. It is 1 if the study cannot start or resume, a trial stops it, or it is interrupted,
@@ -108,9 +109,12 @@ search toward feasibility, but they do not guarantee it.
   about this. Treat such a study as not yet scientifically mature: a characteristic `scale` per
   constraint is planned for it.
 
-**The sampler.** Optuna's `TPESampler`, made explicitly with its seed and 10 startup trials,
-both recorded, so that a change of Optuna's defaults cannot change a study. The first 10
-trials of a study are random proposals, and TPE models the trials from then on.
+**The sampler.** Optuna's `TPESampler`, made explicitly with its seed, 10 startup trials and
+the constant liar, all recorded, so that a change of Optuna's defaults cannot change a study.
+It proposes at random until 10 trials are COMPLETE, and TPE models the trials from then on. The
+constant liar matters only for [trials at once](#trials-at-once---jobs): a trial still running
+counts as one that ended badly, so the sampler does not propose its neighborhood again before it
+knows the result.
 
 ## Trials and their outcomes
 
@@ -122,6 +126,7 @@ trials of a study are random proposals, and TPE models the trials from then on.
 | `failed` | FAIL | none | none |
 | interrupted, no record | FAIL | none | none |
 | the trial stopped the study | FAIL | none | none |
+| still running when another trial stopped the study | FAIL, as interrupted | none | none |
 
 An invalid or failed trial never gets made-up values (0, infinity) or constraint values. TPE
 ignores FAIL trials, so a region that is always invalid can be proposed again. Treating
@@ -188,6 +193,43 @@ back from disk and checked:
 Only then is Optuna told. This is also how a resume finishes a trial that an interrupted
 session left with a record, so a recovered trial is told exactly what a live one would have
 been.
+
+## Trials at once: `--jobs`
+
+`--jobs N` (`-j N`, `optimize(..., jobs=N)`) runs up to N tasks at once: the geometries,
+simulations and evaluations of one trial and of several, each in a worker process of this
+machine, as [`k4opt evaluate --jobs`](evaluation.md#execution-jobs-and-worker-processes) runs
+them. N bounds what k4opt starts, not the threads or the memory of each task: a CLD ddsim takes
+1-2 GB, so choose N for the memory as much as for the cores.
+
+```bash
+k4opt optimize examples/problem/cld-ecal-granularity.yaml \
+  --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
+  --trials 32 --seed 42 --jobs 8 --output runs/cld-ecal-study
+```
+
+- **The optimizer is asked for a candidate only when a job would otherwise be idle**, and only
+  after every trial that ended was told. So at most N trials run at once, and fewer when the
+  trials under way have tasks enough for every job.
+- **Each trial is told as it ends**, in the order the trials end, after the same checks of its
+  record as with one job; its line is printed then.
+- **Every trial keeps its own directory and record**, and a record is the same whatever N
+  (only `environment.observed.execution` says how its tasks ran). `--jobs` is not part of the
+  study: a study may be resumed with any N.
+- **A trial that stops the study** ([above](#trials-and-their-outcomes)) stops the trials still
+  running too: their simulations and evaluations are killed, their directories kept as they
+  are, and each is closed as interrupted (FAIL), in number order.
+- **Each trial is told once.** Writing to the optimizer's storage can fail after the write
+  committed; before a trial is told anything after an error, its state is read back from the
+  storage. A trial already COMPLETE or FAIL is not told again, and one whose state cannot be read
+  is left RUNNING, for `--resume` to settle, which the error says.
+
+**Reproducibility.** With one job, a seed proposes the same candidates as ever. With more, what
+the sampler proposes depends on which trials have ended when it is asked, so two runs of one
+seed take different paths; and the trials still running when the tenth completes were proposed
+at random too, so up to N - 1 more than with one job. Each trial still records its candidate,
+its session's sampler seed and its record, and the records of a candidate are the same whatever
+N: the simulation seed is each sample's own.
 
 ## The study directory
 
@@ -281,9 +323,10 @@ the same proposals again.
 ## Interruptions, the lock and recovery
 
 **Ctrl-C and SIGTERM** (`systemctl --user stop`, a batch system ending a job) stop the study
-cleanly. The running trial is FAIL, or is told its record if one was published just before;
-ddsim is killed, with any process it started; the lock is removed; the command exits 1 and says
-how to resume.
+cleanly. Each running trial is FAIL, or is told its record if one was published just before;
+ddsim is killed, with any process it started, and so are the worker processes of `--jobs`; the
+lock is removed; the command exits 1 and says how to resume. A study killed outright (SIGKILL)
+takes its worker processes with it (Linux), and a resume closes the trials it left running.
 
 **The lock.** `.lock` is created exclusively when a process starts working on a study, and
 removed when it ends, so two processes never work on one study. A lock that a killed process
@@ -496,6 +539,7 @@ report = optimize(
     "runs/cld-ecal-study",
     trials=30,
     seed=42,  # or resume=True, storage="postgresql://..."
+    jobs=4,  # tasks at once, of one trial and of several; 1 by default
     warn=print,  # each warning
     progress=print,  # each TrialReport as its trial ends, the recovered ones of a resume first
 )
@@ -542,7 +586,7 @@ Optuna, which holds the trials; the rest of k4opt does not.
 
 Retrying interrupted trials, reusing the record of a candidate proposed twice, a warm start from
 `k4opt evaluate` records, sampler options, a characteristic `scale` per constraint, treating
-invalid candidates as infeasible, parallel workers, overrides for changed software, other
-optimizers, comparing or plotting studies, and exporting an evaluator's other measurements (each
-row names its record, which holds them). None of them is blocked by the design: records have
+invalid candidates as infeasible, trials on other machines (a batch system), overrides for
+changed software, other optimizers, comparing or plotting studies, and exporting an evaluator's
+other measurements (each row names its record, which holds them). None of them is blocked by the design: records have
 ids, studies reference them, and the session knows no optimizer.

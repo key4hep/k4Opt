@@ -74,6 +74,7 @@ def optimize(
     resume: bool = False,
     storage: str | None = None,
     timeout: float | None = None,
+    jobs: int = 1,
     warn: Callable[[str], None] | None = None,
     progress: Callable[[TrialReport], None] | None = None,
 ) -> StudyReport:
@@ -89,15 +90,20 @@ def optimize(
     ``storage`` is an Optuna database URL in place of the journal file in ``output``, given
     again on every resume. ``timeout`` is how many seconds a trial's simulation may take before
     ddsim is killed and the trial fails; it is not part of the study, so a resume may set
-    another one.
+    another one. ``jobs`` is how many tasks (simulations, evaluations, geometries) may run at
+    once, of one trial and of several, each in a worker process when more than one
+    (:meth:`~k4opt.problem.EvaluationSession.open`); the optimizer is asked for a candidate only
+    when a job would otherwise be idle, and told each trial as it ends. Like ``timeout``, it is
+    not part of the study.
 
     ``warn`` is called with each warning, ``progress`` with each trial as it ends, the trials a
     resume finishes first (``recovered``). Invalid and failed candidates are FAIL trials and the
     study goes on. Raises :class:`OptimizationError` for a study that cannot start or resume,
     and when a trial stops it (a broken evaluation contract, a record that does not hold up); a
     :class:`~k4opt.errors.K4OptError` for an invalid problem or evaluator, before anything is
-    created. Ctrl-C and SIGTERM end the running trial (FAIL, or told its record), remove the
-    lock and raise :class:`KeyboardInterrupt`.
+    created. Ctrl-C and SIGTERM end the running trials (FAIL, or told their records), remove the
+    lock and raise :class:`KeyboardInterrupt`; a trial that stops the study ends the others the
+    same way.
     """
     with _needs_optuna("k4opt optimize"):
         from k4opt.optimization import _optuna
@@ -110,6 +116,7 @@ def optimize(
         resume=resume,
         storage=storage,
         timeout=timeout,
+        jobs=jobs,
         warn=warn or (lambda message: None),
         progress=progress or (lambda trial: None),
     )

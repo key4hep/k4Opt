@@ -1,7 +1,7 @@
 """Command-line interface of the optimization component: ``k4opt optimize`` and ``k4opt study``.
 
     k4opt optimize PROBLEM --evaluator FILE.py:Class [--evaluator ...] --trials N --output DIR
-        [--seed S] [--resume] [--storage URL] [--timeout SECONDS]
+        [--seed S] [--resume] [--storage URL] [--timeout SECONDS] [--jobs N]
     k4opt study show DIR [--storage URL]
     k4opt study trial DIR NUMBER [--storage URL]
     k4opt study export DIR --format {csv,json} [--output FILE] [--storage URL]
@@ -84,6 +84,18 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
             "study goes on (no limit without it)"
         ),
     )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "run at most N tasks at once, of one trial and of several, each in a worker process; "
+            "it bounds what k4opt starts, not the threads or memory of each task, and is not part "
+            "of the study. Default 1: one trial after another"
+        ),
+    )
     parser.set_defaults(func=cmd_optimize)
     _register_study(commands)
 
@@ -159,6 +171,7 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 resume=args.resume,
                 storage=args.storage,
                 timeout=args.timeout,
+                jobs=args.jobs,
                 warn=progress.warning,
                 progress=progress.trial,
             )
