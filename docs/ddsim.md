@@ -45,6 +45,10 @@ problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsi
 `ddsim.stderr.log` and `ddsim.json` (argument list, directory, exit code, time limit, peak
 memory).
 
+`numberOfThreads` (Geant4's worker threads) must be a positive integer, written in full: k4opt
+reads it, since such a simulation holds as many of the `--jobs` of `k4opt evaluate` and
+`k4opt optimize` while it runs ([execution](evaluation.md#execution-jobs-and-worker-processes)).
+
 `SimulationRun.peak_memory_bytes` is ddsim's peak resident memory, as the kernel kept it when
 ddsim ended (`wait4`): the largest of ddsim's own and of each process it started and waited for,
 each on its own, not their sum. A wrapper script that runs ddsim is measured with ddsim; Geant4's

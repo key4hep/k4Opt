@@ -10,7 +10,8 @@ sample comes from the keys ``"*"``, ``"<sample>"`` and ``"<run>.<sample>"`` (the
 ``await`` waits until that many simulations started, or until each file of a list exists (a path
 relative to ``dir``, or absolute); ``write`` then writes the text of each file it maps;
 ``kill`` sends SIGKILL to ``"self"`` or to its ``"parent"`` (the worker that started it);
-``sleep`` sleeps that many seconds; ``allocate`` holds that many MiB for a moment; ``hits``
+``sleep`` sleeps that many seconds; ``burn`` keeps a processor busy that many seconds of its
+time; ``allocate`` holds that many MiB for a moment; ``hits``
 gives the cells of each event; ``exit`` is its exit status.
 """
 
@@ -50,6 +51,9 @@ if told.get("kill") == "parent":
 if told.get("kill") == "self":
     os.kill(os.getpid(), signal.SIGKILL)
 time.sleep(told.get("sleep", 0))
+burnt = time.process_time() + told.get("burn", 0)
+while time.process_time() < burnt:
+    pass
 if "allocate" in told:
     held = bytearray(told["allocate"] << 20)
     held[:: 1 << 12] = b"x" * len(held[:: 1 << 12])  # every page resident

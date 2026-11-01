@@ -38,11 +38,12 @@ bar stays under them while the study runs:
 ```
 
 It shows the trials asked for that have ended, the time since the study began, the time left,
-the time a trial takes and how the trials ended; on a narrow terminal the last of these go first.
-A trial takes the mean time from the end of one trial to the end of the next, without the first
-trial of the session, whose time also holds the study's setup. The time left is that of the
-trials still to run, less the time the running one has had, so it counts down between the ends of
-trials. When the study ends, the bar is left in place and marked `✔`, or `✘` when it was stopped;
+with more than one job the trials running and the job slots they hold (`4 running  8/8
+slots`), the time a trial takes and how the trials ended; on a narrow terminal the last of these
+go first. A trial takes the time since the study began divided by the trials that ended: how
+often one ends, which holds when several end together. The time left is that of the trials
+still to run, less the time since the last one ended, so it counts down between the ends of
+trials. It is an estimate: it assumes the trials to come take as long as those so far. When the study ends, the bar is left in place and marked `✔`, or `✘` when it was stopped;
 a study that stops before any of its new trials ended (one that cannot start) leaves only its
 error.
 Piped or written to a file, the output is the plain lines above, as in a log; `NO_COLOR=1` turns
@@ -57,7 +58,7 @@ color off.
 | `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)) |
 | `--storage URL` | an Optuna database URL (SQLite on a local disk, PostgreSQL) in place of the journal file in `DIR`; it needs SQLAlchemy, and the same URL on every resume |
 | `--timeout SECONDS` | kill `ddsim` if a trial's simulation runs longer than that: the candidate is `failed`, the trial FAIL, and the study goes on. No limit without it. It is recorded in each trial's record and is not part of the study, so a resume may give another one |
-| `--jobs N`, `-j N` | run up to N tasks at once, of one trial and of several, each in a worker process ([Trials at once](#trials-at-once---jobs)). Default 1: one trial after another, each task in turn. Not part of the study: a resume may give another one |
+| `--jobs N`, `-j N` | run up to N tasks at once, of one trial and of several, each in a worker process; a simulation on several threads holds as many; `auto`: as many as the processors this process may use ([Trials at once](#trials-at-once---jobs)). Default 1: one trial after another, each task in turn. Not part of the study: a resume may give another one |
 
 The exit status is 0 once every trial asked for has ended, even if candidates were `invalid` or
 `failed`. It is 1 if the study cannot start or resume, a trial stops it, or it is interrupted,
@@ -199,8 +200,12 @@ been.
 `--jobs N` (`-j N`, `optimize(..., jobs=N)`) runs up to N tasks at once: the geometries,
 simulations and evaluations of one trial and of several, each in a worker process of this
 machine, as [`k4opt evaluate --jobs`](evaluation.md#execution-jobs-and-worker-processes) runs
-them. N bounds what k4opt starts, not the threads or the memory of each task: a CLD ddsim takes
-1-2 GB, so choose N for the memory as much as for the cores.
+them. A simulation on several threads (`numberOfThreads`) holds as many jobs, and `--jobs auto`
+takes as many jobs as the processors this process may use (on lxplus: the whole node, so give a
+number there). N bounds the processors k4opt keeps busy, not the memory: evaluate one candidate
+with `k4opt evaluate` first, which prints what one job needed at most, and choose N so that N
+times that fits, with room for the study's own process. Every trial's record holds the peak
+memory of each of its tasks.
 
 ```bash
 k4opt optimize examples/problem/cld-ecal-granularity.yaml \
@@ -587,6 +592,7 @@ Optuna, which holds the trials; the rest of k4opt does not.
 Retrying interrupted trials, reusing the record of a candidate proposed twice, a warm start from
 `k4opt evaluate` records, sampler options, a characteristic `scale` per constraint, treating
 invalid candidates as infeasible, trials on other machines (a batch system), overrides for
-changed software, other optimizers, comparing or plotting studies, and exporting an evaluator's
-other measurements (each row names its record, which holds them). None of them is blocked by the design: records have
-ids, studies reference them, and the session knows no optimizer.
+changed software, other optimizers, comparing or plotting studies, exporting an evaluator's
+other measurements (each row names its record, which holds them), and a memory limit of k4opt's
+own. None of them is blocked by the design: records have ids, studies reference them, and the
+session knows no optimizer.
