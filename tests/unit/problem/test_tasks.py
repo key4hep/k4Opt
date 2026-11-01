@@ -27,9 +27,9 @@ from k4opt.problem._tasks import (
     diagnostics,
     evaluator_task,
     plan_tasks,
-    run_tasks,
     stage_task,
 )
+from tests.unit.problem.conftest import run_in_order
 
 GUN = Stage("generation", executor="gun", options={"particle": "gamma"})
 DDSIM = Stage("simulation", executor="ddsim", events=3, seed=1)
@@ -234,7 +234,7 @@ def test_the_executor_runs_each_task_once_in_plan_order_with_only_what_it_reads(
         seen.append((task.id.label, [need.label for need in reads]))
         return done(task.id, "valid" if task.id.kind is Kind.EVALUATOR else "done")
 
-    results = run_tasks(plan, run)
+    results = run_in_order(plan, run)
     assert seen == [
         ("geometry", []),
         ("gamma/generation", []),
@@ -255,7 +255,7 @@ def test_the_executor_does_not_run_a_blocked_task() -> None:
             return done(task.id, "failed", "ddsim crashed")
         return done(task.id, "valid" if task.id.kind is Kind.EVALUATOR else "done")
 
-    results = run_tasks(plan, run)
+    results = run_in_order(plan, run)
     assert ran == ["geometry", "gamma/generation", "gamma/simulation", "b"]
     assert results[evaluator_task("a", "gamma")].blocked_by == (SIMULATION,)
     assert results[evaluator_task("b")].status == "valid"

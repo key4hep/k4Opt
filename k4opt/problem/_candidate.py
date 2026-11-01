@@ -321,7 +321,7 @@ class CandidateRecord:
 
     def changed(self) -> list[str]:
         """The references of the files its tasks made that are no longer what its record says
-        (:meth:`~k4opt.problem._tasks.Made.changed`)."""
+        (:meth:`~k4opt.problem._files.Made.changed`)."""
         return changed_files(self.results.values())
 
     def record(self, label: str) -> EvaluationRecord:

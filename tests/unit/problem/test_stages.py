@@ -51,12 +51,12 @@ from k4opt.problem._tasks import (
     TaskId,
     TaskResult,
     plan_tasks,
-    run_tasks,
     stage_task,
 )
 from tests.support import simulation
 from tests.support.evaluators import implementations
 from tests.support.simulation import events_with
+from tests.unit.problem.conftest import run_in_order
 
 CELL = "constants.ECal_cell_size"
 
@@ -405,7 +405,7 @@ def test_a_failed_stage_blocks_only_the_tasks_that_read_it(
         EvaluatorSpec("on_right", "1", stage="after_right", samples=("s",)),
     ]
     plan = plan_tasks({"s": Sample("s")}, readers, references=())
-    results = run_tasks(plan, run)
+    results = run_in_order(plan, run)
     assert ran == ["left", "right", "after_right"]
     status = {task.label: (r.status, r.message) for task, r in results.items()}
     assert status == {

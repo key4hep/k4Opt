@@ -11,12 +11,12 @@ from how it runs:
 * :func:`plan_tasks` resolves the dependencies from the problem alone, once per session, so that
   a record can be checked against the same plan
   (:meth:`~k4opt.problem.Assessment.from_summary`);
-* :func:`run_tasks` executes a plan one task after another. A task whose needs did not all
-  succeed is ``blocked`` (:func:`blocked`) and is not run; the work of a task is the caller's.
-  Another executor (processes, a batch system) would replace only this loop;
-* the candidate's record is assembled from the task results alone (:mod:`k4opt.problem._run`),
-  and its status and message are derived from them (:func:`candidate_status`,
-  :func:`candidate_message`).
+* the scheduler (:mod:`k4opt.problem._schedule`) starts each task once what it reads ended; a
+  task whose needs did not all succeed is ``blocked`` (:func:`blocked`) and is not run. Where
+  and how a task does its work is a backend's (:mod:`k4opt.problem._backends`);
+* the candidate's record is assembled from the task results alone
+  (:mod:`k4opt.problem._summary`), and its status and message are derived from them
+  (:func:`candidate_status`, :func:`candidate_message`).
 
 A task is ``required`` if an objective, a constraint or a binding marked ``required: true`` needs
 it: the evaluation that measures what one names, and every task it reads, transitively. Only the
@@ -36,7 +36,7 @@ the geometry) are held by its result as :class:`~k4opt.problem._files.Made` and
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -146,7 +146,7 @@ class Task:
 class Plan:
     """The tasks of every candidate of a problem, each after the tasks it reads.
 
-    The order of ``tasks`` is the order :func:`run_tasks` runs them in: the geometry, then for
+    The order of ``tasks`` is the order they run in with one job: the geometry, then for
     each sample its stages in pipeline order and its evaluations in problem order, then the
     evaluations of the candidate. It is one of the orders in which every task comes after its
     needs, and nothing may depend on which one: another executor may run any of them, or several
@@ -346,26 +346,6 @@ def blocked(task: Task, results: Mapping[TaskId, TaskResult]) -> TaskResult | No
         return None
     causes = ", ".join(f"{root.label} {results[root].status}" for root in roots)
     return TaskResult(task.id, Status.BLOCKED, f"not run: {causes}", blocked_by=tuple(roots))
-
-
-type RunTask = Callable[[Task, Mapping[TaskId, TaskResult]], TaskResult]
-"""The work of one task, given the results of the tasks it reads; the only code that does work."""
-
-
-def run_tasks(plan: Plan, run: RunTask) -> dict[TaskId, TaskResult]:
-    """Run every task of ``plan`` in plan order, one at a time, and return their results.
-
-    A task whose needs did not all succeed is not run, and its result is the ``blocked`` one of
-    :func:`blocked`. ``run`` gets the results of the tasks it reads, and only those. An exception
-    of ``run`` propagates: a task that cannot do its work reports so in its result.
-    """
-    results: dict[TaskId, TaskResult] = {}
-    for task in plan.tasks:
-        result = blocked(task, results)
-        if result is None:
-            result = run(task, {need: results[need] for need in task.needs})
-        results[task.id] = result
-    return results
 
 
 def _required(plan: Plan, results: Mapping[TaskId, TaskResult]) -> list[TaskResult]:

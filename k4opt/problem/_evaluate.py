@@ -86,7 +86,7 @@ from k4opt.problem.models import EvaluatorSpec, ProblemSpec, Reference
 
 def _inputs(reads: Mapping[TaskId, TaskResult], root: Path | None) -> dict[str, Path]:
     """What a task is given of the tasks it reads: the main output of each, by its name, named
-    in the candidate's workspace (:func:`~k4opt.problem._work.portable`)."""
+    in the candidate's workspace (:func:`~k4opt.problem._files.portable`)."""
     return {
         task.name: portable(result.output, root)
         for task, result in reads.items()
@@ -362,20 +362,20 @@ def _evaluate_candidate(
 
     The candidate maps each canonical parameter reference to a scalar; ``implementations`` (an
     evaluator class, say) implement the problem's ``evaluators``, in any order. Before any stage
-    runs, raises :class:`CandidateError` for a candidate outside the declared domains and
-    :class:`EvaluationContractError` for implementations that cannot be created or do not match
-    the problem (missing, undeclared, given twice, another version), settings an evaluator's
-    ``check()`` rejects, a stage that cannot run, or an objective or constraint metric its
-    evaluator does not declare. ``inputs["geometry"]`` is the candidate's geometry, already
-    prepared; any other entry of ``inputs`` supplies the file of the stage of a sample it is named
-    after (``gamma/simulation``). The stages the evaluators read and ``inputs`` does not supply
-    then run once each, in ``workdir``.
-    An evaluator whose stage failed, or whose stage output lacks the requested events, is
-    ``blocked`` and not called, as is a combined evaluator an item of whose roles did not succeed
-    (failed, invalid or blocked); the others are still called. An evaluator that raises
-    :class:`EvaluationFailed` or :class:`EvaluationInvalid` gets that result; any other
-    exception propagates, and so does an :class:`EvaluationContractError` for a result that
-    breaks the contract.
+    runs, raises :class:`~k4opt.problem.CandidateError` for a candidate outside the declared
+    domains and :class:`EvaluationContractError` for implementations that cannot be created or
+    do not match the problem (missing, undeclared, given twice, another version), settings an
+    evaluator's ``check()`` rejects, a stage that cannot run, or an objective or constraint
+    metric its evaluator does not declare. ``inputs["geometry"]`` is the candidate's geometry,
+    already prepared; any other entry of ``inputs`` supplies the file of the stage of a sample
+    it is named after (``gamma/simulation``). The stages the evaluators read and ``inputs`` does
+    not supply then run once each, in ``workdir``. An evaluator whose stage failed, or whose
+    stage output lacks the requested events, is ``blocked`` and not called, as is a combined
+    evaluator an item of whose roles did not succeed (failed, invalid or blocked); the others
+    are still called. An evaluator that raises :class:`~k4opt.evaluation.EvaluationFailed` or
+    :class:`~k4opt.evaluation.EvaluationInvalid` gets that result; any other exception
+    propagates, and so does an :class:`EvaluationContractError` for a result that breaks the
+    contract.
     """
     started = time.perf_counter()
     values, key = _validate_candidate(spec, candidate)
@@ -432,7 +432,8 @@ def _execute_plan(
     that need none). Each task writes below ``workdir``, in the directory the plan gives it.
     ``checked_seconds``, the time the candidate's validation and preflight took, counts towards
     ``elapsed_seconds``, which thus covers k4opt's checks too (not what the caller does between).
-    ``timeout`` limits each stage that runs a program (:attr:`StageContext.timeout`).
+    ``timeout`` limits each stage that runs a program
+    (:attr:`~k4opt.problem._stages.StageContext.timeout`).
     """
     started = time.perf_counter() - checked_seconds
     binding = prepared.binding
