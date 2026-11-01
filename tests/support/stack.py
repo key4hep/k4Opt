@@ -5,32 +5,34 @@ the coordinator's ``sys.path``. The coordinator itself reads the same files thro
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import time
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
 
 from k4opt.evaluation import edm4hep
-from tests.support.simulation import COLLECTION, Event, Hits
 
 FAKE_STACK = Path(__file__).with_name("fake_stack")
 
 
-class Reader:
-    """A podio reader of a file the fake ``ddsim`` wrote."""
+def _reading() -> ModuleType:
+    """The fake ``podio.reading``, loaded from its file under a name of its own, so that this
+    process reads the fake files as the workers do without importing a ``podio``."""
+    path = FAKE_STACK / "python" / "podio" / "reading.py"
+    spec = importlib.util.spec_from_file_location("k4opt_tests_fake_podio_reading", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    categories = ("events",)
 
-    def __init__(self, path: str) -> None:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        self.events = [Event(**{COLLECTION: Hits(cells)}) for cells in data["events"]]
-
-    def get(self, category: str) -> list[Event]:
-        return self.events
+READING = _reading()
 
 
 def install(monkeypatch: pytest.MonkeyPatch, marks: Path | None = None, **told: Any) -> None:
@@ -39,7 +41,7 @@ def install(monkeypatch: pytest.MonkeyPatch, marks: Path | None = None, **told: 
     end in; ``told`` says what it does for each sample (see ``fake_stack/bin/ddsim``)."""
     monkeypatch.setenv("PATH", f"{FAKE_STACK / 'bin'}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.syspath_prepend(str(FAKE_STACK / "python"))
-    monkeypatch.setattr(edm4hep, "_frames", lambda path: Reader(str(path)).events)
+    monkeypatch.setattr(edm4hep, "_frames", lambda path: READING.Reader(str(path)).events)
     control = dict(told) | ({} if marks is None else {"dir": str(marks)})
     monkeypatch.setenv("FAKE_DDSIM", json.dumps(control))
 
