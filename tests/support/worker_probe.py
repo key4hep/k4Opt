@@ -6,12 +6,14 @@ What else it does is said by the environment variable ``WORKER_PROBE``, a JSON o
 the binding, and by ``<run>.<binding>`` for one run directory alone (a worker keeps the
 environment it started with): ``mark`` writes a file first, ``await`` waits until each file of
 a list exists, ``print`` prints that text to stdout and stderr, ``raise`` raises a
-``ValueError`` with that text, ``contract`` an ``EvaluationContractError``, and ``kill`` sends
-its own process SIGKILL."""
+``ValueError`` with that text, ``contract`` an ``EvaluationContractError``, ``kill`` sends
+its own process SIGKILL, and ``stall`` writes the start of an answer to the coordinator and
+never the rest."""
 
 import json
 import os
 import signal
+import struct
 import sys
 import time
 from pathlib import Path
@@ -54,4 +56,8 @@ class WorkerProbe(Evaluator):
             raise EvaluationContractError(told["contract"])
         if "kill" in told:
             os.kill(os.getpid(), signal.SIGKILL)
+        if "stall" in told:  # the header of an answer whose rest never comes, then nothing
+            answers = int(sys.argv[2])  # the worker's end of its socket (``_worker.main``)
+            os.write(answers, struct.pack("!i", 1000))
+            time.sleep(600)
         return {("analysis", "checked"): 1 if self.checked else 0}

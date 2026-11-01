@@ -14,9 +14,11 @@ import multiprocessing
 import os
 import pickle
 import signal
+import socket
 import struct
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterator
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -40,7 +42,8 @@ from k4opt.problem import (
     _worker,
     load_problem,
 )
-from k4opt.problem._work import TaskSpec
+from k4opt.problem._tasks import Task, stage_task
+from k4opt.problem._work import TaskOutcome, TaskSpec
 from tests.support import stack
 from tests.support.common import scientific
 from tests.support.evaluators import CELL_COUNT, cell_count, implementations, worker_probe
@@ -584,6 +587,41 @@ def test_a_task_that_cannot_be_sent_whole_stops_its_candidate_and_its_worker(
     assert not alive(ready)  # never written to again, and stopped
     monkeypatch.setattr(Connection, "send", sent)
     assert session.evaluate({RADIUS: 450.0}, tmp_path / "b").candidate.status == "valid"
+
+
+def test_a_worker_that_sends_part_of_an_answer_is_stopped_with_its_candidate(
+    tmp_path: Path,
+    doc: dict[str, Any],
+    session_of: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
+    stack.install(monkeypatch)
+    probe(monkeypatch, **{"a.p": {"stall": True}})
+    monkeypatch.setattr(_backends, "_MESSAGE", 1.0)  # taken by each worker as it starts
+    session = session_of(2, problem)
+    message = r"gamma/p: a worker process sent part of an answer and nothing more for 1 s"
+    with pytest.raises(RunError, match=message):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert not (tmp_path / "a" / SUMMARY_NAME).exists()
+    assert session.evaluate({RADIUS: 450.0}, tmp_path / "b").candidate.status == "valid"
+
+
+def test_a_worker_found_dead_as_its_setup_deadline_passes_is_ended_once(tmp_path: Path) -> None:
+    backend = _backends.ProcessBackend(None, 2)  # type: ignore[arg-type]  # starts no worker
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    ours, theirs = socket.socketpair()
+    theirs.close()  # what the worker's death leaves: the end of the stream
+    worker = _backends._Worker(process, Connection(ours.detach()), setup=time.monotonic() - 1)
+    task = Task(stage_task("simulation", "gamma"), directory="samples/gamma/simulation")
+    worker.running = (_backends.Handle("w", task.id), TaskSpec("w", task))
+    backend._workers.append(worker)
+    ((handle, outcome, _),) = backend.wait(0)  # died, read first; the deadline then skips it
+    assert handle.task == task.id
+    assert isinstance(outcome, TaskOutcome) and outcome.status == "failed"
+    assert "died (exit status 0)" in (outcome.message or "")
+    assert backend._workers == []
 
 
 @pytest.mark.parametrize("jobs", [1, 2])

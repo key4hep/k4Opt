@@ -149,6 +149,8 @@ _MAIN = (
 _GRACE = 5.0  # seconds a worker has to end after SIGTERM before it is killed
 # seconds a worker has to set up the session (import, load the evaluators) before it is stopped
 _SETUP = 300.0
+# seconds the rest of a message may take once its first bytes came; a worker writes each whole
+_MESSAGE = 60.0
 
 
 @dataclass(slots=True, eq=False)
@@ -209,6 +211,9 @@ class ProcessBackend:
                 continue
             try:
                 message = worker.connection.recv()
+            except BlockingIOError:  # part of a message, and the rest never came
+                self._end(worker)
+                raise RunError(_partial()) from None
             except (EOFError, OSError):
                 status = self._end(worker, terminate=False)
                 raise RunError(
@@ -224,6 +229,8 @@ class ProcessBackend:
         ours, theirs = socket.socketpair()
         # a send to a worker that never reads (hung before it set up) gives up in the end
         ours.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, struct.pack("ll", int(_SETUP), 0))
+        # a receive, which starts once the first bytes came, gives up if the rest stalls
+        ours.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, struct.pack("ll", int(_MESSAGE), 0))
         with ours, theirs:
             argv = [sys.executable, "-P", "-c", _MAIN, str(_HOME)]
             argv += [str(theirs.fileno()), str(os.getpid())]
@@ -296,6 +303,8 @@ class ProcessBackend:
                 ended.append(completion)
         now = time.monotonic()
         for worker in busy.values():  # one that never set up the session holds no job
+            if worker not in self._workers:  # ended while its messages were read
+                continue
             if worker.running is not None and not worker.ready and now > worker.setup:
                 handle, _ = worker.running
                 self._end(worker)
@@ -311,6 +320,9 @@ class ProcessBackend:
                 if not worker.connection.poll():
                     return None
                 message = worker.connection.recv()
+            except BlockingIOError:  # part of a message, and the rest never came
+                self._end(worker)
+                return handle, RunError(f"{spec.task.id.label}: {_partial()}"), Observations()
             except (EOFError, OSError):
                 return self._died(worker)
             except Exception as exc:  # an answer that cannot be read: the worker is useless
@@ -363,7 +375,10 @@ class ProcessBackend:
 
     def _end(self, worker: _Worker, terminate: bool = True, deadline: float | None = None) -> int:
         """End ``worker`` (SIGTERM first if ``terminate``, SIGKILL after the grace period or at
-        ``deadline``), then every process group its task started and its own; its exit status."""
+        ``deadline``), then every process group its task started and its own; its exit status.
+        A worker already ended is left as it is."""
+        if worker not in self._workers:
+            return worker.process.returncode
         if terminate:
             _signal(worker, signal.SIGTERM)
         left = _GRACE if deadline is None else max(deadline - time.monotonic(), 0.0)
@@ -398,6 +413,13 @@ class ProcessBackend:
             self._end(worker, terminate=False, deadline=deadline)
         self._roots.clear()
         self._unsent.clear()
+
+
+def _partial() -> str:
+    return (
+        f"a worker process sent part of an answer and nothing more for {_MESSAGE:g} s; it was "
+        "stopped"
+    )
 
 
 def _slow() -> str:
