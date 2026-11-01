@@ -39,6 +39,7 @@ import contextlib
 import difflib
 import json
 import math
+import os
 import time
 from collections.abc import Callable, Collection, Generator, Mapping, Sequence
 from copy import deepcopy
@@ -1118,6 +1119,8 @@ def _evaluate_candidate(
     values, key = _validate_candidate(spec, candidate)
     given = dict(inputs or {})
     geometry = given.pop(GEOMETRY.name, None)
+    if geometry is not None:  # an input from outside the workspace: named absolutely
+        geometry = Path(os.path.abspath(geometry))
     supplied = {}
     for label, path in given.items():
         sample, _, stage = label.partition("/")
@@ -1126,7 +1129,7 @@ def _evaluate_candidate(
                 f"input {label!r}: expected SAMPLE/STAGE, a sample of the problem and one of "
                 f"{', '.join(STAGE_TYPES)}"
             )
-        supplied[stage_task(stage, sample)] = path
+        supplied[stage_task(stage, sample)] = Path(os.path.abspath(path))
     binding = _bind_problem(spec, implementations, supplied)
     planned = {task.id for task in binding.plan.of(Kind.STAGE)}
     for task in supplied:  # a file no task reads would be dropped without a word

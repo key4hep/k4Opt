@@ -107,7 +107,8 @@ class SessionContext:
 @dataclass(frozen=True, slots=True)
 class GeometryWork:
     """How the geometry task makes the candidate's geometry: by applying ``overrides`` to the
-    session's geometry, or by taking the compact file ``given``, already prepared."""
+    session's geometry, or by taking the compact file ``given``, already prepared (named by its
+    absolute path: it is an input from outside the workspace)."""
 
     overrides: tuple[Override, ...] = ()
     given: Path | None = None
@@ -158,6 +159,10 @@ class TaskOutcome:
     artifacts relative to the workspace), ``workdir`` the evaluation's own directory if it was
     called, and ``call_seconds`` the time of its call. ``own_refs`` says whether the geometry a
     geometry task made has ``ref`` attributes the candidate changed.
+
+    Only the files are named so that they hold wherever the workspace is. ``provenance`` says how
+    the task ran where it ran (the command of a stage, with the absolute paths it was given) and
+    is kept as it is: it records what ran, not where to find a file.
     """
 
     task: TaskId
@@ -270,7 +275,8 @@ def _geometry(
     if work.given is not None:
         # every simulation of every sample reads these files: watched like what a stage made
         tree = Tree.of(own) if own is not None and own.is_dir() else None
-        outcome = TaskOutcome(task, DONE, output=work.given, elapsed_seconds=_since(began))
+        given = portable(work.given, root)
+        outcome = TaskOutcome(task, DONE, output=given, elapsed_seconds=_since(began))
         return outcome, Observations(tree=None if tree is None else tree.stats)
     source, catalog = context.spec._source, context.spec._catalog
     assert source is not None

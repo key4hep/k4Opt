@@ -407,3 +407,16 @@ def test_a_metric_the_evaluator_does_not_declare_is_not_unit_checked(spec: Probl
 def test_an_evaluator_without_declared_metrics_is_not_unit_checked(spec: ProblemSpec) -> None:
     result = EvaluationResult.valid([Measurement("simulation", "a.rms", 1.0, unit="parsec"), CELLS])
     assert evaluate_one(spec, {CELL: 6}, Toy(result)).result.status == "valid"
+
+
+@pytest.mark.parametrize("workdir", [None, "run"])
+def test_a_relative_supplied_geometry_is_the_file_it_names_where_it_was_given(
+    spec: ProblemSpec, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workdir: str | None
+) -> None:
+    (tmp_path / "compact.xml").write_text("<lccdd/>\n")
+    monkeypatch.chdir(tmp_path)
+    toy = Toy()
+    run = None if workdir is None else tmp_path / workdir
+    evaluate_one(spec, {CELL: 6}, toy, inputs={"geometry": Path("compact.xml")}, workdir=run)
+    # not a file of the candidate's workspace, wherever that is
+    assert toy.calls[0].inputs["geometry"] == tmp_path / "compact.xml"
