@@ -18,6 +18,7 @@ TRADE_OFF = f"{Path(__file__).with_name('trade_off.py')}:TradeOff"
 CANDIDATE_CHECK = f"{Path(__file__).with_name('candidate_check.py')}:CandidateCheck"
 YIELDS = f"{Path(__file__).with_name('yields.py')}:Yields"
 TOY_SIGNIFICANCE = f"{Path(__file__).with_name('toy_significance.py')}:ToySignificance"
+WORKER_PROBE = f"{Path(__file__).with_name('worker_probe.py')}:WorkerProbe"
 
 
 def calo_photon() -> type[Evaluator]:
@@ -58,6 +59,11 @@ def yields() -> type[Evaluator]:
 def toy_significance() -> type[Evaluator]:
     """The class of ``test.toy_significance``, a combined evaluator over ``test.yields``."""
     return load_evaluator(TOY_SIGNIFICANCE)
+
+
+def worker_probe() -> type[Evaluator]:
+    """The class of ``test.worker_probe``, which does in a worker process what a test says."""
+    return load_evaluator(WORKER_PROBE)
 
 
 def implementations(*given: Any) -> list[type[Any]]:

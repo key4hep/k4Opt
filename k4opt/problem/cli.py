@@ -1,7 +1,7 @@
 """Command-line interface of the problem component: ``k4opt evaluate``.
 
     k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] [--param REFERENCE=VALUE ...]
-        [--input SAMPLE/STAGE=FILE ...] [--timeout SECONDS] --output DIR
+        [--input SAMPLE/STAGE=FILE ...] [--timeout SECONDS] [--jobs N] --output DIR
 
 A thin wrapper over :func:`k4opt.problem._run.run_candidate`; :func:`register` plugs it into
 the top-level ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate,
@@ -70,6 +70,18 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         type=float,
         metavar="SECONDS",
         help="kill ddsim if it runs longer than this; the candidate fails (no limit without it)",
+    )
+    evaluate.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "run at most N tasks at once (simulations of different samples, evaluators, the "
+            "geometry), each in a worker process; it bounds what k4opt starts, not the threads "
+            "or memory of each task. Default 1: one after another"
+        ),
     )
     evaluate.add_argument(
         "--output", required=True, help="new directory for the geometry, simulation and summary"
@@ -146,6 +158,7 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         implementations=implementations,
         inputs=args.input,
         timeout=args.timeout,
+        jobs=args.jobs,
         warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
     )
     _report(outcome, out)

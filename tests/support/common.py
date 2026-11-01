@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -60,3 +62,22 @@ def tree_digest(root: Path) -> dict[str, str]:
             else:
                 digest[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
     return digest
+
+
+def scientific(summary: dict[str, Any], dropped: frozenset[str] = frozenset()) -> dict[str, Any]:
+    """What a summary says of its candidate, without where and how fast it ran, nor how its
+    tasks were executed (its ``id``, ``run_dir``, times, ``execution`` and logs), nor the keys
+    ``dropped``; the run directory in a path reads ``<run>``."""
+    gone = {"id", "run_dir", "elapsed_seconds", "log", "execution", *dropped}
+
+    def strip(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: strip(item) for key, item in value.items() if key not in gone}
+        if isinstance(value, list):
+            return [strip(item) for item in value]
+        return value
+
+    stripped: dict[str, Any] = strip(
+        json.loads(json.dumps(summary).replace(summary["run_dir"], "<run>"))
+    )
+    return stripped

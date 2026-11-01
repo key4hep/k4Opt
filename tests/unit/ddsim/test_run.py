@@ -6,6 +6,8 @@ import contextlib
 import json
 import os
 import signal
+import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -235,6 +237,74 @@ def test_an_interrupted_ddsim_is_killed_with_what_it_started(tmp_path: Path, wra
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
     assert _ended(int(wrapped.read_text())), "the wrapper's child outlived it"
+
+
+# a ddsim that says where it runs and never ends
+SLEEPER = """\
+#!/bin/sh
+echo $$ > ddsim.pid
+exec sleep 60
+"""
+
+
+@pytest.fixture
+def sleeper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A ``ddsim`` on ``PATH`` that never ends; the file it writes its process ID to."""
+    ddsim = tmp_path / "bin" / "ddsim"
+    ddsim.parent.mkdir()
+    ddsim.write_text(SLEEPER)
+    ddsim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{ddsim.parent}{os.pathsep}{os.environ['PATH']}")
+    pid = tmp_path / "run" / "ddsim.pid"
+    yield pid
+    if pid.is_file():
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(int(pid.read_text()), signal.SIGKILL)
+
+
+def test_the_caller_is_told_the_process_group_ddsim_runs_in(tmp_path: Path, sleeper: Path) -> None:
+    told = []
+    run = simulate(
+        compact=tmp_path / "c.xml",
+        workdir=tmp_path / "run",
+        events=1,
+        seed=None,
+        input_file=tmp_path / "events.hepmc",
+        options={},
+        timeout=0.5,
+        started=told.append,
+    )
+    assert run.returncode is None  # killed when its time ran out
+    assert told == [int(sleeper.read_text())]  # the group's leader: its id is the group's
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG is Linux's")
+def test_a_ddsim_that_dies_with_its_parent_ends_when_the_parent_is_killed(
+    tmp_path: Path, sleeper: Path
+) -> None:
+    """Even before the parent could tell anyone which process to stop: what a worker process
+    that the kernel's OOM killer ends leaves behind."""
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; from k4opt.ddsim import simulate\n"
+            "root = Path(sys.argv[1])\n"
+            "simulate(compact=root / 'c.xml', workdir=root / 'run', events=1, seed=None,\n"
+            "         input_file=root / 'events.hepmc', options={}, die_with_parent=True)\n",
+            str(tmp_path),
+        ]
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not (sleeper.is_file() and sleeper.read_text().strip()):
+            assert time.monotonic() < deadline, "ddsim never started"
+            time.sleep(0.01)
+        parent.kill()
+    finally:
+        parent.kill()
+        parent.wait()
+    assert _ended(int(sleeper.read_text())), "ddsim outlived the process that started it"
 
 
 @pytest.mark.parametrize("timeout", [0, -1.0, float("nan"), float("inf"), True])

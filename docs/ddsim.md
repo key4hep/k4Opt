@@ -31,7 +31,12 @@ is run. A `ddsim` that cannot run or fails is reported in
 error, no output file, killed when it ran longer than `timeout` seconds) with `returncode`
 (`None` when it was killed), `argv` and the files. `ddsim` runs in a process group of its own,
 which is killed as a whole when its time runs out or k4opt is interrupted, so the processes a
-wrapper script started (one without `exec`, a container) do not outlive it. `check_arguments` does the first
+wrapper script started (one without `exec`, a container) do not outlive it. `started`, a
+function, is told that group's id as soon as ddsim started; `die_with_parent=True` has the kernel
+kill ddsim when the thread that started it ends, even by SIGKILL (Linux). It runs code between
+fork and exec, which only a single-threaded process may do: k4opt's worker processes pass both,
+so that ddsim ends with a worker the coordinator stops or the kernel's OOM killer ends.
+`check_arguments` does the first
 part alone, `check_particle_gun` and `check_options` check a gun or options on their own (the
 problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`,
 `ddsim.stderr.log` and `ddsim.json` (argument list, directory, exit code, time limit).

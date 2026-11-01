@@ -30,7 +30,8 @@ from __future__ import annotations
 import contextlib
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -60,6 +61,9 @@ SUMMARY_NAME = "summary.json"
 
 type MetricKey = tuple[str, str]
 """A metric as an evaluator declares and measures it: ``(stage, metric)``."""
+
+type Output = Callable[[Path], AbstractContextManager[object]]
+"""Where an evaluator's output goes while it is called, given its own directory."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,12 +241,15 @@ def execute_task(
     root: Path | None,
     seen: Observations,
     instance: EvaluatorProtocol | None = None,
+    output: Output | None = None,
 ) -> tuple[TaskOutcome, Observations]:
     """Do the work of the task ``spec`` in the workspace whose directory is ``root`` here
     (``None``: the candidate has no directory, so no task of it writes).
 
     ``seen`` holds the stats taken of the files the task's reads made, which it checks before and
-    after it runs. An evaluation calls ``instance``. Returns what the task left behind and the
+    after it runs. An evaluation calls ``instance``, within ``output`` of its own directory if
+    given (a worker process points the evaluator's output at a log there). Returns what the task
+    left behind and the
     stats of what it made. Raises what the work of the task raises: a geometry that cannot be
     made, an :class:`~k4opt.evaluation.EvaluationContractError` for a result that breaks the
     evaluation contract, or any exception of an evaluator other than
@@ -255,7 +262,7 @@ def execute_task(
     if kind is Kind.STAGE:
         return _stage(context, spec, root, seen, began)
     assert instance is not None
-    return _evaluation(context, spec, root, seen, instance, began)
+    return _evaluation(context, spec, root, seen, instance, began, output)
 
 
 def _since(started: float) -> float:
@@ -396,6 +403,7 @@ def _evaluation(
     seen: Observations,
     evaluator: EvaluatorProtocol,
     began: float,
+    output: Output | None = None,
 ) -> tuple[TaskOutcome, Observations]:
     """An evaluator called once on the files the task reads, which all succeeded, and the
     artifacts it made, hashed once, when it returns.
@@ -433,8 +441,10 @@ def _evaluation(
             )
     request = replace(request, workdir=workdir)
     started = time.perf_counter()
+    surrounding = contextlib.nullcontext() if output is None or workdir is None else output(workdir)
     try:
-        result = result_from(evaluator, evaluator.evaluate(request))
+        with surrounding:
+            result = result_from(evaluator, evaluator.evaluate(request))
     except EvaluationFailed as exc:
         result = EvaluationResult.failed(str(exc))
     except EvaluationInvalid as exc:

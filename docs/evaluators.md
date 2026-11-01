@@ -37,6 +37,14 @@ simulation on its own and is recorded with it (`samples.<sample>.stages.simulati
 `null` without one). It is not part of the problem: how long a
 simulation takes depends on the machine as much as on the candidate.
 
+`--jobs N` (`-j N`) runs up to N tasks at once: the simulations of different samples, the
+evaluations of a simulation, each in a worker process of its own
+([execution](evaluation.md#execution-jobs-and-worker-processes)). It bounds how many tasks k4opt
+starts, not the threads or memory each one takes: a CLD ddsim needs 1-2 GB, so choose N for
+the memory as much as for the cores. The default, 1, runs them one after another in the
+command's own process. Like `--timeout`, it is not part of the problem, and `summary.json`
+records it as provenance only (`environment.observed.execution`).
+
 One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`); from
 Python, an [`EvaluationSession`](evaluation.md#evaluating-candidates-evaluationsession)
 evaluates many candidates of a problem the same way.

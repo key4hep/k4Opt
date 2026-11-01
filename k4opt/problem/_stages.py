@@ -65,12 +65,19 @@ class StageContext:
     is ``None``. ``timeout`` is how many seconds a stage that runs a program (ddsim) may take
     before the program is killed and the stage fails; ``None`` for no limit. It is the caller's,
     not the problem's. ``sample`` names the sample in messages and labels.
+
+    ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
+    program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's
+    process group, and has it die with the worker. They belong to that process alone and are
+    never part of a description sent elsewhere.
     """
 
     stages: Mapping[str, Stage] = field(default_factory=dict)
     directory: Path | None = None
     timeout: float | None = None
     sample: str | None = None
+    started: Callable[[int], None] | None = field(default=None, compare=False, repr=False)
+    die_with_parent: bool = field(default=False, compare=False, repr=False)
 
     @classmethod
     def of(cls, spec: ProblemSpec, sample: str) -> StageContext:
@@ -231,6 +238,8 @@ def _run_simulation(
         input_file=input_file,
         options={key: str(files[key]) if key in files else v for key, v in stage.options.items()},
         timeout=context.timeout,
+        started=context.started,
+        die_with_parent=context.die_with_parent,
     )
     # it ran in workdir, the stage's own directory, which the record names relative to the run
     provenance: dict[str, Json] = {
