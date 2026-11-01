@@ -3381,3 +3381,33 @@ def test_evaluations_stopped_early_are_closed_and_the_session_evaluates_again(
     with session:
         session.evaluate({RADIUS: 300.0}, tmp_path / "after")  # the session evaluates again
     assert (tmp_path / "after" / SUMMARY_NAME).is_file()
+
+
+@pytest.mark.parametrize("how", ["close", "with", "twice"])
+def test_evaluations_closed_before_their_first_candidate_give_the_session_back(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, how: str
+) -> None:
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    requests = [RunRequest({RADIUS: 300.0}, tmp_path / "never")]
+    if how == "with":
+        with session.evaluate_each(requests):
+            pass
+    else:
+        evaluations = session.evaluate_each(requests)
+        evaluations.close()  # it never started: nothing ran, and nothing holds the session
+        if how == "twice":
+            evaluations.close()
+            with pytest.raises(StopIteration):
+                next(evaluations)
+    assert not (tmp_path / "never").exists()
+    session.evaluate({RADIUS: 300.0}, tmp_path / "after")
+    assert (tmp_path / "after" / SUMMARY_NAME).is_file()
+
+
+def test_evaluations_that_ran_out_give_the_session_back(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    evaluations = session.evaluate_each([RunRequest({RADIUS: 300.0}, tmp_path / "a")])
+    assert [type(outcome).__name__ for _, outcome in evaluations] == ["RunOutcome"]
+    session.evaluate({RADIUS: 300.0}, tmp_path / "b")  # not closed, but nothing is left of it

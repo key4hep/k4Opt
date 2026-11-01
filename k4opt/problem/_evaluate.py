@@ -108,9 +108,9 @@ from k4opt.problem._work import (
     TaskSpec,
     Workspace,
     asked,
+    local_result,
     portable,
     portable_artifact,
-    record_of,
     show,
     to_result,
 )
@@ -876,11 +876,19 @@ def _result(run: _Run, task: Task, outcome: TaskOutcome, observed: Observations)
     """The coordinator's result of ``task`` of ``run`` from what it left behind; the record of an
     evaluation holds the request it was asked, its files where the workspace is here."""
     assert run.prepared is not None
-    record = None
-    if task.id.kind is Kind.EVALUATOR:
-        entry, _ = run.prepared.evaluators[task.id]
-        record = record_of(asked(run.specs[task.id], run.workspace.root), entry, run.key)
-    return to_result(task, outcome, observed, run.workspace.root, record)
+    root = run.workspace.root
+    result = to_result(task, outcome, observed, root)
+    if task.id.kind is not Kind.EVALUATOR:
+        return result
+    entry, _ = run.prepared.evaluators[task.id]
+    returned, workdir = local_result(outcome, root)
+    request = asked(run.specs[task.id], root)
+    if workdir is not None:  # it was called, in its own directory
+        request = replace(request, workdir=workdir)
+    record = EvaluationRecord(
+        request, returned, entry.name, entry.version, run.key, outcome.call_seconds
+    )
+    return replace(result, record=record)
 
 
 type Check = Callable[[_Run, TaskOutcome, TaskResult], None]

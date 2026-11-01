@@ -550,16 +550,31 @@ class Evaluations:
         session: EvaluationSession,
         generator: Generator[tuple[RunRequest, RunOutcome | Exception]],
     ) -> None:
+        self._session: EvaluationSession | None = session
         self._generator = generator
 
     def __iter__(self) -> Evaluations:
         return self
 
     def __next__(self) -> tuple[RunRequest, RunOutcome | Exception]:
-        return next(self._generator)
+        try:
+            return next(self._generator)
+        except BaseException:  # it ended: nothing of it runs any more
+            self._release()
+            raise
 
     def close(self) -> None:
-        self._generator.close()
+        """Stop whatever still runs and give the session back; closing again does nothing."""
+        try:
+            self._generator.close()
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        # here, not only in the generator: one closed before its first item never ran its body
+        if self._session is not None and self._session._open is self:
+            self._session._open = None
+        self._session = None
 
     def __enter__(self) -> Evaluations:
         return self
@@ -975,7 +990,6 @@ class EvaluationSession:
         finally:
             driven.close()
             backend.close()
-            self._open = None
 
     def _start(self, request: RunRequest) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory

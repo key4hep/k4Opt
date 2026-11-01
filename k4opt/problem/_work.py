@@ -30,17 +30,15 @@ from __future__ import annotations
 import contextlib
 import os
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from k4opt.evaluation import (
     Artifact,
-    CandidateKey,
     EvaluationContractError,
     EvaluationFailed,
     EvaluationInvalid,
-    EvaluationRecord,
     EvaluationRequest,
     EvaluationResult,
     EvaluatorProtocol,
@@ -640,16 +638,11 @@ def artifacts(
 
 
 def to_result(
-    task: Task,
-    outcome: TaskOutcome,
-    observed: Observations,
-    root: Path | None,
-    record: Callable[[EvaluationResult, Path | None, float | None], EvaluationRecord] | None = None,
+    task: Task, outcome: TaskOutcome, observed: Observations, root: Path | None
 ) -> TaskResult:
     """The coordinator's :class:`~k4opt.problem._tasks.TaskResult` of ``outcome``, its files
-    where the workspace ``root`` is here, with the stats ``observed`` where they were taken; for
-    an evaluation, ``record`` makes the record of its result from that result (its files here),
-    its directory and the time of its call."""
+    where the workspace ``root`` is here, with the stats ``observed`` where they were taken.
+    An evaluation's record is the coordinator's to add: it made the request."""
     made = {
         name: Made(local_artifact(artifact, root), observed.made[artifact.ref])
         for name, artifact in outcome.made.items()
@@ -659,15 +652,6 @@ def to_result(
         assert root is not None
         assert task.directory is not None
         tree = Tree(root / task.directory, FrozenMap(dict(observed.tree)))
-    evaluation = None
-    if outcome.result is not None:
-        assert record is not None
-        result = replace(
-            outcome.result,
-            artifacts={name: local(path, root) for name, path in outcome.result.artifacts.items()},
-        )
-        workdir = None if outcome.workdir is None else local(outcome.workdir, root)
-        evaluation = record(result, workdir, outcome.call_seconds)
     return TaskResult(
         outcome.task,
         outcome.status,
@@ -676,22 +660,15 @@ def to_result(
         {role: local(path, root) for role, path in outcome.artifacts.items()},
         outcome.provenance,
         outcome.elapsed_seconds,
-        record=evaluation,
         made=made,
         tree=tree,
     )
 
 
-def record_of(
-    request: EvaluationRequest, entry: EvaluatorSpec, key: CandidateKey
-) -> Callable[[EvaluationResult, Path | None, float | None], EvaluationRecord]:
-    """How :func:`to_result` makes the record of an evaluation asked ``request``: with its
-    directory if it was called."""
-
-    def make(
-        result: EvaluationResult, workdir: Path | None, seconds: float | None
-    ) -> EvaluationRecord:
-        asked = request if workdir is None else replace(request, workdir=workdir)
-        return EvaluationRecord(asked, result, entry.name, entry.version, key, seconds)
-
-    return make
+def local_result(outcome: TaskOutcome, root: Path | None) -> tuple[EvaluationResult, Path | None]:
+    """What an evaluation returned and its own directory (``None`` if it was not called), its
+    files where the workspace ``root`` is here."""
+    assert outcome.result is not None
+    returned = {name: local(path, root) for name, path in outcome.result.artifacts.items()}
+    workdir = None if outcome.workdir is None else local(outcome.workdir, root)
+    return replace(outcome.result, artifacts=returned), workdir
