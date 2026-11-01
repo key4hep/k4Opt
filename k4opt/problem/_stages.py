@@ -46,6 +46,7 @@ from pathlib import Path
 
 from k4opt.ddsim import (
     FILE_OPTIONS,
+    LOG_FILES,
     check_arguments,
     check_options,
     check_particle_gun,
@@ -65,12 +66,19 @@ class StageContext:
     is ``None``. ``timeout`` is how many seconds a stage that runs a program (ddsim) may take
     before the program is killed and the stage fails; ``None`` for no limit. It is the caller's,
     not the problem's. ``sample`` names the sample in messages and labels.
+
+    ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
+    program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's
+    process group, and has it die with the worker. They belong to that process alone and are
+    never part of a description sent elsewhere.
     """
 
     stages: Mapping[str, Stage] = field(default_factory=dict)
     directory: Path | None = None
     timeout: float | None = None
     sample: str | None = None
+    started: Callable[[int], None] | None = field(default=None, compare=False, repr=False)
+    die_with_parent: bool = field(default=False, compare=False, repr=False)
 
     @classmethod
     def of(cls, spec: ProblemSpec, sample: str) -> StageContext:
@@ -231,6 +239,8 @@ def _run_simulation(
         input_file=input_file,
         options={key: str(files[key]) if key in files else v for key, v in stage.options.items()},
         timeout=context.timeout,
+        started=context.started,
+        die_with_parent=context.die_with_parent,
     )
     # it ran in workdir, the stage's own directory, which the record names relative to the run
     provenance: dict[str, Json] = {
@@ -293,6 +303,7 @@ class _Stage:
     geometry: bool  # reads the prepared geometry, inputs["geometry"]
     writes: bool  # writes files, so it needs a workdir
     output: str = "events"  # the name of its main output
+    logs: Mapping[str, str] = field(default_factory=dict)  # its other files' names, by role
     # checks the output file, whether the stage wrote it or it was given
     inspect: Callable[[StageContext, Path], tuple[dict[str, Json], str | None]] | None = None
 
@@ -314,6 +325,7 @@ _STAGES: Mapping[str, _Stage] = {
         geometry=True,
         writes=True,
         inspect=_inspect_simulation,
+        logs=LOG_FILES,
     ),
 }
 
@@ -334,6 +346,13 @@ def reads_geometry(stage: str) -> bool:
 def writes_files(stage: str) -> bool:
     """Whether ``stage``, when it runs, writes files, and so needs a directory of its own."""
     return _STAGES[stage].writes
+
+
+def stage_logs(stage: str, directory: Path) -> dict[str, Path]:
+    """The files besides its outputs (logs, the command) that ``stage`` left in its
+    ``directory``, by role, as far as they exist: what a stage whose process died left."""
+    files = {role: directory / name for role, name in _STAGES[stage].logs.items()}
+    return {role: path for role, path in files.items() if path.is_file()}
 
 
 def stage_output(stage: str) -> str:

@@ -8,8 +8,9 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
@@ -20,6 +21,14 @@ from k4opt.frozen import Json
 from k4opt.jsonio import write_json
 
 _LOG_TAIL = 15  # lines of standard error quoted in a failure message
+
+LOG_FILES: Mapping[str, str] = {
+    "stdout": "ddsim.stdout.log",
+    "stderr": "ddsim.stderr.log",
+    "command": "ddsim.json",
+}
+"""The files besides its output that a run keeps in its directory, by role (the command record
+is written once ddsim ended)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,19 +115,47 @@ def _check_timeout(timeout: float | None) -> None:
         raise DdsimError(f"timeout must be a positive number of seconds, got {timeout!r}")
 
 
+_LAUNCHER = Path(__file__).with_name("_launch.py")
+
+
+def _launched(argv: list[str], die_with_parent: bool) -> list[str]:
+    """``argv``, started so that it dies with the calling thread if ``die_with_parent`` (where
+    the system can do that: Linux)."""
+    if not die_with_parent or not sys.platform.startswith("linux"):
+        return argv
+    return [sys.executable, "-I", str(_LAUNCHER), str(os.getpid()), *argv]
+
+
 def _execute(
-    argv: list[str], *, cwd: Path, stdout: IO[bytes], stderr: IO[bytes], timeout: float | None
+    argv: list[str],
+    *,
+    cwd: Path,
+    stdout: IO[bytes],
+    stderr: IO[bytes],
+    timeout: float | None,
+    started: Callable[[int], None] | None = None,
+    die_with_parent: bool = False,
 ) -> int | None:
     """Run ``argv`` to its end: its exit status, ``None`` if it ran longer than ``timeout``.
 
     It runs in a process group of its own, which is killed as a whole when its time runs out or
     this process is interrupted (Ctrl-C, SIGTERM), so nothing a wrapper script started (a shell
     script without ``exec``, a container) outlives it; a process that leaves the group does.
+    ``started`` is told the id of that group as soon as it exists. With ``die_with_parent`` the
+    program is killed when this thread ends, even by SIGKILL (on Linux; through a launcher that
+    fails the run, with the reason in ``stderr``, if the system refuses that).
     """
     with subprocess.Popen(
-        argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, process_group=0
+        _launched(argv, die_with_parent),
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
+        process_group=0,
     ) as process:
         try:
+            if started is not None:
+                started(process.pid)  # the leader of its own group: the group's id
             return process.wait(timeout=timeout)
         except BaseException as exc:
             with contextlib.suppress(ProcessLookupError):
@@ -139,6 +176,8 @@ def simulate(
     input_file: Path | None = None,
     options: Mapping[str, Json],
     timeout: float | None = None,
+    started: Callable[[int], None] | None = None,
+    die_with_parent: bool = False,
 ) -> SimulationRun:
     """Run the ``ddsim`` found on ``PATH`` on ``compact``, in the new directory ``workdir``.
 
@@ -150,7 +189,10 @@ def simulate(
     ``workdir`` receives ``events.edm4hep.root``, ``ddsim.stdout.log``, ``ddsim.stderr.log``
     and ``ddsim.json`` (command, directory, exit code, time limit). A ``ddsim`` that runs longer
     than ``timeout`` seconds is killed with every process it started, and the run fails with its
-    logs kept. Raises :class:`DdsimError` for unsupported settings or options, a ``timeout`` that
+    logs kept. ``started`` is told the id of the process group ddsim runs in once it started, and
+    ``die_with_parent`` kills ddsim when the calling thread ends, even by SIGKILL (see
+    :func:`_execute`). Raises :class:`DdsimError` for unsupported
+    settings or options, a ``timeout`` that
     is not a positive number of seconds, or an existing ``workdir``.
     """
     # ddsim runs inside workdir, so every path in its command line must be absolute
@@ -159,7 +201,7 @@ def simulate(
     workdir = Path(os.path.abspath(workdir))
     output = workdir / "events.edm4hep.root"
     stdout, stderr, command = (
-        workdir / name for name in ("ddsim.stdout.log", "ddsim.stderr.log", "ddsim.json")
+        workdir / LOG_FILES[role] for role in ("stdout", "stderr", "command")
     )
     arguments = ddsim_arguments(
         compact=compact,
@@ -190,7 +232,15 @@ def simulate(
     try:
         with stdout.open("wb") as out, stderr.open("wb") as err:
             # None: killed when its time ran out
-            returncode = _execute(list(argv), cwd=workdir, stdout=out, stderr=err, timeout=timeout)
+            returncode = _execute(
+                list(argv),
+                cwd=workdir,
+                stdout=out,
+                stderr=err,
+                timeout=timeout,
+                started=started,
+                die_with_parent=die_with_parent,
+            )
     except OSError as exc:
         return run(argv, None, f"ddsim could not be started: {exc}")
     error = None

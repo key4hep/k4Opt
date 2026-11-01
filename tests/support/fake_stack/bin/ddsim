@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""A fake ``ddsim`` for tests whose tasks run in worker processes, which no monkeypatch reaches.
+
+It writes ``--outputFile`` as JSON (``{"events": [[cell, ...], ...]}``, one hit in cell 1 per
+requested event unless told otherwise), which the fake ``podio`` next to it reads. It runs in
+``<run>/samples/<sample>/simulation``; what else it does is said by the environment variable
+``FAKE_DDSIM``, a JSON object. ``dir`` is a directory in which it writes ``<run>.<sample>.started``
+(its pid) when it starts and ``<run>.<sample>.ended`` when it ends. What it does for a run and
+sample comes from the keys ``"*"``, ``"<sample>"`` and ``"<run>.<sample>"`` (the later ones win):
+``await`` waits until that many simulations started, or until each file of a list exists (a path
+relative to ``dir``, or absolute); ``write`` then writes the text of each file it maps;
+``kill`` sends SIGKILL to ``"self"`` or to its ``"parent"`` (the worker that started it);
+``sleep`` sleeps that many seconds; ``hits`` gives the cells of each event; ``exit`` is its exit
+status.
+"""
+
+import json
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+options = dict(arg[2:].split("=", 1) for arg in sys.argv[1:] if arg.startswith("--") and "=" in arg)
+control = json.loads(os.environ.get("FAKE_DDSIM", "{}"))
+here = Path.cwd()
+sample, run = here.parent.name, here.parents[2].name
+told = {**control.get("*", {}), **control.get(sample, {}), **control.get(f"{run}.{sample}", {})}
+marks = Path(control["dir"]) if "dir" in control else None
+if marks is not None:
+    (marks / f"{run}.{sample}.started").write_text(str(os.getpid()))
+waited = told.get("await")
+if waited is not None:
+    assert marks is not None
+
+    def arrived():
+        if isinstance(waited, int):
+            return len(list(marks.glob("*.started"))) >= waited
+        return all((marks / name).exists() for name in waited)
+
+    deadline = time.monotonic() + 60
+    while not arrived():
+        if time.monotonic() > deadline:
+            sys.exit(f"fake ddsim: still waiting for {waited}")
+        time.sleep(0.01)
+for name, text in told.get("write", {}).items():
+    Path(name).write_text(text)
+if told.get("kill") == "parent":
+    os.kill(os.getppid(), signal.SIGKILL)
+if told.get("kill") == "self":
+    os.kill(os.getpid(), signal.SIGKILL)
+time.sleep(told.get("sleep", 0))
+events = told.get("hits") or [[1]] * int(options.get("numberOfEvents", "1"))
+Path(options["outputFile"]).write_text(json.dumps({"events": events}))
+if marks is not None:
+    (marks / f"{run}.{sample}.ended").write_text(str(os.getpid()))
+sys.exit(told.get("exit", 0))

@@ -499,6 +499,17 @@ anything of the candidate is created. Setup that is expensive and the same for e
 (a model file, a lookup table) belongs in a module-level cache of the evaluator's own
 (`functools.cache`), not in `__init__`, which runs for every candidate.
 
+With more than one job ([execution](#execution-jobs-and-worker-processes)), `evaluate()` runs
+in a worker process, which loads the evaluator again by its reference (`FILE.py:Class` or
+`module:Class`): give classes [`load_evaluator`](#loading-an-evaluator) loaded, not ones
+defined in the script that runs the session. The instance checked before anything of the
+candidate is created then only does that: the worker creates the instance that evaluates, calls
+its `check()` with the same request and then its `evaluate()`. So `check()` and `evaluate()`
+always reach one instance, and `check()` runs twice; keep it free of side effects. What
+`evaluate()` prints goes to `evaluator.log` in its own directory, which the summary names
+(`log`); it writes only in `request.workdir` and shares nothing with the process that started
+the session. A module-level cache lives as long as its worker, which serves many evaluations.
+
 ## Problem, evaluator, record
 
 - **Problem** (`k4opt.problem`): the declared parameter domains and the requested objective and
@@ -635,7 +646,7 @@ the checks.
 
 ## Evaluating candidates: `EvaluationSession`
 
-`k4opt.problem.EvaluationSession` evaluates candidates of one problem file, one after another,
+`k4opt.problem.EvaluationSession` evaluates candidates of one problem file,
 each into a run directory of its own with a `summary.json`, exactly as `k4opt evaluate` does
 for one ([evaluators](evaluators.md#k4opt-evaluate)). It knows no optimizer: a scan by hand, a
 script and an optimization library call it the same way, with candidates given as values.
@@ -688,7 +699,8 @@ run is not recorded as the code that ran (a hash cannot prove which code Python 
 narrow the gap). k4opt's code is hashed once per process, since Python runs the modules it
 imported; a session does not open, and does not evaluate or record a candidate, once k4opt's
 files have changed since then, because no hash would then say which code runs. A session
-coordinates its candidates from one thread and is not thread-safe.
+coordinates its candidates from one thread and is not thread-safe, whatever runs its tasks
+([execution](#execution-jobs-and-worker-processes)).
 
 Whatever proposes candidates (a person, an optimizer) can hand them over one by one:
 
@@ -701,20 +713,61 @@ with session.evaluate_each(requests) as evaluations:
         ...
 ```
 
-The next request is taken only once the candidates before it leave room, and every outcome is
-given back before it; `evaluate()` is one request through the same path. Close what
-`evaluate_each` returns (`with`): that stops whatever still runs, which leaving the loop early
-does not by itself.
+The next request is taken only once the candidates under way leave a job idle, and every
+outcome that ended is given back before it; `evaluate()` is one request through the same path.
+Close what `evaluate_each` returns (`with`): that stops whatever still runs, which leaving the
+loop early does not by itself.
 
-**Execution.** Each task of a candidate is described as plain data (its planned task, the files
-it reads named relative to the candidate's workspace, an evaluation's request) and done by one
-task program, whatever executes it; a scheduler decides from what each task reads which tasks may
-start, within a budget of slots. Today every task runs in the session's own thread, one at a
-time, in plan order, with the evaluator instances the candidate's preflight checked. Every
-summary records how its tasks ran under `environment.observed.execution` (`{"backend": "local",
-"jobs": 1}`): provenance only, never part of what was evaluated or of any comparison of records.
+### Execution: jobs and worker processes
+
+Each task of a candidate (its geometry, a stage of a sample, an evaluation) is described as plain
+data (its planned task, the files it reads named relative to the candidate's run directory, an
+evaluation's request) and done by one task program, wherever it runs; a scheduler decides from
+what each task reads which tasks may start. `EvaluationSession.open(..., jobs=N)` (`k4opt
+evaluate --jobs N`) lets up to N tasks run at once, of one candidate (the simulations of its
+samples, the evaluations of a simulation) and of several (`evaluate_each`), the oldest
+candidate's first:
+
+```python
+with EvaluationSession.open(problem, [CaloPhoton], jobs=4) as session:  # stops its workers
+    with session.evaluate_each(requests) as evaluations:
+        for request, outcome in evaluations:  # in the order they end
+            ...
+```
+
+- **One job** (the default): every task runs in the session's own thread, one at a time, in
+  plan order, with the evaluator instances the candidate's preflight checked; nothing else is
+  started.
+- **More jobs**: each task runs in a worker process of this machine, started when a task finds
+  none idle (one when the session opens, to check that it can work) and kept for the next tasks;
+  `close()` (or leaving `with`) stops them, and a later evaluation starts new ones. A worker
+  loads the evaluators again by their references and refuses to start (`RunError`) unless they,
+  k4opt's code, `KEY4HEP_STACK` and `K4GEO` are the session's. The session itself then only
+  checks, assesses and writes the records, and it alone writes them.
+- **N bounds what k4opt starts**, not the threads or the memory of a task: a CLD ddsim takes 1-2
+  GB, threaded libraries (ROOT, BLAS) start threads of their own. Choose N for the memory as
+  much as for the cores; a shared machine (lxplus) is not yours alone.
+- **Records** are the same whatever N: each task gets the same configuration (geometry, stage
+  options and seeds, requests), each record holds its results in plan order with the same
+  statuses, blocking and diagnostics, and deterministic evaluators measure the same. Every
+  summary records how its tasks ran under `environment.observed.execution` (`{"backend":
+  "local", "jobs": 4}`), and each evaluation that ran in a worker its `log`; both are provenance,
+  never part of what was evaluated or of any comparison of records.
+- **Failures.** An exception of a task (an evaluator's, a contract error) stops its candidate,
+  as with one job: it is raised as itself, with the worker's traceback as its cause, and the
+  other tasks of the candidate are stopped; the other candidates go on. A worker that dies (a
+  segfault, the kernel's OOM killer) fails only its task, naming the signal, and is replaced:
+  the candidate is `failed` if that task was required, a diagnostic otherwise, and its record is
+  written as for any failed task. The programs a worker started (ddsim) die with it. A worker
+  that dies making the geometry, or whose task has killed N + 1 workers in a row (`lower
+  --jobs?`), stops its candidate with a `RunError` instead.
+- **Stopping.** Ctrl-C reaches only the session, which stops its workers (SIGTERM, then SIGKILL)
+  and the simulations they run; a worker also dies when the session's process does (Linux), and
+  nothing is published once the evaluations are closed.
+
 A summary is published only after the references only a candidate's geometry names are checked
-again against the candidates recorded meanwhile.
+again against the candidates recorded meanwhile, so two candidates that ran at once never both
+get a record that says they read different files.
 
 ### Assessment: objectives, limits and feasibility
 
@@ -766,6 +819,7 @@ trusting it.
 
 An evaluator registry or lookup by name (evaluators are named on the command line), chained
 combined evaluators, branches of the stages, validating
-metric names, `k4run`, hashing stage outputs, a store of artifacts, execution cost, retries and scheduling, fingerprints and caching,
+metric names, `k4run`, hashing stage outputs, a store of artifacts, execution cost, retries, execution on other machines (a
+batch system), fingerprints and caching,
 persisting or serializing the `EvaluationRecord` apart from `summary.json`, and aggregation,
 significance or constraints judged with their uncertainty.

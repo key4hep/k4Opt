@@ -22,6 +22,7 @@ import os
 import re
 import time
 import uuid
+import weakref
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -41,7 +42,7 @@ from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.jsonio import write_json
 from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
-from k4opt.problem._backends import InlineBackend
+from k4opt.problem._backends import Backend, InlineBackend, ProcessBackend
 from k4opt.problem._evaluate import (
     CandidateRecord,
     _bind_problem,
@@ -75,13 +76,14 @@ from k4opt.problem._work import (
     candidate_externals,
     content,
 )
+from k4opt.problem._worker import session_spec
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import CandidateError, RunError
 from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
 from k4opt.revision import code_identity, code_unchanged
 
 LOCAL: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": 1})
-"""How a session of this k4opt executes its tasks: one after another, in its own process."""
+"""How a session executes its tasks by default: one after another, in its own process."""
 
 # Units that are written into a DD4hep expression (``6.0*mm``); anything else is refused
 # rather than passed on unchecked.
@@ -410,6 +412,8 @@ def _evaluation(
         "provenance": thaw(outcome.provenance),
         # its own directory, made just before it was called; none if it was not
         "workdir": None if request.workdir is None else task.directory,
+        # what it printed while it was called in a worker process; none in the caller's process
+        "log": _relative(log, run_dir) if (log := result.artifacts.get("log")) else None,
         "elapsed_seconds": record.elapsed_seconds,
     }
 
@@ -589,7 +593,8 @@ class Evaluations:
 
 
 class EvaluationSession:
-    """Candidates of one problem, evaluated one after another with the same evaluators.
+    """Candidates of one problem, evaluated with the same evaluators: one task after another in
+    the caller's thread, or up to ``jobs`` tasks at once in worker processes (:meth:`open`).
 
     :meth:`open` loads the problem file once, so later edits to it do not reach the session,
     binds the evaluator implementations to it and checks what does not depend on a candidate.
@@ -605,10 +610,13 @@ class EvaluationSession:
     code changed, which :meth:`evaluate` checks again before it writes the record. A candidate
     whose values change a ``ref`` can name an external file of its own; what it reads is
     recorded, and must not change while the candidate runs nor between the candidates that name
-    it. A session coordinates its candidates from one thread: it is not thread-safe.
+    it. A session coordinates its candidates from one thread: it is not thread-safe. Close it
+    (:meth:`close`, or ``with``) to stop its worker processes.
     """
 
     __slots__ = (
+        "__weakref__",
+        "_backend",
         "_binding",
         "_context",
         "_execution",
@@ -637,6 +645,7 @@ class EvaluationSession:
         warnings: tuple[str, ...],
         process: Mapping[str, Json],
         timeout: float | None,
+        jobs: int = 1,
     ) -> None:
         """Use :meth:`open`."""
         self._path = path
@@ -653,8 +662,20 @@ class EvaluationSession:
         self._read: dict[str, Json] = {}
         # what every task needs, wherever it runs
         self._context = _context(spec, binding, timeout, externals)
-        self._execution = LOCAL
+        self._execution: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": jobs})
         self._open: Evaluations | None = None
+        self._backend: ProcessBackend | None = None
+        if jobs > 1:  # one worker started at once: one that cannot work refuses here
+            environment = process["environment"]
+            assert isinstance(environment, Mapping)
+            described = session_spec(self._context, binding.evaluations, environment)
+            backend = self._backend = ProcessBackend(described, jobs)
+            weakref.finalize(self, backend.close)  # a backstop: close() stops the workers
+            try:
+                backend.start()
+            except BaseException:
+                backend.close()
+                raise
 
     @classmethod
     def open(
@@ -664,6 +685,7 @@ class EvaluationSession:
         *,
         inputs: Mapping[str, str | os.PathLike[str]] | None = None,
         timeout: float | None = None,
+        jobs: int = 1,
     ) -> EvaluationSession:
         """Load the problem file ``problem_path`` to evaluate its candidates with
         ``implementations``.
@@ -677,7 +699,12 @@ class EvaluationSession:
         the candidate, which every outcome says
         (``represents_candidate``). ``timeout`` is how many seconds a stage that runs a program
         (ddsim) may take: one that runs longer is killed, and its candidate fails with the logs
-        kept. Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
+        kept. ``jobs`` is how many tasks (simulations, evaluations, geometries) may run at once,
+        of one candidate and of several (:meth:`evaluate_each`); with more than one, each runs
+        in a worker process that loads the implementations again by their references, so they
+        must be loaded by :func:`~k4opt.evaluation.load_evaluator`, and one worker is started
+        and checked now. Close a session (:meth:`close`, or ``with``) to stop its workers.
+        Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
         stage or input (an :class:`~k4opt.evaluation.EvaluationContractError` for an
         implementation that cannot be created, too), and :class:`~k4opt.problem.RunError` if
         k4opt's own files changed since this process first identified them
@@ -685,6 +712,7 @@ class EvaluationSession:
         """
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         limit = _timeout(timeout)
+        _jobs(jobs)
         spec = load_problem(path)
         supplied = _supplied(spec, inputs or {})
         binding = _bind_problem(spec, implementations, supplied)
@@ -743,6 +771,7 @@ class EvaluationSession:
             binding.warnings,
             process,
             limit,
+            jobs,
         )
 
     @property
@@ -928,11 +957,14 @@ class EvaluationSession:
         each ``(request, outcome)`` as its candidate ends; the outcome is the exception that
         stopped it instead, if one did (nothing else is then written for it).
 
-        The next request is taken from ``requests`` only once the candidates before it leave
-        room: one candidate at a time, each yielded before the next is taken, so whatever makes
-        the requests (an optimizer) can learn from every outcome before it proposes again.
-        Close what this returns (``with``) when done with it: that stops whatever still runs,
-        as leaving the loop early does not by itself. One at a time per session.
+        The next request is taken from ``requests`` only once the candidates under way leave a
+        job idle (none of their tasks is ready to take it), and every candidate that ended was
+        yielded before, so whatever makes the requests (an optimizer) learns from every outcome
+        it can before it proposes again. With one job, that is one candidate at a time, each
+        yielded before the next is taken; with more, the candidates end in any order, each
+        with its own record. Close what this returns (``with``) when done with it: that stops
+        whatever still runs, as leaving the loop early does not by itself. One at a time per
+        session.
         """
         if self._open is not None:
             raise RunError("the session is evaluating already; close that evaluation first")
@@ -941,9 +973,14 @@ class EvaluationSession:
         return evaluations
 
     def close(self) -> None:
-        """Stop whatever an open :meth:`evaluate_each` still runs."""
-        if self._open is not None:
-            self._open.close()
+        """Stop whatever an open :meth:`evaluate_each` still runs, and the session's worker
+        processes; a later evaluation starts new ones."""
+        try:
+            if self._open is not None:
+                self._open.close()
+        finally:
+            if self._backend is not None:
+                self._backend.close()
 
     def __enter__(self) -> EvaluationSession:
         return self
@@ -960,8 +997,8 @@ class EvaluationSession:
         self, requests: Iterator[RunRequest]
     ) -> Generator[tuple[RunRequest, RunOutcome | Exception]]:
         runs: dict[str, _Run] = {}
-        backend = InlineBackend(
-            self._context, lambda workspace, task: _prepared(runs[workspace]).evaluators[task][1]
+        backend: Backend = self._backend or InlineBackend(
+            self._context, lambda workspace, task: _prepared(runs[workspace]).instances[task]
         )
 
         def pull() -> _Run | None:
@@ -991,7 +1028,8 @@ class EvaluationSession:
                 yield request, outcome
         finally:
             driven.close()
-            backend.close()
+            if backend is not self._backend:  # the session's workers serve its next evaluation
+                backend.close()
 
     def _start(self, request: RunRequest) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory
@@ -999,6 +1037,8 @@ class EvaluationSession:
         reference = _run_reference(request.run)
         started = time.perf_counter()
         values, key, prepared, overrides = self._prepare(request.candidate)
+        if self._backend is not None:  # its workers check and evaluate instances of their own
+            prepared = prepared.released()
         run_dir = Path(os.path.abspath(request.output))
         if run_dir.exists() or run_dir.is_symlink():
             raise RunError(f"output {run_dir} already exists; choose a new directory")
@@ -1122,6 +1162,12 @@ def _plain(value: object) -> object:
     return thaw(freeze(value, "geometry", RunError))
 
 
+def _jobs(value: int) -> None:
+    """:class:`RunError` unless ``value`` is a positive number of jobs."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RunError(f"jobs must be a positive integer, got {value!r}")
+
+
 def _described(identity: Mapping[str, Json] | None) -> str:
     if identity is None:
         return "unreadable"
@@ -1136,24 +1182,27 @@ def run_candidate(
     implementations: Sequence[type[EvaluatorProtocol]],
     inputs: Sequence[str] = (),
     timeout: float | None = None,
+    jobs: int = 1,
     warn: Callable[[str], None] | None = None,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
     :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
-    ``SAMPLE/STAGE=FILE`` strings, ``timeout`` that of :meth:`EvaluationSession.open`. ``warn``
+    ``SAMPLE/STAGE=FILE`` strings, ``timeout`` and ``jobs`` those of
+    :meth:`EvaluationSession.open`. ``warn``
     is called with each of the session's warnings once the candidate is known to be valid, before
     anything is created, and with its :attr:`~EvaluationSession.notice` of diagnostics; the
     warnings are also kept in the summary.
     """
-    session = EvaluationSession.open(
-        problem_path, implementations, inputs=_parse_inputs(inputs), timeout=timeout
-    )
-    values = _parse_candidate(session.spec, assignments)
-    _validate_candidate(session.spec, values)  # a wrong candidate is reported before the warnings
-    if warn is not None:
-        for warning in session.warnings:
-            warn(warning)
-        if session.notice is not None:
-            warn(session.notice)
-    return session.evaluate(values, output)
+    with EvaluationSession.open(
+        problem_path, implementations, inputs=_parse_inputs(inputs), timeout=timeout, jobs=jobs
+    ) as session:
+        values = _parse_candidate(session.spec, assignments)
+        # a wrong candidate is reported before the warnings
+        _validate_candidate(session.spec, values)
+        if warn is not None:
+            for warning in session.warnings:
+                warn(warning)
+            if session.notice is not None:
+                warn(session.notice)
+        return session.evaluate(values, output)

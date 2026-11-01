@@ -42,11 +42,9 @@ import math
 import os
 import time
 from collections.abc import Callable, Collection, Generator, Mapping, Sequence
-from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
-from typing import NamedTuple
 
 from k4opt.ddsim import output_collections
 from k4opt.evaluation import (
@@ -58,7 +56,6 @@ from k4opt.evaluation import (
     EvaluationResult,
     EvaluatorProtocol,
     Measurement,
-    Role,
     RoleInput,
     Scalar,
     Status,
@@ -72,6 +69,7 @@ from k4opt.evaluation import (
 )
 from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.problem._backends import Backend, Handle, InlineBackend
+from k4opt.problem._instances import _Bound, _create, _Declaration, _declaration, _instance, _stage
 from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import (
     STAGE_TYPES,
@@ -202,114 +200,6 @@ def _validate_candidate(
         values[reference] = value
         key.append((reference, parameter.kind, tag, canonical))
     return values, tuple(key)
-
-
-def _stage(evaluator: EvaluatorProtocol) -> str | None:
-    """The pipeline stage the evaluator reads, ``None`` if it reads none."""
-    stage: str | None = getattr(evaluator, "stage", None)
-    return stage
-
-
-def _create(implementation: type[EvaluatorProtocol]) -> EvaluatorProtocol:
-    """A new instance of the class ``implementation``, which must have ``name``, ``version`` and
-    ``evaluate``; :class:`EvaluationContractError` if it is no class, cannot be created or lacks
-    one."""
-    if not isinstance(implementation, type):
-        # a function that builds an instance could configure it in ways the class's source,
-        # which the records identify as the code that ran, does not say
-        raise EvaluationContractError(
-            f"got a {type(implementation).__name__} object, not an evaluator class: give the "
-            "class, whose source is recorded and of which k4opt creates an instance per candidate"
-        )
-    label = implementation.__qualname__
-    try:
-        evaluator = implementation()
-    except Exception as exc:
-        raise EvaluationContractError(
-            f"creating {label}() failed: {type(exc).__name__}: {exc}"
-        ) from exc
-    missing = [
-        member for member in ("name", "version", "evaluate") if not hasattr(evaluator, member)
-    ]
-    if missing or not callable(evaluator.evaluate):
-        raise EvaluationContractError(
-            f"{label} is not an evaluator: needs name, version and an evaluate() method"
-            + (f" (missing {', '.join(missing)})" if missing else "")
-        )
-    return evaluator
-
-
-class _Declaration(NamedTuple):
-    """What every instance of an implementation must say of itself as its probe did: the session
-    records the probe's class as the code that runs, the stage and metrics decided what each
-    evaluator reads and measures, the settings and collections (their defaults included)
-    make the request it gets, which must not change from one candidate to the next, the artifacts
-    are what its results are checked against, and the roles what it reads."""
-
-    cls: type
-    name: str
-    version: str
-    stage: str | None
-    settings: Mapping[str, object]
-    collections: Mapping[str, object]
-    metrics: Mapping[MetricKey, str] | None
-    artifacts: Mapping[str, str] | None
-    roles: Mapping[str, Role] | None
-
-
-def _declaration(evaluator: EvaluatorProtocol) -> _Declaration:
-    return _Declaration(
-        type(evaluator),
-        evaluator.name,
-        evaluator.version,
-        _stage(evaluator),
-        # a copy all through: an instance that changes a nested default changes its class's, and
-        # the next instance would declare the changed one unnoticed
-        deepcopy(dict(getattr(evaluator, "settings", None) or {})),
-        declared_collections(evaluator),
-        metric_units(evaluator),
-        declared_artifacts(evaluator),
-        declared_roles(evaluator),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _Bound:
-    """A binding of the problem: its entry, the implementation given for it and what the probe
-    instance that bound them declared."""
-
-    entry: EvaluatorSpec
-    implementation: type[EvaluatorProtocol]
-    declaration: _Declaration
-
-
-def _instance(bound: _Bound) -> EvaluatorProtocol:
-    """A new instance of a bound implementation; :class:`EvaluationContractError` unless it
-    declares what the probe declared."""
-    evaluator = _create(bound.implementation)
-    labels = (
-        "class",
-        "name",
-        "version",
-        "stage",
-        "settings",
-        "collections",
-        "metrics",
-        "artifacts",
-        "roles",
-    )
-    changed = [
-        f"{label} {new!r}, not {old!r}"
-        for label, new, old in zip(labels, _declaration(evaluator), bound.declaration, strict=True)
-        if new != old
-    ]
-    if changed:
-        raise EvaluationContractError(
-            f"evaluator {bound.entry.binding!r}: a new instance of "
-            f"{bound.implementation.__qualname__} has {'; '.join(changed)}; every instance must "
-            "declare what the first did"
-        )
-    return evaluator
 
 
 def _as(entry: EvaluatorSpec) -> str:
@@ -595,9 +485,17 @@ class _Prepared:
     instance for each evaluation and the requests made for it."""
 
     binding: _Binding
-    # by evaluation, in plan order; the requests normalized and checked before execution
-    evaluators: Mapping[TaskId, tuple[EvaluatorSpec, EvaluatorProtocol]]
+    # by evaluation, in plan order: the entry that binds it, and the request normalized and
+    # checked before execution
+    entries: Mapping[TaskId, EvaluatorSpec]
     requests: Mapping[TaskId, EvaluationRequest]
+    # the instance whose check() accepted the request; none once released (a worker process
+    # evaluates with an instance of its own)
+    instances: Mapping[TaskId, EvaluatorProtocol] = FrozenMap({})
+
+    def released(self) -> _Prepared:
+        """The same without its evaluator instances, which hold whatever they allocated."""
+        return replace(self, instances=FrozenMap({}))
 
 
 def _bind_problem(
@@ -689,7 +587,12 @@ def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
         check = getattr(evaluator, "check", None)
         if check is not None:
             check(request)
-    return _Prepared(binding, FrozenMap(evaluators), FrozenMap(requests))
+    return _Prepared(
+        binding,
+        FrozenMap({task: entry for task, (entry, _) in evaluators.items()}),
+        FrozenMap(requests),
+        FrozenMap({task: instance for task, (_, instance) in evaluators.items()}),
+    )
 
 
 def _request(
@@ -855,7 +758,7 @@ def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> T
     if task.id.kind is Kind.STAGE:
         given, supplied = _inputs(reads, root), run.supplied.get(task.id)
         return TaskSpec(workspace, task, given, watched, tree, supplied=supplied)
-    entry, _ = run.prepared.evaluators[task.id]
+    entry = run.prepared.entries[task.id]
     if task.id.sample is None:  # the geometry, and what its roles read: no stage of its own
         given = _inputs({need: result for need, result in reads.items() if need == GEOMETRY}, root)
         roles = _role_inputs(binding, entry, reads, root)
@@ -881,7 +784,7 @@ def _result(run: _Run, task: Task, outcome: TaskOutcome, observed: Observations)
     result = to_result(task, outcome, observed, root)
     if task.id.kind is not Kind.EVALUATOR:
         return result
-    entry, _ = run.prepared.evaluators[task.id]
+    entry = run.prepared.entries[task.id]
     returned, workdir = local_result(outcome, root)
     request = asked(run.specs[task.id], root)
     if workdir is not None:  # it was called, in its own directory
@@ -946,6 +849,8 @@ def _drive(
                 assert run.prepared is not None
                 task = run.prepared.binding.plan[handle.task]
                 try:
+                    if isinstance(outcome, Exception):  # raised where the task ran
+                        raise outcome
                     result = _result(run, task, outcome, observed)
                     if check is not None:
                         check(run, outcome, result)
@@ -1178,7 +1083,7 @@ def _execute_plan(
     check_run_inputs([t.id.name for t in stages if t.given is None], geometry is not None, workdir)
     run = _Run(Workspace("candidate", workdir), prepared, key, supplied, geometry, started)
     backend = InlineBackend(
-        _context(spec, binding, timeout), lambda workspace, task: prepared.evaluators[task][1]
+        _context(spec, binding, timeout), lambda workspace, task: prepared.instances[task]
     )
     pulled = iter([run])
     driven = _drive(Scheduler(backend.capacity), backend, {}, lambda: next(pulled, None))
@@ -1199,7 +1104,7 @@ def _finish_plan(run: _Run) -> CandidateRecord:
     for task in plan.of(Kind.EVALUATOR):
         held = results[task.id]
         if held.status == Status.BLOCKED:
-            entry, _ = prepared.evaluators[task.id]
+            entry = prepared.entries[task.id]
             assert held.message is not None
             outcome = EvaluationResult(Status.BLOCKED, message=held.message)
             request = prepared.requests[task.id]
