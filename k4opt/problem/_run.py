@@ -33,15 +33,22 @@ from k4opt.evaluation import (
     CandidateKey,
     EvaluatorProtocol,
     Measurement,
-    Role,
     Scalar,
-    evaluator_source,
 )
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.jsonio import write_json
 from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
 from k4opt.problem._backends import Backend, InlineBackend, ProcessBackend
+from k4opt.problem._binding import (
+    _bind_problem,
+    _Binding,
+    _context,
+    _implementations,
+    _preflight,
+    _Prepared,
+    task_cpus,
+)
 from k4opt.problem._candidate import (
     CandidateRecord,
     _overrides,
@@ -49,18 +56,7 @@ from k4opt.problem._candidate import (
     _validate_candidate,
 )
 from k4opt.problem._cpus import AUTO, usable_cpus
-from k4opt.problem._evaluate import (
-    Activity,
-    _bind_problem,
-    _Binding,
-    _context,
-    _drive,
-    _finish_plan,
-    _preflight,
-    _Prepared,
-    _Run,
-    task_cpus,
-)
+from k4opt.problem._evaluate import Activity, _drive, _finish_plan, _Run
 from k4opt.problem._files import Made, readable_identity
 from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import STAGE_TYPES, input_files, plan_stages
@@ -77,7 +73,6 @@ from k4opt.problem._tasks import (
 from k4opt.problem._work import (
     SUMMARY_NAME,
     GeometryWork,
-    MetricKey,
     TaskOutcome,
     Workspace,
     candidate_externals,
@@ -197,30 +192,6 @@ def _run_reference(run: Mapping[str, Json] | None) -> object:
     if not isinstance(run, Mapping):
         raise RunError(f"run must be a mapping, got {type(run).__name__}")
     return thaw(freeze(run, "run", RunError))
-
-
-def _declared(units: Mapping[MetricKey, str] | None) -> list[dict[str, str]] | None:
-    """The metrics an evaluator declares (``units``), each with its unit; ``None`` if it declares
-    none."""
-    if units is None:
-        return None
-    return [{"stage": s, "metric": m, "unit": unit} for (s, m), unit in units.items()]
-
-
-def _roles(roles: Mapping[str, Role] | None) -> dict[str, dict[str, Json]] | None:
-    """The roles a combined evaluator declares, each with what it reads; ``None`` if it declares
-    none."""
-    if roles is None:
-        return None
-    return {
-        name: {
-            "many": role.many,
-            "stage": role.stage,
-            "metrics": tuple(role.metrics),
-            "artifacts": tuple(role.artifacts),
-        }
-        for name, role in roles.items()
-    }
 
 
 def _relative(path: Path, run_dir: Path) -> str:
@@ -661,25 +632,7 @@ class EvaluationSession:
         assert spec._source is not None
         externals = freeze(spec._source.external_files(spec._catalog), "geometry", RunError)
         assert isinstance(externals, Mapping)
-        taken = {}
-        for bound in binding.evaluators:  # what the first instance of each declared
-            declaration = bound.declaration
-            if declaration.name in taken:
-                continue
-            data = {
-                "version": declaration.version,
-                "stage": declaration.stage,
-                "source": evaluator_source(declaration.cls),
-                # each with the unit every measurement of it carries, whatever the status
-                "metrics": _declared(declaration.metrics),
-                # the names of the files a valid result of it returns; null if it declares none
-                "artifacts": None if declaration.artifacts is None else list(declaration.artifacts),
-                # what each role of a combined evaluator reads; null for an evaluator of no roles
-                "roles": _roles(declaration.roles),
-            }
-            frozen = freeze(data, f"evaluator {declaration.name}", RunError)
-            assert isinstance(frozen, Mapping)
-            taken[declaration.name] = frozen
+        taken = _implementations(binding)
         # before anything runs, so that an edit to the checkout during a long run is not
         # recorded as the code that ran, nor a later change of the environment as the session's
         environment = {name: os.environ.get(name) for name in ("KEY4HEP_STACK", "K4GEO")}
