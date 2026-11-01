@@ -65,7 +65,7 @@ from k4opt.problem._tasks import Kind, Task, TaskId, TaskResult, Tree
 from k4opt.problem._work import TaskSpec, _stat_of, asked
 from k4opt.revision import code_fingerprint, code_identity
 from tests.support import simulation
-from tests.support.common import tree_digest
+from tests.support.common import scientific, tree_digest
 from tests.support.evaluators import (
     CELL_COUNT,
     HIT_ENERGY,
@@ -1295,16 +1295,8 @@ def test_the_summary_is_the_same_for_the_same_candidate(
     )
 
     def normalized(outcome: RunOutcome) -> str:
-        """The summary as written, without its directory, its times and its own id."""
-        data = json.loads(outcome.summary_path.read_text().replace(str(outcome.run_dir), "<run>"))
-        del data["id"]
-
-        def untimed(node: Any) -> Any:
-            if isinstance(node, dict):
-                return {k: 0 if k == "elapsed_seconds" else untimed(v) for k, v in node.items()}
-            return [untimed(item) for item in node] if isinstance(node, list) else node
-
-        return json.dumps(untimed(data))  # key order included
+        """The summary as written, without its directory, its times, peak memory and own id."""
+        return json.dumps(scientific(json.loads(outcome.summary_path.read_text())))  # key order
 
     assert normalized(first) == normalized(second)
     assert first.summary["id"] != second.summary["id"]  # two records, each its own identity
@@ -1989,20 +1981,6 @@ def latest_ready(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None:
     monkeypatch.setattr(scheduler, "finished", ending)
 
 
-def comparable(summary: Any, run_dir: Path) -> Any:
-    """``summary`` without what differs from one evaluation of a candidate to the next: its id,
-    the times and where it ran."""
-
-    def strip(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {k: strip(v) for k, v in value.items() if k not in ("id", "elapsed_seconds")}
-        if isinstance(value, list):
-            return [strip(item) for item in value]
-        return value
-
-    return strip(json.loads(json.dumps(summary).replace(str(run_dir), "RUN")))
-
-
 @pytest.mark.parametrize("ddsim", [{}, {"returncode": 2, "stderr": "G4Exception: bad volume"}])
 def test_the_record_does_not_depend_on_the_order_the_tasks_ran_in(
     tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch, ddsim: dict[str, Any]
@@ -2026,7 +2004,7 @@ def test_the_record_does_not_depend_on_the_order_the_tasks_ran_in(
     assert order != planned and sorted(order) == sorted(planned)
     assert order[:2] == ["gamma/generation", "geometry"]  # the gun first: it reads no geometry
     assert seen == [True, True]
-    assert comparable(second.summary, tmp_path / "b") == comparable(first.summary, tmp_path / "a")
+    assert scientific(dict(second.summary)) == scientific(dict(first.summary))
     assert second.summary["status"] == ("valid" if not ddsim else "failed")
 
 
