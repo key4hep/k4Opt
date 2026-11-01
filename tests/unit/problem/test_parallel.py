@@ -71,11 +71,15 @@ def marks(tmp_path: Path) -> Path:
 
 
 def write_problem(
-    path: Path, doc: dict[str, Any], probes: tuple[str, ...] = (), required: bool = True
+    path: Path,
+    doc: dict[str, Any],
+    probes: tuple[str, ...] = (),
+    required: bool = True,
+    probed: tuple[str, ...] = ("gamma",),
 ) -> Path:
     """The problem ``doc`` on the mini geometry with the samples ``gamma`` and ``pion``, each
-    measured by ``test.cell_count``, and ``gamma`` by a ``test.worker_probe`` bound as each of
-    ``probes`` (``required`` or a diagnostic); an objective on ``gamma``."""
+    measured by ``test.cell_count``, and the samples ``probed`` by a ``test.worker_probe`` bound
+    as each of ``probes`` (``required`` or a diagnostic); an objective on ``gamma``."""
     doc = copy.deepcopy(doc)
     doc["geometry"] = MINI_COMPACT
     doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
@@ -100,7 +104,7 @@ def write_problem(
                 "as": name,
                 "version": "1",
                 "stage": "simulation",
-                "samples": ["gamma"],
+                "samples": list(probed),
                 "settings": {"binding": name},
             }
             | ({"required": True} if required else {})
@@ -547,6 +551,42 @@ def test_workers_that_keep_dying_on_one_task_stop_its_candidates(
     assert len(failed) == 2 and all(o.candidate.status == "failed" for o in failed)
     (error,) = stopped
     assert "3 times in a row for p; lower --jobs?" in str(error)
+
+
+def test_the_deaths_of_one_binding_count_together_on_every_sample(
+    tmp_path: Path, doc: dict[str, Any], session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # one implementation's code, and memory pressure, do not stop at a sample: deaths of p on
+    # gamma and on pion are one series, which stops a candidate after jobs + 1 of them
+    problem = write_problem(tmp_path / "probe.yaml", doc, ("p",), probed=("gamma", "pion"))
+    stack.install(monkeypatch)
+    probe(monkeypatch, p={"kill": True})
+    requests = [RunRequest({RADIUS: 450.0}, tmp_path / name) for name in "ab"]
+    with session_of(2, problem).evaluate_each(requests) as evaluations:
+        ended = [outcome for _, outcome in evaluations]
+    stopped = [o for o in ended if isinstance(o, RunError)]
+    assert stopped and all("times in a row for p; lower --jobs?" in str(o) for o in stopped)
+    assert all(o.candidate.status == "failed" for o in ended if isinstance(o, RunOutcome))
+
+
+def test_a_binding_that_succeeds_on_one_sample_never_stops_candidates_dying_on_another(
+    tmp_path: Path, doc: dict[str, Any], session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # every success of p ends a series of deaths, so p on gamma, which always dies, fails its
+    # task in each candidate (a diagnostic here) and never stops the session's candidates
+    problem = write_problem(
+        tmp_path / "probe.yaml", doc, ("p",), required=False, probed=("gamma", "pion")
+    )
+    stack.install(monkeypatch)
+    probe(monkeypatch, **{"gamma/p": {"kill": True}})
+    session = session_of(2, problem)
+    for name in "abcd":  # one after another: never three deaths of p without a success between
+        outcome = session.evaluate({RADIUS: 450.0}, tmp_path / name)
+        assert outcome.candidate.status == "valid", outcome.candidate.message
+        (diagnostic,) = verified(outcome)["diagnostics"]
+        assert (
+            diagnostic["task"] == "gamma/p" and "died (killed by SIGKILL)" in diagnostic["message"]
+        )
 
 
 # --- stopping ---------------------------------------------------------------------------------
