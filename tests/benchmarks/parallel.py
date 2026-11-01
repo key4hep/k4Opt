@@ -7,9 +7,11 @@ Not a test (pytest does not collect it) and no thresholds: it prints, and writes
 - the processor time used, by k4opt and by everything it started and waited for (workers,
   ddsim), how many processors that kept busy on average, and the share of the jobs it used;
 - the occupancy of the job slots: the time the tasks took, each times the slots it held, over
-  jobs x wall time (what the scheduling leaves idle). A task's time is what its record holds:
-  for an evaluation its ``evaluate()`` call alone, so the occupancy leaves out what an
-  evaluation spends around that call (making and checking its instance, hashing artifacts);
+  jobs x wall time (what the scheduling leaves idle). A task's time is the ``elapsed_seconds``
+  its summary records: a stage's or the geometry's whole task, an evaluation's ``evaluate()``
+  call alone (the record's time; the task's whole time, with making and checking its instance
+  and hashing its artifacts, is not written to the summary), so the occupancy leaves out what an
+  evaluation spends around that call;
 - the peak memory the records hold: what a task needed at most (k4opt's process and its
   program added, an estimate), ddsim's and k4opt's own, and the session's process;
 - whether every record says what the one-job run says of its candidate (all but how it ran).
@@ -48,9 +50,13 @@ from tests.support.common import scientific  # noqa: E402
 EXAMPLES = REPOSITORY / "examples"
 CELL = "constants.ECal_cell_size"
 RADIUS = "constants.InnerTracker_Barrel_radius_1"
+GRIDS = {  # the candidates of each stack, the first --candidates of them evaluated
+    "real": [4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0],
+    "fake": [150.0 + 50 * n for n in range(8)],
+}
 
 
-def _real(directory: Path, events: int, threads: int) -> tuple[Path, list[Any], str, list[float]]:
+def _real(directory: Path, events: int, threads: int) -> tuple[Path, list[Any], str]:
     document = yaml.safe_load((EXAMPLES / "problem" / "cld-ecal-pi0-rejection.yaml").read_text())
     simulation = document["stages"]["simulation"]
     simulation["events"] = events
@@ -66,10 +72,10 @@ def _real(directory: Path, events: int, threads: int) -> tuple[Path, list[Any], 
             ("ecal_channels.py", "EcalChannels"),
         )
     ]
-    return path, evaluators, CELL, [4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0]
+    return path, evaluators, CELL
 
 
-def _fake(directory: Path, events: int, burn: float) -> tuple[Path, list[Any], str, list[float]]:
+def _fake(directory: Path, events: int, burn: float) -> tuple[Path, list[Any], str]:
     from tests.support import stack
     from tests.support.evaluators import cell_count
     from tests.unit.problem.conftest import _BASE
@@ -87,7 +93,7 @@ def _fake(directory: Path, events: int, burn: float) -> tuple[Path, list[Any], s
     for sample in raw["samples"].values():
         sample["simulation"]["events"] = events
     path.write_text(yaml.safe_dump(raw))
-    return path, [cell_count()], RADIUS, [150.0 + 50 * n for n in range(8)]
+    return path, [cell_count()], RADIUS
 
 
 def _cpu() -> float:
@@ -169,6 +175,25 @@ def _gib(count: int | None) -> str:
     return "-" if count is None else f"{count / 2**30:.2f}"
 
 
+def _check(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Refuse what would run something else than asked, or report what was not measured."""
+    if args.jobs[0] != 1:  # speedup and efficiency are over one job, measured
+        parser.error("the first of --jobs must be 1: speedup and efficiency are over one job")
+    if min(args.jobs) < 1 or len(set(args.jobs)) != len(args.jobs):
+        parser.error(f"--jobs must be distinct positive numbers, got {args.jobs}")
+    grid = GRIDS[args.stack]
+    if not 1 <= args.candidates <= len(grid):
+        parser.error(f"--candidates must be 1 to {len(grid)} (the {args.stack} grid)")
+    if args.events < 1:
+        parser.error(f"--events must be positive, got {args.events}")
+    if args.threads < 1:
+        parser.error(f"--threads must be positive, got {args.threads}")
+    if args.stack == "fake" and args.threads != 1:
+        parser.error("--threads is for --stack real: the fake ddsim runs no threads")
+    if args.burn < 0:
+        parser.error(f"--burn must not be negative, got {args.burn}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--stack", choices=("real", "fake"), default="fake")
@@ -179,14 +204,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--burn", type=float, default=5.0, help="processor s per fake ddsim")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
-    if args.jobs[0] != 1:  # speedup and efficiency are over one job, measured
-        parser.error("the first of --jobs must be 1: speedup and efficiency are over one job")
+    _check(parser, args)  # before anything is created
     args.output.mkdir(parents=True)
     if args.stack == "real":
-        path, evaluators, parameter, grid = _real(args.output, args.events, args.threads)
+        path, evaluators, parameter = _real(args.output, args.events, args.threads)
     else:
-        path, evaluators, parameter, grid = _fake(args.output, args.events, args.burn)
-    values = grid[: args.candidates]
+        path, evaluators, parameter = _fake(args.output, args.events, args.burn)
+    values = GRIDS[args.stack][: args.candidates]
     results = []
     for jobs in args.jobs:
         directory = args.output / f"jobs{jobs}"
