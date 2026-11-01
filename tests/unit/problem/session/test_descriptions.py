@@ -115,8 +115,9 @@ def test_a_task_run_again_in_a_copied_workspace_leaves_the_same_portable_outcome
         Tree.of(copy_dir / "geometry").stats,
     )
     again, observed_again = execute_task(session._context, spec, copy_dir, seen, yields()())
-    untimed = {"elapsed_seconds": None, "call_seconds": None}
-    # its status, measurements, files by reference, bytes and hashes; never its times
+    untimed = {"elapsed_seconds": None, "call_seconds": None, "memory": None}
+    # its status, measurements, files by reference, bytes and hashes; never its times or the
+    # peak memory of this process, which depends on what it held before
     assert dataclasses.replace(again, **untimed) == dataclasses.replace(made, **untimed)
     assert observed_again.made.keys() == observed.made.keys()
 
