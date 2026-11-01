@@ -19,13 +19,11 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import time
 import uuid
 import weakref
 from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
 from types import TracebackType
 from typing import Literal
@@ -44,10 +42,15 @@ from k4opt.geometry import Override
 from k4opt.jsonio import write_json
 from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
 from k4opt.problem._backends import Backend, InlineBackend, ProcessBackend
+from k4opt.problem._candidate import (
+    CandidateRecord,
+    _overrides,
+    _parse_candidate,
+    _validate_candidate,
+)
 from k4opt.problem._cpus import AUTO, usable_cpus
 from k4opt.problem._evaluate import (
     Activity,
-    CandidateRecord,
     _bind_problem,
     _Binding,
     _context,
@@ -56,7 +59,6 @@ from k4opt.problem._evaluate import (
     _preflight,
     _Prepared,
     _Run,
-    _validate_candidate,
     task_cpus,
 )
 from k4opt.problem._files import Made, readable_identity
@@ -83,19 +85,12 @@ from k4opt.problem._work import (
 )
 from k4opt.problem._worker import session_spec
 from k4opt.problem.config import load_problem
-from k4opt.problem.errors import CandidateError, RecordError, RunError
-from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
+from k4opt.problem.errors import RecordError, RunError
+from k4opt.problem.models import EvaluatorSpec, ProblemSpec
 from k4opt.revision import code_identity, code_unchanged
 
 LOCAL: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": 1})
 """How a session executes its tasks by default: one after another, in its own process."""
-
-# Units that are written into a DD4hep expression (``6.0*mm``); anything else is refused
-# rather than passed on unchecked.
-_UNITS = ("um", "mm", "cm", "m", "mrad", "rad", "deg", "MeV", "GeV", "TeV")
-
-_INTEGER = re.compile(r"[+-]?[0-9]+")
-_DECIMAL = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,113 +123,6 @@ class RunOutcome:
                 requested = samples[task.id.sample]["simulation"].get("events")
                 events[task.id.sample] = (found, requested)
         return events
-
-
-def _int(reference: str, text: str) -> int:
-    """``int(text)`` for a text that matches ``_INTEGER``."""
-    try:
-        return int(text)
-    except ValueError:  # more digits than Python converts (sys.get_int_max_str_digits())
-        raise CandidateError(f"{reference}: {text[:20]}... has too many digits") from None
-
-
-def _parse_value(parameter: Parameter, text: str) -> Scalar:
-    """The value ``text`` stands for, read according to the kind of ``parameter``."""
-    reference = parameter.geometry.canonical_target
-    choices = parameter.choices or ()
-    if parameter.kind == "categorical" and all(isinstance(c, str) for c in choices):
-        return text
-    if parameter.kind == "categorical" and all(isinstance(c, bool) for c in choices):
-        if text not in ("true", "false"):
-            raise CandidateError(f"{reference}: expected true or false, got {text!r}")
-        return text == "true"
-    if parameter.kind == "integer":
-        if not _INTEGER.fullmatch(text):
-            raise CandidateError(f"{reference}: expected an integer, got {text!r}")
-        return _int(reference, text)
-    if not _DECIMAL.fullmatch(text):
-        raise CandidateError(f"{reference}: expected a number, got {text!r}")
-    if parameter.kind == "categorical":
-        # Compare with the declared choices exactly (Decimal vs int or float is exact), and
-        # return the choice itself: float(text) would merge 2**53 and 2**53+1.
-        exact = Decimal(text)
-        numeric = [c for c in choices if not isinstance(c, bool)]
-        for choice in numeric:
-            if exact == choice:
-                return choice
-        for choice in numeric:  # a float choice such as 1e23 is not the decimal 10**23 ...
-            # ... so also accept its shortest decimal spelling, never a rounded neighbor
-            if (
-                isinstance(choice, float)
-                and math.isfinite(choice)
-                and exact == Decimal(repr(choice))
-            ):
-                return choice
-        # never round an unmatched value into a neighboring choice
-        raise CandidateError(f"{reference}: {text!r} is not one of {list(choices)!r}")
-    if _INTEGER.fullmatch(text):
-        # an integer literal stays exact where float would change it (above 2**53) or overflow
-        number = _int(reference, text)
-        try:
-            return float(number) if float(number) == number else number
-        except OverflowError:
-            return number
-    return float(text)
-
-
-def _split_assignment(assignment: str) -> tuple[str, str]:
-    """Split ``REFERENCE=VALUE`` at the first ``=`` outside ``[...]`` (``layer[id=1].x=90``)."""
-    depth = 0
-    for index, char in enumerate(assignment):
-        if char == "[":
-            depth += 1
-        elif char == "]":
-            depth = max(depth - 1, 0)
-        elif char == "=" and depth == 0:
-            return assignment[:index], assignment[index + 1 :]
-    raise CandidateError(f"--param {assignment!r}: expected REFERENCE=VALUE")
-
-
-def _parse_candidate(spec: ProblemSpec, assignments: Sequence[str]) -> dict[str, Scalar]:
-    by_reference = {p.geometry.canonical_target: p for p in spec.parameters}
-    candidate: dict[str, Scalar] = {}
-    for assignment in assignments:
-        reference, text = _split_assignment(assignment)
-        if reference in candidate:
-            raise CandidateError(f"--param {reference} is given more than once")
-        parameter = by_reference.get(reference)
-        # an unknown reference is reported by the candidate validation, with the known ones
-        candidate[reference] = text if parameter is None else _parse_value(parameter, text)
-    return candidate
-
-
-def _xml_value(parameter: Parameter, value: Scalar) -> str:
-    """The literal written into the geometry XML for a validated ``value``."""
-    reference = parameter.geometry.canonical_target
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return value
-    if parameter.unit is None:
-        return repr(value)
-    if parameter.unit not in _UNITS:
-        raise CandidateError(
-            f"{reference}: unit {parameter.unit!r} cannot be written into the geometry; "
-            f"supported: {', '.join(_UNITS)}"
-        )
-    return f"{value!r}*{parameter.unit}"
-
-
-def _overrides(spec: ProblemSpec, values: Mapping[str, Scalar]) -> list[Override]:
-    assert spec._source is not None
-    assert len(spec._targets) == len(spec.parameters)
-    overrides = []
-    for parameter, target in zip(spec.parameters, spec._targets, strict=True):
-        value = values[parameter.geometry.canonical_target]
-        overrides.append(
-            Override(target=target.target, value=_xml_value(parameter, value), file=target.file)
-        )
-    return overrides
 
 
 def _measurement(m: Measurement | None) -> dict[str, object]:

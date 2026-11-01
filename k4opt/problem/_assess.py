@@ -28,7 +28,7 @@ from k4opt.evaluation import (
     Status,
 )
 from k4opt.frozen import thaw
-from k4opt.problem._evaluate import CandidateRecord, _validate_candidate
+from k4opt.problem._candidate import CandidateRecord, _validate_candidate
 from k4opt.problem._stages import STAGE_TYPES, changed_by_geometry, stage_output
 from k4opt.problem._tasks import (
     DONE,

@@ -59,8 +59,9 @@ from k4opt.problem import (
     load_problem,
     parse_problem,
 )
+from k4opt.problem._candidate import _parse_candidate, _xml_value
 from k4opt.problem._files import Tree, stat_of
-from k4opt.problem._run import _parse_candidate, _xml_value, assemble
+from k4opt.problem._run import assemble
 from k4opt.problem._run import run_candidate as _run_candidate
 from k4opt.problem._tasks import Kind, Task, TaskId, TaskResult
 from k4opt.problem._work import TaskSpec, asked
@@ -456,7 +457,7 @@ def test_numeric_categories_keep_exact_integers(doc: dict[str, Any]) -> None:
     assert _parse_candidate(spec, [f"constants.n={big + 1}"]) == {"constants.n": big + 1}
     assert _parse_candidate(spec, [f"constants.n={big}"]) == {"constants.n": big}
     assert _parse_candidate(spec, ["constants.n=0.5"]) == {"constants.n": 0.5}
-    from k4opt.problem._evaluate import _validate_candidate
+    from k4opt.problem._candidate import _validate_candidate
 
     _, key_a = _validate_candidate(spec, {"constants.n": big})
     _, key_b = _validate_candidate(spec, _parse_candidate(spec, [f"constants.n={big + 1}"]))

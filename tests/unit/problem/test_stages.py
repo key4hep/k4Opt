@@ -30,7 +30,8 @@ from k4opt.evaluation import (
 from k4opt.frozen import thaw
 from k4opt.problem import EvaluatorSpec, ProblemSpec, Sample, Stage, parse_problem
 from k4opt.problem import _stages as stages_module
-from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate, _request
+from k4opt.problem._candidate import CandidateRecord
+from k4opt.problem._evaluate import _evaluate_candidate, _request
 from k4opt.problem._files import _sha256, file_identity
 from k4opt.problem._stages import (
     StageContext,

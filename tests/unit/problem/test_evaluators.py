@@ -23,7 +23,8 @@ from k4opt.evaluation import (
     Status,
 )
 from k4opt.problem import MetricRef, ProblemSpec, _evaluate, _work, parse_problem
-from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate
+from k4opt.problem._candidate import CandidateRecord
+from k4opt.problem._evaluate import _evaluate_candidate
 from k4opt.problem._tasks import Kind, stage_task
 from tests.support import simulation
 from tests.support.evaluators import (
