@@ -392,6 +392,8 @@ class EvaluationSession:
         crowded = [
             f"{task.id.label} simulates with {cpus} threads, more than the {jobs} job(s) of the "
             f"session: it runs alone, on {cpus} processors"
+            # also beyond the processors, which the warning about jobs does not cover
+            + ("" if cpus <= usable else f", more than the {usable} this process may use")
             for task in binding.plan.tasks
             if (cpus := task_cpus(binding, task)) > jobs
         ]

@@ -441,7 +441,9 @@ on it. An
 evaluator's result holds only what it returned, so its artifact and provenance names cannot
 clash with the stages'. The stages take their conditions from their sample, never from an
 evaluator, except a time limit, which is the caller's: a stage that runs a program (ddsim)
-longer than the `timeout` of the session kills it and fails. Stages are internal for now
+longer than the `timeout` of the session kills it and fails. An evaluator has no time limit: one
+that never returns holds its job, or with one job the session, until the session is stopped
+(Ctrl-C, SIGTERM). Stages are internal for now
 (`k4opt.problem._stages`).
 
 ## Loading an evaluator
@@ -774,7 +776,8 @@ with EvaluationSession.open(problem, [CaloPhoton], jobs=4) as session:  # stops 
 - **A job is a processor.** A simulation that ddsim runs on several threads (`numberOfThreads: 4`
   in its stage) holds as many jobs while it runs, so `--jobs 8` runs two such simulations at
   once, or one and four single-threaded tasks. One with more threads than there are jobs holds
-  them all and runs alone (the session warns). While such a simulation waits for its jobs,
+  them all and runs alone (the session warns, and says so if it has more threads than the
+  processors this process may use, too). While such a simulation waits for its jobs,
   later tasks that fit may start instead, at most N of them, so it never waits for ever; with
   only single-threaded tasks this never happens, and the order is that of one job per task.
   Threads a library starts of its own (ROOT's implicit multi-threading, BLAS) are not counted.
