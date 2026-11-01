@@ -33,9 +33,12 @@ error, no output file, killed when it ran longer than `timeout` seconds) with `r
 which is killed as a whole when its time runs out or k4opt is interrupted, so the processes a
 wrapper script started (one without `exec`, a container) do not outlive it. `started`, a
 function, is told that group's id as soon as ddsim started; `die_with_parent=True` has the kernel
-kill ddsim when the thread that started it ends, even by SIGKILL (Linux). It runs code between
-fork and exec, which only a single-threaded process may do: k4opt's worker processes pass both,
-so that ddsim ends with a worker the coordinator stops or the kernel's OOM killer ends.
+kill ddsim when the thread that started it ends, even by SIGKILL (Linux). ddsim is then started
+by a small launcher that asks for that signal and becomes ddsim (`exec`), so nothing runs
+between fork and exec in a process whose libraries (ROOT) may have started threads; if the
+system refuses the signal, the run fails and says so instead of starting ddsim unprotected.
+k4opt's worker processes pass both, so that ddsim ends with a worker the coordinator stops or
+the kernel's OOM killer ends.
 `check_arguments` does the first
 part alone, `check_particle_gun` and `check_options` check a gun or options on their own (the
 problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`,

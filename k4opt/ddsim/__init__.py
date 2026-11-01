@@ -29,6 +29,7 @@ Typical use::
 from k4opt.ddsim.command import DIRECTION_DISTRIBUTIONS, FILE_OPTIONS, output_collections
 from k4opt.ddsim.errors import DdsimError
 from k4opt.ddsim.run import (
+    LOG_FILES,
     SimulationRun,
     check_arguments,
     check_options,
@@ -39,6 +40,7 @@ from k4opt.ddsim.run import (
 __all__ = [
     "DIRECTION_DISTRIBUTIONS",
     "FILE_OPTIONS",
+    "LOG_FILES",
     "DdsimError",
     "SimulationRun",
     "check_arguments",

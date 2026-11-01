@@ -23,7 +23,8 @@ import pytest
 import yaml
 
 from k4opt.cli import main
-from k4opt.problem import Assessment, parse_problem
+from k4opt.evaluation import load_evaluator
+from k4opt.problem import Assessment, EvaluationSession, parse_problem
 from tests.support.common import scientific
 from tests.support.evaluators import CALO_PHOTON, CELL_COUNT
 from tests.support.geometry import CLD_COMPACT
@@ -356,3 +357,17 @@ def test_pi0_example_gives_the_same_record_with_four_jobs(
         assert histogram == one["samples"][sample]["evaluations"]["calo.shower_shape"]["artifacts"][
             "histogram"
         ] | {"path": histogram["path"]}
+
+
+def test_a_worker_that_read_events_with_podio_runs_the_next_simulation(
+    problem: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """ROOT may leave threads behind in a worker that read a file; ddsim still starts there, by
+    a launcher of its own rather than code run between fork and exec."""
+    base = tmp_path_factory.mktemp("reused")
+    with EvaluationSession.open(problem, [load_evaluator(CALO_PHOTON)], jobs=2) as session:
+        # the worker of a simulation counts its events with podio, and runs the next one too
+        runs = [session.evaluate({CELL: size}, base / str(size)) for size in (6.0, 7.0)]
+    for run in runs:
+        assert run.candidate.status == "valid", run.candidate.message
+        assert run.events == {SAMPLE: (EVENTS, EVENTS)}

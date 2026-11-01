@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import multiprocessing
 import os
 import pickle
 import signal
@@ -350,6 +351,9 @@ def test_a_process_killed_like_the_oom_killer_does_fails_its_task_and_leaves_not
     assert failed["status"] == "failed"
     reason = "died (killed by SIGKILL)" if "worker" in killed else "status -9"
     assert reason in failed["message"]
+    if "evaluation" not in killed:  # what ddsim wrote so far stays referenced
+        assert {"stdout", "stderr"} <= failed["logs"].keys()
+        assert all((outcome.run_dir / log).is_file() for log in failed["logs"].values())
     if message is not None:
         assert message in (outcome.candidate.message or "")
     else:  # a diagnostic: recorded, without deciding the candidate
@@ -498,6 +502,20 @@ def test_a_worker_rebuilds_the_session_from_plain_data(
     for stages in rebuilt.context.contexts.values():  # what only a worker's stages do
         assert stages.started == told.append and stages.die_with_parent
     assert not any(stages.die_with_parent for stages in session._context.contexts.values())
+
+
+def test_a_worker_that_cannot_be_made_to_end_with_the_session_refuses_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_worker, "_PR_SET_PDEATHSIG", 0x7FFF)  # no option of prctl(2)
+    refused = _worker._die_with(os.getppid())
+    if sys.platform.startswith("linux"):
+        assert refused is not None
+        assert "cannot be made to end with the session (prctl: Invalid argument)" in refused
+    ours, theirs = multiprocessing.Pipe()
+    ours.send("the session")
+    assert _worker.serve(theirs, "why not") == 1
+    assert ours.recv() == ("refused", "why not")
 
 
 @pytest.mark.parametrize("jobs", [0, -2, True, 1.5, "2"])

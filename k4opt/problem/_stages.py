@@ -46,6 +46,7 @@ from pathlib import Path
 
 from k4opt.ddsim import (
     FILE_OPTIONS,
+    LOG_FILES,
     check_arguments,
     check_options,
     check_particle_gun,
@@ -302,6 +303,7 @@ class _Stage:
     geometry: bool  # reads the prepared geometry, inputs["geometry"]
     writes: bool  # writes files, so it needs a workdir
     output: str = "events"  # the name of its main output
+    logs: Mapping[str, str] = field(default_factory=dict)  # its other files' names, by role
     # checks the output file, whether the stage wrote it or it was given
     inspect: Callable[[StageContext, Path], tuple[dict[str, Json], str | None]] | None = None
 
@@ -323,6 +325,7 @@ _STAGES: Mapping[str, _Stage] = {
         geometry=True,
         writes=True,
         inspect=_inspect_simulation,
+        logs=LOG_FILES,
     ),
 }
 
@@ -343,6 +346,13 @@ def reads_geometry(stage: str) -> bool:
 def writes_files(stage: str) -> bool:
     """Whether ``stage``, when it runs, writes files, and so needs a directory of its own."""
     return _STAGES[stage].writes
+
+
+def stage_logs(stage: str, directory: Path) -> dict[str, Path]:
+    """The files besides its outputs (logs, the command) that ``stage`` left in its
+    ``directory``, by role, as far as they exist: what a stage whose process died left."""
+    files = {role: directory / name for role, name in _STAGES[stage].logs.items()}
+    return {role: path for role, path in files.items() if path.is_file()}
 
 
 def stage_output(stage: str) -> str:

@@ -31,6 +31,7 @@ from typing import Protocol
 
 import k4opt
 from k4opt.evaluation import EvaluationResult, EvaluatorProtocol, Status
+from k4opt.problem._stages import stage_logs
 from k4opt.problem._tasks import GEOMETRY, Kind, TaskId
 from k4opt.problem._work import (
     Observations,
@@ -39,6 +40,7 @@ from k4opt.problem._work import (
     TaskSpec,
     Workspace,
     execute_task,
+    portable,
 )
 from k4opt.problem._worker import LOG_NAME, Failure, SessionSpec
 from k4opt.problem.errors import RunError
@@ -378,8 +380,10 @@ def _died(spec: TaskSpec, root: Path | None, how: str) -> TaskOutcome:
     task, directory = spec.task.id, spec.task.directory
     own = None if root is None or directory is None else root / directory
     message = how if own is None else f"{how}; what it left is in {own}"
-    if task.kind is not Kind.EVALUATOR:
-        return TaskOutcome(task, Status.FAILED, message)
+    if task.kind is not Kind.EVALUATOR:  # the logs of what it ran, as far as it got
+        found = {} if own is None or task.kind is not Kind.STAGE else stage_logs(task.name, own)
+        logs = {role: portable(path, root) for role, path in found.items()}
+        return TaskOutcome(task, Status.FAILED, message, artifacts=logs)
     workdir = log = None
     if own is not None and directory is not None and own.is_dir():  # made just before the call
         workdir = Path(directory)

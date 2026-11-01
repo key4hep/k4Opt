@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from k4opt.ddsim import DdsimError, simulate
+from k4opt.ddsim import DdsimError, _launch, simulate
 from k4opt.ddsim import run as ddsim_run
 from k4opt.frozen import freeze
 from tests.support import simulation
@@ -262,8 +262,11 @@ def sleeper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
             os.kill(int(pid.read_text()), signal.SIGKILL)
 
 
-def test_the_caller_is_told_the_process_group_ddsim_runs_in(tmp_path: Path, sleeper: Path) -> None:
-    told = []
+@pytest.mark.parametrize("die_with_parent", [False, True])
+def test_the_caller_is_told_the_process_group_ddsim_runs_in(
+    tmp_path: Path, sleeper: Path, die_with_parent: bool
+) -> None:
+    told: list[int] = []
     run = simulate(
         compact=tmp_path / "c.xml",
         workdir=tmp_path / "run",
@@ -273,9 +276,22 @@ def test_the_caller_is_told_the_process_group_ddsim_runs_in(tmp_path: Path, slee
         options={},
         timeout=0.5,
         started=told.append,
+        die_with_parent=die_with_parent,  # through a launcher that becomes ddsim
     )
     assert run.returncode is None  # killed when its time ran out
     assert told == [int(sleeper.read_text())]  # the group's leader: its id is the group's
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG is Linux's")
+def test_a_launch_that_cannot_tie_ddsim_to_its_parent_says_why_and_starts_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_launch, "PR_SET_PDEATHSIG", 0x7FFF)  # no option of prctl(2)
+    reason = _launch.main([str(os.getppid()), "/no/such/ddsim"])  # it would raise if exec'd
+    assert reason == (
+        "k4opt: /no/such/ddsim cannot be made to end with its worker process "
+        "(prctl: Invalid argument)"
+    )
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG is Linux's")

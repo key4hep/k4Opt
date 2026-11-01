@@ -279,24 +279,36 @@ def _cancel(signum: int, frame: FrameType | None) -> None:
     raise Cancelled(f"signal {signum}")
 
 
-def _die_with(parent: int) -> bool:
-    """Have this process get SIGKILL once its parent ends (Linux); ``False`` if the parent
-    ``parent`` already ended."""
+_PR_SET_PDEATHSIG = 1  # prctl(2): the signal a process gets when its parent thread ends
+
+
+def _die_with(parent: int) -> str | None:
+    """Have this process get SIGKILL once its parent ``parent`` ends (Linux); why it cannot,
+    ``None`` if it does."""
     if sys.platform.startswith("linux"):
-        ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
-    return os.getppid() == parent
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL) != 0:
+            error = os.strerror(ctypes.get_errno())
+            return f"a worker process cannot be made to end with the session (prctl: {error})"
+    if os.getppid() != parent:
+        return "the session ended before its worker process started"
+    return None
 
 
 def _refusal(error: Exception) -> str:
     return str(error) if isinstance(error, K4OptError) else f"{type(error).__name__}: {error}"
 
 
-def serve(connection: Connection) -> int:
-    """Answer the coordinator at the other end of ``connection`` until it closes it."""
+def serve(connection: Connection, refused: str | None = None) -> int:
+    """Answer the coordinator at the other end of ``connection`` until it closes it; one that
+    must be ``refused`` is told why once it sent the session."""
     try:
         spec = connection.recv()
     except EOFError:
         return 0
+    if refused is not None:
+        connection.send(("refused", refused))
+        return 1
     try:
         session = Session.of(spec, started=lambda group: connection.send(("started", group)))
     except Exception as exc:
@@ -319,10 +331,9 @@ def main(argv: Sequence[str]) -> int:
     """Serve the coordinator at the end ``argv[0]`` of a socket pair; ``argv[1]`` is its pid."""
     fd, parent = int(argv[0]), int(argv[1])
     signal.signal(signal.SIGTERM, _cancel)
-    if not _die_with(parent):
-        return 1
+    refused = _die_with(parent)
     try:
         with Connection(fd) as connection:
-            return serve(connection)
+            return serve(connection, refused)
     except Cancelled:
         return 128 + signal.SIGTERM
