@@ -90,8 +90,9 @@ def _fake(directory: Path, events: int, burn: float) -> tuple[Path, list[Any], s
 
 def _cpu() -> float:
     """Processor seconds of this process and of what it waited for, so far."""
-    own, waited = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(
-        resource.RUSAGE_CHILDREN
+    own, waited = (
+        resource.getrusage(resource.RUSAGE_SELF),
+        resource.getrusage(resource.RUSAGE_CHILDREN),
     )
     return own.ru_utime + own.ru_stime + waited.ru_utime + waited.ru_stime
 
@@ -125,12 +126,14 @@ def run(
         clear.write_text("5")  # the session's own peak, from now
     cpu, began = _cpu(), time.perf_counter()
     summaries = []
-    with EvaluationSession.open(path, evaluators, jobs=jobs) as session:
-        with session.evaluate_each(requests) as evaluations:
-            for _, outcome in evaluations:
-                if isinstance(outcome, Exception):
-                    raise outcome
-                summaries.append(dict(outcome.summary))
+    with (
+        EvaluationSession.open(path, evaluators, jobs=jobs) as session,
+        session.evaluate_each(requests) as evaluations,
+    ):
+        for _, outcome in evaluations:
+            if isinstance(outcome, Exception):
+                raise outcome
+            summaries.append(dict(outcome.summary))
     wall = time.perf_counter() - began
     used = _cpu() - cpu
     held = sum(_held(entry, threads) for s in summaries for entry in _tasks(s))
