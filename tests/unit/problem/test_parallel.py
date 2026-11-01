@@ -8,14 +8,17 @@ directory, never sleeps, say when a simulation started or ended.
 from __future__ import annotations
 
 import copy
+import errno
 import json
 import multiprocessing
 import os
 import pickle
 import signal
+import struct
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
+from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +40,7 @@ from k4opt.problem import (
     _worker,
     load_problem,
 )
+from k4opt.problem._work import TaskSpec
 from tests.support import stack
 from tests.support.common import scientific
 from tests.support.evaluators import CELL_COUNT, cell_count, implementations, worker_probe
@@ -555,6 +559,31 @@ def test_a_worker_that_hangs_while_it_sets_up_is_stopped(
         assert len(stack.workers()) == 1  # the one that set up; the hung one was stopped
         assert not (tmp_path / "a" / SUMMARY_NAME).exists()
     assert stack.workers() == []
+
+
+def test_a_task_that_cannot_be_sent_whole_stops_its_candidate_and_its_worker(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch)
+    session = session_of(2)
+    (ready,) = stack.workers()  # set up when the session opened
+    sent = Connection.send
+
+    def stalled(self: Connection, message: Any) -> None:
+        if isinstance(message, tuple) and isinstance(message[0], TaskSpec):
+            # the header of a message whose rest never comes: the worker waits for it, and
+            # the send times out (SO_SNDTIMEO)
+            os.write(self.fileno(), struct.pack("!i", 1000))
+            raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+        sent(self, message)
+
+    monkeypatch.setattr(Connection, "send", stalled)
+    message = r"geometry could not be sent to its worker process \(.*\); the worker was stopped"
+    with pytest.raises(RunError, match=message):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert not alive(ready)  # never written to again, and stopped
+    monkeypatch.setattr(Connection, "send", sent)
+    assert session.evaluate({RADIUS: 450.0}, tmp_path / "b").candidate.status == "valid"
 
 
 @pytest.mark.parametrize("jobs", [1, 2])

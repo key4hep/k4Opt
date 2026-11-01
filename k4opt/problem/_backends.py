@@ -154,7 +154,8 @@ _SETUP = 300.0
 @dataclass(slots=True, eq=False)
 class _Worker:
     """A worker process and the task it runs (``running``, ``None`` while idle), with the
-    process groups of the programs that task started (``groups``)."""
+    process groups of the programs that task started (``groups``); ``lost`` is why a message
+    to it could not be sent whole, after which nothing more is written to it."""
 
     process: subprocess.Popen[bytes]
     connection: Connection
@@ -162,6 +163,7 @@ class _Worker:
     groups: set[int] = field(default_factory=set)
     ready: bool = False
     setup: float = field(default_factory=lambda: time.monotonic() + _SETUP)  # its deadline
+    lost: OSError | None = None
 
 
 class ProcessBackend:
@@ -183,6 +185,7 @@ class ProcessBackend:
         self._workers: list[_Worker] = []
         self._roots: dict[str, Path | None] = {}
         self._deaths: dict[tuple[Kind, str], int] = {}
+        self._unsent: list[Completion] = []  # tasks that never reached their worker
 
     @property
     def capacity(self) -> int:
@@ -195,6 +198,9 @@ class ProcessBackend:
         """Start a worker and wait until it is set up; :class:`~k4opt.problem.RunError` if it
         refuses the session, dies or takes too long."""
         worker = self._spawn()
+        if worker.lost is not None:
+            self._end(worker)
+            raise RunError(f"the session could not be sent to a worker process: {worker.lost}")
         while not worker.ready:
             if time.monotonic() > worker.setup:
                 self._end(worker)
@@ -230,9 +236,17 @@ class ProcessBackend:
             )
             worker = _Worker(process, Connection(ours.detach()))
         self._workers.append(worker)
-        with contextlib.suppress(OSError):  # one that died at once is found when read
-            worker.connection.send(self._spec)
+        self._send(worker, self._spec)
         return worker
+
+    def _send(self, worker: _Worker, message: object) -> None:
+        """Send ``message`` to ``worker``, unless a message to it was lost: a stream that may
+        hold part of a message is never written to again."""
+        if worker.lost is None:
+            try:
+                worker.connection.send(message)
+            except OSError as exc:
+                worker.lost = exc
 
     def open(self, workspace: Workspace) -> None:
         self._roots[workspace.id] = workspace.root
@@ -241,9 +255,24 @@ class ProcessBackend:
         worker = self._idle() or self._spawn()
         handle = Handle(spec.workspace, spec.task.id)
         worker.running = (handle, spec)
-        with contextlib.suppress(OSError):  # a worker that died is found when read
-            worker.connection.send((spec, self._roots[spec.workspace], seen))
+        self._send(worker, (spec, self._roots[spec.workspace], seen))
+        if worker.lost is not None:  # it ends at the next wait, as every task does
+            self._unsent.append(self._unreached(worker, worker.lost))
         return handle
+
+    def _unreached(self, worker: _Worker, error: OSError) -> Completion:
+        """The end of the task of ``worker``, which could not be sent to it: a worker that
+        closed its end died; one that stopped reading is stopped."""
+        if isinstance(error, (BrokenPipeError, ConnectionResetError)):
+            return self._died(worker)
+        assert worker.running is not None
+        handle, spec = worker.running
+        self._end(worker)
+        failure = RunError(
+            f"{spec.task.id.label} could not be sent to its worker process ({error}); the worker "
+            "was stopped"
+        )
+        return handle, failure, Observations()
 
     def _idle(self) -> _Worker | None:
         """A worker without a task that is still alive; one that died while idle is ended, so
@@ -256,10 +285,10 @@ class ProcessBackend:
         return None
 
     def wait(self, timeout: float) -> list[Completion]:
+        ended, self._unsent = self._unsent, []
         busy = {w.connection: w for w in self._workers if w.running is not None}
-        if not busy:
-            return []
-        ended = []
+        if not busy or ended:
+            return ended
         for ready in connection.wait(list(busy), timeout):
             assert isinstance(ready, Connection)
             completion = self._read(busy[ready])
@@ -368,6 +397,7 @@ class ProcessBackend:
         for worker in workers:
             self._end(worker, terminate=False, deadline=deadline)
         self._roots.clear()
+        self._unsent.clear()
 
 
 def _slow() -> str:
