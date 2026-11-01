@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from k4opt.problem._backends import ProcessBackend
-from tests.benchmarks.parallel import held, main
+from tests.benchmarks.parallel import held, main, valid
 
 SIMULATION = {"argv": ["/bin/ddsim", "--numberOfEvents=10", "--numberOfThreads=4"]}
 
@@ -62,3 +62,15 @@ def test_speedup_is_over_one_job_measured(
     assert info.value.code == 2  # before anything runs
     assert "the first of --jobs must be 1" in capsys.readouterr().err
     assert not (tmp_path / "bench").exists()
+
+
+@pytest.mark.parametrize("status", ["failed", "invalid"])
+def test_a_candidate_that_is_not_valid_stops_the_benchmark(status: str) -> None:
+    summary = {
+        "status": status,
+        "message": "gamma/simulation failed: ddsim exited",
+        "run_dir": "c4",
+    }
+    with pytest.raises(SystemExit, match=rf"candidate in c4 is {status}: gamma/simulation failed"):
+        valid(summary, 2)
+    assert valid({"status": "valid"}, 2) == {"status": "valid"}

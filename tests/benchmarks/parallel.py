@@ -16,6 +16,9 @@ Not a test (pytest does not collect it) and no thresholds: it prints, and writes
   program added, an estimate), ddsim's and k4opt's own, and the session's process;
 - whether every record says what the one-job run says of its candidate (all but how it ran).
 
+Every candidate must be valid: one that failed or is invalid stops the benchmark, which would
+otherwise time failures.
+
 The candidates are a fixed grid, not proposals, so that every run evaluates the same ones. With
 ``--stack real`` (needs the Key4hep stack and ``$K4GEO``) it is the pi0-rejection example on
 CLD at a few events, two samples per candidate; with ``--stack fake`` the mini geometry and the
@@ -112,6 +115,19 @@ def _tasks(summary: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return entries
 
 
+def valid(summary: dict[str, Any], jobs: int) -> dict[str, Any]:
+    """``summary``, if its candidate is valid: one that failed or is invalid (a simulation that
+    did not run, an evaluator that failed) took another time and memory than an evaluation, and
+    its records would match those of the same failure with one job. Stops the benchmark
+    otherwise."""
+    if summary.get("status") != "valid":
+        raise SystemExit(
+            f"benchmark: with {jobs} job(s), the candidate in {summary.get('run_dir')} is "
+            f"{summary.get('status')}: {summary.get('message')}; nothing is measured of failures"
+        )
+    return summary
+
+
 def held(entry: Mapping[str, Any], jobs: int) -> float:
     """The slot seconds a task held: its time, times the slots it held, as the local backend
     counts them (``ProcessBackend.cost``): a simulation one per thread, at most every slot."""
@@ -145,7 +161,7 @@ def run(
         for _, outcome in evaluations:
             if isinstance(outcome, Exception):
                 raise outcome
-            summaries.append(dict(outcome.summary))
+            summaries.append(valid(dict(outcome.summary), jobs))
     wall = time.perf_counter() - began
     used = _cpu() - cpu
     used_slots = sum(held(entry, jobs) for s in summaries for entry in _tasks(s))
@@ -240,7 +256,9 @@ def main(argv: list[str] | None = None) -> int:
         "events": args.events,
         "candidates": values,
         "threads": args.threads,
-        "processors": len(os.sched_getaffinity(0)),
+        "processors": (
+            len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+        ),
         "KEY4HEP_STACK": os.environ.get("KEY4HEP_STACK"),
     }
     for result in results:
