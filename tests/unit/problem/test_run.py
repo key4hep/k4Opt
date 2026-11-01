@@ -55,14 +55,15 @@ from k4opt.problem import (
     RunError,
     RunOutcome,
     RunRequest,
-    _stages,
+    _files,
     load_problem,
     parse_problem,
 )
+from k4opt.problem._files import Tree, stat_of
 from k4opt.problem._run import _parse_candidate, _xml_value, assemble
 from k4opt.problem._run import run_candidate as _run_candidate
-from k4opt.problem._tasks import Kind, Task, TaskId, TaskResult, Tree
-from k4opt.problem._work import TaskSpec, _stat_of, asked
+from k4opt.problem._tasks import Kind, Task, TaskId, TaskResult
+from k4opt.problem._work import TaskSpec, asked
 from k4opt.revision import code_fingerprint, code_identity
 from tests.support import simulation
 from tests.support.common import scientific, tree_digest
@@ -2300,7 +2301,7 @@ def test_a_sample_whose_simulation_fails_blocks_only_its_own_evaluations(
 def test_a_file_read_by_two_samples_is_hashed_once_and_named_for_each(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
-    from k4opt.problem._stages import _sha256
+    from k4opt.problem._files import _sha256
 
     hepmc = tmp_path / "zh.hepmc"  # next to the problem file
     hepmc.write_bytes(b"HepMC::Version 3\n")
@@ -2483,7 +2484,7 @@ def test_an_artifact_is_hashed_once_and_an_edm4hep_output_never(
         hashed.append(path)
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
-    monkeypatch.setattr(_stages, "_sha256", sha256)  # uncached: every hash is counted
+    monkeypatch.setattr(_files, "_sha256", sha256)  # uncached: every hash is counted
     run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[plotting()])
     artifact = tmp_path / "a" / "samples" / "gamma" / "evaluators" / "test.cell_count"
     assert hashed == [str(artifact / "histogram.json")]  # a gun reads no file
@@ -3085,7 +3086,7 @@ def test_a_role_that_reads_a_stage_gets_its_file_unhashed(
         hashed.append(path)
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
-    monkeypatch.setattr(_stages, "_sha256", sha256)  # uncached: every hash is counted
+    monkeypatch.setattr(_files, "_sha256", sha256)  # uncached: every hash is counted
     seen: list[RoleInput] = []
 
     class Files(Evaluator):
@@ -3288,7 +3289,7 @@ def test_a_task_run_again_in_a_copied_workspace_leaves_the_same_portable_outcome
     shutil.rmtree(copy_dir / spec.task.directory)  # its own directory is made again
     # the stats are those of this filesystem's copies, taken anew: never compared across copies
     seen = Observations(
-        {a.ref: _stat_of(copy_dir / a.path) for a in spec.watched},
+        {a.ref: stat_of(copy_dir / a.path) for a in spec.watched},
         Tree.of(copy_dir / "geometry").stats,
     )
     again, observed_again = execute_task(session._context, spec, copy_dir, seen, yields()())

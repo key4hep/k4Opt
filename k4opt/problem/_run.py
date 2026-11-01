@@ -59,12 +59,12 @@ from k4opt.problem._evaluate import (
     _validate_candidate,
     task_cpus,
 )
+from k4opt.problem._files import Made, readable_identity
 from k4opt.problem._schedule import Scheduler
-from k4opt.problem._stages import STAGE_TYPES, file_identity, input_files, plan_stages
+from k4opt.problem._stages import STAGE_TYPES, input_files, plan_stages
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
-    Made,
     PeakMemory,
     Task,
     TaskId,
@@ -282,14 +282,6 @@ def _supplied(
             raise RunError(f"input {label}={os.fspath(given)}: {path} is not a file")
         supplied[stage_task(stage, sample)] = path
     return supplied
-
-
-def _readable_identity(path: Path) -> dict[str, Json] | None:
-    """``bytes`` and ``sha256`` of a file, ``None`` if it cannot be read (its stage's to report)."""
-    try:
-        return file_identity(path)
-    except OSError:
-        return None
 
 
 def _timeout(value: float | None) -> float | None:
@@ -777,7 +769,7 @@ class EvaluationSession:
             named |= input_files(context, *targets, provided=given)
         named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
         # an unreadable file has no identity: its stage reports it, and a record still names it
-        files = {label: (file, _readable_identity(file)) for label, file in named.items()}
+        files = {label: (file, readable_identity(file)) for label, file in named.items()}
         assert spec._source is not None
         externals = freeze(spec._source.external_files(spec._catalog), "geometry", RunError)
         assert isinstance(externals, Mapping)
@@ -918,7 +910,7 @@ class EvaluationSession:
         A file is hashed again only when its size, times or inode changed.
         """
         for label, (file, opened) in self._files.items():
-            now = _readable_identity(file)
+            now = readable_identity(file)
             if now != opened:
                 raise RunError(
                     f"{label}: {file} changed after the session opened ({_described(opened)} "

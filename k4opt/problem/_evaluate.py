@@ -69,6 +69,7 @@ from k4opt.evaluation import (
 )
 from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.problem._backends import Backend, Handle, InlineBackend
+from k4opt.problem._files import portable, portable_artifact
 from k4opt.problem._instances import _Bound, _create, _Declaration, _declaration, _instance, _stage
 from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import (
@@ -108,8 +109,6 @@ from k4opt.problem._work import (
     Workspace,
     asked,
     local_result,
-    portable,
-    portable_artifact,
     show,
     to_result,
 )

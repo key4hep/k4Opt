@@ -32,6 +32,7 @@ from typing import Protocol
 
 import k4opt
 from k4opt.evaluation import EvaluationResult, EvaluatorProtocol, Status
+from k4opt.problem._files import portable
 from k4opt.problem._stages import stage_logs
 from k4opt.problem._tasks import GEOMETRY, Kind, TaskId
 from k4opt.problem._work import (
@@ -41,7 +42,6 @@ from k4opt.problem._work import (
     TaskSpec,
     Workspace,
     execute_task,
-    portable,
 )
 from k4opt.problem._worker import LOG_NAME, Failure, SessionSpec
 from k4opt.problem.errors import RunError

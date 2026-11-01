@@ -37,8 +37,6 @@ supplied stage that the parameters change was not made from the candidate.
 from __future__ import annotations
 
 import contextlib
-import functools
-import hashlib
 import os
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
@@ -54,6 +52,7 @@ from k4opt.ddsim import (
 )
 from k4opt.evaluation import EvaluationContractError, EvaluationFailed, count_events
 from k4opt.frozen import Json
+from k4opt.problem._files import file_identity, readable_identity
 from k4opt.problem.models import ProblemSpec, Stage
 
 
@@ -126,32 +125,6 @@ class StageOutcome:
     provenance: Mapping[str, Json] = field(default_factory=dict)
     error: str | None = None
     peak_memory_bytes: int | None = None
-
-
-@functools.lru_cache(maxsize=32)
-def _sha256(path: str, size: int, mtime_ns: int, ctime_ns: int, inode: int) -> str:
-    """SHA-256 of a file. The other arguments only key the cache, so the same file is read once
-    per run of candidates but a changed one is hashed again: writing to a file or replacing it
-    changes its ctime or inode even if the content keeps its size and its mtime is restored.
-    The kernel stamps ctime with a coarse clock (milliseconds), so a file rewritten within the
-    same tick as it was hashed is not told apart; input files are assumed not to change while
-    a campaign hashes them."""
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def file_identity(path: Path) -> dict[str, Json]:
-    """``bytes`` and ``sha256`` of the file at ``path``; raises :class:`OSError`."""
-    status = path.stat()
-    return {
-        "bytes": status.st_size,
-        "sha256": _sha256(
-            str(path), status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino
-        ),
-    }
 
 
 def provided_provenance(path: Path) -> dict[str, Json]:
@@ -232,7 +205,7 @@ def _run_simulation(
     assert workdir is not None  # checked by check_run_inputs
     particle_gun, input_file = _primaries(context, inputs.get("generation"))
     files = _option_files(context, stage.options)
-    read = {key: _identity_if_readable(path) for key, path in files.items()}  # before ddsim does
+    read = {key: readable_identity(path) for key, path in files.items()}  # before ddsim does
     run = simulate(
         compact=inputs["geometry"],
         workdir=workdir,
@@ -257,7 +230,7 @@ def _run_simulation(
         for key, path in files.items():
             identity = read[key]
             recorded[key] = {"path": str(path), **(identity or {})}
-            if identity is not None and _identity_if_readable(path) != identity:
+            if identity is not None and readable_identity(path) != identity:
                 changed = f"{key}: {path} changed while ddsim ran; the record cannot say which"
                 error = changed if error is None else f"{error}\n{changed}"
         provenance["files"] = recorded
@@ -268,14 +241,6 @@ def _run_simulation(
             artifacts=logs, provenance=provenance, error=error, peak_memory_bytes=peak
         )
     return StageOutcome({"events": run.output}, logs, provenance, peak_memory_bytes=peak)
-
-
-def _identity_if_readable(path: Path) -> dict[str, Json] | None:
-    """:func:`file_identity`, or ``None`` for a file that cannot be read (ddsim's to report)."""
-    try:
-        return file_identity(path)
-    except OSError:
-        return None
 
 
 def _inspect_simulation(context: StageContext, path: Path) -> tuple[dict[str, Json], str | None]:

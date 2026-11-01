@@ -28,13 +28,10 @@ no task, so the stages before it are planned only if something else needs them. 
 share nothing but the geometry: a task of one sample never reads a task of another, and only a
 combined evaluator reads tasks of several.
 
-The files a task makes in its directory (the events of a simulation, an evaluator's artifacts)
-are :class:`Made`: what the record says of each, and the file's ``stat`` when it was made. A file
-whose stat changed is no longer what the record says (:meth:`Made.changed`), so the tasks that
-read it check it before and after they run (:func:`changed_files`), and the candidate checks all
-of them at its end. The files of the geometry, which the record identifies together by their
-fingerprint and every simulation of every sample reads, are watched as one :class:`Tree`. The
-stats are machine-specific and never recorded.
+The files a task makes in its directory (the events of a simulation, an evaluator's artifacts,
+the geometry) are held by its result as :class:`~k4opt.problem._files.Made` and
+:class:`~k4opt.problem._files.Tree`, watched for changes until the candidate ends
+(:func:`changed_files`).
 """
 
 from __future__ import annotations
@@ -45,15 +42,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from k4opt.evaluation import Artifact, EvaluationContractError, EvaluationRecord, Status
+from k4opt.evaluation import EvaluationContractError, EvaluationRecord, Status
 from k4opt.frozen import FrozenMap, Json, freeze
-from k4opt.problem._stages import (
-    STAGE_TYPES,
-    file_identity,
-    graph,
-    reads_geometry,
-    writes_files,
-)
+from k4opt.problem._files import Made, Tree
+from k4opt.problem._stages import STAGE_TYPES, graph, reads_geometry, writes_files
 from k4opt.problem.models import EvaluatorSpec, MetricRef, Reference, Sample
 
 
@@ -253,82 +245,6 @@ def plan_tasks(
             needed.update(each.needs)
     assert needed <= {each.id for each in tasks}  # the problem names only evaluations it has
     return Plan(tuple(replace(each, required=each.id in needed) for each in tasks))
-
-
-type Stat = tuple[int, int, int, int]
-"""What tells a file apart from a rewritten one: its size, mtime, ctime and inode."""
-
-
-def _stat(path: Path) -> Stat | None:
-    try:
-        status = path.stat()
-    except OSError:
-        return None
-    return (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
-
-
-@dataclass(frozen=True, slots=True)
-class Made:
-    """A file a task made in its own directory: its ``artifact`` as the record names it, and its
-    ``stat`` when it was made."""
-
-    artifact: Artifact
-    stat: Stat
-
-    @classmethod
-    def file(cls, task: TaskId, name: str, path: Path, *, hashed: bool) -> Made:
-        """The file ``path`` that ``task`` made as ``name``, with its SHA-256 if ``hashed``;
-        raises :class:`OSError` if it cannot be read, or if it changes while it is hashed (its
-        size and its hash would describe other versions of it)."""
-        stat = _stat(path)
-        if stat is None or not path.is_file():
-            raise OSError(f"{path} is no file")
-        sha256 = file_identity(path)["sha256"] if hashed else None
-        assert sha256 is None or isinstance(sha256, str)
-        if hashed and _stat(path) != stat:
-            raise OSError(f"{path} changed while it was hashed")
-        return cls(Artifact(f"{task.label}#{name}", path, stat[0], sha256), stat)
-
-    def changed(self) -> bool:
-        """Whether the file is no longer what the record says: it is gone, or its stat changed
-        and it is not hashed, or hashed again it has other bytes. Equal stats are trusted."""
-        now = _stat(self.artifact.path)
-        if now == self.stat:
-            return False
-        if now is None or self.artifact.sha256 is None:
-            return True
-        try:
-            return file_identity(self.artifact.path)["sha256"] != self.artifact.sha256
-        except OSError:
-            return True
-
-
-@dataclass(frozen=True, slots=True)
-class Tree:
-    """Every file below ``root``, a directory a task made, by its path relative to ``root``, with
-    its stat when the task was done: a tree the record identifies as a whole (the geometry, by
-    its fingerprint), so any file in it that changes, goes or is added changes it."""
-
-    root: Path
-    stats: Mapping[str, Stat]
-
-    @classmethod
-    def of(cls, root: Path) -> Tree:
-        stats = {
-            path.relative_to(root).as_posix(): stat
-            for path in sorted(root.rglob("*"))
-            if not path.is_dir() and (stat := _stat(path)) is not None
-        }
-        return cls(root, FrozenMap(stats))
-
-    def changed(self) -> list[str]:
-        """The files of the tree, by relative path, that are not as they were."""
-        now = Tree.of(self.root).stats
-        return [
-            name
-            for name in dict.fromkeys([*self.stats, *now])
-            if now.get(name) != self.stats.get(name)
-        ]
 
 
 def changed_files(results: Iterable[TaskResult]) -> list[str]:
