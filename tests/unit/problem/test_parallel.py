@@ -279,6 +279,26 @@ def test_concurrent_candidates_each_write_and_record_only_their_own_files(
     assert len(ids) == 3
 
 
+def test_an_output_a_candidate_under_way_writes_to_is_refused_as_existing(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the second request may be taken while the first one's geometry still runs in a worker,
+    # before that made the directory (a large geometry, a slow filesystem): it is refused as with
+    # one job, not left to race the first one for the directory
+    stack.install(monkeypatch)
+    requests = [
+        RunRequest({RADIUS: 300.0}, tmp_path / "a", {"name": "first"}),
+        RunRequest({RADIUS: 400.0}, tmp_path / "a", {"name": "second"}),
+    ]
+    with session_of(2).evaluate_each(requests) as evaluations:
+        ended = {request.run["name"]: outcome for request, outcome in evaluations}  # type: ignore[index]
+    refused, outcome = ended["second"], ended["first"]
+    assert isinstance(refused, RunError), refused
+    assert f"output {tmp_path / 'a'} already exists; choose a new directory" in str(refused)
+    assert isinstance(outcome, RunOutcome) and outcome.candidate.status == "valid"
+    assert verified(outcome)["candidate"] == {RADIUS: 300.0}
+
+
 def threaded(path: Path, threads: int) -> Path:
     """``path``'s problem with the gamma simulation run on ``threads`` threads."""
     document = yaml.safe_load(path.read_text())

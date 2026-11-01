@@ -23,7 +23,7 @@ import re
 import time
 import uuid
 import weakref
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -1074,7 +1074,7 @@ class EvaluationSession:
             if not isinstance(request, RunRequest):  # the caller's mistake, not a candidate's
                 raise RunError(f"expected a RunRequest, got {type(request).__name__}")
             try:
-                return self._start(request)
+                return self._start(request, {run.workspace.root for run in runs.values()})
             except Exception as exc:  # before anything was created
                 return _Run(Workspace("", None), None, error=exc, request=request)
 
@@ -1097,16 +1097,17 @@ class EvaluationSession:
             if backend is not self._backend:  # the session's workers serve its next evaluation
                 backend.close()
 
-    def _start(self, request: RunRequest) -> _Run:
+    def _start(self, request: RunRequest, taken: Collection[Path | None] = ()) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory
-        (not yet created) as its workspace."""
+        (not yet created) as its workspace; the directories of the candidates under way
+        (``taken``), which their geometry may not have made yet, count as existing."""
         reference = _run_reference(request.run)
         started = time.perf_counter()
         values, key, prepared, overrides = self._prepare(request.candidate)
         if self._backend is not None:  # its workers check and evaluate instances of their own
             prepared = prepared.released()
         run_dir = Path(os.path.abspath(request.output))
-        if run_dir.exists() or run_dir.is_symlink():
+        if run_dir.exists() or run_dir.is_symlink() or run_dir in taken:
             raise RunError(f"output {run_dir} already exists; choose a new directory")
         return _Run(
             Workspace(str(uuid.uuid4()), run_dir),
