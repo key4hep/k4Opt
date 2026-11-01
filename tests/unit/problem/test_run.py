@@ -3411,3 +3411,38 @@ def test_evaluations_that_ran_out_give_the_session_back(
     evaluations = session.evaluate_each([RunRequest({RADIUS: 300.0}, tmp_path / "a")])
     assert [type(outcome).__name__ for _, outcome in evaluations] == ["RunOutcome"]
     session.evaluate({RADIUS: 300.0}, tmp_path / "b")  # not closed, but nothing is left of it
+
+
+@pytest.mark.parametrize("item", [None, {RADIUS: 300.0}])
+def test_an_item_that_is_no_request_is_refused_and_ends_nothing_silently(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, item: Any
+) -> None:
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    first = RunRequest({RADIUS: 300.0}, tmp_path / "a")
+    after = RunRequest({RADIUS: 300.0}, tmp_path / "b")
+    given = []
+
+    def consume() -> None:
+        with session.evaluate_each([first, item, after]) as evaluations:
+            for request, _ in evaluations:
+                given.append(request)
+
+    with pytest.raises(RunError, match="expected a RunRequest"):
+        consume()
+    assert given == [first] and not (tmp_path / "b").exists()
+    session.evaluate({RADIUS: 300.0}, tmp_path / "c")  # the session is free again
+
+
+def test_the_collections_of_earlier_candidates_files_are_not_kept_for_ever(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.problem import _work
+
+    monkeypatch.setattr(_work, "_LISTED", 2)
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    for name in "abcd":
+        assert session.evaluate({RADIUS: 300.0}, tmp_path / name).candidate.status == "valid"
+    assert [path.parent.parent.parent.parent.name for path, _ in session._context.listed] == [
+        "c",
+        "d",
+    ]

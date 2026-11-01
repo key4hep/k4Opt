@@ -965,9 +965,11 @@ class EvaluationSession:
         )
 
         def pull() -> _Run | None:
-            request = next(requests, None)
-            if request is None:
+            request = next(requests, _END)
+            if request is _END:
                 return None
+            if not isinstance(request, RunRequest):  # the caller's mistake, not a candidate's
+                raise RunError(f"expected a RunRequest, got {type(request).__name__}")
             try:
                 return self._start(request)
             except Exception as exc:  # before anything was created
@@ -994,8 +996,6 @@ class EvaluationSession:
     def _start(self, request: RunRequest) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory
         (not yet created) as its workspace."""
-        if not isinstance(request, RunRequest):
-            raise RunError(f"expected a RunRequest, got {type(request).__name__}")
         reference = _run_reference(request.run)
         started = time.perf_counter()
         values, key, prepared, overrides = self._prepare(request.candidate)
@@ -1099,6 +1099,9 @@ class EvaluationSession:
         prepared = _preflight(self._binding, values)
         overrides = _overrides(self._spec, values)
         return values, key, prepared, overrides
+
+
+_END = object()  # what the requests give once there are none left; no request is it
 
 
 def _prepared(run: _Run) -> _Prepared:

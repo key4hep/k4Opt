@@ -97,7 +97,8 @@ class SessionContext:
     evaluations: Mapping[TaskId, Measuring]
     externals: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
     # the collection names of each stage file, by path and stat, so that a file several
-    # evaluations read is listed once; a cache of this process, never part of a description
+    # evaluations read is listed once; a cache of this process, never part of a description,
+    # which keeps the files of the last few candidates only
     listed: dict[tuple[Path, Stat | None], tuple[str, ...] | str] = field(
         default_factory=dict, compare=False
     )
@@ -555,6 +556,8 @@ def collection_error(
     path = request.inputs[stage]
     key = (path, _stat_of(path))
     if key not in listed:
+        if len(listed) >= _LISTED:  # those of earlier candidates' files, named nowhere any more
+            del listed[next(iter(listed))]
         try:
             listed[key] = available_collections(path)
         except EvaluationFailed as exc:
@@ -579,6 +582,9 @@ def collection_error(
                 f"{collection.podio_type!r}"
             )
     return None
+
+
+_LISTED = 64  # stage files whose collections are kept listed: those of a few candidates
 
 
 def _stat_of(path: Path) -> Stat | None:
