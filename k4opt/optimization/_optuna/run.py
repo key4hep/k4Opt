@@ -7,7 +7,10 @@ study (:func:`_report`): what the optimizer learns is always what the record hol
 candidate becomes a COMPLETE trial with its objective values and one constraint value per limit
 (:func:`~k4opt.optimization._optuna.space.constraint_values`); an invalid or failed one a FAIL
 trial, and the study goes on. A trial that breaks the evaluation contract, or whose record does
-not hold up, is FAIL and stops the study.
+not hold up, is FAIL and stops the study, and the trials still running are closed as
+interrupted. With more than one job the session runs several trials at once: the optimizer is
+asked for the next candidate only when a job would be idle, and told each trial as it ends
+(:func:`_run_trials`).
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from optuna.trial import FrozenTrial, Trial, TrialState
 from k4opt.errors import K4OptError
 from k4opt.evaluation import EvaluatorProtocol
 from k4opt.optimization._optuna.optimizer import (
+    CONSTANT_LIAR,
     STARTUP_TRIALS,
     check_optuna_study,
     check_resume,
@@ -58,7 +62,15 @@ from k4opt.optimization._study import (
     write_study,
 )
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import SUMMARY_NAME, Assessment, EvaluationSession, ProblemSpec, RecordError
+from k4opt.problem import (
+    SUMMARY_NAME,
+    Assessment,
+    EvaluationSession,
+    ProblemSpec,
+    RecordError,
+    RunOutcome,
+    RunRequest,
+)
 
 _MESSAGE = 1000  # characters of a message kept in the optimizer's storage; the record has all
 
@@ -176,43 +188,115 @@ def _fail(run: _Study, trial: Trial, error: str | None = None) -> FrozenTrial:
     return run.study.tell(trial, state=TrialState.FAIL)
 
 
-def _evaluate(
-    run: _Study, session: EvaluationSession, space: Mapping[str, BaseDistribution], seed: int
-) -> FrozenTrial:
-    """Ask for one candidate, evaluate it and tell the optimizer; raise to stop the study."""
-    trial = run.study.ask(fixed_distributions=dict(space))
-    name = trial_directory(trial.number)
-    trial.set_user_attr("k4opt.dir", name)
-    trial.set_user_attr("k4opt.sampler_seed", seed)
-    candidate = {key: trial.params[key] for key in space}
-    output = run.directory / name
-    reference = {"study": run.document["id"], "trial": trial.number}
+def _stored(run: _Study, number: int) -> FrozenTrial | None:
+    """Trial ``number`` as the storage holds it now; ``None`` if it cannot be read.
+
+    Read back before a trial is told anything after an error, since a ``tell`` can commit and
+    then raise: a trial is told once."""
     try:
-        session.evaluate(candidate, output, run=reference)
+        return next(t for t in run.study.get_trials(deepcopy=False) if t.number == number)
+    except Exception:
+        return None
+
+
+def _requests(
+    run: _Study,
+    space: Mapping[str, BaseDistribution],
+    seed: int,
+    trials: int,
+    in_flight: dict[int, tuple[Trial, Path]],
+) -> Iterator[RunRequest]:
+    """Ask for ``trials`` candidates, one each time the session takes the next; each trial is in
+    ``in_flight`` from the moment it is asked for until it is settled."""
+    for _ in range(trials):
+        trial = run.study.ask(fixed_distributions=dict(space))
+        name = trial_directory(trial.number)
+        output = run.directory / name
+        in_flight[trial.number] = (trial, output)
+        trial.set_user_attr("k4opt.dir", name)
+        trial.set_user_attr("k4opt.sampler_seed", seed)
+        candidate = {key: trial.params[key] for key in space}
+        yield RunRequest(candidate, output, {"study": run.document["id"], "trial": trial.number})
+
+
+def _settle(run: _Study, trial: Trial, output: Path, result: RunOutcome | Exception) -> FrozenTrial:
+    """Tell the optimizer how the trial's evaluation ended; raise to stop the study."""
+    try:
+        if isinstance(result, Exception):
+            raise result
         return _report(run, trial, {})
     except KeyboardInterrupt:
-        _close_interrupted(run, trial, output)
+        with contextlib.suppress(Exception):  # one that cannot be told is left to --resume
+            _close_interrupted(run, trial, output)
         raise
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
-        _fail(run, trial, error)
         raise OptimizationError(
-            f"trial {trial.number} stops the study ({name} is FAIL): {error}"
+            f"trial {trial.number} stops the study ({_failed(run, trial, error)}): {error}"
         ) from exc
 
 
+def _failed(run: _Study, trial: Trial, error: str) -> str:
+    """Tell ``trial`` FAIL with ``error`` unless the storage holds it ended; what became of it."""
+    name = trial_directory(trial.number)
+    stored = _stored(run, trial.number)
+    if stored is None:
+        return f"the state of {name} could not be read; k4opt optimize --resume settles it"
+    if stored.state != TrialState.RUNNING:
+        return f"{name} is {stored.state.name}"
+    try:
+        _fail(run, trial, error)
+    except Exception:
+        return f"{name} could not be told FAIL; k4opt optimize --resume settles it"
+    return f"{name} is FAIL"
+
+
 def _close_interrupted(run: _Study, trial: Trial, output: Path) -> None:
-    """A trial that Ctrl-C or SIGTERM ended: told its record if that was published just before,
-    FAIL otherwise, its directory left as it is."""
+    """A trial that Ctrl-C, SIGTERM or another trial's error ended: told its record if that was
+    published just before, FAIL otherwise, its directory left as it is; nothing if the storage
+    holds it ended already, or cannot say (a resume settles it)."""
+    stored = _stored(run, trial.number)
+    if stored is None or stored.state != TrialState.RUNNING:
+        return
     if (output / SUMMARY_NAME).is_file():
         # the interruption may have come within _report, after the constraints were set
-        (frozen,) = [t for t in run.study.get_trials(deepcopy=False) if t.number == trial.number]
         try:
-            _report(run, trial, frozen.constraints)
+            _report(run, trial, stored.constraints)
             return
         except K4OptError:
             pass  # a record that does not hold up is no result
     _fail(run, trial)
+
+
+def _run_trials(
+    run: _Study,
+    session: EvaluationSession,
+    space: Mapping[str, BaseDistribution],
+    seed: int,
+    trials: int,
+    progress: Progress,
+) -> None:
+    """Run ``trials`` new trials, as many at once as the session has jobs, each told as it ends.
+
+    The optimizer is asked for a candidate only when a job would otherwise be idle, and after
+    every trial that ended was told. Whatever stops the study first stops the evaluations still
+    running; their trials are then closed as interrupted, in number order, and one that cannot
+    be is left RUNNING for a resume to settle.
+    """
+    in_flight: dict[int, tuple[Trial, Path]] = {}
+    try:
+        requests = _requests(run, space, seed, trials, in_flight)
+        with session.evaluate_each(requests) as evaluations:
+            for request, result in evaluations:
+                assert isinstance(request.run, Mapping)
+                number = request.run["trial"]
+                assert isinstance(number, int)
+                trial, output = in_flight.pop(number)  # settled by _settle, whatever it raises
+                progress(_trial_report(run, _settle(run, trial, output, result)))
+    finally:  # nothing runs any more
+        for number in sorted(in_flight):
+            with contextlib.suppress(Exception):  # one that cannot be told: --resume
+                _close_interrupted(run, *in_flight[number])
 
 
 def _recover(run: _Study, progress: Progress) -> None:
@@ -298,6 +382,7 @@ def optimize(
     resume: bool,
     storage: str | None,
     timeout: float | None,
+    jobs: int,
     warn: Warn,
     progress: Progress,
 ) -> StudyReport:
@@ -309,10 +394,36 @@ def optimize(
         raise OptimizationError(f"seed must be in [0, 2**32), got {seed}")
     if resume and seed is not None:
         raise OptimizationError("a resumed study keeps the seed it was made with; leave out --seed")
+    if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
+        raise OptimizationError(f"jobs must be a positive integer, got {jobs!r}")
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
+    # its workers, with more than one job, stop with the study however it ends
+    with EvaluationSession.open(problem, implementations, timeout=timeout, jobs=jobs) as session:
+        return _run_study(
+            session,
+            directory,
+            trials=trials,
+            seed=seed,
+            resume=resume,
+            storage=storage,
+            warn=warn,
+            progress=progress,
+        )
+
+
+def _run_study(
+    session: EvaluationSession,
+    directory: Path,
+    *,
+    trials: int,
+    seed: int | None,
+    resume: bool,
+    storage: str | None,
+    warn: Warn,
+    progress: Progress,
+) -> StudyReport:
     # everything that can be checked before a file is created
-    session = EvaluationSession.open(problem, implementations, timeout=timeout)
     spec = session.spec
     space = search_space(spec)  # the evaluators' settings were checked when the session opened
     identity: dict[str, Any] = session.identity()
@@ -364,10 +475,9 @@ def optimize(
             seed = document["optimizer"]["sampler"]["seed"]
             seed_now = session_seed(seed, len(study.trials))
             study.sampler = optuna.samplers.TPESampler(
-                seed=seed_now, n_startup_trials=STARTUP_TRIALS
+                seed=seed_now, n_startup_trials=STARTUP_TRIALS, constant_liar=CONSTANT_LIAR
             )
-            for _ in range(trials):
-                progress(_trial_report(run, _evaluate(run, session, space, seed_now)))
+            _run_trials(run, session, space, seed_now, trials, progress)
             return _study_report(run)
     except Exception as exc:
         replacement, secret = leaving(exc, storage)

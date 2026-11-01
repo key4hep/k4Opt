@@ -21,7 +21,7 @@ from optuna.trial import TrialState
 from k4opt.evaluation import EvaluationContractError
 from k4opt.optimization import STUDY_NAME, OptimizationError, optimize
 from k4opt.optimization._render import trial_line
-from k4opt.problem import Assessment, EvaluationSession, load_problem
+from k4opt.problem import Assessment, Evaluations, load_problem
 from tests.support import simulation
 from tests.support.evaluators import (
     candidate_check,
@@ -300,19 +300,28 @@ def test_an_evaluator_that_breaks_the_contract_stops_the_study(
     assert not (tmp_path / "s" / "trial-000000" / "summary.json").exists()
 
 
+def _tamper(monkeypatch: pytest.MonkeyPatch, change: Callable[[dict[str, Any]], None]) -> None:
+    """Change each published record with ``change`` before the study reads it back."""
+    following = Evaluations.__next__
+
+    def tampering(self: Evaluations) -> Any:
+        request, outcome = following(self)
+        if not isinstance(outcome, Exception):
+            data = json.loads(outcome.summary_path.read_text())
+            change(data)
+            outcome.summary_path.write_text(json.dumps(data))
+        return request, outcome
+
+    monkeypatch.setattr(Evaluations, "__next__", tampering)
+
+
 def test_a_record_that_does_not_hold_up_stops_the_study(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    evaluate = EvaluationSession.evaluate
-
-    def tampering(self: EvaluationSession, *args: Any, **kwargs: Any) -> Any:
-        outcome = evaluate(self, *args, **kwargs)
-        data = json.loads(outcome.summary_path.read_text())
+    def tampering(data: dict[str, Any]) -> None:
         data["metrics"][0]["value"] = 1.0  # not what its evaluator measured
-        outcome.summary_path.write_text(json.dumps(data))
-        return outcome
 
-    monkeypatch.setattr(EvaluationSession, "evaluate", tampering)
+    _tamper(monkeypatch, tampering)
     with pytest.raises(
         OptimizationError, match=r"trial 0 stops the study.*metric test\.trade_off/analysis/a"
     ):
@@ -324,17 +333,11 @@ def test_a_record_that_does_not_hold_up_stops_the_study(
 def test_a_record_of_other_external_geometry_files_stops_the_study(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    evaluate = EvaluationSession.evaluate
-
-    def tampering(self: EvaluationSession, *args: Any, **kwargs: Any) -> Any:
-        outcome = evaluate(self, *args, **kwargs)
-        data = json.loads(outcome.summary_path.read_text())
+    def tampering(data: dict[str, Any]) -> None:
         for entry in data["geometry"]["externals"].values():
             entry["sha256"] = "0" * 64  # not what the study read
-        outcome.summary_path.write_text(json.dumps(data))
-        return outcome
 
-    monkeypatch.setattr(EvaluationSession, "evaluate", tampering)
+    _tamper(monkeypatch, tampering)
     message = r"trial 0 stops the study.*through the geometry's external references"
     with pytest.raises(OptimizationError, match=message):
         study(write_problem(), tmp_path / "s")
@@ -405,6 +408,9 @@ def test_a_bug_of_k4opt_is_not_dressed_up_as_a_study_error(
         ({"seed": 2**32}, r"seed must be in \[0, 2\*\*32\)"),
         ({"seed": "1"}, "seed must be an integer"),
         ({"resume": True, "seed": 3}, "a resumed study keeps the seed"),
+        ({"jobs": 0}, "jobs must be a positive integer"),
+        ({"jobs": True}, "jobs must be a positive integer"),
+        ({"jobs": "2"}, "jobs must be a positive integer"),
     ],
 )
 def test_unusable_arguments_are_refused_before_anything_is_created(
