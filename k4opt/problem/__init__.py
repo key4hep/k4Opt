@@ -31,13 +31,8 @@ Typical use::
 
 from k4opt.problem._assess import Assessment, Limit, ObjectiveValue
 from k4opt.problem._evaluate import Activity
-from k4opt.problem._run import (
-    Evaluations,
-    EvaluationSession,
-    RunOutcome,
-    RunRequest,
-    peak_memory,
-)
+from k4opt.problem._run import Evaluations, EvaluationSession, RunOutcome, RunRequest
+from k4opt.problem._summary import peak_memory
 from k4opt.problem._tasks import PeakMemory
 from k4opt.problem._work import SUMMARY_NAME
 from k4opt.problem.config import load_problem, parse_problem

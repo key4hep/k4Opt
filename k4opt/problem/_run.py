@@ -1,18 +1,16 @@
 """Candidates of a problem file, evaluated end to end (behind ``k4opt evaluate``).
 
 :class:`EvaluationSession` loads the problem once, binds and checks the evaluator
-implementations and records the identity of every file the problem names. For each candidate it
-then validates the candidate, creates a new instance of each evaluator and checks its request
-for the candidate, checks that no such file changed (nothing is created before this succeeds),
-and runs the candidate's tasks in a new run directory through
-:func:`k4opt.problem._evaluate._execute_plan`: the geometry task materializes the candidate's
-geometry into it, each pipeline stage of each sample runs once and each evaluation measures its
-sample, or the candidate, with its new instance. It then assesses the candidate against the
-objectives and constraints (:mod:`k4opt.problem._assess`) and writes ``summary.json``, which
-:func:`assemble` makes from the task results alone. Every path the record holds of a file in the
-run directory is relative to it, so a record stays true wherever the directory is moved; the
-run directory itself is recorded once, as ``run_dir``. :func:`run_candidate` evaluates one candidate
-given as ``REFERENCE=VALUE`` strings.
+implementations (:mod:`k4opt.problem._binding`) and records the identity of every file the
+problem names. For each candidate it then validates the candidate, creates a new instance of each
+evaluator and checks its request for the candidate, checks that no such file changed (nothing is
+created before this succeeds), and runs the candidate's tasks in a new run directory
+(:mod:`k4opt.problem._evaluate`): the geometry task materializes the candidate's geometry into
+it, each pipeline stage of each sample runs once and each evaluation measures its sample, or the
+candidate, with its new instance. It then assesses the candidate against the objectives and
+constraints (:mod:`k4opt.problem._assess`) and writes its ``summary.json``
+(:mod:`k4opt.problem._summary`). :func:`run_candidate` evaluates one candidate given as
+``REFERENCE=VALUE`` strings.
 """
 
 from __future__ import annotations
@@ -32,13 +30,12 @@ from k4opt import __version__
 from k4opt.evaluation import (
     CandidateKey,
     EvaluatorProtocol,
-    Measurement,
     Scalar,
 )
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.jsonio import write_json
-from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
+from k4opt.problem._assess import Assessment, assess
 from k4opt.problem._backends import Backend, InlineBackend, ProcessBackend
 from k4opt.problem._binding import (
     _bind_problem,
@@ -57,17 +54,15 @@ from k4opt.problem._candidate import (
 )
 from k4opt.problem._cpus import AUTO, usable_cpus
 from k4opt.problem._evaluate import Activity, _drive, _finish_plan, _Run
-from k4opt.problem._files import Made, readable_identity
+from k4opt.problem._files import readable_identity
 from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import STAGE_TYPES, input_files, plan_stages
+from k4opt.problem._summary import assemble
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
-    PeakMemory,
-    Task,
     TaskId,
     TaskResult,
-    evaluations,
     stage_task,
 )
 from k4opt.problem._work import (
@@ -80,12 +75,9 @@ from k4opt.problem._work import (
 )
 from k4opt.problem._worker import session_spec
 from k4opt.problem.config import load_problem
-from k4opt.problem.errors import RecordError, RunError
-from k4opt.problem.models import EvaluatorSpec, ProblemSpec
+from k4opt.problem.errors import RunError
+from k4opt.problem.models import ProblemSpec
 from k4opt.revision import code_identity, code_unchanged
-
-LOCAL: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": 1})
-"""How a session executes its tasks by default: one after another, in its own process."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,14 +110,6 @@ class RunOutcome:
                 requested = samples[task.id.sample]["simulation"].get("events")
                 events[task.id.sample] = (found, requested)
         return events
-
-
-def _measurement(m: Measurement | None) -> dict[str, object]:
-    return {
-        "value": None if m is None else m.value,
-        "unit": None if m is None else m.unit,
-        "uncertainty": None if m is None else m.uncertainty,
-    }
 
 
 def _parse_inputs(assignments: Sequence[str]) -> dict[str, str]:
@@ -192,242 +176,6 @@ def _run_reference(run: Mapping[str, Json] | None) -> object:
     if not isinstance(run, Mapping):
         raise RunError(f"run must be a mapping, got {type(run).__name__}")
     return thaw(freeze(run, "run", RunError))
-
-
-def _relative(path: Path, run_dir: Path) -> str:
-    """How the record names ``path``, a file in the run directory ``run_dir``: relative to it."""
-    return path.resolve().relative_to(run_dir.resolve()).as_posix()
-
-
-def _artifact(made: Made, run_dir: Path) -> dict[str, object]:
-    """A file a task made, as the record names it; ``sha256`` is ``null`` unless it was hashed."""
-    artifact = made.artifact
-    return {
-        "ref": artifact.ref,
-        "path": _relative(artifact.path, run_dir),
-        "bytes": artifact.bytes,
-        "sha256": artifact.sha256,
-    }
-
-
-def _memory(result: TaskResult) -> dict[str, object]:
-    """A task's peak memory as its record says it, in bytes: of the k4opt process that did its
-    work (``process``) and of the program a stage ran (``program``); ``null`` for one that did
-    not run. How it ran, never what was evaluated."""
-    return {"peak_memory_bytes": None if result.memory is None else result.memory.to_dict()}
-
-
-def _fragment(result: TaskResult) -> dict[str, object]:
-    """What every task's part of the summary says first: how it ended, and why."""
-    return {"status": result.status, "message": result.message}
-
-
-def _reads(task: Task, result: TaskResult) -> dict[str, object]:
-    """What every task's part of the summary says of the tasks before it: those it reads, and
-    those of them that kept it from running."""
-    return {
-        "reads": [need.label for need in task.needs],
-        "blocked_by": [cause.label for cause in result.blocked_by],
-    }
-
-
-def _stage(task: Task, result: TaskResult, run_dir: Path) -> dict[str, object]:
-    """One stage's part of the summary: how it ended, how it ran, where, and what it made."""
-    provenance = thaw(result.provenance)
-    assert isinstance(provenance, dict)
-    return (
-        _fragment(result)
-        | provenance
-        | {
-            "directory": task.directory,
-            "outputs": {name: _artifact(made, run_dir) for name, made in result.made.items()},
-            "logs": {role: _relative(path, run_dir) for role, path in result.artifacts.items()},
-        }
-        | _reads(task, result)
-        | {"elapsed_seconds": result.elapsed_seconds}
-        | _memory(result)
-    )
-
-
-def _evaluation(
-    task: Task, result: TaskResult, entry: EvaluatorSpec, run_dir: Path
-) -> dict[str, object]:
-    """One evaluation's own part of the summary: nothing of the stages it shares, nor of its
-    implementation, which ``implementations`` records once, nor of what its roles read, which is
-    recorded by the tasks that made it."""
-    record = result.record
-    assert record is not None  # every binding has one, a blocked one too
-    outcome, request = record.result, record.request
-    # what each role of an evaluation of the candidate reads, by the task that made it
-    roles = {role: [item.label for item in items] for role, items in entry.roles.items()}
-    return {
-        "implementation": entry.name,
-        **_fragment(result),
-        # as the problem wrote them, and as the evaluator received them (defaults filled in,
-        # quantities in the declared unit)
-        "settings": {"declared": thaw(entry.settings), "used": thaw(request.settings)},
-        "collections": dict(request.collections),
-        **({} if task.id.sample is not None else {"roles": roles}),
-        **_reads(task, result),
-        "measurements": [
-            {"stage": m.stage, "metric": m.metric} | _measurement(m) for m in outcome.measurements
-        ],
-        "artifacts": {name: _artifact(made, run_dir) for name, made in result.made.items()},
-        "provenance": thaw(outcome.provenance),
-        # its own directory, made just before it was called; none if it was not
-        "workdir": None if request.workdir is None else task.directory,
-        # what it printed while it was called in a worker process; none in the caller's process
-        "log": _relative(log, run_dir) if (log := result.artifacts.get("log")) else None,
-        "elapsed_seconds": record.elapsed_seconds,
-        **_memory(result),
-    }
-
-
-def assemble(
-    record_id: str,
-    problem_path: Path,
-    spec: ProblemSpec,
-    values: Mapping[str, Scalar],
-    candidate: CandidateRecord,
-    assessment: Assessment,
-    run_dir: Path,
-    taken: Mapping[str, Mapping[str, Json]],
-    run: object,
-    process: Mapping[str, Json],
-    execution: Mapping[str, Json] = LOCAL,
-) -> dict[str, object]:
-    """The summary of a candidate, made from its task results and nothing else that ran.
-
-    Each task's part (``geometry``; each sample's ``stages`` and ``evaluations``; the
-    ``evaluations`` of the candidate) is made from that task's result alone; the candidate's
-    ``status``, ``message``, ``required``, ``diagnostics``, ``metrics`` and ``assessment`` derive
-    from them and the plan, as
-    :meth:`Assessment.from_summary` derives them again.
-    ``record_id`` is the record's identity; the rest is what the session holds: the problem,
-    what it recorded of each implementation (``taken``: its version, stage, source and metrics)
-    and of the process (``process``), and how it executed the tasks (``execution``: provenance,
-    which no identity or comparison of records reads).
-    """
-    plan, results = candidate.plan, candidate.results
-    environment = thaw(process["environment"])
-    assert isinstance(environment, dict)
-    started = [
-        argv
-        for task in plan.of(Kind.STAGE)
-        if isinstance(argv := results[task.id].provenance.get("argv"), (list, tuple)) and argv
-    ]
-    entries = dict(evaluations(spec.samples, spec.evaluators))
-    geometry = results[GEOMETRY]
-
-    def measured(sample: str | None) -> dict[str, object]:
-        """The evaluations of ``sample``, or of the candidate, by binding."""
-        return {
-            task.id.name: _evaluation(task, results[task.id], entries[task.id], run_dir)
-            for task in plan.of(Kind.EVALUATOR)
-            if task.id.sample == sample
-        }
-
-    made = thaw(geometry.provenance)
-    assert isinstance(made, dict)
-    return {
-        "schema": SUMMARY_SCHEMA,
-        "id": record_id,  # the record's identity, wherever it is copied to
-        "run": run,  # what the caller evaluates it for (a study and trial, say), null if nothing
-        # where it was made, which the paths of its files are relative to; it may move since
-        "run_dir": str(run_dir),
-        "problem": {"path": str(problem_path), "name": spec.name, "definition": spec.to_dict()},
-        "candidate": dict(values),
-        "candidate_key": [list(part) for part in candidate.candidate_key],
-        "status": candidate.status,
-        "message": candidate.message,
-        # the tasks the status is decided by: what the objectives, constraints and the evaluators
-        # marked required read; the others are diagnostics
-        "required": [task.id.label for task in plan.tasks if task.required],
-        # each diagnostic that did not succeed, which the status leaves out
-        "diagnostics": [
-            {"task": result.id.label, "status": result.status, "message": result.message}
-            for result in candidate.diagnostics
-        ],
-        # False if a required stage file was supplied that was not made from this candidate
-        "represents_candidate": candidate.represents_candidate,
-        "supplied": sorted(candidate.supplied),
-        "warnings": list(candidate.warnings),
-        # the objective and constraint metrics, each from the binding it names
-        "metrics": [
-            {"evaluator": ref.evaluator, "sample": ref.sample, "stage": ref.stage}
-            | {"metric": ref.metric, "label": ref.label}
-            | _measurement(candidate.value(ref))
-            for ref in spec.references
-        ],
-        # the objectives and the constraints judged, from those metrics
-        "assessment": assessment.to_dict(),
-        # each implementation once, however many bindings it has
-        "implementations": {name: thaw(entry) for name, entry in taken.items()},
-        # each sample's stages, each recorded once, and the evaluations of the sample
-        "samples": {
-            sample: {
-                "stages": {
-                    task.id.name: _stage(task, results[task.id], run_dir)
-                    for task in plan.of(Kind.STAGE)
-                    if task.id.sample == sample
-                },
-                "evaluations": measured(sample),
-            }
-            for sample in spec.samples
-        },
-        # the evaluations of the candidate, of no sample
-        "evaluations": measured(None),
-        "elapsed_seconds": candidate.elapsed_seconds,
-        "geometry": {"status": geometry.status}
-        | made
-        | {"elapsed_seconds": geometry.elapsed_seconds}
-        | _memory(geometry),
-        "environment": {
-            # declared by the problem: a pin, not a check of what ran
-            "declared": spec.environment.to_dict()["key4hep"],
-            # observed in this process; ddsim is the executable that was started
-            "observed": {
-                "k4opt": __version__,
-                # what the version only labels: the content of its code, and its checkout
-                "k4opt_source": thaw(process["k4opt"]),
-                # the session's, which the process still had when this candidate started
-                **environment,
-                "ddsim": started[0][0] if started else None,
-                # where and how the tasks ran: provenance, never part of what was evaluated
-                "execution": thaw(execution),
-            },
-        },
-    }
-
-
-def peak_memory(summary: Mapping[str, object]) -> dict[str, PeakMemory]:
-    """The peak memory of each task a ``summary.json`` records, by the task's label
-    (``geometry``, ``gamma/simulation``, ``gamma/calo.photon``, ``pi0_rejection``), for the tasks
-    that ran; read as the record holds it, in bytes. Raises
-    :class:`~k4opt.problem.RecordError` for one that is not a peak memory."""
-    entries: dict[str, object] = {"geometry": summary.get("geometry")}
-    samples = summary.get("samples")
-    for sample, part in (samples if isinstance(samples, Mapping) else {}).items():
-        for kind in ("stages", "evaluations"):
-            tasks = part.get(kind) if isinstance(part, Mapping) else None
-            for name, entry in (tasks if isinstance(tasks, Mapping) else {}).items():
-                entries[f"{sample}/{name}"] = entry
-    evaluations = summary.get("evaluations")
-    entries |= dict(evaluations) if isinstance(evaluations, Mapping) else {}
-    found: dict[str, PeakMemory] = {}
-    for label, entry in entries.items():
-        value = entry.get("peak_memory_bytes") if isinstance(entry, Mapping) else None
-        if value is None:
-            continue
-        if not isinstance(value, Mapping) or set(value) != {"process", "program"}:
-            raise RecordError(f"{label}: peak_memory_bytes is no process and program: {value!r}")
-        for key, count in value.items():
-            if count is not None and (
-                isinstance(count, bool) or not isinstance(count, int) or count < 0
-            ):
-                raise RecordError(f"{label}: peak_memory_bytes.{key} is no number of bytes")
-        found[label] = PeakMemory(value["process"], value["program"])
-    return found
 
 
 @dataclass(frozen=True, slots=True)

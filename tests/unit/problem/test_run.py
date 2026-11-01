@@ -61,8 +61,8 @@ from k4opt.problem import (
 )
 from k4opt.problem._candidate import _parse_candidate, _xml_value
 from k4opt.problem._files import Tree, stat_of
-from k4opt.problem._run import assemble
 from k4opt.problem._run import run_candidate as _run_candidate
+from k4opt.problem._summary import assemble
 from k4opt.problem._tasks import Kind, Task, TaskId, TaskResult
 from k4opt.problem._work import TaskSpec, asked
 from k4opt.revision import code_fingerprint, code_identity
