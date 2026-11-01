@@ -255,22 +255,27 @@ def execute_task(
     seen: Observations,
     instance: EvaluatorProtocol | None = None,
     output: Output | None = None,
+    *,
+    make: Callable[[], EvaluatorProtocol] | None = None,
 ) -> tuple[TaskOutcome, Observations]:
     """Do the work of the task ``spec`` in the workspace whose directory is ``root`` here
     (``None``: the candidate has no directory, so no task of it writes).
 
     ``seen`` holds the stats taken of the files the task's reads made, which it checks before and
     after it runs. An evaluation calls ``instance``, within ``output`` of its own directory if
-    given (a worker process points the evaluator's output at a log there). Returns what the task
-    left behind and the
+    given (a worker process points the evaluator's output at a log there), or the instance
+    ``make`` returns, which the task makes first (a worker: a new instance, checked), so that
+    making it counts as the task's work. Returns what the task left behind and the
     stats of what it made. Raises what the work of the task raises: a geometry that cannot be
     made, an :class:`~k4opt.evaluation.EvaluationContractError` for a result that breaks the
     evaluation contract, or any exception of an evaluator other than
     :class:`~k4opt.evaluation.EvaluationFailed` and :class:`~k4opt.evaluation.EvaluationInvalid`.
-    The outcome holds the peak memory of this process while it did the task, and that of the
-    program a stage ran.
+    The outcome holds the peak memory of this process while it did the task, the making of its
+    instance included, and that of the program a stage ran.
     """
     measuring = _reset_peak()
+    if make is not None:
+        instance = make()
     outcome, observed = _run_task(context, spec, root, seen, instance, output)
     program = None if outcome.memory is None else outcome.memory.program
     process = _process_peak() if measuring else None

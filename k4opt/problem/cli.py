@@ -159,7 +159,7 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
         parts = [f"k4opt {size(memory.process)}"] if memory.process is not None else []
         parts += [f"ddsim {size(memory.program)}"] if memory.program is not None else []
         print(
-            f"memory:      {size(most or 0)} per job at most, for {label} ({', '.join(parts)})",
+            f"memory:      {size(most or 0)} per job (estimate), for {label} ({', '.join(parts)})",
             file=out,
         )
     print(f"summary:     {outcome.summary_path}", file=out)

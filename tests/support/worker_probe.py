@@ -5,7 +5,8 @@ which no monkeypatch reaches. Reads the simulation stage (none of its collection
 What else it does is said by the environment variable ``WORKER_PROBE``, a JSON object keyed by
 the binding, and by ``<run>.<binding>`` for one run directory alone (a worker keeps the
 environment it started with): ``mark`` writes a file first, ``await`` waits until each file of
-a list exists, ``allocate`` holds that many MiB for a moment, ``print`` prints that text to
+a list exists, ``allocate`` holds that many MiB for a moment (``check_allocate`` in ``check()``,
+by binding alone), ``print`` prints that text to
 stdout and stderr, ``raise`` raises a
 ``ValueError`` with that text, ``contract`` an ``EvaluationContractError``, ``kill`` sends
 its own process SIGKILL, and ``stall`` writes the start of an answer to the coordinator and
@@ -34,6 +35,11 @@ class WorkerProbe(Evaluator):
 
     def check(self, request):
         super().check(request)
+        told = json.loads(os.environ.get("WORKER_PROBE", "{}")).get(request.settings["binding"], {})
+        if "check_allocate" in told:
+            held = bytearray(told["check_allocate"] << 20)
+            held[:: 1 << 12] = b"x" * len(held[:: 1 << 12])  # every page resident
+            del held
         self.checked = True
 
     def evaluate(self, request):

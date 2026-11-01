@@ -41,7 +41,7 @@ from pathlib import Path
 from types import FrameType
 
 from k4opt.errors import K4OptError
-from k4opt.evaluation import evaluator_source, load_evaluator
+from k4opt.evaluation import EvaluatorProtocol, evaluator_source, load_evaluator
 from k4opt.frozen import FrozenMap, Json
 from k4opt.problem._instances import _Bound, _instance
 from k4opt.problem._tasks import Kind, TaskId
@@ -223,16 +223,21 @@ class Session:
     def run(self, spec: TaskSpec, root: Path | None, seen: Observations) -> Message:
         """Do the task ``spec`` in the workspace ``root``: the answer to send."""
         task = spec.task.id
+
+        def checked() -> EvaluatorProtocol:
+            """A new instance, checked as in the preflight; it is the one that evaluates."""
+            assert spec.request is not None
+            instance = _instance(self.bound[task])
+            check = getattr(instance, "check", None)
+            if check is not None:
+                check(spec.request)
+            return instance
+
         try:
-            instance = None
-            if task.kind is Kind.EVALUATOR:
-                assert spec.request is not None
-                instance = _instance(self.bound[task])
-                check = getattr(instance, "check", None)
-                if check is not None:  # on the instance that evaluates, as in the preflight
-                    check(spec.request)
+            # made within the task, so that its peak memory counts what that took
+            make = checked if task.kind is Kind.EVALUATOR else None
             outcome, observed = execute_task(
-                self.context, spec, root, seen, instance, output=_logged
+                self.context, spec, root, seen, output=_logged, make=make
             )
         except Exception as exc:
             return ("failed", Failure.of(exc))

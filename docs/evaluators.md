@@ -42,10 +42,10 @@ evaluations of a simulation, each in a worker process of its own
 ([execution](evaluation.md#execution-jobs-and-worker-processes)); a simulation on several
 threads (`numberOfThreads`) holds as many jobs, and `--jobs auto` takes as many jobs as the
 processors the command may use. It bounds the processors k4opt keeps busy, not the memory each
-task takes: the command prints what one job needed at most (`memory:`), and each task's peak is
-in the summary, so choose N for the memory as much as for the processors. The default, 1, runs
-them one after another in the command's own process. Like `--timeout`, it is not part of the problem, and `summary.json`
-records it as provenance only (`environment.observed.execution`).
+task takes: the command prints an estimate of what one job needs (`memory:`), and each task's
+peak is in the summary, so choose N for the memory as much as for the processors. The default,
+1, runs them one after another in the command's own process. Like `--timeout`, it is not part of
+the problem, and `summary.json` records it as provenance only (`environment.observed.execution`).
 
 One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`); from
 Python, an [`EvaluationSession`](evaluation.md#evaluating-candidates-evaluationsession)

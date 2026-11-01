@@ -356,8 +356,9 @@ class PeakMemory:
 
     @property
     def per_job(self) -> int | None:
-        """What one job needs for the task: both peaks added, as if they came at once (they
-        may not, so this is at most what it held); ``None`` if neither is known."""
+        """An estimate of what one job needs for the task: both peaks added; ``None`` if neither
+        is known. Not a bound: the peaks need not come at once (it is then high), and a program
+        that runs several processes at once counts by the largest (it is then low)."""
         if self.process is None and self.program is None:
             return None
         return (self.process or 0) + (self.program or 0)

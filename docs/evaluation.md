@@ -651,18 +651,23 @@ that did not run):
   process, or the session's own with one job) while it did it, all it held included (Python,
   podio, ROOT, the evaluator). It is measured per task: the process's high-water mark is reset
   before each task (`/proc/self/clear_refs`, Linux), so a worker that is reused does not carry
-  one task's peak into the next. `null` where the system cannot reset it.
+  one task's peak into the next. A worker resets it before it creates the evaluator's instance,
+  so the instance's creation and its `check()` count too; with one job they ran in the preflight,
+  before the task, and do not. `null` where the system cannot reset it.
 - `program`: for a stage that ran a program (ddsim), that program's peak, as the kernel kept it
   when it ended (`wait4`): the largest of ddsim's own and of each process it started and waited
-  for (a wrapper script's child), each on its own. `null` for every other task, and for a
-  program that did not end by itself (killed at its time limit).
+  for (a wrapper script's child), each on its own, never their sum. `null` for every other task,
+  and for a program that did not end by itself (killed at its time limit).
 
 `peak_memory(summary)` reads them back, by task label, as `PeakMemory(process, program)`; its
-`per_job` is both added, what one job needs for that task at most, as if both peaked at once.
-`k4opt evaluate` prints the task that needs most
-(`memory:      1.93 GiB per job at most, for gamma_10gev/simulation (k4opt 312 MiB, ddsim 1.62
-GiB)`). Like the times, they say how the candidate ran, never what was evaluated: no comparison
-of records reads them.
+`per_job` is both added: an **estimate** of what one job needs for that task, not a bound. The
+two peaks need not come at once, which makes it high; a program that runs several processes at
+once is counted by the largest of them, which makes it low (ddsim is one process, its Geant4
+threads share its memory). A true bound of a process tree needs the kernel's accounting of a
+cgroup, which k4opt does not set up. `k4opt evaluate` prints the task that needs most
+(`memory:      1.93 GiB per job (estimate), for gamma_10gev/simulation (k4opt 312 MiB, ddsim
+1.62 GiB)`). Like the times, they say how the candidate ran, never what was evaluated: no
+comparison of records reads them.
 
 ## Evaluating candidates: `EvaluationSession`
 
@@ -779,10 +784,10 @@ with EvaluationSession.open(problem, [CaloPhoton], jobs=4) as session:  # stops 
   number there. An HTCondor job without CPU affinity gets the whole machine too: give
   `--jobs $(request_cpus)`. More jobs than usable processors are warned about.
 - **N bounds what k4opt starts, not the memory.** Each record holds the peak memory of every task
-  (above), and `k4opt evaluate` prints what one job needed at most: a job needs that much at
-  most, and N jobs about N times as much, plus the session's own process. Measure one candidate
-  first, then choose N for the memory as much as for the processors; a shared machine (lxplus)
-  is not yours alone. k4opt sets no memory limit of its own.
+  (above), and `k4opt evaluate` prints an estimate of what one job needs: N jobs need about N
+  times as much, plus the session's own process. Measure one candidate first, then choose N for
+  the memory as much as for the processors, with some room, since it is an estimate; a shared
+  machine (lxplus) is not yours alone. k4opt sets no memory limit of its own.
 - **Records** are the same whatever N: each task gets the same configuration (geometry, stage
   options and seeds, requests), each record holds its results in plan order with the same
   statuses, blocking and diagnostics, and deterministic evaluators measure the same. Every

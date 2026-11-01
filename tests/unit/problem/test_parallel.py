@@ -358,6 +358,21 @@ def test_each_task_records_its_own_peak_memory_in_reused_workers(
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/clear_refs is Linux's")
+def test_what_making_and_checking_the_instance_took_counts_in_a_worker(
+    tmp_path: Path,
+    doc: dict[str, Any],
+    session_of: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
+    stack.install(monkeypatch)
+    probe(monkeypatch, p={"check_allocate": 300})  # in check(), released before evaluate()
+    summary = verified(session_of(2, problem).evaluate({RADIUS: 450.0}, tmp_path / "a"))
+    memory = summary["samples"]["gamma"]["evaluations"]["p"]["peak_memory_bytes"]
+    assert memory["process"] >= 300 * MIB
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/clear_refs is Linux's")
 def test_with_one_job_the_session_records_its_own_peak_memory(
     tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -579,7 +594,7 @@ def test_the_command_evaluates_with_several_jobs(
     assert main([*argv, "-j", "2", "--output", str(output)]) == 0, capsys.readouterr().err
     if sys.platform.startswith("linux"):  # the task that needs most: the pions' ddsim
         line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("memory:"))
-        assert " per job at most, for pion/simulation (k4opt " in line and ", ddsim 3" in line
+        assert " per job (estimate), for pion/simulation (k4opt " in line and ", ddsim 3" in line
     summary = json.loads((output / SUMMARY_NAME).read_text())
     assert summary["environment"]["observed"]["execution"] == {"backend": "local", "jobs": 2}
     assert stack.workers() == []  # the command's session closed its workers

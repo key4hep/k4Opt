@@ -203,8 +203,8 @@ machine, as [`k4opt evaluate --jobs`](evaluation.md#execution-jobs-and-worker-pr
 them. A simulation on several threads (`numberOfThreads`) holds as many jobs, and `--jobs auto`
 takes as many jobs as the processors this process may use (on lxplus: the whole node, so give a
 number there). N bounds the processors k4opt keeps busy, not the memory: evaluate one candidate
-with `k4opt evaluate` first, which prints what one job needed at most, and choose N so that N
-times that fits, with room for the study's own process. Every trial's record holds the peak
+with `k4opt evaluate` first, which prints an estimate of what one job needs, and choose N so that
+N times that fits with some room, and the study's own process too. Every trial's record holds the peak
 memory of each of its tasks.
 
 ```bash
