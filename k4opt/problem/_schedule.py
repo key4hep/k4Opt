@@ -13,6 +13,10 @@ may start in is decided here alone, from the tasks each one reads (``Task.needs`
   more than the capacity, whichever candidates they belong to;
 * ready tasks start in the order of their candidate (the first added first) and then of their
   plan, so with a capacity of one every candidate runs exactly in plan order, one after another;
+* while the first ready task waits for more free slots than there are (a simulation with
+  several threads), later ones that fit may start instead, but at most ``capacity`` of them:
+  then nothing more starts until it can, so it never waits for ever. With every cost 1 this
+  never happens;
 * the scheduler is *idle* when a slot is free and no task is ready: the time to add another
   candidate, which keeps the candidates under way as few as the slots need.
 """
@@ -53,6 +57,8 @@ class Scheduler:
         self._index: dict[Hashable, dict[TaskId, int]] = {}
         self._added = 0
         self._busy = 0
+        self._head: tuple[int, int] | None = None  # the first ready task, while it waits
+        self._passed = 0  # how many tasks started before it meanwhile
 
     def add(self, key: Hashable, plan: Plan, costs: Mapping[TaskId, int] | None = None) -> None:
         """Add the candidate ``key`` with the tasks of ``plan``; each running task holds its cost
@@ -81,16 +87,33 @@ class Scheduler:
         heapq.heappush(self._ready, (candidate.order, self._index[key][task.id], key, task))
 
     def next(self) -> tuple[Hashable, Task] | None:
-        """The ready task to start now, marked as running, or ``None`` if none is ready or the
-        first of them needs more slots than are free."""
+        """The ready task to start now, marked as running, or ``None`` if none is ready or none
+        may start: the first needs more slots than are free, and no later one fits or as many
+        as the capacity already started before it."""
         if not self._ready:
             return None
-        _, _, key, task = self._ready[0]
-        cost = self._candidates[key].costs[task.id]
-        if self._busy + cost > self.capacity:
+        order, index, key, task = self._ready[0]
+        if self._head != (order, index):
+            self._head, self._passed = (order, index), 0
+        if self._fits(key, task):
+            heapq.heappop(self._ready)
+            self._head = None
+            return self._start(key, task)
+        if self._passed >= self.capacity:
             return None
-        heapq.heappop(self._ready)
-        self._busy += cost
+        for entry in sorted(self._ready)[1:]:
+            if self._fits(entry[2], entry[3]):
+                self._ready.remove(entry)
+                heapq.heapify(self._ready)
+                self._passed += 1
+                return self._start(entry[2], entry[3])
+        return None
+
+    def _fits(self, key: Hashable, task: Task) -> bool:
+        return self._busy + self._candidates[key].costs[task.id] <= self.capacity
+
+    def _start(self, key: Hashable, task: Task) -> tuple[Hashable, Task]:
+        self._busy += self._candidates[key].costs[task.id]
         self._candidates[key].running.add(task.id)
         return key, task
 

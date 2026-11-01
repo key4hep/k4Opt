@@ -75,19 +75,32 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     evaluate.add_argument(
         "-j",
         "--jobs",
-        type=int,
+        type=_jobs,
         default=1,
         metavar="N",
         help=(
             "run at most N tasks at once (simulations of different samples, evaluators, the "
-            "geometry), each in a worker process; it bounds what k4opt starts, not the threads "
-            "or memory of each task. Default 1: one after another"
+            "geometry), each in a worker process; a simulation with numberOfThreads holds as "
+            "many. 'auto': as many as the processors this process may use. It bounds what k4opt "
+            "starts, not the memory of each task. Default 1: one after another"
         ),
     )
     evaluate.add_argument(
         "--output", required=True, help="new directory for the geometry, simulation and summary"
     )
     evaluate.set_defaults(func=cmd_evaluate)
+
+
+def _jobs(text: str) -> int | str:
+    """``--jobs``: a number (checked by the session) or ``auto``."""
+    if text == "auto":
+        return text
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a number of jobs or auto, got {text!r}"
+        ) from None
 
 
 def _limit(limit: Limit) -> str:

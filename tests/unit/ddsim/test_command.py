@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from k4opt.ddsim import DdsimError, output_collections
+from k4opt.ddsim import DdsimError, output_collections, threads
 from k4opt.ddsim.command import ddsim_arguments, managed_conflict, option_args, particle_gun_args
 from k4opt.frozen import freeze
 
@@ -269,6 +269,11 @@ def test_options_are_written_the_way_ddsim_reads_them(
         ({"gun.energy": "1*GeV"}, "primaries come from the generation stage"),
         ({"inputFiles": "other.hepmc"}, "primaries come from the generation stage"),
         ({"enableGun": True}, "primaries come from the generation stage"),
+        ({"numberOfThreads": 0}, "must be a positive integer of threads, got 0"),
+        ({"numberOfThreads": "4"}, "must be a positive integer of threads, got '4'"),
+        ({"numberOfThreads": True}, "must be a positive integer of threads"),
+        ({"numberOfThreads": 2.0}, "must be a positive integer of threads"),
+        ({"numberOfThr": 2}, r"write the full option name \(numberOfThreads\)"),
     ],
 )
 def test_options_that_cannot_be_written_faithfully_are_rejected(
@@ -277,6 +282,14 @@ def test_options_that_cannot_be_written_faithfully_are_rejected(
     with pytest.raises(DdsimError, match=match) as raised:
         build(options)
     assert str(raised.value).startswith(f"simulation.{next(iter(options))}: ")
+
+
+def test_the_threads_ddsim_simulates_with_are_its_number_of_threads() -> None:
+    assert threads({}) == 1
+    assert threads({"physics.list": "FTFP_BERT", "numberOfThreads": 4}) == 4
+    assert build({"numberOfThreads": 4})[-1] == "--numberOfThreads=4"
+    with pytest.raises(DdsimError, match="positive integer of threads"):
+        threads({"numberOfThreads": -1})
 
 
 def test_plain_python_lists_are_accepted() -> None:

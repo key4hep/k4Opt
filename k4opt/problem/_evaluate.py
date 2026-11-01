@@ -46,7 +46,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 
-from k4opt.ddsim import output_collections
+from k4opt.ddsim import output_collections, threads
 from k4opt.evaluation import (
     Artifact,
     CandidateKey,
@@ -740,6 +740,16 @@ class _Run:
     reference: object = None
 
 
+def task_cpus(binding: _Binding, task: Task) -> int:
+    """How many processors ``task`` keeps busy: the threads of a simulation ddsim runs
+    (``numberOfThreads``), one for every other task."""
+    if task.id.kind is not Kind.STAGE or task.given is not None or task.id.name != "simulation":
+        return 1
+    assert task.id.sample is not None
+    stage = binding.contexts[task.id.sample].stages["simulation"]
+    return threads(stage.options) if stage.executor == "ddsim" else 1
+
+
 def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> TaskSpec:
     """The description of ``task`` of ``run``, from the results of the tasks it reads."""
     assert run.prepared is not None
@@ -757,7 +767,8 @@ def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> T
         return TaskSpec(workspace, task, watched=watched, tree=tree, geometry=run.geometry)
     if task.id.kind is Kind.STAGE:
         given, supplied = _inputs(reads, root), run.supplied.get(task.id)
-        return TaskSpec(workspace, task, given, watched, tree, supplied=supplied)
+        cpus = task_cpus(binding, task)
+        return TaskSpec(workspace, task, given, watched, tree, supplied=supplied, cpus=cpus)
     entry = run.prepared.entries[task.id]
     if task.id.sample is None:  # the geometry, and what its roles read: no stage of its own
         given = _inputs({need: result for need, result in reads.items() if need == GEOMETRY}, root)
@@ -874,7 +885,9 @@ def _drive(
                 else:
                     runs[pulled.workspace.id] = pulled
                     backend.open(pulled.workspace)
-                    scheduler.add(pulled.workspace.id, pulled.prepared.binding.plan)
+                    binding = pulled.prepared.binding
+                    costs = {t.id: backend.cost(task_cpus(binding, t)) for t in binding.plan.tasks}
+                    scheduler.add(pulled.workspace.id, binding.plan, costs)
                 continue
             if not runs:  # and nothing more to pull: a free slot would have pulled
                 return

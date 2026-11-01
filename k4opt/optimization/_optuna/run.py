@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import Any, Literal
 
 import optuna
 from optuna.distributions import BaseDistribution
@@ -382,7 +382,7 @@ def optimize(
     resume: bool,
     storage: str | None,
     timeout: float | None,
-    jobs: int,
+    jobs: int | Literal["auto"],
     warn: Warn,
     progress: Progress,
 ) -> StudyReport:
@@ -394,8 +394,8 @@ def optimize(
         raise OptimizationError(f"seed must be in [0, 2**32), got {seed}")
     if resume and seed is not None:
         raise OptimizationError("a resumed study keeps the seed it was made with; leave out --seed")
-    if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
-        raise OptimizationError(f"jobs must be a positive integer, got {jobs!r}")
+    if jobs != "auto" and (isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1):
+        raise OptimizationError(f"jobs must be a positive integer or 'auto', got {jobs!r}")
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
     # its workers, with more than one job, stop with the study however it ends

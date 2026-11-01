@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from types import TracebackType
+from typing import Literal
 
 from k4opt import __version__
 from k4opt.evaluation import (
@@ -43,6 +44,7 @@ from k4opt.geometry import Override
 from k4opt.jsonio import write_json
 from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
 from k4opt.problem._backends import Backend, InlineBackend, ProcessBackend
+from k4opt.problem._cpus import AUTO, usable_cpus
 from k4opt.problem._evaluate import (
     CandidateRecord,
     _bind_problem,
@@ -54,6 +56,7 @@ from k4opt.problem._evaluate import (
     _Prepared,
     _Run,
     _validate_candidate,
+    task_cpus,
 )
 from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import STAGE_TYPES, file_identity, input_files, plan_stages
@@ -726,7 +729,7 @@ class EvaluationSession:
         *,
         inputs: Mapping[str, str | os.PathLike[str]] | None = None,
         timeout: float | None = None,
-        jobs: int = 1,
+        jobs: int | Literal["auto"] = 1,
     ) -> EvaluationSession:
         """Load the problem file ``problem_path`` to evaluate its candidates with
         ``implementations``.
@@ -744,7 +747,10 @@ class EvaluationSession:
         of one candidate and of several (:meth:`evaluate_each`); with more than one, each runs
         in a worker process that loads the implementations again by their references, so they
         must be loaded by :func:`~k4opt.evaluation.load_evaluator`, and one worker is started
-        and checked now. Close a session (:meth:`close`, or ``with``) to stop its workers.
+        and checked now. ``"auto"`` is as many jobs as the processors this process may use (its
+        affinity, at most its cgroup's quota). A simulation on several threads
+        (``numberOfThreads``) holds as many jobs while it runs. Close a session
+        (:meth:`close`, or ``with``) to stop its workers.
         Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
         stage or input (an :class:`~k4opt.evaluation.EvaluationContractError` for an
         implementation that cannot be created, too), and :class:`~k4opt.problem.RunError` if
@@ -753,7 +759,7 @@ class EvaluationSession:
         """
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         limit = _timeout(timeout)
-        _jobs(jobs)
+        jobs, usable = _jobs(jobs), usable_cpus()
         spec = load_problem(path)
         supplied = _supplied(spec, inputs or {})
         binding = _bind_problem(spec, implementations, supplied)
@@ -801,6 +807,17 @@ class EvaluationSession:
         )
         _check_code()
         assert isinstance(process, Mapping)
+        crowded = [
+            f"{task.id.label} simulates with {cpus} threads, more than the {jobs} job(s) of the "
+            f"session: it runs alone, on {cpus} processors"
+            for task in binding.plan.tasks
+            if (cpus := task_cpus(binding, task)) > jobs
+        ]
+        if jobs > usable:
+            crowded.append(
+                f"{jobs} jobs, more than the {usable} processors this process may use: tasks "
+                "will share processors"
+            )
         return cls(
             path.absolute(),
             spec,
@@ -809,7 +826,7 @@ class EvaluationSession:
             files,
             externals,
             taken,
-            binding.warnings,
+            (*binding.warnings, *crowded),
             process,
             limit,
             jobs,
@@ -828,8 +845,9 @@ class EvaluationSession:
     @property
     def warnings(self) -> tuple[str, ...]:
         """Collections an evaluator reads that the simulation is not expected to write; the
-        simulation's output decides, so they do not stop an evaluation. Each summary keeps
-        them too."""
+        simulation's output decides, so they do not stop an evaluation (each summary keeps them
+        too). Then how the session's jobs suit what it runs: a simulation on more threads than
+        there are jobs, more jobs than processors (how it ran: no summary keeps these)."""
         return self._warnings
 
     @property
@@ -1203,10 +1221,14 @@ def _plain(value: object) -> object:
     return thaw(freeze(value, "geometry", RunError))
 
 
-def _jobs(value: int) -> None:
-    """:class:`RunError` unless ``value`` is a positive number of jobs."""
+def _jobs(value: int | Literal["auto"]) -> int:
+    """The number of jobs ``value`` says: itself, or for ``"auto"`` the processors this process
+    may use. :class:`RunError` unless it is a positive integer or ``"auto"``."""
+    if value == AUTO:
+        return usable_cpus()
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise RunError(f"jobs must be a positive integer, got {value!r}")
+        raise RunError(f"jobs must be a positive integer or 'auto', got {value!r}")
+    return value
 
 
 def _described(identity: Mapping[str, Json] | None) -> str:
@@ -1223,7 +1245,7 @@ def run_candidate(
     implementations: Sequence[type[EvaluatorProtocol]],
     inputs: Sequence[str] = (),
     timeout: float | None = None,
-    jobs: int = 1,
+    jobs: int | Literal["auto"] = 1,
     warn: Callable[[str], None] | None = None,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.

@@ -128,7 +128,7 @@ def test_jobs_run_trials_at_once_and_are_no_part_of_the_study(
     assert code == 0, err
     code, out, err = optimize(str(problem), "--trials", "1", "-j", "0", "--output", str(output))
     assert (code, out) == (1, "")
-    assert "jobs must be a positive integer, got 0" in err
+    assert "jobs must be a positive integer or 'auto', got 0" in err
 
 
 def test_a_missing_budget_is_a_usage_error(

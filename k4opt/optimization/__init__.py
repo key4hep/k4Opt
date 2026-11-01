@@ -31,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import os
 from collections.abc import Callable, Iterator, Sequence
+from typing import Literal
 
 from k4opt.evaluation import EvaluatorProtocol
 from k4opt.optimization._results import StudyResults, TrialResult
@@ -74,7 +75,7 @@ def optimize(
     resume: bool = False,
     storage: str | None = None,
     timeout: float | None = None,
-    jobs: int = 1,
+    jobs: int | Literal["auto"] = 1,
     warn: Callable[[str], None] | None = None,
     progress: Callable[[TrialReport], None] | None = None,
 ) -> StudyReport:
@@ -91,7 +92,8 @@ def optimize(
     again on every resume. ``timeout`` is how many seconds a trial's simulation may take before
     ddsim is killed and the trial fails; it is not part of the study, so a resume may set
     another one. ``jobs`` is how many tasks (simulations, evaluations, geometries) may run at
-    once, of one trial and of several, each in a worker process when more than one
+    once, of one trial and of several, each in a worker process when more than one, or
+    ``"auto"``: as many as the processors this process may use
     (:meth:`~k4opt.problem.EvaluationSession.open`); the optimizer is asked for a candidate only
     when a job would otherwise be idle, and told each trial as it ends. Like ``timeout``, it is
     not part of the study.
