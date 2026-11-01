@@ -998,7 +998,7 @@ class EvaluationSession:
     ) -> Generator[tuple[RunRequest, RunOutcome | Exception]]:
         runs: dict[str, _Run] = {}
         backend: Backend = self._backend or InlineBackend(
-            self._context, lambda workspace, task: _prepared(runs[workspace]).evaluators[task][1]
+            self._context, lambda workspace, task: _prepared(runs[workspace]).instances[task]
         )
 
         def pull() -> _Run | None:
@@ -1037,6 +1037,8 @@ class EvaluationSession:
         reference = _run_reference(request.run)
         started = time.perf_counter()
         values, key, prepared, overrides = self._prepare(request.candidate)
+        if self._backend is not None:  # its workers check and evaluate instances of their own
+            prepared = prepared.released()
         run_dir = Path(os.path.abspath(request.output))
         if run_dir.exists() or run_dir.is_symlink():
             raise RunError(f"output {run_dir} already exists; choose a new directory")

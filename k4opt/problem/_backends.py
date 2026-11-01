@@ -19,6 +19,7 @@ import contextlib
 import os
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -146,6 +147,8 @@ _MAIN = (
     "from k4opt.problem._worker import main; sys.exit(main(sys.argv[2:]))"
 )
 _GRACE = 5.0  # seconds a worker has to end after SIGTERM before it is killed
+# seconds a worker has to set up the session (import, load the evaluators) before it is stopped
+_SETUP = 300.0
 
 
 @dataclass(slots=True, eq=False)
@@ -158,6 +161,7 @@ class _Worker:
     running: tuple[Handle, TaskSpec] | None = None
     groups: set[int] = field(default_factory=set)
     ready: bool = False
+    setup: float = field(default_factory=lambda: time.monotonic() + _SETUP)  # its deadline
 
 
 class ProcessBackend:
@@ -168,8 +172,9 @@ class ProcessBackend:
     never more than ``jobs``. A worker that dies (a crash, the kernel's OOM killer) fails its task,
     naming the signal, and is replaced by the next task; its programs (ddsim) are killed with it.
     A geometry task that dies, or a task whose name has killed ``jobs + 1`` workers in a row,
-    stops its candidate (:class:`~k4opt.problem.RunError`) instead. Cancelled tasks end their
-    workers: SIGTERM, then SIGKILL after a grace period.
+    stops its candidate (:class:`~k4opt.problem.RunError`) instead, and so does a worker that
+    has not set up the session after a generous deadline: a hung import never holds a job.
+    Cancelled tasks end their workers: SIGTERM, then SIGKILL after a grace period.
     """
 
     def __init__(self, spec: SessionSpec, jobs: int) -> None:
@@ -188,9 +193,12 @@ class ProcessBackend:
 
     def start(self) -> None:
         """Start a worker and wait until it is set up; :class:`~k4opt.problem.RunError` if it
-        refuses the session or dies."""
+        refuses the session, dies or takes too long."""
         worker = self._spawn()
         while not worker.ready:
+            if time.monotonic() > worker.setup:
+                self._end(worker)
+                raise RunError(_slow())
             if not worker.connection.poll(0.2):
                 continue
             try:
@@ -208,6 +216,8 @@ class ProcessBackend:
     def _spawn(self) -> _Worker:
         assert len(self._workers) < self._jobs  # the scheduler keeps the tasks within jobs
         ours, theirs = socket.socketpair()
+        # a send to a worker that never reads (hung before it set up) gives up in the end
+        ours.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, struct.pack("ll", int(_SETUP), 0))
         with ours, theirs:
             argv = [sys.executable, "-P", "-c", _MAIN, str(_HOME)]
             argv += [str(theirs.fileno()), str(os.getpid())]
@@ -255,6 +265,12 @@ class ProcessBackend:
             completion = self._read(busy[ready])
             if completion is not None:
                 ended.append(completion)
+        now = time.monotonic()
+        for worker in busy.values():  # one that never set up the session holds no job
+            if worker.running is not None and not worker.ready and now > worker.setup:
+                handle, _ = worker.running
+                self._end(worker)
+                ended.append((handle, RunError(_slow()), Observations()))
         return ended
 
     def _read(self, worker: _Worker) -> Completion | None:
@@ -352,6 +368,13 @@ class ProcessBackend:
         for worker in workers:
             self._end(worker, terminate=False, deadline=deadline)
         self._roots.clear()
+
+
+def _slow() -> str:
+    return (
+        f"a worker process did not set up the session within {_SETUP:g} s (importing k4opt "
+        "or loading the evaluators) and was stopped"
+    )
 
 
 def _signal(worker: _Worker, signum: int) -> None:

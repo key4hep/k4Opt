@@ -32,6 +32,7 @@ from k4opt.problem import (
     RunError,
     RunOutcome,
     RunRequest,
+    _backends,
     _run,
     _worker,
     load_problem,
@@ -516,6 +517,55 @@ def test_a_worker_that_cannot_be_made_to_end_with_the_session_refuses_it(
     ours.send("the session")
     assert _worker.serve(theirs, "why not") == 1
     assert ours.recv() == ("refused", "why not")
+
+
+# an evaluator file whose import hangs in a worker of this process once a marker file exists
+HANGING = """\
+import os, time
+from pathlib import Path
+
+if os.getppid() == {parent} and Path({marker!r}).exists():
+    time.sleep(600)
+"""
+
+
+@pytest.mark.parametrize("hangs", ["the first worker", "a later worker"])
+def test_a_worker_that_hangs_while_it_sets_up_is_stopped(
+    tmp_path: Path, problem: Path, monkeypatch: pytest.MonkeyPatch, hangs: str
+) -> None:
+    stack.install(monkeypatch)
+    marker = tmp_path / "hang"
+    hanging = tmp_path / "hanging_count.py"
+    source = (REPO / "tests" / "support" / "cell_count.py").read_text()
+    hanging.write_text(HANGING.format(parent=os.getpid(), marker=str(marker)) + source)
+    implementation = load_evaluator(f"{hanging}:CellCount")
+    message = r"a worker process did not set up the session within 2 s .* and was stopped"
+    if hangs == "the first worker":
+        marker.touch()
+        monkeypatch.setattr(_backends, "_SETUP", 2.0)
+        with pytest.raises(RunError, match=message):
+            EvaluationSession.open(problem, [implementation], jobs=2)
+        assert stack.workers() == []
+        return
+    with EvaluationSession.open(problem, [implementation], jobs=2) as session:
+        marker.touch()  # the second worker starts once both simulations are ready
+        monkeypatch.setattr(_backends, "_SETUP", 2.0)
+        with pytest.raises(RunError, match=message):
+            session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+        assert len(stack.workers()) == 1  # the one that set up; the hung one was stopped
+        assert not (tmp_path / "a" / SUMMARY_NAME).exists()
+    assert stack.workers() == []
+
+
+@pytest.mark.parametrize("jobs", [1, 2])
+def test_the_session_keeps_the_preflight_instances_only_when_it_evaluates_with_them(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, jobs: int
+) -> None:
+    stack.install(monkeypatch)
+    run = session_of(jobs)._start(RunRequest({RADIUS: 450.0}, tmp_path / "a"))
+    assert run.prepared is not None
+    assert len(run.prepared.entries) == len(run.prepared.requests) == 2  # for the records
+    assert len(run.prepared.instances) == (2 if jobs == 1 else 0)
 
 
 @pytest.mark.parametrize("jobs", [0, -2, True, 1.5, "2"])

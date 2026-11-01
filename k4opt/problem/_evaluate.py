@@ -485,9 +485,17 @@ class _Prepared:
     instance for each evaluation and the requests made for it."""
 
     binding: _Binding
-    # by evaluation, in plan order; the requests normalized and checked before execution
-    evaluators: Mapping[TaskId, tuple[EvaluatorSpec, EvaluatorProtocol]]
+    # by evaluation, in plan order: the entry that binds it, and the request normalized and
+    # checked before execution
+    entries: Mapping[TaskId, EvaluatorSpec]
     requests: Mapping[TaskId, EvaluationRequest]
+    # the instance whose check() accepted the request; none once released (a worker process
+    # evaluates with an instance of its own)
+    instances: Mapping[TaskId, EvaluatorProtocol] = FrozenMap({})
+
+    def released(self) -> _Prepared:
+        """The same without its evaluator instances, which hold whatever they allocated."""
+        return replace(self, instances=FrozenMap({}))
 
 
 def _bind_problem(
@@ -579,7 +587,12 @@ def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
         check = getattr(evaluator, "check", None)
         if check is not None:
             check(request)
-    return _Prepared(binding, FrozenMap(evaluators), FrozenMap(requests))
+    return _Prepared(
+        binding,
+        FrozenMap({task: entry for task, (entry, _) in evaluators.items()}),
+        FrozenMap(requests),
+        FrozenMap({task: instance for task, (_, instance) in evaluators.items()}),
+    )
 
 
 def _request(
@@ -745,7 +758,7 @@ def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> T
     if task.id.kind is Kind.STAGE:
         given, supplied = _inputs(reads, root), run.supplied.get(task.id)
         return TaskSpec(workspace, task, given, watched, tree, supplied=supplied)
-    entry, _ = run.prepared.evaluators[task.id]
+    entry = run.prepared.entries[task.id]
     if task.id.sample is None:  # the geometry, and what its roles read: no stage of its own
         given = _inputs({need: result for need, result in reads.items() if need == GEOMETRY}, root)
         roles = _role_inputs(binding, entry, reads, root)
@@ -771,7 +784,7 @@ def _result(run: _Run, task: Task, outcome: TaskOutcome, observed: Observations)
     result = to_result(task, outcome, observed, root)
     if task.id.kind is not Kind.EVALUATOR:
         return result
-    entry, _ = run.prepared.evaluators[task.id]
+    entry = run.prepared.entries[task.id]
     returned, workdir = local_result(outcome, root)
     request = asked(run.specs[task.id], root)
     if workdir is not None:  # it was called, in its own directory
@@ -1070,7 +1083,7 @@ def _execute_plan(
     check_run_inputs([t.id.name for t in stages if t.given is None], geometry is not None, workdir)
     run = _Run(Workspace("candidate", workdir), prepared, key, supplied, geometry, started)
     backend = InlineBackend(
-        _context(spec, binding, timeout), lambda workspace, task: prepared.evaluators[task][1]
+        _context(spec, binding, timeout), lambda workspace, task: prepared.instances[task]
     )
     pulled = iter([run])
     driven = _drive(Scheduler(backend.capacity), backend, {}, lambda: next(pulled, None))
@@ -1091,7 +1104,7 @@ def _finish_plan(run: _Run) -> CandidateRecord:
     for task in plan.of(Kind.EVALUATOR):
         held = results[task.id]
         if held.status == Status.BLOCKED:
-            entry, _ = prepared.evaluators[task.id]
+            entry = prepared.entries[task.id]
             assert held.message is not None
             outcome = EvaluationResult(Status.BLOCKED, message=held.message)
             request = prepared.requests[task.id]
