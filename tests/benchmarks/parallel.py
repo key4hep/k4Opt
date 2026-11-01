@@ -104,11 +104,16 @@ def _tasks(summary: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return entries
 
 
-def _held(entry: Mapping[str, Any], threads: int) -> float:
-    """The slot seconds a task held: its time, times its threads if it ran ddsim."""
-    seconds = entry.get("elapsed_seconds") or 0.0
-    simulated = "argv" in entry and any("--numberOfThreads" in a for a in entry["argv"])
-    return float(seconds) * (threads if simulated else 1)
+def held(entry: Mapping[str, Any], jobs: int) -> float:
+    """The slot seconds a task held: its time, times the slots it held, as the local backend
+    counts them (``ProcessBackend.cost``): a simulation one per thread, at most every slot."""
+    seconds = float(entry.get("elapsed_seconds") or 0.0)
+    threads = [
+        int(arg.split("=", 1)[1])
+        for arg in entry.get("argv") or ()
+        if arg.startswith("--numberOfThreads=")
+    ]
+    return seconds * min(max(threads or [1]), jobs)
 
 
 def run(
@@ -118,7 +123,6 @@ def run(
     parameter: str,
     values: list[float],
     directory: Path,
-    threads: int,
 ) -> dict[str, Any]:
     requests = [RunRequest({parameter: value}, directory / f"c{value:g}") for value in values]
     clear = Path("/proc/self/clear_refs")
@@ -136,7 +140,7 @@ def run(
             summaries.append(dict(outcome.summary))
     wall = time.perf_counter() - began
     used = _cpu() - cpu
-    held = sum(_held(entry, threads) for s in summaries for entry in _tasks(s))
+    used_slots = sum(held(entry, jobs) for s in summaries for entry in _tasks(s))
     memories = [m for s in summaries for m in peak_memory(s).values()]
     per_job = max((m.per_job or 0 for m in memories), default=0)
     programs = max((m.program or 0 for m in memories), default=0)
@@ -148,7 +152,7 @@ def run(
         "cpu_seconds": used,
         "processors_busy": used / wall,
         "utilization": used / wall / jobs,
-        "occupancy": held / (jobs * wall),
+        "occupancy": used_slots / (jobs * wall),
         "peak_memory_bytes": {
             "per_job": per_job,
             "ddsim": programs,
@@ -182,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     for jobs in args.jobs:
         directory = args.output / f"jobs{jobs}"
-        results.append(run(jobs, path, evaluators, parameter, values, directory, args.threads))
+        results.append(run(jobs, path, evaluators, parameter, values, directory))
         print(f"jobs {jobs}: {results[-1]['wall_seconds']:.1f} s", file=sys.stderr, flush=True)
     base = results[0]
     print(
