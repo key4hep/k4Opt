@@ -373,9 +373,11 @@ The default storage is `study.journal` in the study directory: Optuna's journal 
 JSON line per operation, appended and synced, with Optuna's own file lock. It needs no database
 and no SQLAlchemy, and it is replayed when it is read, which is fine for thousands of trials.
 `--storage URL` keeps the Optuna study in a database instead (SQLite on a local disk,
-PostgreSQL), while the trial directories stay in the study directory. The database is reached,
-and set up once, before the study directory is made, so a wrong URL creates nothing; a relative
-SQLite path is relative to the working directory. Its password and the
+PostgreSQL), while the trial directories stay in the study directory. A new study checks its
+directory first, so a directory in use leaves the database untouched; then the database is
+reached, and set up once, before the study directory is made, so a wrong URL creates nothing. A
+relative SQLite path is relative to the working directory, and the SQLite file of a new study
+must lie outside its directory, which holds only what k4opt makes. Its password and the
 values of its query parameters are never recorded or shown, also not in an error from the
 database, and every resume needs the same URL.
 

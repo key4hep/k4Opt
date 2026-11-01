@@ -125,10 +125,9 @@ def _read_only(url: str) -> dict[str, Any]:
         raise OptimizationError(f"--storage {redacted(url)} is not a database URL") from None
     backend, driver = parsed.get_backend_name(), parsed.get_driver_name()
     if backend == "sqlite":
-        database = parsed.database or ""
-        if database in ("", ":memory:") or database.startswith("file:"):
+        path = _database_file(parsed.database)
+        if path is None:
             raise OptimizationError(f"--storage {redacted(url)} names no database file to read")
-        path = Path(os.path.abspath(database))
         if not path.is_file():
             raise OptimizationError(
                 f"--storage {redacted(url)}: {path} does not exist, so it holds no study"
@@ -150,6 +149,30 @@ def _read_only(url: str) -> dict[str, Any]:
         f"(psycopg2, psycopg) database, which can be opened so that it refuses every write; "
         f"this is {backend}+{driver}"
     )
+
+
+def sqlite_file(url: str) -> Path | None:
+    """The file of the SQLite database ``url`` names, as an absolute path (a relative one is
+    relative to the working directory); ``None`` for any other database, one in memory or named
+    by a URI, and for a URL that cannot be parsed (opening it says why)."""
+    try:
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.exc import ArgumentError
+    except ImportError:
+        return None
+    try:
+        parsed = make_url(url)
+    except (ArgumentError, ValueError):
+        return None
+    return _database_file(parsed.database) if parsed.get_backend_name() == "sqlite" else None
+
+
+def _database_file(database: str | None) -> Path | None:
+    """The file the database of a SQLite URL names, absolute; ``None`` for none, one in memory
+    or one named by a URI."""
+    if not database or database == ":memory:" or database.startswith("file:"):
+        return None
+    return Path(os.path.abspath(database))
 
 
 def _write_ahead(path: Path) -> bool:
