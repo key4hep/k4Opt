@@ -14,25 +14,18 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from k4opt import __version__
-from k4opt.evaluation import Measurement, Scalar
+from k4opt.evaluation import Scalar
 from k4opt.frozen import FrozenMap, Json, thaw
-from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment
+from k4opt.problem._assess import Assessment
 from k4opt.problem._candidate import CandidateRecord
 from k4opt.problem._files import Made
+from k4opt.problem._record import SUMMARY_SCHEMA, _measurement
 from k4opt.problem._tasks import GEOMETRY, Kind, PeakMemory, Task, TaskResult, evaluations
 from k4opt.problem.errors import RecordError
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
 
 LOCAL: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": 1})
 """How a session executes its tasks by default: one after another, in its own process."""
-
-
-def _measurement(m: Measurement | None) -> dict[str, object]:
-    return {
-        "value": None if m is None else m.value,
-        "unit": None if m is None else m.unit,
-        "uncertainty": None if m is None else m.uncertainty,
-    }
 
 
 def _relative(path: Path, run_dir: Path) -> str:
