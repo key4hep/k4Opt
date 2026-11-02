@@ -21,7 +21,8 @@ from optuna.distributions import (
 from k4opt.optimization import OptimizationError, optimize
 from k4opt.optimization._optuna.space import constraint_values, objective_values, search_space
 from k4opt.optimization._results import limit_names
-from k4opt.problem import Assessment, Limit, ObjectiveValue, parse_problem
+from k4opt.problem import parse_problem
+from k4opt.record import Assessment, Limit, ObjectiveValue
 from tests.support.evaluators import candidate_check, trade_off
 from tests.support.geometry import MINI_GEO
 from tests.unit.optimization.conftest import Log, problem_document, summary

@@ -40,6 +40,7 @@ from k4opt.evaluation.base import (
     result_from,
     with_defaults,
 )
+from k4opt.evaluation.declaration import Declaration
 from k4opt.evaluation.edm4hep import (
     Event,
     available_collections,
@@ -74,6 +75,7 @@ __all__ = [
     "Artifact",
     "CandidateKey",
     "Collection",
+    "Declaration",
     "EvaluationContractError",
     "EvaluationFailed",
     "EvaluationInvalid",

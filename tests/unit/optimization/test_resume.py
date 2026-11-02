@@ -20,7 +20,7 @@ from optuna.trial import TrialState
 
 from k4opt.evaluation import load_evaluator
 from k4opt.optimization import OptimizationError, optimize
-from k4opt.optimization._optuna import run as adapter
+from k4opt.optimization._optuna import tell as adapter
 from k4opt.optimization._optuna.space import search_space
 from k4opt.problem import load_problem
 from tests.support import simulation

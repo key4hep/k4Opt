@@ -23,7 +23,7 @@ from k4opt.jsonio import publish
 from k4opt.optimization._results import StudyResults, limit_names
 from k4opt.optimization._study import trial_directory
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import SUMMARY_NAME
+from k4opt.record import SUMMARY_NAME
 
 FORMATS = ("csv", "json")
 

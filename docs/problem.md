@@ -8,7 +8,7 @@
 > before it simulates, it checks that every declared objective and constraint is a metric of the
 > evaluation it names, and afterwards it judges the candidate against the constraints. From
 > Python, an `EvaluationSession` evaluates many candidates of a problem the same way
-> ([evaluation](evaluation.md#evaluating-candidates-evaluationsession)). Everything else is
+> ([evaluation](execution.md#evaluating-candidates-evaluationsession)). Everything else is
 > **proposed, not implemented**: no evaluator registry, no `k4run` invocation. An optimizer
 > searches the parameters with `k4opt optimize` ([optimization](optimization.md)).
 > Parsing a file alone does not check that its evaluators, metrics or geometry targets exist.
@@ -184,7 +184,7 @@ Units are explicit: `unit` names the unit of the numbers in `bounds`. k4Opt neve
 a scientific unit from a textual XML expression such as `5.1*mm`, and it never evaluates
 DD4hep expressions. `k4opt evaluate` writes a candidate value followed by its declared unit
 into the XML attribute (`6.0` with `unit: mm` becomes `6.0*mm`, a value without `unit` the bare
-number); the units it can write are listed in [evaluators](evaluators.md#k4opt-evaluate).
+number); the units it can write are listed in [evaluators](execution.md#k4opt-evaluate).
 Unit-less parameters (counts, choices) omit `unit`.
 
 Bounds belong to the *search space*. They are distinct from measurement constraints.
@@ -241,7 +241,7 @@ checks:
   geometry and every candidate would measure the same events. Only `generation` may be a file
   today. To try an evaluator on an existing simulation, use
   `k4opt evaluate --input gamma/simulation=FILE`, which records that the run does not represent
-  the candidate ([evaluators](evaluators.md#k4opt-evaluate)).
+  the candidate ([evaluators](execution.md#k4opt-evaluate)).
 
 `events` and `seed` belong to a sample's stages, not to an evaluator, so all evaluators of a
 sample measure the same events. They are part of the evaluation context, since a different seed
@@ -532,7 +532,7 @@ The uncertainty is recorded next to the value but does not decide (whether it sh
 central value. Only a `valid` evaluation is judged; an unavailable metric never counts as
 satisfied and is never replaced by an invented number. Each run records the verdict and the
 margin of every bound, and whether the candidate is feasible
-([assessment](evaluation.md#assessment-objectives-limits-and-feasibility)). k4Opt adds no
+([assessment](record.md#assessment-objectives-limits-and-feasibility)). k4Opt adds no
 scientifically motivated constraints of its own: whether a candidate is physically sensible
 is the researcher's responsibility. For instance, a requirement on the photon direction:
 
@@ -625,7 +625,7 @@ settings and the import-time SHA-256 of the file defining its class, the execute
 command (which holds the options in
 order), the size and SHA-256 of every given or supplied file and of the files options name, the
 k4opt version with the SHA-256 of its code, and the active stack to `summary.json`
-([evaluators](evaluators.md#k4opt-evaluate)).
+([evaluators](execution.md#k4opt-evaluate)).
 The normalized problem definition is kept in the summary, so later edits to the YAML cannot
 change the parameter domains, objectives or constraints recorded for an earlier run.
 The resolved versions of the individual Key4hep packages are not recorded yet.

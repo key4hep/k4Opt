@@ -14,19 +14,6 @@ class ProblemConfigError(ConfigError):
     """
 
 
-class RunError(K4OptError):
-    """A candidate cannot be evaluated: its run directory exists, a stage file supplied for it
-    is unusable, or a file the stages read changed during an evaluation session."""
-
-
-class RecordError(K4OptError):
-    """A run record (``summary.json``) is malformed, was made for another problem, or
-    disagrees with its own measurements.
-
-    The message says which part of the record is at fault.
-    """
-
-
 class CandidateError(K4OptError):
     """A candidate does not fit the problem it is evaluated for.
 

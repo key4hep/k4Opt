@@ -19,9 +19,11 @@ from optuna.study import StudyDirection
 from optuna.trial import TrialState
 
 from k4opt.evaluation import EvaluationContractError
+from k4opt.execution import Evaluations, RunError
 from k4opt.optimization import STUDY_NAME, OptimizationError, optimize
 from k4opt.optimization._render import trial_line
-from k4opt.problem import Assessment, Evaluations, load_problem
+from k4opt.problem import load_problem
+from k4opt.record import Assessment
 from tests.support import simulation
 from tests.support.evaluators import (
     candidate_check,
@@ -408,9 +410,6 @@ def test_a_bug_of_k4opt_is_not_dressed_up_as_a_study_error(
         ({"seed": 2**32}, r"seed must be in \[0, 2\*\*32\)"),
         ({"seed": "1"}, "seed must be an integer"),
         ({"resume": True, "seed": 3}, "a resumed study keeps the seed"),
-        ({"jobs": 0}, "jobs must be a positive integer"),
-        ({"jobs": True}, "jobs must be a positive integer"),
-        ({"jobs": "2"}, "jobs must be a positive integer"),
     ],
 )
 def test_unusable_arguments_are_refused_before_anything_is_created(
@@ -419,6 +418,15 @@ def test_unusable_arguments_are_refused_before_anything_is_created(
     kwargs = {"trials": 1, **kwargs}
     with pytest.raises(OptimizationError, match=message):
         optimize(write_problem(), [trade_off()], tmp_path / "s", **kwargs)
+    assert not (tmp_path / "s").exists()
+
+
+@pytest.mark.parametrize("workers", [0, True, "2"])
+def test_unusable_workers_are_refused_by_the_session_before_anything_is_created(
+    tmp_path: Path, write_problem: Callable[..., Path], workers: object
+) -> None:
+    with pytest.raises(RunError, match="workers must be a positive integer, 'auto' or 'inline'"):
+        optimize(write_problem(), [trade_off()], tmp_path / "s", trials=1, workers=workers)  # type: ignore[arg-type]
     assert not (tmp_path / "s").exists()
 
 
@@ -623,3 +631,12 @@ def test_a_diagnostic_that_fails_leaves_its_trial_complete_and_is_counted(
         )
         assert ("(1 diagnostic did not succeed)" in trial_line(trial)) is below
     assert 0 < failing < 6  # both ways, to mean much
+
+
+def test_a_study_of_the_library_evaluates_inline_unless_told_otherwise(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    # as a script or a notebook defines its evaluator: given as it is, evaluated in this process
+    optimize(write_problem(), [trade_off()], tmp_path / "s", trials=1, seed=1)
+    summary = json.loads((tmp_path / "s" / "trial-000000" / "summary.json").read_text())
+    assert summary["environment"]["observed"]["execution"] == {"backend": "inline"}

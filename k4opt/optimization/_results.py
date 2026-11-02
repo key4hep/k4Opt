@@ -27,14 +27,8 @@ from k4opt.optimization._study import (
     trial_directory,
 )
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import (
-    SUMMARY_NAME,
-    Assessment,
-    ProblemConfigError,
-    ProblemSpec,
-    RecordError,
-    parse_problem,
-)
+from k4opt.problem import ProblemConfigError, ProblemSpec, parse_problem
+from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 
 RESULTS_FORMAT = "k4opt.study-results/1"
 OUTCOMES = ("feasible", "infeasible", "invalid", "failed", "interrupted", "error", "running")

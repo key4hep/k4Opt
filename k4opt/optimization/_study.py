@@ -187,7 +187,7 @@ def _contents(externals: object) -> object:
 
 def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
     """What must be equal for two runs to belong to one study, from an identity
-    (:meth:`k4opt.problem.EvaluationSession.identity`, or ``study.json`` which holds one)."""
+    (:meth:`k4opt.execution.EvaluationSession.identity`, or ``study.json`` which holds one)."""
     try:
         definition = dict(identity["problem"]["definition"])
         definition.pop("name", None)  # a label, the file name by default
@@ -363,7 +363,7 @@ def check_record(
     """Refuse a record that is not the one trial ``number`` of ``study`` asked for with
     ``params``, or was made with something the study does not compare equal; return the
     warnings of :func:`revision_warnings`. Its assessment is checked apart, by
-    :meth:`k4opt.problem.Assessment.from_summary`."""
+    :meth:`k4opt.record.Assessment.from_summary`."""
     where = f"trial {number}: {trial_directory(number)}/summary.json"
     if not isinstance(summary, Mapping):
         raise OptimizationError(f"{where} is not a run record")

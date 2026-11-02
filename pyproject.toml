@@ -63,11 +63,12 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-# key4hep's CVMFS pytest bundles GaudiTesting, which emits DartMeasurement
-# XML blobs to stdout for every test. Irrelevant here — block all three.
+# The Key4hep stack bundles pytest plugins k4opt does not use (GaudiTesting's, which print
+# DartMeasurement XML for every test; mimesis, whose import warns on Python 3.14), and every
+# nightly may add another. None is loaded unless named here: only pytest-cov, for --cov.
 # --import-mode=importlib lets tests/unit/<component> and tests/integration/<component>
 # share test basenames (e.g. test_cli.py) without __init__.py files.
-addopts = "-ra --tb=short --strict-markers --strict-config --import-mode=importlib -p no:collect_for_ctest -p no:ctest_measurements_reporter -p no:gaudi_fixtures"
+addopts = "-ra --tb=short --strict-markers --strict-config --import-mode=importlib --disable-plugin-autoload -p pytest_cov"
 filterwarnings = ["error"]
 markers = [
     "integration: needs a k4geo tree (K4GEO from the Key4hep stack, or K4GEO_DIR)",

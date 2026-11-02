@@ -11,11 +11,13 @@ from typing import Any
 import pytest
 
 from k4opt.cli import main
+from k4opt.execution import Activity
 from k4opt.frozen import FrozenMap
 from k4opt.optimization import StudyResults, TrialReport, TrialResult
 from k4opt.optimization._render import BAR_WIDTH, Progress, trial_line
 from k4opt.optimization._show import render_results, render_trial
-from k4opt.problem import Activity, Assessment, Limit, ObjectiveValue, parse_problem
+from k4opt.problem import parse_problem
+from k4opt.record import Assessment, Limit, ObjectiveValue
 from tests.support.evaluators import TRADE_OFF
 from tests.unit.optimization.conftest import RADIUS, problem_document
 
