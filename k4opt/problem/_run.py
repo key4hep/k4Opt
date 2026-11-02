@@ -389,14 +389,18 @@ class EvaluationSession:
         )
         _check_code()
         assert isinstance(process, Mapping)
-        crowded = [
-            f"{task.id.label} simulates with {cpus} threads, more than the {jobs} job(s) of the "
-            f"session: it runs alone, on {cpus} processors"
-            # also beyond the processors, which the warning about jobs does not cover
-            + ("" if cpus <= usable else f", more than the {usable} this process may use")
-            for task in binding.plan.tasks
-            if (cpus := task_cpus(binding, task)) > jobs
-        ]
+        crowded = []
+        for task in binding.plan.tasks:
+            cpus = task_cpus(binding, task)
+            beyond = f"more than the {usable} processors this process may use"
+            if cpus > jobs:
+                crowded.append(
+                    f"{task.id.label} simulates with {cpus} threads, more than the {jobs} "
+                    f"job(s) of the session: it runs alone, on {cpus} processors"
+                    + ("" if cpus <= usable else f", {beyond}")
+                )
+            elif cpus > usable:  # within the jobs, which are then too many themselves
+                crowded.append(f"{task.id.label} simulates with {cpus} threads, {beyond}")
         if jobs > usable:
             crowded.append(
                 f"{jobs} jobs, more than the {usable} processors this process may use: tasks "

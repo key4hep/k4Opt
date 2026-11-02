@@ -126,7 +126,7 @@ def _read_only(url: str) -> dict[str, Any]:
         raise OptimizationError(f"--storage {redacted(url)} is not a database URL") from None
     backend, driver = parsed.get_backend_name(), parsed.get_driver_name()
     if backend == "sqlite":
-        path = _database_file(parsed.database, parsed.query.get("mode"))
+        path = _database_file(parsed.database, parsed.query)
         if path is None:
             raise OptimizationError(f"--storage {redacted(url)} names no database file to read")
         if not path.is_file():
@@ -153,10 +153,10 @@ def _read_only(url: str) -> dict[str, Any]:
 
 
 def sqlite_file(url: str) -> Path | None:
-    """The file of the SQLite database ``url`` names, as an absolute path (a relative one is
-    relative to the working directory), also when it is named by a URI filename
+    """The file SQLite opens for the database ``url`` names, as an absolute path (a relative
+    one is relative to the working directory), also when it is named by a URI filename
     (``sqlite:///file:/path/studies.db?uri=true``); ``None`` for any other database, one in
-    memory, and a URL that cannot be parsed (opening it says why)."""
+    memory or a temporary one, and a URL that cannot be parsed (opening it says why)."""
     try:
         from sqlalchemy.engine import make_url
         from sqlalchemy.exc import ArgumentError
@@ -168,20 +168,48 @@ def sqlite_file(url: str) -> Path | None:
         return None
     if parsed.get_backend_name() != "sqlite":
         return None
-    return _database_file(parsed.database, parsed.query.get("mode"))
+    return _database_file(parsed.database, parsed.query)
 
 
-def _database_file(database: str | None, mode: object = None) -> Path | None:
-    """The file the database of a SQLite URL names, absolute; ``None`` for none or one in
-    memory (``mode=memory`` for a URI filename). A URI filename (``file:``) names the file of
-    its path, which SQLite percent-decodes once more."""
-    if mode == "memory":
+# the query parameters SQLAlchemy's pysqlite driver takes itself; with uri=true, it appends
+# every other one to the name it hands to SQLite
+_DRIVER = (
+    "uri",
+    "timeout",
+    "isolation_level",
+    "detect_types",
+    "check_same_thread",
+    "cached_statements",
+)
+
+
+def _database_file(database: str | None, query: Mapping[str, object]) -> Path | None:
+    """The file SQLite opens for the ``database`` and ``query`` of a SQLite URL, as SQLAlchemy's
+    pysqlite driver hands them to it, absolute; ``None`` for one in memory or a temporary one.
+
+    Without ``uri`` true, the name is a name, whatever it holds (``file:``, ``:memory:`` alone
+    is in memory), and the query is ignored. With it, the other query parameters are appended
+    to the name, and a URI filename (``file:``) names the file of its path, percent-decoded, or
+    none for ``mode=memory``; another name is still a name."""
+    from sqlalchemy.util import asbool
+
+    try:
+        uri = asbool(query.get("uri", False))
+    except ValueError:  # opening it says why
         return None
-    if database and database.startswith("file:"):
-        database = urllib.parse.unquote(urllib.parse.urlsplit(database).path)
-    if not database or database == ":memory:":
+    name = database or ""
+    if uri:
+        rest = {key: value for key, value in query.items() if key not in _DRIVER}
+        if rest:
+            name += "?" + "&".join(f"{key}={rest[key]}" for key in sorted(rest))
+        if name.startswith("file:"):
+            parts = urllib.parse.urlsplit(name)
+            if dict(urllib.parse.parse_qsl(parts.query)).get("mode") == "memory":
+                return None
+            name = urllib.parse.unquote(parts.path)
+    if name in ("", ":memory:"):
         return None
-    return Path(os.path.abspath(database))
+    return Path(os.path.abspath(name))
 
 
 def _write_ahead(path: Path) -> bool:

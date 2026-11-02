@@ -131,23 +131,41 @@ def test_more_jobs_than_processors_are_warned_about(
         ]
 
 
-@pytest.mark.parametrize(("jobs", "usable"), [("auto", 2), (1, 2), (1, 8)])
-def test_a_simulation_on_more_threads_than_processors_is_warned_about(
-    problem_file: Path, monkeypatch: pytest.MonkeyPatch, jobs: int | str, usable: int
+ALONE = "gamma/simulation simulates with 4 threads, more than the {} job(s) of the session: it "
+ALONE += "runs alone, on 4 processors"
+BEYOND = "more than the 2 processors this process may use"
+
+
+@pytest.mark.parametrize(
+    ("jobs", "usable", "warned"),
+    [
+        ("auto", 2, [f"{ALONE.format(2)}, {BEYOND}"]),
+        (1, 2, [f"{ALONE.format(1)}, {BEYOND}"]),
+        (1, 8, [ALONE.format(1)]),
+        # within the jobs, which are too many themselves: it shares processors even alone
+        (
+            8,
+            2,
+            [
+                f"gamma/simulation simulates with 4 threads, {BEYOND}",
+                f"8 jobs, {BEYOND}: tasks will share processors",
+            ],
+        ),
+    ],
+)
+def test_a_simulation_on_more_threads_than_jobs_or_processors_is_warned_about(
+    problem_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    jobs: int | str,
+    usable: int,
+    warned: list[str],
 ) -> None:
-    # more than the jobs as well as the processors, which the warning about jobs does not see
     document = yaml.safe_load(problem_file.read_text())
     document["samples"]["gamma"]["simulation"]["numberOfThreads"] = 4
     problem_file.write_text(yaml.safe_dump(document))
     monkeypatch.setattr(_run, "usable_cpus", lambda: usable)
     with EvaluationSession.open(problem_file, [cell_count()], jobs=jobs) as session:  # type: ignore[arg-type]
-        taken = session._execution["jobs"]
-        warned = [w for w in session.warnings if "processors" in w]
-    beyond = "" if usable >= 4 else f", more than the {usable} this process may use"
-    assert warned == [
-        f"gamma/simulation simulates with 4 threads, more than the {taken} job(s) of the "
-        f"session: it runs alone, on 4 processors{beyond}"
-    ]
+        assert [w for w in session.warnings if "processors" in w] == warned
 
 
 @pytest.mark.parametrize("jobs", [0, -2, True, 1.5, "2", "all"])

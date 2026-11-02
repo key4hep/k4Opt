@@ -6,6 +6,7 @@ outside its directory. The cases need SQLAlchemy and alembic."""
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 
@@ -40,10 +41,13 @@ def url_of(path: Path, form: str) -> str:
         "path": f"sqlite:///{path}",
         "uri": f"sqlite:///file:{path}?uri=true",
         "uri with authority": f"sqlite:///file://{path}?uri=true",
+        "path, with a query it ignores": f"sqlite:///{path}?mode=memory",
     }[form]
 
 
-@pytest.mark.parametrize("form", ["path", "uri", "uri with authority"])
+@pytest.mark.parametrize(
+    "form", ["path", "uri", "uri with authority", "path, with a query it ignores"]
+)
 @pytest.mark.parametrize(
     ("made", "database"),
     [
@@ -133,26 +137,39 @@ def test_a_database_that_is_no_sqlite_file_is_none(url: str) -> None:
     "database",
     [
         "studies.db",
+        "file:studies.db",  # without uri=true, a name like any other
+        "file::memory:",
+        "studies.db?mode=memory",  # without uri=true, the query is ignored
+        "file:studies.db?mode=memory",
+        "file:studies.db?uri=false",
         "file:studies.db?uri=true",
+        "file:studies.db?uri=1",
+        "file:studies.db?uri=True&mode=rwc",
         "file:my%20studies.db?uri=true",
         "file:my%2520studies.db?uri=true",
         "file:{here}/deeper/studies.db?uri=true",
         "file://{here}/deeper/studies.db?uri=true",
         "file://localhost{here}/deeper/studies.db?uri=true",
+        "file:studies.db?mode=memory&uri=true",
+        "file::memory:?uri=true",
+        ":memory:",
     ],
 )
 def test_the_file_of_a_sqlite_url_is_the_one_sqlite_makes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database: str
 ) -> None:
-    # however the installed SQLAlchemy and SQLite decode the name: a relative one is relative to
-    # the working directory
+    # however the installed SQLAlchemy and SQLite read the URL: a relative name is relative to
+    # the working directory, and a database in memory makes no file
     import sqlalchemy
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "deeper").mkdir()
     url = f"sqlite:///{database.format(here=tmp_path)}"
-    engine = sqlalchemy.create_engine(url)
-    engine.connect().close()
-    engine.dispose()
-    (made,) = (path for path in tmp_path.rglob("*") if path.is_file())
-    assert storage.sqlite_file(url) == made
+    with warnings.catch_warnings():  # of query parameters it ignores, and of its pool
+        warnings.simplefilter("ignore")
+        engine = sqlalchemy.create_engine(url)
+        engine.connect().close()
+        engine.dispose()
+    made = [path for path in tmp_path.rglob("*") if path.is_file()]
+    assert storage.sqlite_file(url) == (made[0] if made else None)
+    assert len(made) <= 1
