@@ -20,7 +20,7 @@ from k4opt.execution._baseline import Baseline, candidate_reads, plain
 from k4opt.execution._drive import _finish_plan, _Run
 from k4opt.execution._files import changed_files
 from k4opt.execution._work import candidate_externals
-from k4opt.execution.errors import RunError
+from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import Json
 from k4opt.jsonio import write_json
 from k4opt.problem.plan import GEOMETRY, Kind
@@ -33,13 +33,13 @@ from k4opt.record.write import SUMMARY_NAME, assemble
 class RunOutcome:
     """What one run produced: the candidate's record, the written summary and where it is, the
     fingerprint of the geometry it was evaluated with (provenance: candidates that differ only
-    in what they set elsewhere, a ddsim option say, share it) and the candidate's assessment
-    against the objectives and constraints."""
+    in what they set elsewhere, a ddsim option say, share it; ``None`` if its geometry was not
+    made) and the candidate's assessment against the objectives and constraints."""
 
     candidate: CandidateRecord
     summary: Mapping[str, object]
     run_dir: Path
-    geometry_fingerprint: str
+    geometry_fingerprint: str | None
     assessment: Assessment
 
     @property
@@ -70,7 +70,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
     Nothing is published, and nothing is remembered of the candidate, if what the session
     verifies changed while it ran, a file a task made is no longer what its record says, or a
     reference only its geometry names reads other files than for a candidate recorded meanwhile:
-    that raises :class:`RunError`."""
+    that raises :class:`ProvenanceError`."""
     spec, source = baseline.spec, baseline.problem.source
     run_dir = run.workspace.root
     assert run_dir is not None
@@ -84,7 +84,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
         watched = {t.id: run.observed[t.id] for t in record.plan.tasks if t.id in run.observed}
         changed = changed_files(watched)
         if changed:
-            raise RunError(
+            raise ProvenanceError(
                 f"{', '.join(changed)} changed after it was made, so the record could not "
                 "say what it holds"
             )
@@ -94,14 +94,14 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
         if plain(now) != plain(externals):
             refs = dict.fromkeys([*externals, *now])
             changed = [ref for ref in refs if now.get(ref) != externals.get(ref)]
-            raise RunError(
+            raise ProvenanceError(
                 f"geometry: {', '.join(changed)} does not read the files it read when the "
                 "candidate started"
             )
         # again, now: a candidate recorded while this one ran may have read other files
         baseline.check_read(externals)
-    except RunError as exc:
-        raise RunError(
+    except RunError as exc:  # of the kind it is: a ProvenanceError stays one
+        raise type(exc)(
             f"{exc} (while the candidate in {run_dir} ran, which has no {SUMMARY_NAME})"
         ) from None
     assessment = assess(spec, record)
@@ -120,10 +120,11 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
         execution,
     )
     try:
+        run_dir.mkdir(parents=True, exist_ok=True)  # a geometry that was not made made none
         write_json(run_dir / SUMMARY_NAME, summary)
     except OSError as exc:
         raise RunError(f"cannot write summary in {run_dir}: {exc}") from exc
     baseline.remember(externals)
-    fingerprint = geometry.provenance["fingerprint"]
-    assert isinstance(fingerprint, str)
+    fingerprint = geometry.provenance.get("fingerprint")  # none for a geometry not made
+    assert fingerprint is None or isinstance(fingerprint, str)
     return RunOutcome(record, summary, run_dir, fingerprint, assessment)

@@ -20,8 +20,9 @@ from optuna.trial import TrialState
 
 from k4opt.evaluation import EvaluationContractError
 from k4opt.execution import Evaluations, RunError
-from k4opt.optimization import STUDY_NAME, OptimizationError, optimize
+from k4opt.optimization import STUDY_NAME, OptimizationError, load_study, optimize
 from k4opt.optimization._render import trial_line
+from k4opt.optimization._results import limit_names
 from k4opt.problem import load_problem
 from k4opt.record import Assessment
 from tests.support import simulation
@@ -66,7 +67,10 @@ def test_two_objectives_are_told_in_the_problems_order_and_directions(
             m["metric"]: m["value"] for m in summary(tmp_path / "s", trial.number)["metrics"]
         }
         assert trial.values == [metrics["b"], metrics["a"]]
-    assert report.objectives == ("test.trade_off/analysis/b", "test.trade_off/analysis/a")
+    assert tuple(o.label for o in report.problem.objectives) == (
+        "test.trade_off/analysis/b",
+        "test.trade_off/analysis/a",
+    )
     (first, *_) = report.trials
     assert list(first.objectives) == ["test.trade_off/analysis/b", "test.trade_off/analysis/a"]
 
@@ -166,17 +170,33 @@ def test_without_a_feasible_candidate_the_front_is_empty(
         assert trial.constraints == {"test.trade_off/analysis/a:max": x - 50}
 
 
-def test_limits_on_several_metrics_are_warned_about(
+def test_limits_on_several_metrics_are_told_in_units_of_their_scales(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
+    # a in mm and b in 1/mm: the optimizer adds dimensionless violations, never mm and 1/mm
     constraints = [
-        {"stage": "analysis", "metric": "a", "max": 500, "unit": "mm"},
-        {"stage": "analysis", "metric": "b", "min": 0.0025},
+        {"stage": "analysis", "metric": "a", "max": 300, "unit": "mm", "scale": 100},
+        {"stage": "analysis", "metric": "b", "min": 0.0025, "scale": 0.001},
     ]
-    log = Log()
-    study(write_problem(constraints=constraints), tmp_path / "s", trials=1, **log.kwargs())
-    (warning,) = [w for w in log.warnings if w.startswith("constraints on")]
-    assert warning.startswith("constraints on 2 metrics") and "different units" in warning
+    report = study(write_problem(constraints=constraints), tmp_path / "s", trials=4)
+    for trial, frozen in zip(report.trials, optuna_study(tmp_path / "s").trials, strict=True):
+        assert trial.assessment is not None
+        (x,) = frozen.params.values()
+        margins = {limit.name: limit.margin for limit in trial.assessment.limits}
+        assert margins == {  # the physical margins stay in the record
+            "test.trade_off/analysis/a:max": x - 300,
+            "test.trade_off/analysis/b:min": pytest.approx(0.0025 - 1 / x),
+        }
+        assert frozen.constraints == {
+            "test.trade_off/analysis/a:max": pytest.approx((x - 300) / 100),
+            "test.trade_off/analysis/b:min": pytest.approx((0.0025 - 1 / x) / 0.001),
+        }
+        # the verdict is the physical one, whatever the scale
+        assert trial.feasible is (x <= 300 and 1 / x >= 0.0025)
+    study_json = json.loads((tmp_path / "s" / STUDY_NAME).read_text())
+    assert study_json["optimizer"]["constraint_values"] == "margin / scale"
+    scales = [c.get("scale") for c in study_json["problem"]["definition"]["constraints"]]
+    assert scales == [100, 0.001]  # part of the study's identity
 
 
 def test_the_same_seed_proposes_the_same_candidates(
@@ -199,38 +219,61 @@ def test_check_and_evaluate_see_each_trials_own_candidate(
     )
     checking = candidate_check()
     checking.instances.clear()  # type: ignore[attr-defined]  # those of earlier tests
+    checking.checked.clear()  # type: ignore[attr-defined]
     report = study(problem, tmp_path / "s", trials=4, evaluators=[checking])
     proposed = [dict(t.candidate) for t in report.trials]
-    # one instance to bind the class when the study opens, used for nothing else, then a new one
-    # for each trial, which is checked and evaluated with that trial's values only
-    probe, *trials = checking.instances  # type: ignore[attr-defined]
-    assert (probe.checked, probe.evaluated) == ([], [])
+    # no instance binds the class: its check() is asked once per trial, about that trial alone,
+    # and each trial creates one new instance, which evaluates that trial's values only
     values = [c[RADIUS] for c in proposed]
-    assert [(i.checked, i.evaluated) for i in trials] == [([v], [v]) for v in values]
+    assert checking.checked == values  # type: ignore[attr-defined]
+    assert [i.evaluated for i in checking.instances] == [[v] for v in values]  # type: ignore[attr-defined]
     assert len(set(map(str, proposed))) == 4
 
 
-def test_a_check_that_refuses_a_candidate_stops_the_study_at_it(
-    tmp_path: Path, write_problem: Callable[..., Path]
-) -> None:
-    problem = write_problem(
+def checked_problem(write_problem: Callable[..., Path], **settings: float) -> Path:
+    """A problem whose radius is 150 or 250, measured by ``test.candidate_check``."""
+    return write_problem(
         parameter={
             "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "categorical",
             "choices": [150, 250],
         },
-        evaluators=[{"name": "test.candidate_check", "version": "1", "settings": {"reject": 250}}],
+        evaluators=[{"name": "test.candidate_check", "version": "1", "settings": settings}],
         objectives=[("analysis", "seen", "minimize")],
     )
-    with pytest.raises(
-        OptimizationError, match=r"trial (\d+) stops the study .*cannot measure 250"
-    ):
+
+
+def test_a_candidate_an_evaluator_rejects_is_rejected_and_the_study_goes_on(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    problem = checked_problem(write_problem, reject=250)
+    report = study(problem, tmp_path / "s", trials=8, evaluators=[candidate_check()])
+    statuses = {t.candidate[RADIUS]: t.status for t in report.trials}
+    assert statuses == {150: "valid", 250: "rejected"}  # both proposed, and the study ran on
+    for trial, frozen in zip(report.trials, optuna_study(tmp_path / "s").trials, strict=True):
+        if trial.status != "rejected":
+            continue
+        # no values, no constraint values, no record and nothing created: never an evaluation
+        assert frozen.state == TrialState.FAIL and frozen.values is None and not frozen.constraints
+        assert trial.assessment is None and trial.record is None and trial.objectives is None
+        assert trial.message == "test.candidate_check: this evaluator cannot measure 250"
+        assert not trial.directory.exists()
+        assert "rejected" in trial_line(trial)
+    assert set(report.pareto) <= {t.number for t in report.trials if t.status == "valid"}
+    assert report.outcomes["rejected"] == sum(t.status == "rejected" for t in report.trials)
+    assert load_study(tmp_path / "s") == report  # read back alike, rejections included
+
+
+def test_a_check_that_ends_otherwise_than_rejecting_stops_the_study_at_it(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    problem = checked_problem(write_problem, refuse=250)
+    with pytest.raises(OptimizationError, match=r"trial (\d+) stops the study .*work with 250"):
         study(problem, tmp_path / "s", trials=20, evaluators=[candidate_check()])
-    trials = optuna_study(tmp_path / "s").trials
-    *before, stopped = trials
+    *before, stopped = optuna_study(tmp_path / "s").trials
     assert all(t.params[RADIUS] == 150 and t.state == TrialState.COMPLETE for t in before)
     assert stopped.state == TrialState.FAIL and stopped.params[RADIUS] == 250
-    assert "cannot measure 250" in stopped.user_attrs["k4opt.error"]
+    assert "EvaluationContractError" in stopped.user_attrs["k4opt.error"]
     assert not (tmp_path / "s" / f"trial-{stopped.number:06d}").exists()  # nothing was created
     assert not (tmp_path / "s" / ".lock").exists()
 
@@ -396,10 +439,10 @@ def test_a_bug_of_k4opt_is_not_dressed_up_as_a_study_error(
 ) -> None:
     from k4opt.optimization._optuna import run
 
-    def buggy(run: Any) -> Any:
+    def buggy(*args: Any) -> Any:
         return 1 / 0
 
-    monkeypatch.setattr(run, "_study_report", buggy)
+    monkeypatch.setattr(run, "results_of", buggy)
     with pytest.raises(ZeroDivisionError):
         study(write_problem(), tmp_path / "s")
 
@@ -537,14 +580,17 @@ def test_metrics_whose_names_hold_a_slash_are_told_and_reported_apart(
         evaluators=[{"name": "test.slashed", "version": "1"}],
         objectives=[("analysis/x", "y", "minimize"), ("analysis", "x/y", "minimize")],
         constraints=[
-            {"stage": "analysis/x", "metric": "y", "max": 1000, "unit": "1"},
-            {"stage": "analysis", "metric": "x/y", "max": 1000, "unit": "1"},
+            {"stage": "analysis/x", "metric": "y", "max": 1000, "unit": "1", "scale": 1},
+            {"stage": "analysis", "metric": "x/y", "max": 1000, "unit": "1", "scale": 1},
         ],
     )
     slashed = evaluator_from(tmp_path / "evaluators", "slashed", SLASHED)
     report = optimize(problem, [slashed], tmp_path / "s", trials=2, seed=1)
-    assert report.objectives == ("test.slashed/analysis%2Fx/y", "test.slashed/analysis/x%2Fy")
-    assert report.constraints == (
+    assert tuple(o.label for o in report.problem.objectives) == (
+        "test.slashed/analysis%2Fx/y",
+        "test.slashed/analysis/x%2Fy",
+    )
+    assert tuple(limit_names(report.problem)) == (
         "test.slashed/analysis%2Fx/y:max",
         "test.slashed/analysis/x%2Fy:max",
     )
@@ -570,7 +616,7 @@ def test_a_trial_whose_sample_fails_is_failed_and_keeps_the_other_samples_values
     report = study(sampled_problem, tmp_path / "s", trials=3, evaluators=[cell_count()])
     assert len(fake.calls) == 6  # two samples, one simulation each, every trial
     assert [t.status for t in report.trials] == ["valid", "failed", "valid"]
-    assert report.objectives == (
+    assert tuple(o.label for o in report.problem.objectives) == (
         "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
         "pion/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
     )
@@ -597,7 +643,9 @@ def test_a_combined_evaluator_is_optimized_and_a_trial_without_its_background_fa
     monkeypatch.setattr(simulation.ddsim_run, "_execute", second_background_crashes)
     evaluators = [toy_significance(), yields()]
     report = study(combined_problem, tmp_path / "s", trials=3, evaluators=evaluators)
-    assert report.objectives == ("significance/analysis/expected_significance",)
+    assert tuple(o.label for o in report.problem.objectives) == (
+        "significance/analysis/expected_significance",
+    )
     assert [t.status for t in report.trials] == ["valid", "failed", "valid"]
     states = [trial.state for trial in optuna_study(tmp_path / "s").trials]
     assert states == [TrialState.COMPLETE, TrialState.FAIL, TrialState.COMPLETE]
@@ -628,7 +676,7 @@ def test_a_diagnostic_that_fails_leaves_its_trial_complete_and_is_counted(
         below = frozen.params[RADIUS] < 350
         failing += below
         assert (frozen.state, record["status"]) == (TrialState.COMPLETE, "valid")
-        assert frozen.user_attrs["k4opt.diagnostics"] == trial.diagnostics == int(below)
+        assert frozen.user_attrs["k4opt.diagnostics"] == len(trial.diagnostics) == int(below)
         assert record["diagnostics"] == (
             [{"task": "check", "status": "failed", "message": record["diagnostics"][0]["message"]}]
             if below
@@ -644,4 +692,6 @@ def test_a_study_of_the_library_evaluates_inline_unless_told_otherwise(
     # as a script or a notebook defines its evaluator: given as it is, evaluated in this process
     optimize(write_problem(), [trade_off()], tmp_path / "s", trials=1, seed=1)
     summary = json.loads((tmp_path / "s" / "trial-000000" / "summary.json").read_text())
-    assert summary["environment"]["observed"]["execution"] == {"backend": "inline"}
+    assert summary["environment"]["observed"]["execution"] == {
+        "backend": "inline",
+    }

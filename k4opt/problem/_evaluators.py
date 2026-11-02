@@ -12,6 +12,7 @@ from k4opt.problem._fields import (
     _choice,
     _fail,
     _mapping,
+    _seconds,
     _sequence,
     _show,
     _text,
@@ -65,6 +66,7 @@ def _evaluators(raw: object, samples: list[str]) -> tuple[EvaluatorSpec, ...]:
                 "settings",
                 "roles",
                 "required",
+                "timeout",
             ),
             ("name", "version"),
         )
@@ -103,8 +105,9 @@ def _evaluators(raw: object, samples: list[str]) -> tuple[EvaluatorSpec, ...]:
         measured = _measured(m, path, stage, samples)
         roles = _roles(m["roles"], f"{path}.roles") if "roles" in m else {}
         required = _required(m["required"], f"{path}.required") if "required" in m else False
+        timeout = _seconds(m["timeout"], f"{path}.timeout") if "timeout" in m else None
         entry = EvaluatorSpec(
-            name, version, settings, stage, collections, binding, measured, roles, required
+            name, version, settings, stage, collections, binding, measured, roles, required, timeout
         )
         folded = binding.casefold()  # run directories may be on a file system that folds case
         for earlier in bound.get(folded, []):

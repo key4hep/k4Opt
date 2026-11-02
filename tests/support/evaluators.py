@@ -19,6 +19,7 @@ CANDIDATE_CHECK = f"{Path(__file__).with_name('candidate_check.py')}:CandidateCh
 YIELDS = f"{Path(__file__).with_name('yields.py')}:Yields"
 TOY_SIGNIFICANCE = f"{Path(__file__).with_name('toy_significance.py')}:ToySignificance"
 WORKER_PROBE = f"{Path(__file__).with_name('worker_probe.py')}:WorkerProbe"
+LIFECYCLE = f"{Path(__file__).with_name('lifecycle.py')}:Lifecycle"
 
 
 def calo_photon() -> type[Evaluator]:
@@ -66,10 +67,16 @@ def worker_probe() -> type[Evaluator]:
     return load_evaluator(WORKER_PROBE)
 
 
+def lifecycle() -> type[Evaluator]:
+    """The class of ``test.lifecycle``, which logs what each process did with it."""
+    return load_evaluator(LIFECYCLE)
+
+
 def implementations(*given: Any) -> list[type[Any]]:
     """What a test evaluates with: a class as it is, and an instance as a class each of whose new
-    instances is that very instance, so that the test can watch what it is asked. k4opt itself
-    creates a new instance for every candidate."""
+    instances is that very instance, so that the test can watch what it is asked (its classmethods,
+    ``check`` say, find it as ``cls.watched``). k4opt itself creates a new instance for every
+    evaluation."""
     return [item if isinstance(item, type) else _watched(item) for item in given]
 
 
@@ -77,4 +84,4 @@ def _watched(instance: Any) -> type[Any]:
     cls = type(instance)
     # __new__ gives an object that is no instance of the subclass, so __init__ does not run again,
     # and the class k4opt sees, type(instance), is the same for every "new" instance
-    return type(cls.__name__, (cls,), {"__new__": lambda subclass: instance})
+    return type(cls.__name__, (cls,), {"__new__": lambda subclass: instance, "watched": instance})

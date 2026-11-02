@@ -19,11 +19,11 @@ from typing import Any
 
 from k4opt.evaluation import Scalar
 from k4opt.frozen import FrozenMap, Json, thaw
+from k4opt.optimization._identity import digest
 from k4opt.optimization._study import (
     STUDY_NAME,
     check_candidate_files,
     check_record,
-    digest,
     trial_directory,
 )
 from k4opt.optimization.errors import OptimizationError
@@ -31,7 +31,17 @@ from k4opt.problem import ProblemConfigError, ProblemSpec, parse_problem
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 
 RESULTS_FORMAT = "k4opt.study-results/1"
-OUTCOMES = ("feasible", "infeasible", "invalid", "failed", "interrupted", "error", "running")
+OUTCOMES = (
+    "feasible",
+    "infeasible",
+    "invalid",
+    "failed",
+    "rejected",
+    "interrupted",
+    "error",
+    "running",
+)
+"""How a trial ended (:attr:`TrialResult.outcome`), in the order reports list them."""
 
 
 def limit_names(spec: ProblemSpec) -> list[str]:
@@ -51,6 +61,8 @@ class TrialResult:
     """One trial of a study, as its record holds it.
 
     ``status`` is the candidate's (``valid``, ``invalid``, ``failed``) as its record says, or
+    ``rejected`` for one whose candidate an evaluator's ``check`` rejected before anything of it
+    was created (no record, no directory; ``message`` names the evaluation and says why),
     ``interrupted`` for a trial that ended without a record, ``error`` for one that stopped the
     study (``message`` says why), and ``running`` for one the optimizer still holds as running:
     being evaluated, or left by a session that was killed, until a resume closes it. A running
@@ -90,6 +102,14 @@ class TrialResult:
     def feasible(self) -> bool | None:
         """Whether every limit is satisfied; ``None`` unless the trial was assessed."""
         return None if self.assessment is None else self.assessment.feasible
+
+    @property
+    def objectives(self) -> Mapping[str, int | float] | None:
+        """The objective values of a ``valid`` trial, by label, in the problem's order; ``None``
+        for any other."""
+        if self.assessment is None or self.assessment.objectives is None:
+            return None
+        return FrozenMap({o.label: o.value for o in self.assessment.objectives})
 
     @property
     def outcome(self) -> str:
@@ -227,55 +247,37 @@ def recorded_problem(document: Mapping[str, Any]) -> ProblemSpec:
     return spec
 
 
-def recorded(
+def record_of(
     directory: Path,
     document: Mapping[str, Any],
     spec: ProblemSpec,
     number: int,
     params: Mapping[str, Any],
-    told: object,
     read: dict[str, tuple[int, object]],
 ) -> tuple[TrialResult, list[str]]:
-    """Trial ``number`` as the record the optimizer was told holds it, with the warnings of
-    :func:`~k4opt.optimization._study.check_record`.
+    """Trial ``number`` as its record ``trial-NNNNNN/summary.json`` holds it, checked before
+    anything trusts it, with the warnings of :func:`~k4opt.optimization._study.check_record`.
 
-    ``told`` is the reference the optimizer holds (``id``, ``sha256``, and ``path`` in the
-    study), ``params`` the candidate it proposed, and ``read`` what the external references only
-    candidates name read for the earlier trials
-    (:func:`~k4opt.optimization._study.check_candidate_files`). The record must be
-    ``trial-NNNNNN/summary.json`` with exactly those bytes and that id, made for this trial of
-    this study with its evaluators, stack and code, and its assessment must recompute from its
-    measurements; otherwise :class:`OptimizationError`.
-    """
+    ``params`` is the candidate the optimizer proposed, and ``read`` what the external references
+    only candidates name read for the earlier trials
+    (:func:`~k4opt.optimization._study.check_candidate_files`). The record must be made for this
+    trial of this study with its evaluators, stack and code, and its assessment must recompute
+    from its measurements; otherwise :class:`OptimizationError`. The one reading of a trial's
+    record, live (before the optimizer is told it) and when a study is read back
+    (:func:`recorded`)."""
     name = trial_directory(number)
-    relative = f"{name}/{SUMMARY_NAME}"
-    where = f"trial {number}: {relative}"
-    reference = told if isinstance(told, Mapping) else {}
-    if reference.get("path") != relative:
-        raise OptimizationError(
-            f"trial {number}: the optimizer was told a record at {reference.get('path')!r}, not "
-            f"at {relative}"
-        )
+    where = f"trial {number}: {name}/{SUMMARY_NAME}"
     try:
-        data = (directory / relative).read_bytes()
+        data = (directory / name / SUMMARY_NAME).read_bytes()
     except OSError as exc:
-        raise OptimizationError(
-            f"{where} cannot be read ({exc.strerror or exc}), though the optimizer was told it: "
-            "nothing shows what the trial's values rest on"
-        ) from None
-    sha256 = hashlib.sha256(data).hexdigest()
-    if sha256 != reference.get("sha256"):
-        raise OptimizationError(f"{where} is not the record the optimizer was told (other bytes)")
+        raise OptimizationError(f"{where} cannot be read ({exc.strerror or exc})") from None
     try:
         summary = json.loads(data)
     except ValueError as exc:
         raise OptimizationError(f"{where} is not JSON: {exc}") from None
     warnings = [f"trial {number}: {w}" for w in check_record(document, summary, number, params)]
-    if not isinstance(summary.get("id"), str) or summary["id"] != reference.get("id"):
-        raise OptimizationError(
-            f"{where} has the id {summary.get('id')!r}, but the optimizer was told record "
-            f"{reference.get('id')!r}"
-        )
+    if not isinstance(summary.get("id"), str):
+        raise OptimizationError(f"{where} has no record id")
     check_candidate_files(read, summary, number)
     try:
         assessment = Assessment.from_summary(spec, summary)
@@ -294,12 +296,51 @@ def recorded(
         directory=directory / name,
         assessment=assessment,
         record=summary["id"],
-        sha256=sha256,
+        sha256=hashlib.sha256(data).hexdigest(),
         message=summary.get("message"),
         elapsed_seconds=_seconds(summary.get("elapsed_seconds"), f"{where}: elapsed_seconds"),
         stage_seconds={stage: seconds for stage, seconds in timed.items() if seconds is not None},
         diagnostics=summary["diagnostics"],  # checked by from_summary
     )
+    return result, warnings
+
+
+def recorded(
+    directory: Path,
+    document: Mapping[str, Any],
+    spec: ProblemSpec,
+    number: int,
+    params: Mapping[str, Any],
+    told: object,
+    read: dict[str, tuple[int, object]],
+) -> tuple[TrialResult, list[str]]:
+    """Trial ``number`` as the record the optimizer was told holds it (:func:`record_of`).
+
+    ``told`` is the reference the optimizer holds (``id``, ``sha256``, and ``path`` in the
+    study): the record must be ``trial-NNNNNN/summary.json`` with exactly those bytes and that
+    id; otherwise :class:`OptimizationError`.
+    """
+    relative = f"{trial_directory(number)}/{SUMMARY_NAME}"
+    where = f"trial {number}: {relative}"
+    reference = told if isinstance(told, Mapping) else {}
+    if reference.get("path") != relative:
+        raise OptimizationError(
+            f"trial {number}: the optimizer was told a record at {reference.get('path')!r}, not "
+            f"at {relative}"
+        )
+    if not (directory / relative).is_file():
+        raise OptimizationError(
+            f"{where} cannot be read (it is gone), though the optimizer was told it: nothing "
+            "shows what the trial's values rest on"
+        )
+    result, warnings = record_of(directory, document, spec, number, params, read)
+    if result.sha256 != reference.get("sha256"):
+        raise OptimizationError(f"{where} is not the record the optimizer was told (other bytes)")
+    if result.record != reference.get("id"):
+        raise OptimizationError(
+            f"{where} has the id {result.record!r}, but the optimizer was told record "
+            f"{reference.get('id')!r}"
+        )
     return result, warnings
 
 

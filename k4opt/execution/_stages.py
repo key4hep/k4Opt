@@ -69,8 +69,9 @@ class StageContext:
     ``directory`` is where a relative stage ``file`` (or a file named in an option, such as
     ``physics.pdgfile``) is read from: the directory of the problem file, the current one if it
     is ``None``. ``timeout`` is how many seconds a stage that runs a program (ddsim) may take
-    before the program is killed and the stage fails; ``None`` for no limit. It is the caller's,
-    not the problem's. ``sample`` names the sample in messages and labels.
+    before the program is killed and the stage fails; ``None`` for no limit. It is the stage
+    task's (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`), never the problem's.
+    ``sample`` names the sample in messages and labels.
 
     ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
     program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's

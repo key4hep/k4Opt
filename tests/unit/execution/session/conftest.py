@@ -14,7 +14,7 @@ import yaml
 from k4opt.cli import main
 from k4opt.evaluation import Quantity
 from k4opt.execution import RunOutcome
-from k4opt.execution._session import run_candidate as _run_candidate
+from k4opt.execution._command import run_candidate as _run_candidate
 from k4opt.geometry import GeometrySource
 from tests.support import simulation
 from tests.support.evaluators import (
@@ -115,27 +115,27 @@ def evaluate(*argv: str) -> tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
-class Spy:
-    """The test evaluator, recording the requests of check() and evaluate()."""
+class Spy(cell_count()):  # type: ignore[misc]
+    """The test evaluator, recording the requests of check() and evaluate() (watched, see
+    :func:`~tests.support.evaluators.implementations`)."""
 
     # the candidate's radius, where the problem sets it (spied())
     settings: dict[str, Any] = {RADIUS: Quantity("mm", default=0.0)}
 
     def __init__(self) -> None:
-        self.inner: Any = cell_count()()
-        self.name, self.version = self.inner.name, self.inner.version
-        self.stage, self.metrics = self.inner.stage, self.inner.metrics
-        self.collections = self.inner.collections
         self.checked: list[Any] = []
         self.evaluated: list[Any] = []
 
-    def check(self, request: Any) -> None:
-        self.checked.append(request)
-        self.inner.check(request)
+    @classmethod
+    def check(cls, request: Any) -> None:
+        watched = getattr(cls, "watched", None)
+        if watched is not None:
+            watched.checked.append(request)
+        super().check(request)
 
     def evaluate(self, request: Any) -> Any:
         self.evaluated.append(request)
-        return self.inner.evaluate(request)
+        return super().evaluate(request)
 
 
 def spied(problem_file: Path) -> Path:

@@ -9,7 +9,7 @@ import json
 import math
 from itertools import pairwise
 
-from k4opt.evaluation import Evaluator, Role
+from k4opt.evaluation import EvaluationContractError, Evaluator, Role
 
 
 class Separation(Evaluator):
@@ -22,9 +22,10 @@ class Separation(Evaluator):
         ("analysis", "width_cut"): "mm",
     }
 
-    def check(self, request):
+    @classmethod
+    def check(cls, request):
         if not 0 < request.settings["signal_efficiency"] <= 1:
-            self.fail("signal_efficiency must be in (0, 1]")
+            raise EvaluationContractError("signal_efficiency must be in (0, 1]")
 
     def _histogram(self, item):
         try:

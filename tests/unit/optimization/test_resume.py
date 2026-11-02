@@ -157,7 +157,10 @@ def test_a_study_of_two_bindings_of_one_implementation_resumes(
     run(problem, output, 2, seed=3)
     resumed = run(problem, output, 1, resume=True)
     assert len(resumed.trials) == 3
-    assert resumed.objectives == ("test.trade_off/analysis/a", "strict/analysis/a")
+    assert tuple(o.label for o in resumed.problem.objectives) == (
+        "test.trade_off/analysis/a",
+        "strict/analysis/a",
+    )
     study = json.loads((output / "study.json").read_text())
     assert list(study["implementations"]) == ["test.trade_off"]  # one code, bound twice
     record = summary(output, 0)
@@ -449,10 +452,11 @@ UNITS = """
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
         settings = {"x": float}  # the candidate's value, which it sets
-
-        def __init__(self):  # the same code, configured to report in another unit
-            unit = os.environ.get("K4OPT_TEST_UNIT", "mm")
-            self.metrics = {("analysis", "a"): unit, ("analysis", "b"): "1/mm"}
+        # the same code, configured where it is imported to report in another unit
+        metrics = {
+            ("analysis", "a"): os.environ.get("K4OPT_TEST_UNIT", "mm"),
+            ("analysis", "b"): "1/mm",
+        }
 
         def evaluate(self, request):
             x = request.settings["x"]
@@ -466,7 +470,7 @@ def test_a_study_does_not_resume_with_metrics_in_other_units(
     problem, output = write_problem(), tmp_path / "s"
     run(problem, output, 1, seed=1, evaluators=[evaluator_from(tmp_path / "e", "units", UNITS)])
     monkeypatch.setenv("K4OPT_TEST_UNIT", "cm")
-    other = evaluator_from(tmp_path / "e", "units", UNITS)  # the same bytes, another instance
+    other = evaluator_from(tmp_path / "f", "units", UNITS)  # the same bytes, imported again
     with pytest.raises(OptimizationError, match=r"declares other metrics or units: .*'cm'"):
         run(problem, output, 1, resume=True, evaluators=[other])
 
@@ -479,9 +483,8 @@ ARTIFACTS = """
         name, version = "test.trade_off", "1"
         settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
-
-        def __init__(self):  # the same code, configured to name its file otherwise
-            self.artifacts = {os.environ.get("K4OPT_TEST_ARTIFACT", "plot"): "a and b"}
+        # the same code, configured where it is imported to name its file otherwise
+        artifacts = {os.environ.get("K4OPT_TEST_ARTIFACT", "plot"): "a and b"}
 
         def evaluate(self, request):
             x = request.settings["x"]
@@ -502,7 +505,7 @@ def test_a_study_does_not_resume_with_other_artifacts_declared(
     run(problem, output, 1, seed=1, evaluators=[evaluator_from(tmp_path / "e", "named", source)])
     assert summary(output, 0)["implementations"]["test.trade_off"]["artifacts"] == ["plot"]
     monkeypatch.setenv("K4OPT_TEST_ARTIFACT", "figure")
-    other = evaluator_from(tmp_path / "e", "named", source)  # the same bytes, another instance
+    other = evaluator_from(tmp_path / "f", "named", source)  # the same bytes, imported again
     with pytest.raises(OptimizationError, match=r"declares other artifacts: \['figure'\]"):
         run(problem, output, 1, resume=True, evaluators=[other])
 
@@ -964,11 +967,9 @@ ROLES = """
         name, version = "test.toy_significance", "1"
         settings = {"luminosity_invab": float}
         metrics = {("analysis", "expected_significance"): "1"}
-
-        def __init__(self):  # the same code, configured to read another metric
-            metric = os.environ.get("K4OPT_TEST_METRIC", "selected.sum_weights")
-            role = Role(metrics=[("analysis", metric)])
-            self.roles = {"signal": role, "backgrounds": Role(many=True)}
+        # the same code, configured where it is imported to read another metric
+        metric = os.environ.get("K4OPT_TEST_METRIC", "selected.sum_weights")
+        roles = {"signal": Role(metrics=[("analysis", metric)]), "backgrounds": Role(many=True)}
 
         def evaluate(self, request):
             return {("analysis", "expected_significance"): 1.0}
@@ -1004,7 +1005,7 @@ def test_a_study_does_not_resume_with_other_roles_declared(
     declared = summary(output, 0)["implementations"]["test.toy_significance"]["roles"]
     assert declared["signal"]["metrics"] == [["analysis", "selected.sum_weights"]]
     monkeypatch.setenv("K4OPT_TEST_METRIC", "generated.sum_weights")
-    other = evaluator_from(tmp_path / "e", "roles", ROLES)  # the same bytes, other roles
+    other = evaluator_from(tmp_path / "f", "roles", ROLES)  # the same bytes, other roles
     with pytest.raises(OptimizationError, match=r"'test\.toy_significance' declares other roles"):
         run(combined_problem, output, 1, resume=True, evaluators=[other, yields()])
 

@@ -13,7 +13,7 @@ import pytest
 from k4opt.cli import main
 from k4opt.execution import Activity
 from k4opt.frozen import FrozenMap
-from k4opt.optimization import StudyResults, TrialReport, TrialResult
+from k4opt.optimization import StudyResults, TrialResult
 from k4opt.optimization._render import BAR_WIDTH, Progress, trial_line
 from k4opt.optimization._show import render_results, render_trial
 from k4opt.problem import parse_problem
@@ -34,11 +34,22 @@ def screen(text: str) -> list[str]:
     return [line.rsplit("\r\x1b[2K", 1)[-1] for line in ANSI.sub("", text).split("\n")]
 
 
-def trial(number: int, status: str = "valid", **fields: Any) -> TrialReport:
+def assessed(feasible: bool | None, **values: float) -> Assessment:
+    """The assessment of a valid trial with ``values`` by metric of ``test.trade_off``."""
+    objectives = tuple(
+        ObjectiveValue("test.trade_off", "analysis", metric, "minimize", value)
+        for metric, value in values.items()
+    )
+    return Assessment(objectives, (), feasible)
+
+
+def trial(
+    number: int, status: str = "valid", *, feasible: bool | None = True, **fields: Any
+) -> TrialResult:
     if status == "valid":
-        fields = {"feasible": True, "objectives": {"test.trade_off/analysis/a": 1 / 3}, **fields}
-    return TrialReport(
-        number, Path(f"trial-{number:06d}"), {"x": 498.78582224598927}, status, **fields
+        fields = {"assessment": assessed(feasible, a=1 / 3), **fields}
+    return TrialResult(
+        number, status, {"x": 498.78582224598927}, Path(f"trial-{number:06d}"), **fields
     )
 
 
@@ -269,12 +280,14 @@ def test_a_running_study_cannot_send_the_terminal_a_control_sequence() -> None:
     esc = "\x1b[2J\nfake"  # clears the screen and starts a line, were it printed as it is
     out, err = io.StringIO(), io.StringIO()
     with Progress(3, out, err, bar=False, color=False) as shown:
-        candidate, objectives = {f"x{esc}": f"c{esc}"}, {f"a{esc}": 1.0}
+        candidate = {f"x{esc}": f"c{esc}"}
         shown.trial(
-            TrialReport(0, Path("t"), candidate, "valid", feasible=True, objectives=objectives)
+            TrialResult(
+                0, "valid", candidate, Path("t"), assessment=assessed(True, **{f"a{esc}": 1.0})
+            )
         )
         shown.trial(trial(1, "failed", record="r", message=f"ddsim{esc}"))
-        shown.trial(TrialReport(2, Path(f"trial{esc}"), {}, "interrupted"))
+        shown.trial(TrialResult(2, "interrupted", {}, Path(f"trial{esc}")))
         shown.warning(f"trial 1: careful{esc}")
     lines = out.getvalue().splitlines()
     assert "\x1b" not in out.getvalue() + err.getvalue() and len(lines) == 3

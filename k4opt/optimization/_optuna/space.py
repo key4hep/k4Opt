@@ -82,17 +82,19 @@ def objective_values(assessment: Assessment) -> list[float]:
 def constraint_values(assessment: Assessment) -> dict[str, float]:
     """The value the optimizer is told for each limit of an assessed candidate, by limit name.
 
-    The physical margin as it is (``study.json`` records this as ``physical margins``), zero or
-    below when the limit is satisfied. The sampler ranks infeasible trials by the sum of their
-    positive values, so with limits on several metrics it adds values in different units.
+    The normalized margin (:attr:`~k4opt.record.Limit.normalized`: the physical margin divided by
+    the constraint's scale, ``study.json`` records this as ``margin / scale``), zero or below when
+    the limit is satisfied. The sampler ranks infeasible trials by the sum of their positive
+    values, which the scales make dimensionless. A value no float holds stops the study rather
+    than being told as another one.
     """
     values = {}
     for limit in assessment.limits:
         assert limit.satisfied is not None  # assessed
-        if limit.margin is None:
+        if limit.normalized is None:
             raise OptimizationError(
-                f"{limit.name}: the margin of {limit.value} to {limit.limit} does not fit in a "
-                "float, which the optimizer is told"
+                f"{limit.name}: the margin of {limit.value} to {limit.limit} in units of its "
+                f"scale {limit.scale} does not fit in a float, which the optimizer is told"
             )
-        values[limit.name] = limit.margin
+        values[limit.name] = limit.normalized
     return values

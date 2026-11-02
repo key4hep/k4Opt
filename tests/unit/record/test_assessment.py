@@ -275,8 +275,14 @@ def test_the_assessment_is_plain_json() -> None:
         "feasible": True,
         "objectives": [metric | {"direction": "minimize"} | measured],
         "limits": [
-            metric | {"bound": "min", "limit": 0} | measured | {"margin": -1.0, "satisfied": True},
-            metric | {"bound": "max", "limit": 2} | measured | {"margin": -1.0, "satisfied": True},
+            metric
+            | {"bound": "min", "limit": 0}
+            | measured
+            | {"margin": -1.0, "scale": 1, "normalized": -1.0, "satisfied": True},
+            metric
+            | {"bound": "max", "limit": 2}
+            | measured
+            | {"margin": -1.0, "scale": 1, "normalized": -1.0, "satisfied": True},
         ],
     }
     assert judged(problem(), a(1.0), status="failed").to_dict() == {

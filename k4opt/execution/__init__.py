@@ -21,15 +21,19 @@ Typical use::
     outcome.assessment.feasible  # True, False or None (not assessed)
 """
 
+from k4opt.execution._command import run_candidate
 from k4opt.execution._drive import Activity
+from k4opt.execution._preflight import Rejected
 from k4opt.execution._publish import RunOutcome
-from k4opt.execution._session import Evaluations, EvaluationSession, RunRequest, run_candidate
-from k4opt.execution.errors import RunError
+from k4opt.execution._session import Evaluations, EvaluationSession, RunRequest
+from k4opt.execution.errors import ProvenanceError, RunError
 
 __all__ = [
     "Activity",
     "EvaluationSession",
     "Evaluations",
+    "ProvenanceError",
+    "Rejected",
     "RunError",
     "RunOutcome",
     "RunRequest",

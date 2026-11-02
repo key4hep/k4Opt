@@ -4,7 +4,8 @@
 (:mod:`k4opt.execution._worker`), each running one task at a time, and implements the
 :class:`~k4opt.execution._backends.Backend` contract with them: it starts and checks one worker
 at once, sends each task to an idle one, reads back what it left behind, and can stop any of them
-at any time. A worker that dies fails only the task it ran and is replaced.
+at any time. A worker that dies fails only the task it ran and is replaced, and so does one whose
+task runs longer than its time limit (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`).
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from k4opt.execution._stages import stage_logs
 from k4opt.execution._tasks import Observations, TaskOutcome, TaskSpec, Workspace
 from k4opt.execution._worker import LOG_NAME, Failure, SessionSpec
 from k4opt.execution.errors import RunError
-from k4opt.problem.plan import GEOMETRY, Kind
+from k4opt.problem.plan import Kind
 
 _HOME = Path(k4opt.__file__).resolve().parents[1]  # where a worker imports this very k4opt from
 
@@ -54,11 +55,18 @@ _SETUP = 300.0
 _MESSAGE = 60.0
 
 
+# seconds a stage's worker has beyond the stage's time limit, at which the stage stops the program
+# it runs itself, keeping its logs: only k4opt's own code around it hanging reaches this
+_BACKSTOP = 30.0
+
+
 @dataclass(slots=True, eq=False)
 class _Worker:
     """A worker process and the task it runs (``running``, ``None`` while idle), with the
     process groups of the programs that task started (``groups``); ``lost`` is why a message
-    to it could not be sent whole, after which nothing more is written to it."""
+    to it could not be sent whole, after which nothing more is written to it. ``began`` is when
+    its task began, once the worker is set up, and ``deadline`` when it must have ended (both
+    :func:`time.monotonic`; ``None`` for no limit)."""
 
     process: subprocess.Popen[bytes]
     connection: Connection
@@ -67,6 +75,16 @@ class _Worker:
     ready: bool = False
     setup: float = field(default_factory=lambda: time.monotonic() + _SETUP)  # its deadline
     lost: OSError | None = None
+    began: float | None = None
+    deadline: float | None = None
+
+    def begin(self) -> None:
+        """Start the clock of the task it runs, which is set up to run it."""
+        assert self.running is not None
+        _, spec = self.running
+        self.began = time.monotonic()
+        limit = _limit(spec)
+        self.deadline = None if limit is None else self.began + limit
 
 
 class ProcessBackend:
@@ -77,10 +95,14 @@ class ProcessBackend:
     never more than ``workers``. A worker that dies (a crash, the kernel's OOM killer) fails its
     task, naming the signal, and is replaced by the next task; its programs (ddsim) are killed
     with it.
-    A geometry task that dies, or a task whose name has killed ``workers + 1`` workers in a row,
-    stops its candidate (:class:`~k4opt.execution.RunError`) instead, and so does a worker that
-    has not set up the session after a generous deadline: a hung import never holds a job.
-    Cancelled tasks end their workers: SIGTERM, then SIGKILL after a grace period.
+    A task whose name has killed ``workers + 1`` workers in a row stops its candidate
+    (:class:`~k4opt.execution.RunError`) instead, and so does a worker that has not set up the
+    session after a generous deadline: a hung import never holds a job.
+    A task that runs longer than its time limit (``spec.timeout``; a stage gets
+    :data:`_BACKSTOP` more, as it stops its own program at the limit) has its worker ended as a
+    cancelled one is, fails, naming its limit, and the worker is replaced; a time limit reached is
+    no death. Cancelled tasks end their workers: SIGTERM, then SIGKILL after a grace period, then
+    every process group of what they started.
     """
 
     def __init__(self, spec: SessionSpec, workers: int) -> None:
@@ -168,6 +190,8 @@ class ProcessBackend:
         self._send(worker, (spec, self._roots[spec.workspace], seen))
         if worker.lost is not None:  # it ends at the next wait, as every task does
             self._unsent.append(self._unreached(worker, worker.lost))
+        elif worker.ready:  # a new worker's clock starts once it is set up
+            worker.begin()
         return handle
 
     def _unreached(self, worker: _Worker, error: OSError) -> Completion:
@@ -199,19 +223,47 @@ class ProcessBackend:
         busy = {w.connection: w for w in self._workers if w.running is not None}
         if not busy or ended:
             return ended
+        deadlines = [w.deadline for w in busy.values() if w.deadline is not None]
+        if deadlines:  # wake up for the first time limit
+            timeout = min(timeout, max(min(deadlines) - time.monotonic(), 0.0))
         for ready in connection.wait(list(busy), timeout):
             assert isinstance(ready, Connection)
             completion = self._read(busy[ready])
             if completion is not None:
                 ended.append(completion)
         now = time.monotonic()
-        for worker in busy.values():  # one that never set up the session holds no job
-            if worker not in self._workers:  # ended while its messages were read
+        expired = []
+        for worker in busy.values():
+            if worker not in self._workers or worker.running is None:  # ended meanwhile
                 continue
-            if worker.running is not None and not worker.ready and now > worker.setup:
+            if not worker.ready and now > worker.setup:  # one that never set up holds no job
                 handle, _ = worker.running
                 self._end(worker)
                 ended.append((handle, RunError(_slow()), Observations()))
+            elif worker.deadline is not None and now > worker.deadline:
+                expired.append(worker)
+        return ended + self._expire(expired)
+
+    def _expire(self, workers: list[_Worker]) -> list[Completion]:
+        """End ``workers``, whose tasks ran longer than their time limit, as :meth:`cancel` does:
+        each task fails, naming its limit, with what it left."""
+        for worker in workers:
+            _signal(worker, signal.SIGTERM)
+        deadline = time.monotonic() + _GRACE
+        ended: list[Completion] = []
+        for worker in workers:
+            assert worker.running is not None
+            assert worker.began is not None
+            handle, spec = worker.running
+            self._end(worker, terminate=False, deadline=deadline)
+            elapsed = time.monotonic() - worker.began
+            assert spec.timeout is not None
+            how = (
+                f"{spec.task.id.label} ran longer than {_LIMITS[spec.task.id.kind]} "
+                f"({spec.timeout:g} s) and was stopped"
+            )
+            root = self._roots.get(spec.workspace)
+            ended.append((handle, _died(spec, root, how, elapsed), Observations()))
         return ended
 
     def _read(self, worker: _Worker) -> Completion | None:
@@ -234,6 +286,7 @@ class ProcessBackend:
             kind = message[0]
             if kind == "ready":
                 worker.ready = True
+                worker.begin()
             elif kind == "started":
                 worker.groups.add(message[1])
             elif kind == "refused":
@@ -242,6 +295,7 @@ class ProcessBackend:
             else:
                 worker.running = None
                 worker.groups.clear()
+                worker.began = worker.deadline = None
                 self._deaths.pop(_name(spec), None)
                 if kind == "failed":
                     assert isinstance(message[1], Failure)
@@ -252,20 +306,20 @@ class ProcessBackend:
         """The end of the task of ``worker``, which died."""
         assert worker.running is not None
         handle, spec = worker.running
+        began = worker.began
         status = self._end(worker, terminate=False)
         name = _name(spec)
         deaths = self._deaths[name] = self._deaths.get(name, 0) + 1
         task = spec.task.id
         how = f"the worker process that ran {task.label} died ({_ended(status)})"
-        if task == GEOMETRY:
-            return handle, RunError(f"{how}; the candidate has no geometry"), Observations()
         if deaths > self._count:
             return (
                 handle,
                 RunError(f"{how}, {deaths} times in a row for {task.name}; fewer --workers?"),
                 Observations(),
             )
-        return handle, _died(spec, self._roots.get(spec.workspace), how), Observations()
+        elapsed = None if began is None else time.monotonic() - began
+        return handle, _died(spec, self._roots.get(spec.workspace), how, elapsed), Observations()
 
     def cancel(self, handles: Collection[Handle]) -> None:
         stopped = set(handles)
@@ -357,16 +411,31 @@ def _ended(status: int) -> str:
     return f"exit status {status}"
 
 
-def _died(spec: TaskSpec, root: Path | None, how: str) -> TaskOutcome:
-    """The ``failed`` outcome of the task ``spec``, whose worker died: what it left in its
-    directory stays there, named in the message."""
+_LIMITS = {
+    Kind.GEOMETRY: "the time limit of a geometry",
+    Kind.STAGE: "the stage timeout",
+    Kind.EVALUATOR: "the evaluator timeout",
+}
+
+
+def _limit(spec: TaskSpec) -> float | None:
+    """How long the worker of the task ``spec`` may run it: its time limit, and for a stage that
+    runs a program :data:`_BACKSTOP` more, since the stage stops its program at the limit."""
+    if spec.timeout is None:
+        return None
+    return spec.timeout + (_BACKSTOP if spec.task.id.kind is Kind.STAGE else 0.0)
+
+
+def _died(spec: TaskSpec, root: Path | None, how: str, elapsed: float | None = None) -> TaskOutcome:
+    """The ``failed`` outcome of the task ``spec``, whose worker died or was stopped after
+    ``elapsed`` seconds: what it left in its directory stays there, named in the message."""
     task, directory = spec.task.id, spec.task.directory
     own = None if root is None or directory is None else root / directory
     message = how if own is None else f"{how}; what it left is in {own}"
     if task.kind is not Kind.EVALUATOR:  # the logs of what it ran, as far as it got
         found = {} if own is None or task.kind is not Kind.STAGE else stage_logs(task.name, own)
         logs = {role: portable(path, root) for role, path in found.items()}
-        return TaskOutcome(task, Status.FAILED, message, artifacts=logs)
+        return TaskOutcome(task, Status.FAILED, message, artifacts=logs, elapsed_seconds=elapsed)
     workdir = log = None
     if own is not None and directory is not None and own.is_dir():  # made just before the call
         workdir = Path(directory)
@@ -376,6 +445,7 @@ def _died(spec: TaskSpec, root: Path | None, how: str) -> TaskOutcome:
         Status.FAILED,
         message,
         artifacts={} if log is None else {"log": log},
+        elapsed_seconds=elapsed,
         result=EvaluationResult.failed(message),
         workdir=workdir,
     )

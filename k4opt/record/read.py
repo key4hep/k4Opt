@@ -403,18 +403,32 @@ def _results(
             for role, path in _mapping(part.get("logs"), f"{at}: logs").items():
                 _in_run(path, directory, f"{at}: logs.{role}")
     geometry = _mapping(record.get("geometry"), "geometry")
-    if geometry.get("status") != DONE:
-        raise RecordError(f"geometry: status {geometry.get('status')!r}, but it is always done")
-    for key in ("compact", "manifest"):
-        _in_run(geometry.get(key), GEOMETRY.name, f"geometry: {key}")
     if geometry.get("varies") != list(plan[GEOMETRY].varies):
         raise RecordError(
             f"geometry: varies {geometry.get('varies')!r}, but the parameters that set it are "
             f"{list(plan[GEOMETRY].varies)!r}"
         )
-    _check_changes(spec, configuration, geometry.get("changes"))
+    status = geometry.get("status")
+    if status == DONE:
+        for key in ("compact", "manifest"):
+            _in_run(geometry.get(key), GEOMETRY.name, f"geometry: {key}")
+        _check_changes(spec, configuration, geometry.get("changes"))
+        geometry_result = TaskResult(GEOMETRY, DONE)
+    elif status == Status.FAILED:  # it ran out of time, or its worker died: nothing was made
+        message = geometry.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise RecordError(f"geometry: failed, but its message is {message!r}")
+        named = [key for key in _MADE if key in geometry]
+        if named:
+            raise RecordError(
+                f"geometry: failed, but it names {', '.join(named)}, which only a geometry that "
+                "was made has"
+            )
+        geometry_result = TaskResult(GEOMETRY, Status.FAILED, message)
+    else:
+        raise RecordError(f"geometry: status {status!r}, but a geometry is done or failed")
     fragments |= {task: e.fragment for task, e in evaluators.items()}
-    results: dict[TaskId, TaskResult] = {GEOMETRY: TaskResult(GEOMETRY, DONE)}
+    results: dict[TaskId, TaskResult] = {GEOMETRY: geometry_result}
     for task in plan.tasks:
         if task.id == GEOMETRY:
             continue
@@ -449,6 +463,18 @@ def _results(
             )
         results[task.id] = expected
     return results
+
+
+_MADE = (
+    "compact",
+    "manifest",
+    "fingerprint",
+    "source_root",
+    "changes",
+    "externals",
+    "candidate_externals",
+)
+"""What the record of a geometry that was made holds, of what it made and reads."""
 
 
 def _check_changes(spec: ProblemSpec, configuration: Configuration, value: object) -> None:

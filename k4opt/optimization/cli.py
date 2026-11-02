@@ -1,7 +1,7 @@
 """Command-line interface of the optimization component: ``k4opt optimize`` and ``k4opt study``.
 
     k4opt optimize PROBLEM --evaluator FILE.py:Class [--evaluator ...] --trials N --output DIR
-        [--seed S] [--resume] [--storage URL] [--timeout SECONDS] [--workers N|auto|inline]
+        [--seed S] [--resume] [--storage URL] [--workers N|auto|inline]
     k4opt study show DIR [--storage URL]
     k4opt study trial DIR NUMBER [--storage URL]
     k4opt study export DIR --format {csv,json} [--output FILE] [--storage URL]
@@ -75,15 +75,6 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "--storage",
         metavar="URL",
         help="an Optuna database URL in place of DIR/study.journal (needs SQLAlchemy)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        metavar="SECONDS",
-        help=(
-            "kill ddsim if a trial's simulation runs longer than this; the trial is FAIL and the "
-            "study goes on (no limit without it)"
-        ),
     )
     parser.add_argument(
         "--workers",
@@ -173,7 +164,6 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 seed=args.seed,
                 resume=args.resume,
                 storage=args.storage,
-                timeout=args.timeout,
                 workers=args.workers,
                 warn=progress.warning,
                 progress=progress.trial,

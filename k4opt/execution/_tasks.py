@@ -49,6 +49,13 @@ type Output = Callable[[Path], AbstractContextManager[object]]
 """Where an evaluator's output goes while it is called, given its own directory."""
 
 
+GEOMETRY_TIMEOUT = 600.0
+"""How many seconds the task that makes a candidate's geometry may run in a worker process. It is
+k4opt's own work on files (seconds, normally), which no physics makes long: only a stalled
+filesystem would, and then the geometry fails, recorded, rather than hold its worker forever. The
+problem's ``timeout`` limits its stages and evaluations, not this."""
+
+
 @dataclass(frozen=True, slots=True)
 class Workspace:
     """Where the tasks of one candidate write: ``id`` names it wherever it is (the record id of
@@ -75,8 +82,8 @@ class Measuring:
 @dataclass(frozen=True, slots=True)
 class SessionContext:
     """What every task of a session needs: the problem ``spec``, the stage conditions of each
-    sample (``contexts``, the session's time limit included, without stages: those of a task are
-    its candidate's, in its :class:`TaskSpec`), what each evaluation must measure
+    sample (``contexts``, without stages: those of a task are its candidate's, in its
+    :class:`TaskSpec`, as its time limit is), what each evaluation must measure
     (``evaluations``), what the external references of the session's geometry read
     (``externals``), which a candidate's own references are compared with, and the geometry
     candidates start from (``source``, discovered as ``catalog``; none where every candidate is
@@ -120,7 +127,10 @@ class TaskSpec:
     the stages of its sample as its candidate configures them, for a stage. ``geometry`` says
     how the geometry task works (``None``: there is no geometry), ``supplied`` is a file the
     caller gives for a stage, and ``request`` and ``roles`` are what an evaluation is asked, its
-    request without inputs or a directory. ``cpus`` is how many processors the task keeps busy.
+    request without inputs or a directory. ``cpus`` is how many processors the task keeps busy,
+    and ``timeout`` how many seconds it may run, ``None`` for no limit (the problem's
+    ``timeout`` of a stage or an evaluation, :data:`GEOMETRY_TIMEOUT` for the geometry):
+    whatever runs the task stops it then, and a stage passes it on to the program it runs.
     """
 
     workspace: str
@@ -134,6 +144,7 @@ class TaskSpec:
     request: EvaluationRequest | None = None
     roles: Mapping[str, tuple[RoleInput, ...]] = field(default_factory=lambda: FrozenMap({}))
     cpus: int = 1
+    timeout: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

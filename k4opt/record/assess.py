@@ -77,10 +77,13 @@ class Limit:
     the bound as the problem declares it, and ``unit`` the unit of the measurement (the
     constraint's own when there is no measurement). ``margin`` is ``value - max`` or
     ``min - value`` in that unit, zero or below when the limit is ``satisfied``: equality
-    satisfies it, with margin 0. The margin is computed exactly and rounded once, so its sign is
-    always that of the exact comparison; it is ``None`` if it does not fit in a float, while
-    ``satisfied`` stays exact. ``value``, its ``uncertainty`` (recorded, not used), ``margin``
-    and ``satisfied`` are ``None`` when the evaluation is not ``valid``.
+    satisfies it, with margin 0. ``scale`` is the constraint's characteristic size of the metric
+    (1 where it gives none), and ``normalized`` the margin in units of it, ``margin / scale``:
+    dimensionless, what an optimizer is told, so that limits on metrics of different units add up
+    meaningfully. Both are computed exactly and rounded once, so their sign is always that of the
+    exact comparison; each is ``None`` if it does not fit in a float, while ``satisfied`` stays
+    exact. ``value``, its ``uncertainty`` (recorded, not used), ``margin``, ``normalized`` and
+    ``satisfied`` are ``None`` when the evaluation is not ``valid``.
     """
 
     evaluator: str
@@ -94,6 +97,8 @@ class Limit:
     margin: float | None = None
     satisfied: bool | None = None
     sample: str | None = None
+    scale: int | float = 1
+    normalized: float | None = None
 
     @property
     def ref(self) -> MetricRef:
@@ -123,6 +128,8 @@ class Limit:
             "value": self.value,
             "uncertainty": self.uncertainty,
             "margin": self.margin,
+            "scale": self.scale,
+            "normalized": self.normalized,
             "satisfied": self.satisfied,
         }
 
@@ -245,16 +252,13 @@ def _limit(constraint: Constraint, bound: Bound, measurement: Measurement | None
     limit = constraint.min if bound == "min" else constraint.max
     assert limit is not None
     ref = (constraint.evaluator, constraint.stage, constraint.metric)
+    scale = 1 if constraint.scale is None else constraint.scale
     if measurement is None:
-        return Limit(*ref, bound, limit, constraint.unit, sample=constraint.sample)
-    # exact: Fraction holds every float and int, and float() rounds the difference once
+        return Limit(*ref, bound, limit, constraint.unit, sample=constraint.sample, scale=scale)
+    # exact: Fraction holds every float and int, and float() rounds each quotient once
     excess = Fraction(measurement.value) - Fraction(limit)
     if bound == "min":
         excess = -excess
-    try:
-        margin: float | None = float(excess)
-    except OverflowError:
-        margin = None
     return Limit(
         *ref,
         bound,
@@ -262,7 +266,17 @@ def _limit(constraint: Constraint, bound: Bound, measurement: Measurement | None
         measurement.unit,
         measurement.value,
         measurement.uncertainty,
-        margin,
+        _float(excess),
         excess <= 0,
         constraint.sample,
+        scale,
+        _float(excess / Fraction(scale)),
     )
+
+
+def _float(exact: Fraction) -> float | None:
+    """``exact`` rounded once to the nearest float, ``None`` beyond the range of a float."""
+    try:
+        return float(exact)
+    except OverflowError:
+        return None

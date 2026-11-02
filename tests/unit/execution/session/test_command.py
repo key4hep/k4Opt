@@ -19,7 +19,7 @@ from k4opt.evaluation import (
     result_from,
 )
 from k4opt.execution import RunError
-from k4opt.execution._session import preview_candidate
+from k4opt.execution._command import preview_candidate
 from k4opt.execution.cli import _preview
 from k4opt.geometry import GeometrySource
 from k4opt.problem import load_problem
@@ -87,20 +87,12 @@ def test_a_dry_run_shows_what_the_candidate_sets_and_runs_nothing(
     assert code == 1 and "outside the bounds" in err
 
 
-@pytest.mark.parametrize(
-    ("flags", "named"),
-    [
-        (["--workers", "2"], "--workers"),
-        (["--timeout", "60"], "--timeout"),
-        (["--workers", "inline", "--timeout", "60"], "--workers and --timeout"),
-    ],
-)
-def test_a_dry_run_refuses_the_options_of_a_run(
-    problem_file: Path, flags: list[str], named: str
-) -> None:
-    code, out, err = evaluate(str(problem_file), "--param", f"{RADIUS}=450", "--dry-run", *flags)
+def test_a_dry_run_refuses_the_options_of_a_run(problem_file: Path) -> None:
+    code, out, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--dry-run", "--workers", "2"
+    )
     assert (code, out) == (2, "")
-    assert f"k4opt evaluate: {named} say how a candidate runs, and --dry-run runs none" in err
+    assert "k4opt evaluate: --workers says how a candidate runs, and --dry-run runs none" in err
 
 
 def test_a_dry_run_shows_a_setting_in_every_entry_of_its_binding(
@@ -384,7 +376,7 @@ def test_the_evaluator_provenance_is_saved_in_the_summary(
 ) -> None:
     class Annotating(Spy):
         def evaluate(self, request: Any) -> Any:
-            result = result_from(self.inner, self.inner.evaluate(request))
+            result = result_from(self, super().evaluate(request))
             return dataclasses.replace(result, provenance={"selection": "barrel", "algo": [2, 1]})
 
     outcome = run_candidate(
@@ -503,7 +495,8 @@ def test_the_candidate_time_counts_the_checks_and_every_task_the_geometry_too(
         return materialize(self, *args, **kwargs)
 
     class Checking(Spy):
-        def check(self, request: Any) -> None:
+        @classmethod
+        def check(cls, request: Any) -> None:
             clock.now += 0.5
             super().check(request)
 

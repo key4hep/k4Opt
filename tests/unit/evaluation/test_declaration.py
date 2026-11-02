@@ -61,7 +61,7 @@ class Empty(Evaluator):
 
 @pytest.mark.parametrize("cls", [Plain, Reader, Combined, Empty])
 def test_a_declaration_reads_back_as_it_was_written(cls: type[Evaluator]) -> None:
-    declared = Declaration.of(cls())
+    declared = Declaration.of(cls)
     assert Declaration.from_dict(declared.name, declared.to_dict(), K4OptError) == declared
     # and as JSON gives it back from a summary
     data = json.loads(json.dumps(thaw(declared.to_dict())))
@@ -69,7 +69,7 @@ def test_a_declaration_reads_back_as_it_was_written(cls: type[Evaluator]) -> Non
 
 
 def test_a_declaration_holds_what_the_record_needs_and_nothing_python() -> None:
-    declared = Declaration.of(Reader())
+    declared = Declaration.of(Reader)
     assert declared == Declaration(
         "test.reader",
         "3",
@@ -91,14 +91,14 @@ def test_a_declaration_holds_what_the_record_needs_and_nothing_python() -> None:
 
 
 def test_none_and_empty_declarations_stay_apart() -> None:
-    plain, empty = Declaration.of(Plain()), Declaration.of(Empty())
+    plain, empty = Declaration.of(Plain), Declaration.of(Empty)
     assert (plain.metrics, plain.artifacts, plain.roles) == (None, None, None)
     assert (empty.metrics, empty.artifacts, empty.roles) == ({}, (), {})
     assert plain.to_dict()["metrics"] is None and empty.to_dict()["metrics"] == ()
 
 
 def test_the_roles_of_a_declaration_keep_each_kind() -> None:
-    roles = Declaration.of(Combined()).roles
+    roles = Declaration.of(Combined).roles
     assert roles is not None
     assert roles["signal"] == Role(metrics=[SELECTED, GENERATED])
     assert roles["backgrounds"].many and roles["plots"].artifacts == ("histogram",)
@@ -110,7 +110,7 @@ class RefusedError(K4OptError):
 
 
 def _written() -> dict[str, Any]:
-    data = thaw(Declaration.of(Combined()).to_dict())
+    data = thaw(Declaration.of(Combined).to_dict())
     assert isinstance(data, dict)
     return data
 

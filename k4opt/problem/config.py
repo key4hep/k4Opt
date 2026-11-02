@@ -27,6 +27,7 @@ from k4opt.problem._fields import (
     _mapping,
     _number,
     _optional_text,
+    _seconds,
     _sequence,
     _show,
     _text,
@@ -53,6 +54,7 @@ _TOP_KEYS = (
     "schema_version",
     "name",
     "environment",
+    "timeout",
     "geometry",
     "parameters",
     "stages",
@@ -198,6 +200,7 @@ def _parse(data: object, source: Path | None) -> ProblemSpec:
         evaluators=evaluators,
         objectives=objectives,
         constraints=constraints,
+        timeout=_seconds(top["timeout"], "timeout") if "timeout" in top else None,
     )
 
 
@@ -335,7 +338,7 @@ def _constraints(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Co
         m = _mapping(
             item,
             path,
-            ("sample", "evaluator", "stage", "metric", "min", "max", "unit"),
+            ("sample", "evaluator", "stage", "metric", "min", "max", "unit", "scale"),
             ("stage", "metric"),
         )
         if "min" not in m and "max" not in m:
@@ -344,6 +347,12 @@ def _constraints(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Co
         high = _number(m["max"], f"{path}.max") if "max" in m else None
         if low is not None and high is not None and low > high:
             raise _fail(path, f"min must not exceed max, got min={low}, max={high}")
+        scale = _number(m["scale"], f"{path}.scale") if "scale" in m else None
+        if scale is not None and not scale > 0:
+            raise _fail(
+                f"{path}.scale",
+                f"must be positive: a characteristic size of the metric, got {scale!r}",
+            )
         sample, evaluator = _owner(m, path, evaluators)
         constraint = Constraint(
             evaluator=evaluator,
@@ -353,6 +362,7 @@ def _constraints(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Co
             max=high,
             unit=_optional_text(m, "unit", path),
             sample=sample,
+            scale=scale,
         )
         if constraint.ref in first:
             raise _fail(
@@ -360,4 +370,12 @@ def _constraints(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Co
             )
         first[constraint.ref] = index
         constraints.append(constraint)
+    unscaled = [f"constraints[{i}]" for i, c in enumerate(constraints) if c.scale is None]
+    if len(constraints) > 1 and unscaled:
+        raise _fail(
+            ", ".join(unscaled),
+            "needs a scale: with constraints on several metrics, an optimizer adds how far a "
+            "candidate is beyond each limit, which means something only in units of a "
+            "characteristic size of each metric: give each a scale, in the unit of its limits",
+        )
     return tuple(constraints)

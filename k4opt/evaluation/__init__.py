@@ -26,22 +26,18 @@ Typical use::
             return {("analysis", "answer"): 42}
 """
 
-from k4opt.evaluation.base import (
+from k4opt.evaluation.base import Evaluator, result_from
+from k4opt.evaluation.declaration import (
     Collection,
-    Evaluator,
-    Quantity,
+    Declaration,
     Role,
-    check_bound,
-    check_settings,
+    check_class,
     collection_names,
     declared_artifacts,
     declared_collections,
     declared_roles,
     metric_units,
-    result_from,
-    with_defaults,
 )
-from k4opt.evaluation.declaration import Declaration
 from k4opt.evaluation.edm4hep import (
     Event,
     available_collections,
@@ -51,6 +47,7 @@ from k4opt.evaluation.edm4hep import (
     read_events,
 )
 from k4opt.evaluation.errors import (
+    CandidateRejected,
     EvaluationContractError,
     EvaluationFailed,
     EvaluationInvalid,
@@ -70,11 +67,13 @@ from k4opt.evaluation.models import (
     Status,
 )
 from k4opt.evaluation.protocol import EvaluatorProtocol
+from k4opt.evaluation.settings import Quantity, check_bound, check_settings, with_defaults
 
 __all__ = [
     "ARTIFACT_NAME",
     "Artifact",
     "CandidateKey",
+    "CandidateRejected",
     "Collection",
     "Declaration",
     "EvaluationContractError",
@@ -95,6 +94,7 @@ __all__ = [
     "Status",
     "available_collections",
     "check_bound",
+    "check_class",
     "check_settings",
     "collection_names",
     "collection_types",

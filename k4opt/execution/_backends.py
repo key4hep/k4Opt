@@ -15,12 +15,12 @@ contract.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from k4opt.evaluation import EvaluatorProtocol
+from k4opt.execution._instances import _Bound
 from k4opt.execution._tasks import Observations, SessionContext, TaskOutcome, TaskSpec, Workspace
 from k4opt.execution._work import execute_task
 from k4opt.problem.plan import Kind, TaskId
@@ -68,20 +68,17 @@ class Backend(Protocol):
     def close(self) -> None: ...
 
 
-type Instances = Callable[[str, TaskId], EvaluatorProtocol]
-"""The evaluator instance of an evaluation, by the id of its candidate's workspace."""
-
-
 class InlineBackend:
-    """Runs each task as it is submitted, in the caller's thread, with the evaluator instances the
-    candidate's preflight created and checked (``instances``): one task at a time, as k4opt has
-    always evaluated a candidate. An exception of a task propagates from :meth:`submit`."""
+    """Runs each task as it is submitted, in the caller's thread, one at a time, as k4opt has
+    always evaluated a candidate: an evaluation creates its instance of the implementation
+    ``bound`` to it, as in a worker process. An exception of a task propagates from
+    :meth:`submit`."""
 
     capacity = 1
 
-    def __init__(self, context: SessionContext, instances: Instances) -> None:
+    def __init__(self, context: SessionContext, bound: Mapping[TaskId, _Bound]) -> None:
         self._context = context
-        self._instances = instances
+        self._bound = bound
         self._roots: dict[str, Path | None] = {}
         self._ended: list[Completion] = []
 
@@ -93,11 +90,9 @@ class InlineBackend:
 
     def submit(self, spec: TaskSpec, seen: Observations) -> Handle:
         task = spec.task.id
-        instance = None
-        if task.kind is Kind.EVALUATOR:
-            instance = self._instances(spec.workspace, task)
+        bound = self._bound[task] if task.kind is Kind.EVALUATOR else None
         outcome, observed = execute_task(
-            self._context, spec, self._roots[spec.workspace], seen, instance
+            self._context, spec, self._roots[spec.workspace], seen, bound
         )
         handle = Handle(spec.workspace, task)
         self._ended.append((handle, outcome, observed))

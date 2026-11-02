@@ -36,15 +36,13 @@ from typing import Literal
 from k4opt.evaluation import EvaluatorProtocol
 from k4opt.execution import Activity
 from k4opt.optimization._results import StudyResults, TrialResult
-from k4opt.optimization._study import STUDY_NAME, StudyReport, TrialReport
+from k4opt.optimization._study import STUDY_NAME
 from k4opt.optimization.errors import OptimizationError
 
 __all__ = [
     "STUDY_NAME",
     "OptimizationError",
-    "StudyReport",
     "StudyResults",
-    "TrialReport",
     "TrialResult",
     "load_study",
     "optimize",
@@ -75,12 +73,11 @@ def optimize(
     seed: int | None = None,
     resume: bool = False,
     storage: str | None = None,
-    timeout: float | None = None,
     workers: int | Literal["auto", "inline"] = "inline",
     warn: Callable[[str], None] | None = None,
-    progress: Callable[[TrialReport], None] | None = None,
+    progress: Callable[[TrialResult], None] | None = None,
     activity: Callable[[Activity], None] | None = None,
-) -> StudyReport:
+) -> StudyResults:
     """Run ``trials`` new trials of a study of the problem file ``problem`` in ``output``.
 
     ``implementations`` (evaluator classes, as :func:`~k4opt.evaluation.load_evaluator` returns
@@ -91,24 +88,24 @@ def optimize(
     Key4hep stack, k4opt code and Optuna version, and is refused otherwise; trials an
     interrupted session left running are finished first and do not count among ``trials``.
     ``storage`` is an Optuna database URL in place of the journal file in ``output``, given
-    again on every resume. ``timeout`` is how many seconds a trial's simulation may take before
-    ddsim is killed and the trial fails; it is not part of the study, so a resume may set
-    another one. ``workers`` says where the tasks run, as for
+    again on every resume. ``workers`` says where the tasks run, as for
     :meth:`~k4opt.execution.EvaluationSession.open`: ``"inline"``, one after another in this
     process (an evaluator that crashes the process ends the study, which ``resume`` continues),
     or that many worker processes, of one trial and of several (``k4opt optimize`` runs one by
     default); the optimizer is asked for a candidate only when a slot would otherwise be idle,
-    and told each trial as it ends. Like ``timeout``, it is not part of the study.
+    and told each trial as it ends. It is not part of the study. A trial a stage or an evaluation
+    of which runs longer than the problem's ``timeout`` for it fails, and the study goes on.
 
     ``warn`` is called with each warning, ``progress`` with each trial as it ends, the trials a
     resume finishes first (``recovered``), and ``activity`` with what runs whenever that changes
-    (:class:`~k4opt.execution.Activity`: trials under way, busy slots). Invalid and failed
-    candidates are FAIL trials and the study goes on. Raises :class:`OptimizationError` for a
-    study that cannot start or resume, and when a trial stops it (a broken evaluation contract,
-    a record that does not hold up); a :class:`~k4opt.errors.K4OptError` for an invalid problem
-    or evaluator, before anything is created. Ctrl-C and SIGTERM end the running trials (FAIL,
-    or told their records), remove the lock and raise :class:`KeyboardInterrupt`; a trial that
-    stops the study ends the others the same way.
+    (:class:`~k4opt.execution.Activity`: trials under way, busy slots); each trial is given as
+    :func:`load_study` reads it back, and so is the study once the trials ended. Invalid and failed
+    candidates, and those an evaluator rejects, are FAIL trials and the study goes on. Raises
+    :class:`OptimizationError` for a study that cannot start or resume, and when a trial stops it (a
+    broken evaluation contract, a record that does not hold up); a :class:`~k4opt.errors.K4OptError`
+    for an invalid problem or evaluator, before anything is created. Ctrl-C and SIGTERM end the
+    running trials (FAIL, or told their records), remove the lock and raise
+    :class:`KeyboardInterrupt`; a trial that stops the study ends the others the same way.
     """
     with _needs_optuna("k4opt optimize"):
         from k4opt.optimization import _optuna
@@ -120,7 +117,6 @@ def optimize(
         seed=seed,
         resume=resume,
         storage=storage,
-        timeout=timeout,
         workers=workers,
         warn=warn or (lambda message: None),
         progress=progress or (lambda trial: None),

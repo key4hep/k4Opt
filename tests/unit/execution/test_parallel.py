@@ -192,7 +192,10 @@ def test_the_simulations_of_two_samples_run_at_once(
     outcome = session_of(2).evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert outcome.candidate.status == "valid", outcome.candidate.message
     summary = verified(outcome)
-    assert summary["environment"]["observed"]["execution"] == {"backend": "process", "workers": 2}
+    assert summary["environment"]["observed"]["execution"] == {
+        "backend": "process",
+        "workers": 2,
+    }
     ended = {path.name for path in marks.glob("*.ended")}
     assert ended == {"a.gamma.ended", "a.pion.ended"}
 
@@ -247,8 +250,13 @@ def test_a_candidate_gives_the_same_record_with_one_job_and_with_four(
     four = session_of(4, problem).evaluate({RADIUS: 450.0}, tmp_path / "four")
     first, second = verified(one), verified(four)
     assert scientific(first) == scientific(second)
-    assert first["environment"]["observed"]["execution"] == {"backend": "inline"}
-    assert second["environment"]["observed"]["execution"] == {"backend": "process", "workers": 4}
+    assert first["environment"]["observed"]["execution"] == {
+        "backend": "inline",
+    }
+    assert second["environment"]["observed"]["execution"] == {
+        "backend": "process",
+        "workers": 4,
+    }
     assert first["samples"]["gamma"]["evaluations"]["p"]["log"] is None
     assert second["samples"]["gamma"]["evaluations"]["p"]["log"] is not None
     assert first["status"] == "valid" and first["metrics"][0]["value"] == 2.0
@@ -502,7 +510,7 @@ def test_each_task_records_its_own_peak_memory_in_reused_workers(
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/clear_refs is Linux's")
-def test_what_making_and_checking_the_instance_took_counts_in_a_worker(
+def test_what_making_the_instance_took_counts_in_a_worker(
     tmp_path: Path,
     doc: dict[str, Any],
     session_of: Opener,
@@ -510,13 +518,13 @@ def test_what_making_and_checking_the_instance_took_counts_in_a_worker(
 ) -> None:
     problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
     stack.install(monkeypatch)
-    probe(monkeypatch, p={"check_allocate": 300})  # in check(), released before evaluate()
+    probe(monkeypatch, init={"allocate": 300})  # in __init__, released before evaluate()
     summary = verified(session_of(2, problem).evaluate({RADIUS: 450.0}, tmp_path / "a"))
     memory = summary["samples"]["gamma"]["evaluations"]["p"]["peak_memory_bytes"]
     assert memory["process"] >= 300 * MIB
 
 
-def test_what_making_and_checking_the_instance_took_counts_in_the_tasks_time(
+def test_what_making_the_instance_took_counts_in_the_tasks_time(
     tmp_path: Path,
     doc: dict[str, Any],
     session_of: Opener,
@@ -524,7 +532,7 @@ def test_what_making_and_checking_the_instance_took_counts_in_the_tasks_time(
 ) -> None:
     problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
     stack.install(monkeypatch)
-    probe(monkeypatch, p={"check_sleep": 0.5})
+    probe(monkeypatch, init={"sleep": 0.5})
     outcome = session_of(2, problem).evaluate({RADIUS: 450.0}, tmp_path / "a")
     (result,) = [r for r in outcome.candidate.results.values() if r.id.label == "gamma/p"]
     assert result.record is not None and result.record.elapsed_seconds is not None
@@ -800,7 +808,10 @@ def test_the_command_evaluates_with_several_workers(
         line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("memory:"))
         assert " per task (estimate), for pion/simulation (k4opt " in line and ", ddsim 3" in line
     summary = json.loads((output / SUMMARY_NAME).read_text())
-    assert summary["environment"]["observed"]["execution"] == {"backend": "process", "workers": 2}
+    assert summary["environment"]["observed"]["execution"] == {
+        "backend": "process",
+        "workers": 2,
+    }
     assert stack.workers() == []  # the command's session closed its workers
     assert main([*argv, "--workers", "0", "--output", str(tmp_path / "b")]) == 1
     assert (
@@ -942,17 +953,6 @@ def test_a_worker_found_dead_as_its_setup_deadline_passes_is_ended_once(tmp_path
     assert backend._workers == []
 
 
-@pytest.mark.parametrize("workers", ["inline", 2])
-def test_the_session_keeps_the_preflight_instances_only_when_it_evaluates_with_them(
-    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, workers: int | str
-) -> None:
-    stack.install(monkeypatch)
-    run = session_of(workers)._start(RunRequest({RADIUS: 450.0}, tmp_path / "a"))
-    assert run.prepared is not None
-    assert len(run.prepared.entries) == len(run.prepared.requests) == 2  # for the records
-    assert len(run.prepared.instances) == (2 if workers == "inline" else 0)
-
-
 @pytest.mark.parametrize("workers", [1, 2, "auto"])
 def test_an_evaluator_a_worker_cannot_load_again_is_refused_when_the_session_opens(
     problem: Path, workers: int | str
@@ -970,7 +970,9 @@ def test_an_evaluator_given_as_it_is_evaluates_inline(
     with EvaluationSession.open(problem, implementations(cell_count()())) as session:
         outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert outcome.candidate.status == "valid", outcome.candidate.message
-    assert outcome.summary["environment"]["observed"]["execution"] == {"backend": "inline"}  # type: ignore[index]
+    assert outcome.summary["environment"]["observed"]["execution"] == {
+        "backend": "inline",
+    }  # type: ignore[index]
     assert stack.workers() == []
 
 

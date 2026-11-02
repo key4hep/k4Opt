@@ -166,26 +166,29 @@ def log(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return events
 
 
-class Spy:
-    """Passes everything on to an instance of the class ``inner`` and logs each ``check`` and
-    ``evaluate``."""
+def Spy(inner: type[Any], log: list[str]) -> Any:  # noqa: N802 - stands for the class it makes
+    """An instance of a subclass of ``inner``, the class ``inner`` declares, that logs each
+    ``check`` and ``evaluate`` and keeps the requests it evaluates (watched: see
+    :func:`~tests.support.evaluators.implementations`)."""
 
-    def __init__(self, inner: type[Any], log: list[str]) -> None:
-        self.inner, self.log = inner(), log
-        self.name, self.version = inner.name, inner.version
-        self.stage, self.metrics = inner.stage, inner.metrics
-        self.collections = inner.collections
-        self.settings = getattr(inner, "settings", None)
-        self.evaluated: list[EvaluationRequest] = []
+    class Spy(inner):  # type: ignore[misc, valid-type]
+        def __init__(self) -> None:
+            super().__init__()
+            self.evaluated: list[EvaluationRequest] = []
 
-    def check(self, request: EvaluationRequest) -> None:
-        self.log.append(f"check {self.name}")
-        self.inner.check(request)
+        @classmethod
+        def check(cls, request: EvaluationRequest) -> None:
+            log.append(f"check {cls.name}")
+            check = getattr(super(), "check", None)
+            if check is not None:
+                check(request)
 
-    def evaluate(self, request: EvaluationRequest) -> Any:
-        self.log.append(f"evaluate {self.name}")
-        self.evaluated.append(request)
-        return self.inner.evaluate(request)
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            log.append(f"evaluate {self.name}")
+            self.evaluated.append(request)
+            return super().evaluate(request)
+
+    return Spy()
 
 
 def evaluate(
@@ -468,6 +471,7 @@ def toy(name: str, status: str) -> Any:
     class Toy:
         version = "1"
         metrics = {("analysis", f"{name}.value"): "1"}
+        locals()["name"] = name  # a class attribute, as every declaration is
 
         def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
             measured = [Measurement("analysis", f"{name}.value", 1.0, unit="1")]
@@ -477,9 +481,7 @@ def toy(name: str, status: str) -> Any:
                 return EvaluationResult.invalid("unusable", measured)  # keeps a diagnostic
             return EvaluationResult.failed("crashed")
 
-    evaluator = Toy()
-    evaluator.name = name  # type: ignore[attr-defined]
-    return evaluator
+    return Toy
 
 
 @pytest.mark.parametrize(
@@ -697,6 +699,7 @@ def plotter(name: str) -> Any:
     class Plotter:
         version = "1"
         metrics: dict[Any, str] = {}
+        locals()["name"] = name  # a class attribute, as every declaration is
 
         def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
             assert request.workdir is not None
@@ -704,9 +707,7 @@ def plotter(name: str) -> Any:
             plot.write_text(name)
             return EvaluationResult.valid(artifacts={"plot": plot})
 
-    evaluator = Plotter()
-    evaluator.name = name  # type: ignore[attr-defined]
-    return evaluator
+    return Plotter
 
 
 def test_each_evaluator_writes_and_names_its_files_on_its_own(
@@ -751,18 +752,22 @@ def test_every_second_is_counted_once(
 
     monkeypatch.setattr(ddsim_run, "_execute", slow_ddsim)
 
-    class Slow(Spy):
-        def check(self, request: EvaluationRequest) -> None:
-            clock.now += 0.5
-            super().check(request)
+    def slow(inner: type[Any]) -> type[Any]:
+        class Slow(inner):  # type: ignore[misc, valid-type]
+            @classmethod
+            def check(cls, request: EvaluationRequest) -> None:
+                clock.now += 0.5
+                super().check(request)
 
-        def evaluate(self, request: EvaluationRequest) -> Any:
-            clock.now += 1.0
-            return super().evaluate(request)
+            def evaluate(self, request: EvaluationRequest) -> Any:
+                clock.now += 1.0
+                return super().evaluate(request)
+
+        return Slow
 
     spec = problem(doc, "test.cell_count", "test.hit_energy", objectives=(CELLS, ENERGY))
     candidate: CandidateRecord = evaluate(
-        spec, [Slow(cell_count(), []), Slow(hit_energy(), [])], tmp_path, geometry
+        spec, [slow(cell_count()), slow(hit_energy())], tmp_path, geometry
     )
     seconds = {
         name: candidate.results[stage_task(name, "gamma")].elapsed_seconds
@@ -1029,9 +1034,9 @@ def test_two_bindings_of_one_implementation_read_one_simulation_with_their_own_s
         "test.threshold": ("geometry", "gamma/generation", "gamma/simulation"),
         "t1": ("geometry", "gamma/generation", "gamma/simulation"),
     }
-    # the probe, then an instance of each binding of its own, each asked once
-    probe, first, second = Threshold.created
-    assert (probe.asked, first.asked, second.asked) == ([], [1], [3])
+    # no probe: an instance of each binding of its own, each asked once
+    first, second = Threshold.created
+    assert (first.asked, second.asked) == ([1], [3])
     assert sorted(
         p.name for p in (tmp_path / "run" / "samples" / "gamma" / "evaluators").iterdir()
     ) == [

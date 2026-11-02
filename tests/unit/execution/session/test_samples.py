@@ -553,7 +553,8 @@ def test_each_item_of_a_role_holds_what_its_task_made_and_the_sample_it_is_of(
     seen: dict[str, EvaluationRequest] = {}
 
     class Watched(toy_significance()):  # type: ignore[misc]
-        def check(self, request: EvaluationRequest) -> None:
+        @classmethod
+        def check(cls, request: EvaluationRequest) -> None:
             super().check(request)
             seen["check"] = request
 

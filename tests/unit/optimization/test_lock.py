@@ -21,7 +21,7 @@ pytest.importorskip("optuna")
 from optuna.trial import TrialState
 
 from k4opt.optimization import OptimizationError, optimize
-from k4opt.optimization._study import Lock
+from k4opt.optimization._lock import Lock
 from tests.support.common import tree_digest
 from tests.support.evaluators import trade_off
 from tests.unit.optimization.conftest import evaluator_from, optuna_study

@@ -199,6 +199,9 @@ class EvaluatorSpec:
     by role, in the order the problem gives them. ``required`` makes the candidate's status
     depend on each of its evaluations, as on one an objective or a constraint names; an
     evaluation that none of them needs is a diagnostic, recorded but not deciding the status.
+    ``timeout`` is how many seconds each of its evaluations may take, its instance's creation
+    included (``None``: the problem's ``timeout``, if any): one that takes longer is stopped, and
+    fails.
     """
 
     name: str
@@ -210,6 +213,7 @@ class EvaluatorSpec:
     samples: tuple[str, ...] = ()
     roles: Mapping[str, tuple[Reference, ...]] = field(default_factory=lambda: FrozenMap({}))
     required: bool = False
+    timeout: Number | None = None
 
     def __post_init__(self) -> None:
         # Direct construction gets the same defensive copy as parsing does.
@@ -247,6 +251,8 @@ class EvaluatorSpec:
             data["settings"] = thaw(self.settings)
         if self.required:
             data["required"] = True
+        if self.timeout is not None:
+            data["timeout"] = self.timeout
         return data
 
 
@@ -285,7 +291,9 @@ class Stage:
     ddsim options for ``ddsim``, which also has ``events`` (how many to simulate) and ``seed``.
     A stage given as a ``file`` (a path; a relative one is read from the problem file's
     directory) is not run: the file is its output. Which executors and options are valid is
-    checked by :func:`k4opt.problem.parse_problem`.
+    checked by :func:`k4opt.problem.parse_problem`. ``timeout`` is how many seconds a stage that
+    runs may take (``None``: the problem's ``timeout``, if any): one that takes longer is stopped,
+    and fails.
     """
 
     type: str
@@ -294,6 +302,7 @@ class Stage:
     events: int | None = None
     seed: int | None = None
     options: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    timeout: Number | None = None
 
     def __post_init__(self) -> None:
         if (self.executor is None) == (self.file is None):
@@ -311,6 +320,8 @@ class Stage:
             data["events"] = self.events
         if self.seed is not None:
             data["seed"] = self.seed
+        if self.timeout is not None:
+            data["timeout"] = self.timeout
         options = thaw(self.options)
         assert isinstance(options, dict)
         return data | options
@@ -422,7 +433,14 @@ class Objective:
 @dataclass(frozen=True, slots=True)
 class Constraint:
     """A hard, inclusive limit on a metric of an evaluator, measured on ``sample`` (``None`` for
-    an evaluator that measures the candidate): ``min`` and/or ``max``."""
+    an evaluator that measures the candidate): ``min`` and/or ``max``.
+
+    ``scale`` is a positive characteristic size of the metric, in the unit of its limits: how far
+    beyond a limit counts as far. An optimizer is told how far a candidate is beyond each limit in
+    units of it (:attr:`~k4opt.record.Limit.normalized`), so that limits on metrics of different
+    units or magnitudes add up meaningfully. The problem requires one on every constraint once
+    there are constraints on two or more metrics; ``None`` otherwise, which counts as 1.
+    """
 
     evaluator: str
     stage: str
@@ -431,6 +449,7 @@ class Constraint:
     max: Number | None = None
     unit: str | None = None
     sample: str | None = None
+    scale: Number | None = None
 
     @property
     def ref(self) -> MetricRef:
@@ -451,6 +470,8 @@ class Constraint:
             data["max"] = self.max
         if self.unit is not None:
             data["unit"] = self.unit
+        if self.scale is not None:
+            data["scale"] = self.scale
         return data
 
 
@@ -473,6 +494,8 @@ class ProblemSpec:
     samples: Mapping[str, Sample] = field(default_factory=lambda: FrozenMap({}))
     constraints: tuple[Constraint, ...] = ()
     name: str | None = None
+    # seconds each stage that runs and each evaluation may take, unless it sets its own
+    timeout: Number | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "evaluators", tuple(self.evaluators))
@@ -500,6 +523,12 @@ class ProblemSpec:
         not give them, and every candidate does."""
         return pending(self.parameters, sample)
 
+    def time_limit(self, own: Number | None) -> float | None:
+        """How many seconds a stage or an evaluation whose own ``timeout`` is ``own`` may take:
+        its own, or the problem's; ``None`` for no limit."""
+        limit = self.timeout if own is None else own
+        return None if limit is None else float(limit)
+
     def to_dict(self) -> dict[str, object]:
         """Plain JSON-compatible data in schema order; a fresh copy on every call.
 
@@ -513,6 +542,8 @@ class ProblemSpec:
         if self.name is not None:
             data["name"] = self.name
         data["environment"] = self.environment.to_dict()
+        if self.timeout is not None:
+            data["timeout"] = self.timeout
         data["geometry"] = self.geometry
         data["parameters"] = {parameter.name: parameter.to_dict() for parameter in self.parameters}
         if self.samples:

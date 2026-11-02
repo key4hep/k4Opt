@@ -111,21 +111,36 @@ def assessment(*limits: Limit, objectives: tuple[ObjectiveValue, ...] = ()) -> A
     return Assessment(objectives, limits, all(limit.satisfied for limit in limits))
 
 
-def limit(bound: str, margin: float | None, satisfied: bool) -> Limit:
-    return Limit("e", "simulation", "x.rms", bound, 1.0, "mm", 2.0, 0.1, margin, satisfied)  # type: ignore[arg-type]
+def limit(bound: str, normalized: float | None, satisfied: bool) -> Limit:
+    margin = None if normalized is None else normalized * 0.5
+    return Limit(
+        "e",
+        "simulation",
+        "x.rms",
+        bound,  # type: ignore[arg-type]
+        1.0,
+        "mm",
+        2.0,
+        0.1,
+        margin,
+        satisfied,
+        scale=0.5,
+        normalized=normalized,
+    )
 
 
 def objective(metric: str, value: float) -> ObjectiveValue:
     return ObjectiveValue("e", "analysis", metric, "minimize", value)
 
 
-def test_the_physical_margins_are_the_constraint_values() -> None:
+def test_the_normalized_margins_are_the_constraint_values() -> None:
+    # the margins in units of the scale, never the physical margins (here half of them)
     told = constraint_values(assessment(limit("min", -1.0, True), limit("max", 0.25, False)))
     assert told == {"e/simulation/x.rms:min": -1.0, "e/simulation/x.rms:max": 0.25}
     assert constraint_values(assessment()) == {}
 
 
-def test_a_margin_that_fits_no_float_cannot_be_told() -> None:
+def test_a_margin_that_fits_no_float_in_units_of_its_scale_cannot_be_told() -> None:
     with pytest.raises(OptimizationError, match=r"e/simulation/x\.rms:max: the margin .* float"):
         constraint_values(assessment(limit("max", None, True)))
 
@@ -204,8 +219,8 @@ def test_a_storage_url_is_recorded_and_shown_without_its_secrets(
 
 def test_each_bound_of_a_constraint_is_a_limit_of_its_own() -> None:
     constraints = [
-        {"stage": "analysis", "metric": "a", "min": 150, "max": 500, "unit": "mm"},
-        {"stage": "analysis", "metric": "b", "max": 0.01},
+        {"stage": "analysis", "metric": "a", "min": 150, "max": 500, "unit": "mm", "scale": 50},
+        {"stage": "analysis", "metric": "b", "max": 0.01, "scale": 0.001},
     ]
     spec = parse_problem(problem_document(constraints=constraints))
     assert limit_names(spec) == [

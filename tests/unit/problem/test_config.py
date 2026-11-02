@@ -150,15 +150,42 @@ def test_integer_and_categorical_parameters(doc: dict[str, Any]) -> None:
 
 def test_constraints_with_min_max_or_both(doc: dict[str, Any]) -> None:
     doc["constraints"] = [
-        {"stage": "s", "metric": "a", "min": 1},
+        {"stage": "s", "metric": "a", "min": 1, "scale": 1},
+        {"stage": "s", "metric": "b", "max": 2.5, "unit": "mm", "scale": 0.5},
+        {"stage": "s", "metric": "c", "min": 1, "max": 1, "scale": 3},
+    ]
+    assert [(c.min, c.max, c.scale) for c in parse_problem(doc).constraints] == [
+        (1, None, 1),
+        (None, 2.5, 0.5),
+        (1, 1, 3),
+    ]
+
+
+def test_a_constraint_on_one_metric_needs_no_scale(doc: dict[str, Any]) -> None:
+    doc["constraints"] = [{"stage": "s", "metric": "a", "min": 1, "max": 3}]
+    (constraint,) = parse_problem(doc).constraints
+    assert constraint.scale is None and "scale" not in constraint.to_dict()
+
+
+def test_constraints_on_several_metrics_each_need_a_scale(doc: dict[str, Any]) -> None:
+    # the optimizer adds how far a candidate is beyond each limit: only meaningful in units of
+    # each metric's characteristic size, never in whichever unit happens to be largest
+    doc["constraints"] = [
+        {"stage": "s", "metric": "a", "min": 1, "scale": 1},
         {"stage": "s", "metric": "b", "max": 2.5, "unit": "mm"},
-        {"stage": "s", "metric": "c", "min": 1, "max": 1},
+        {"stage": "s", "metric": "c", "max": 7},
     ]
-    assert [(c.min, c.max) for c in parse_problem(doc).constraints] == [
-        (1, None),
-        (None, 2.5),
-        (1, 1),
-    ]
+    with pytest.raises(
+        ProblemConfigError, match=r"constraints\[1\], constraints\[2\]: needs a scale"
+    ):
+        parse_problem(doc)
+
+
+@pytest.mark.parametrize("scale", [0, -1.5, float("inf"), float("nan"), True, "1"])
+def test_a_scale_is_a_positive_finite_number(doc: dict[str, Any], scale: object) -> None:
+    doc["constraints"] = [{"stage": "s", "metric": "a", "max": 1, "scale": scale}]
+    with pytest.raises(ProblemConfigError, match=r"constraints\[0\]\.scale: must be"):
+        parse_problem(doc)
 
 
 def test_objective_and_constraint_may_share_a_metric(doc: dict[str, Any]) -> None:
@@ -996,3 +1023,35 @@ def test_huge_integer_next_to_a_float_bound(doc: dict[str, Any]) -> None:
     assert parse_problem(doc).parameters[0].bounds == (1.5, 10**400)
     doc["parameters"]["ecal_cell_size"]["bounds"] = [10**400, 1.5]
     reject(doc, "low must be smaller than high")
+
+
+def test_time_limits_are_part_of_the_problem(doc: dict[str, Any]) -> None:
+    doc["timeout"] = 3600
+    doc["samples"]["gamma"]["simulation"]["timeout"] = 7200.5
+    doc["evaluators"][0]["timeout"] = 60
+    spec = parse_problem(doc)
+    assert spec.timeout == 3600 and spec.evaluators[0].timeout == 60
+    assert spec.samples["gamma"].stages["simulation"].timeout == 7200.5
+    assert parse_problem(spec.to_dict()) == spec  # written back as given: the study's identity
+
+
+@pytest.mark.parametrize("value", [0, -5.0, float("nan"), float("inf"), True, "60", 10**400])
+@pytest.mark.parametrize(
+    ("where", "path"),
+    [((), "timeout"), (("samples", "gamma", "simulation"), r"samples\.gamma\.simulation\.timeout")],
+)
+def test_a_time_limit_is_a_positive_number_of_seconds(
+    doc: dict[str, Any], value: object, where: tuple[str, ...], path: str
+) -> None:
+    target: Any = doc
+    for key in where:
+        target = target[key]
+    target["timeout"] = value
+    with pytest.raises(ProblemConfigError, match=path):
+        parse_problem(doc)
+
+
+def test_a_stage_given_as_a_file_takes_no_time_limit(doc: dict[str, Any]) -> None:
+    doc["samples"]["gamma"]["generation"] = {"file": "events.hepmc", "timeout": 5}
+    with pytest.raises(ProblemConfigError, match=r"is not run, so it takes no \['timeout'\]"):
+        parse_problem(doc)

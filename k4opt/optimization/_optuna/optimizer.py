@@ -18,16 +18,9 @@ import optuna
 from optuna.distributions import BaseDistribution, distribution_to_json
 from optuna.storages import BaseStorage
 
+from k4opt.optimization._identity import differences, digest, revision_warnings
 from k4opt.optimization._optuna.storage import storage_record
-from k4opt.optimization._study import (
-    CONSTRAINT_VALUES,
-    STUDY_SCHEMA,
-    differences,
-    digest,
-    now,
-    revision_warnings,
-    trial_directories,
-)
+from k4opt.optimization._study import CONSTRAINT_VALUES, STUDY_SCHEMA, now, trial_directories
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import MetricRef, ProblemSpec
 

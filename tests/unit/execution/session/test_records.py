@@ -124,6 +124,7 @@ def test_the_record_is_assembled_from_the_task_results_alone(
         {"label": "golden"},
         session._baseline.process,
         configure(session.spec, {RADIUS: 450.0}),
+        session._execution,
     )
     assert json.loads(json.dumps(again)) == written
     tasks = [
@@ -189,7 +190,12 @@ SIMULATED = "samples/gamma/stages/simulation"
         ("samples/gamma/stages", {}, "samples.gamma.stages are [], but the problem makes"),
         ("samples/gamma", None, "samples.gamma must be a mapping"),
         ("samples", {}, "its samples are [], but the problem's are ['gamma']"),
-        ("geometry/status", "failed", "geometry: status 'failed', but it is always done"),
+        (
+            "geometry/status",
+            "blocked",
+            "geometry: status 'blocked', but a geometry is done or failed",
+        ),
+        ("geometry/status", "failed", "geometry: failed, but its message is None"),
         ("supplied", ["gamma/simulation"], "but the problem makes ['simulation']"),
         ("supplied", ["simulation"], "supplied ['simulation'] must list stages of the problem's"),
         ("supplied", ["pion/simulation"], "must list stages of the problem's samples"),

@@ -9,7 +9,14 @@ from collections.abc import Mapping
 
 import numpy as np
 
-from k4opt.evaluation import Collection, EvaluationResult, Evaluator, Measurement, Quantity
+from k4opt.evaluation import (
+    Collection,
+    EvaluationContractError,
+    EvaluationResult,
+    Evaluator,
+    Measurement,
+    Quantity,
+)
 
 
 class ShowerShape(Evaluator):
@@ -19,10 +26,11 @@ class ShowerShape(Evaluator):
     metrics = {"ecal_barrel.shower_width": "mm"}
     artifacts = {"histogram": "transverse widths in mm: JSON edges, counts, underflow, overflow"}
 
-    def check(self, request):
+    @classmethod
+    def check(cls, request):
         bins = request.settings["bins"]
         if not isinstance(bins, Mapping) or set(bins) != {"low", "high", "count"}:
-            self.fail("bins needs low, high and count")
+            raise EvaluationContractError("bins needs low, high and count")
         low, high, count = (bins[k] for k in ("low", "high", "count"))
         if (
             any(isinstance(v, bool) or not isinstance(v, (float, int)) for v in (low, high))
@@ -31,9 +39,9 @@ class ShowerShape(Evaluator):
             or not isinstance(count, int)
             or count < 1
         ):
-            self.fail("bins needs 0 <= low < high and a positive integer count")
+            raise EvaluationContractError("bins needs 0 <= low < high and a positive integer count")
         if request.settings["threshold"] < 0:
-            self.fail("threshold must be nonnegative")
+            raise EvaluationContractError("threshold must be nonnegative")
 
     def evaluate(self, request):
         widths = []
