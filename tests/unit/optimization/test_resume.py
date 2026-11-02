@@ -31,6 +31,7 @@ from tests.support import simulation
 from tests.support.common import git, git_checkout, requires_git, tree_digest
 from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, trade_off, yields
 from tests.support.geometry import MINI_GEO
+from tests.support.imports import FromFile
 from tests.unit.optimization.conftest import (
     RADIUS,
     TRADE,
@@ -388,19 +389,6 @@ def test_a_study_stops_when_another_file_that_changes_its_evaluator_class_is_loa
         )
 
 
-class _FromFile(importlib.abc.MetaPathFinder):
-    """An import hook that imports the module ``name`` from ``file`` as Python's own loader does,
-    which may run a cached .pyc: k4opt cannot tell which bytes ran."""
-
-    def __init__(self, name: str, file: Path) -> None:
-        self.name, self.file = name, file
-
-    def find_spec(self, fullname: str, path: object, target: object = None) -> Any:
-        if fullname != self.name:
-            return None
-        return importlib.util.spec_from_file_location(fullname, self.file)
-
-
 def test_a_study_refuses_an_evaluator_whose_executed_code_is_not_known(
     tmp_path: Path,
     write_problem: Callable[..., Path],
@@ -412,7 +400,7 @@ def test_a_study_refuses_an_evaluator_whose_executed_code_is_not_known(
     file = tmp_path / f"{module}.py"
     file.write_bytes(Path(TRADE_OFF.partition(":")[0]).read_bytes())
     monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.setattr(sys, "meta_path", [_FromFile(module, file), *sys.meta_path])
+    monkeypatch.setattr(sys, "meta_path", [FromFile(module, file), *sys.meta_path])
     evaluator = load_evaluator(f"{module}:TradeOff")
     source = evaluator_source(evaluator)
     assert source["sha256"] is not None and source["executed"] is False

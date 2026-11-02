@@ -21,6 +21,7 @@ from k4opt.errors import K4OptError
 from k4opt.evaluation import EvaluatorLoadError, _imports, evaluator_source, load_evaluator
 from k4opt.evaluation.loader import changed_code
 from tests.support.common import git_checkout, requires_git
+from tests.support.imports import FromFile
 
 GOOD = """
 from k4opt.evaluation import EvaluationResult, Measurement
@@ -606,19 +607,6 @@ class _Seventeen(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         module.value = 17  # type: ignore[attr-defined]
 
 
-class _FromFile(importlib.abc.MetaPathFinder):
-    """An import hook that imports the module ``name`` from ``file`` as Python's own loader does,
-    which may run a cached ``.pyc``."""
-
-    def __init__(self, name: str, file: Path) -> None:
-        self.name, self.file = name, file
-
-    def find_spec(self, fullname: str, path: object, target: object = None) -> Any:
-        if fullname != self.name:
-            return None
-        return importlib.util.spec_from_file_location(fullname, self.file)
-
-
 def test_an_import_hook_before_pythons_path_finder_keeps_its_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
@@ -681,7 +669,7 @@ def test_a_lazy_helper_another_import_hook_runs_is_reported(
     (tmp_path / "lazy.py").write_text(lazy)
     cls = load_evaluator(f"{tmp_path / 'lazy.py'}:Good")  # identified with value = 22
     assert evaluator_source(cls)["executed"] is True
-    hook = _FromFile(helper, path)  # comes first, and imports as Python's own loader does
+    hook = FromFile(helper, path)  # comes first, and imports as Python's own loader does
     monkeypatch.setattr(sys, "meta_path", [hook, *sys.meta_path])
     assert cls().evaluate(None).measurements[0].value == 11  # type: ignore[arg-type]
     assert changed_code(cls) == [

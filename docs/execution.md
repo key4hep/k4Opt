@@ -317,8 +317,10 @@ with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # sto
   A worker is started when a task finds none idle (one when the session opens, to check that it
   can work) and kept for the next tasks; `close()` (or leaving `with`) stops them, and a later
   evaluation starts new ones. A worker loads the evaluators again by their references, so they
-  must come from `load_evaluator` (`FILE.py:Class` or `module:Class`); one that was not loaded
-  that way is refused when the session opens (`RunError`), never evaluated inline instead. A
+  must come from `load_evaluator` (`FILE.py:Class` or `module:Class`) and be identified by the
+  code that ran (`executed: true`, [details](evaluation.md#loading-an-evaluator)), since a worker
+  that loads it from its source must run what the session did; one that was not is refused when
+  the session opens (`RunError`), never evaluated inline instead. A
   worker refuses to start unless the evaluators, k4opt's code, `KEY4HEP_STACK` and `K4GEO` are
   the session's. The session itself then only checks, assesses and writes the records, and it
   alone writes them. Even one worker isolates the session from its evaluators: a worker that

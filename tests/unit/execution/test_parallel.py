@@ -47,6 +47,7 @@ from tests.support import stack
 from tests.support.common import scientific
 from tests.support.evaluators import CELL_COUNT, cell_count, implementations, worker_probe
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
+from tests.support.imports import FromFile
 from tests.support.stack import alive, eventually
 
 RADIUS = "radius"
@@ -1008,6 +1009,23 @@ def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
         )
         message = "KEY4HEP_STACK is .* in a worker process, not '/other/stack' as in the session"
     with pytest.raises(RunError, match=message):
+        EvaluationSession.open(problem, [implementation], workers=2)
+    assert stack.workers() == []
+
+
+def test_workers_refuse_an_evaluator_whose_code_here_is_not_known(
+    tmp_path: Path, problem: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    # imported here through a hook (perhaps from a cached .pyc), a worker would load it from its
+    # source: the same hash, perhaps other code
+    module = "count_through_a_hook"
+    request.addfinalizer(lambda: sys.modules.pop(module, None))
+    file = tmp_path / f"{module}.py"
+    file.write_bytes((REPO / "tests" / "support" / "cell_count.py").read_bytes())
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sys, "meta_path", [FromFile(module, file), *sys.meta_path])
+    implementation = load_evaluator(f"{module}:CellCount")
+    with pytest.raises(RunError, match="the code it runs here is not known to be the source"):
         EvaluationSession.open(problem, [implementation], workers=2)
     assert stack.workers() == []
 
