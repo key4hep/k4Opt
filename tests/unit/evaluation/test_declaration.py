@@ -128,6 +128,10 @@ def _written() -> dict[str, Any]:
         (lambda d: d["roles"]["signal"].update(metrics=[["analysis"]]), "(stage, metric) pairs"),
         (lambda d: d["roles"]["events"].update(metrics=[list(SELECTED)]), "reads no metrics"),
         (lambda d: d.update(roles=[]), "roles must be a mapping"),
+        # the names a live evaluator may give its roles, no other
+        (lambda d: d["roles"].update({"bad-role": d["roles"]["signal"]}), "'bad-role' must be"),
+        (lambda d: d["roles"].update({"class": d["roles"]["signal"]}), "'class' must be"),
+        (lambda d: d["roles"].update({"_own": d["roles"]["signal"]}), "'_own' must be"),
     ],
 )
 def test_data_that_is_no_declaration_raises_the_error_asked_for(change: Any, message: str) -> None:

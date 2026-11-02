@@ -320,7 +320,8 @@ with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # sto
   worker refuses to start unless the evaluators, k4opt's code, `KEY4HEP_STACK` and `K4GEO` are
   the session's. The session itself then only checks, assesses and writes the records, and it
   alone writes them. Even one worker isolates the session from its evaluators: a worker that
-  dies fails only its task (below).
+  dies fails only its task, until the same task has killed N + 1 workers in a row (below); with
+  the one worker of `k4opt optimize`, a second death in a row stops the study.
 - **What isolation does not cover.** The new instance of each evaluation is still created, and
   its `check()` called, in the session's process, for every candidate, before anything of the
   candidate is created: that is what refuses a candidate early. Keep `__init__` and `check()`

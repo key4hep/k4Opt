@@ -650,23 +650,27 @@ def test_a_worker_that_died_while_idle_is_replaced_without_failing_a_task(
     assert outcome.candidate.status == "valid", outcome.candidate.message
 
 
+@pytest.mark.parametrize("workers", [1, 2])
 def test_workers_that_keep_dying_on_one_task_stop_its_candidates(
     tmp_path: Path,
     doc: dict[str, Any],
     session_of: Opener,
     monkeypatch: pytest.MonkeyPatch,
+    workers: int,
 ) -> None:
+    # isolation fails a task whose worker died, workers times in a row; the next death stops
+    # its candidate: with the one worker of k4opt optimize, the second (and the study with it)
     problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
     stack.install(monkeypatch)
     probe(monkeypatch, p={"kill": True})
     requests = [RunRequest({RADIUS: 450.0}, tmp_path / name) for name in "abc"]
-    with session_of(2, problem).evaluate_each(requests) as evaluations:
+    with session_of(workers, problem).evaluate_each(requests) as evaluations:
         ended = [outcome for _, outcome in evaluations]
     failed = [o for o in ended if isinstance(o, RunOutcome)]
     stopped = [o for o in ended if isinstance(o, RunError)]
-    assert len(failed) == 2 and all(o.candidate.status == "failed" for o in failed)
-    (error,) = stopped
-    assert "3 times in a row for p; fewer --workers?" in str(error)
+    assert len(failed) == workers and all(o.candidate.status == "failed" for o in failed)
+    assert stopped and len(failed) + len(stopped) <= 3
+    assert f"{workers + 1} times in a row for p; fewer --workers?" in str(stopped[0])
 
 
 def test_the_deaths_of_one_binding_count_together_on_every_sample(

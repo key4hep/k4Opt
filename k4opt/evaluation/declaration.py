@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from k4opt.errors import K4OptError
-from k4opt.evaluation.base import Role, declared_artifacts, declared_roles, metric_units
+from k4opt.evaluation.base import Role, _role_name, declared_artifacts, declared_roles, metric_units
 from k4opt.evaluation.errors import EvaluationContractError
 from k4opt.evaluation.models import ARTIFACT_NAME
 from k4opt.frozen import FrozenMap, Json
@@ -163,6 +163,11 @@ def _roles(value: object, where: str, error: type[K4OptError]) -> dict[str, Role
         return None
     roles: dict[str, Role] = {}
     for name, item in _mapping(value, f"{where}: roles", error).items():
+        if not _role_name(name):  # as declared_roles() refuses it of a live evaluator
+            raise error(
+                f"{where}: roles: {name!r} must be a Python identifier such as signal, not a "
+                "keyword"
+            )
         at = f"{where}: roles.{name}"
         entry = _mapping(item, at, error)
         metrics = _list(entry.get("metrics"), f"{at}.metrics", error)
