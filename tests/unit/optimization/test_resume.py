@@ -260,6 +260,34 @@ def test_a_study_does_not_resume_with_another_module_its_evaluator_imports(
         run(problem, output, 1, resume=True, evaluators=[edited])
 
 
+def test_a_module_its_evaluator_imports_that_changes_during_a_study_stops_it(
+    tmp_path: Path, write_problem: Callable[..., Path], request: pytest.FixtureRequest
+) -> None:
+    # one imported only when the evaluator runs would run the new code under the old identity
+    helper = "edited_during_study"
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / "evaluators").mkdir()
+    (tmp_path / "evaluators" / f"{helper}.py").write_text("scale = 1.0\n")
+    copy = tmp_path / "evaluators" / "trade_off.py"
+    copy.write_text(f"import {helper}\n" + Path(TRADE_OFF.partition(":")[0]).read_text())
+
+    def change(trial: Any) -> None:  # after the first trial, while the study runs
+        (tmp_path / "evaluators" / f"{helper}.py").write_text("scale = 2.0\n")
+
+    with pytest.raises(
+        OptimizationError,
+        match=rf"trial 1 stops the study.*{helper}\.py changed after the session loaded it",
+    ):
+        run(
+            write_problem(),
+            tmp_path / "s",
+            3,
+            seed=1,
+            evaluators=[load_evaluator(f"{copy}:TradeOff")],
+            progress=change,
+        )
+
+
 UNITS = """
     import os
     from k4opt.evaluation import Evaluator

@@ -477,11 +477,18 @@ code Python executed. `reference` is what loads the class again: `FILE.py:Class`
 file's absolute path, or `package.module:Class` as given; `null` for a class `load_evaluator`
 did not load. It is provenance only: a study compares the SHA-256, not where the file is.
 `helpers` holds the SHA-256 of each module the file imports from beside it, directly or through
-one another, by its path relative to the file's directory (for `package.module:Class`, every
-module of the same top-level package it imports, relative to the directory that package is
-in). They are found in the source, so an import inside a method counts as one at the top; a
-module imported by name at run time (`importlib.import_module`) and a data file the evaluator
-reads are not. To label those, `revision` holds the commit and dirty flag of the git checkout
+one another, by its path relative to the file's directory. For `package.module:Class` they are
+the modules of the same top-level package (and of the reference's) that it imports, together
+with the package `__init__.py` files Python runs to reach the class and the module the
+reference names, relative to the directory the package is in; a top-level `module:Class`
+counts the modules beside it, as a file does, unless it is installed (in `site-packages` or the
+standard library). They are found in the source, so an import inside a method counts as one at
+the top; a module imported by name at run time (`importlib.import_module`) and a data file the
+evaluator reads are not. A helper Python imported before is identified by what this process
+first read of it, which is the code that runs: loading is refused if its file changed since,
+or if something imported it before `load_evaluator` read it. A session checks before and
+after each candidate that every helper still holds what it did when the evaluator was loaded,
+so that one imported inside a method cannot run other code than the record says. To label those, `revision` holds the commit and dirty flag of the git checkout
 that tracks the file, taken at the same time: an edited file of that checkout shows as
 `dirty: true`. It is `null` for a file that no checkout tracks (outside one, or new or ignored
 in it).

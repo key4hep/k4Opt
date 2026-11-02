@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from k4opt import __version__
+from k4opt.evaluation.loader import changed_helpers
 from k4opt.execution._binding import _Binding, _implementations
 from k4opt.execution._files import readable_identity
 from k4opt.execution._work import content
@@ -43,9 +44,9 @@ class Baseline:
     the stages read with their identities by where they are named (``files``), what the
     geometry's external references read (``externals``), what a record says of each
     implementation (``taken``) and of the process (``process``: k4opt's code and the
-    environment)."""
+    environment), and the implementations by name (``classes``)."""
 
-    __slots__ = ("_read", "externals", "files", "problem", "process", "taken")
+    __slots__ = ("_read", "classes", "externals", "files", "problem", "process", "taken")
 
     def __init__(
         self,
@@ -54,12 +55,14 @@ class Baseline:
         externals: Mapping[str, Json],
         taken: Mapping[str, Mapping[str, Json]],
         process: Mapping[str, Json],
+        classes: Mapping[str, type] | None = None,
     ) -> None:
         self.problem = problem
         self.files = FrozenMap(files)
         self.externals = externals
         self.taken = FrozenMap(taken)
         self.process = process
+        self.classes = FrozenMap(classes or {})
         # what the external references only candidates have read, by reference, without the path
         self._read: dict[str, Json] = {}
 
@@ -90,7 +93,8 @@ class Baseline:
         )
         check_code()
         assert isinstance(process, Mapping)
-        return cls(problem, files, externals, _implementations(binding), process)
+        classes = {b.probe.declaration.name: b.implementation for b in binding.evaluators}
+        return cls(problem, files, externals, _implementations(binding), process, classes)
 
     def identity(self) -> dict[str, object]:
         """What the session evaluates with, as plain JSON-compatible data
@@ -129,12 +133,26 @@ class Baseline:
                 )
 
     def verify(self) -> None:
-        """Raise :class:`RunError` if the environment, k4opt's code, a file the stages read or
-        what the geometry's external references read changed since the session opened."""
+        """Raise :class:`RunError` if the environment, k4opt's code, a file the stages read,
+        what the geometry's external references read or a module an implementation imports
+        changed since the session opened."""
         self._verify_environment()
         check_code()
         self.verify_inputs()
         self._verify_externals()
+        self._verify_helpers()
+
+    def _verify_helpers(self) -> None:
+        """The modules each implementation imports from beside it are what its identity says: one
+        it imports only when it evaluates (inside a function) would otherwise run other code."""
+        for name, implementation in self.classes.items():
+            changed = changed_helpers(implementation)
+            if changed:
+                raise RunError(
+                    f"evaluator {name!r}: {', '.join(changed)} changed after the session loaded "
+                    "it; evaluate with the code it was loaded with, or open a new session in a new "
+                    "process"
+                )
 
     def check_read(self, externals: Mapping[str, Mapping[str, Json]]) -> None:
         """Raise :class:`RunError` if a reference only candidates name reads other files than

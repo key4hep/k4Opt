@@ -14,6 +14,7 @@ import pytest
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import EvaluatorLoadError, evaluator_source, load_evaluator
+from k4opt.evaluation.loader import changed_helpers
 from tests.support.common import git_checkout, requires_git
 
 GOOD = """
@@ -232,19 +233,21 @@ def test_a_reloaded_module_does_not_keep_the_identity_of_the_code_it_replaced(
         sys.modules.pop("my_evaluator", None)
 
 
-def test_a_class_re_exported_by_a_package_is_identified_by_its_own_file(
+def test_a_class_re_exported_by_a_package_is_identified_by_its_own_file_and_the_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     package = tmp_path / "study"
     package.mkdir()
-    (package / "__init__.py").write_text("from study.impl import Good\n")
+    # Python runs it to reach the class, and it may change the class
+    init = "from study.impl import Good\nGood.version = '4'\n"
+    (package / "__init__.py").write_text(init)
     (package / "impl.py").write_text(GOOD)
     monkeypatch.syspath_prepend(str(tmp_path))
     try:
         source = evaluator_source(load_evaluator("study:Good"))
         assert source["path"] == str(package / "impl.py")
         assert source["sha256"] == hashlib.sha256(GOOD.encode()).hexdigest()
-        assert source["helpers"] == {}  # it imports no other module of its package
+        assert source["helpers"] == {"study/__init__.py": hashlib.sha256(init.encode()).hexdigest()}
         assert source["reference"] == "study:Good"  # as it was loaded
     finally:
         for name in ("study", "study.impl"):
@@ -272,6 +275,84 @@ def test_a_module_is_identified_with_the_modules_of_its_package_it_imports(
     finally:
         for name in [n for n in sys.modules if n.partition(".")[0] == "campaign"]:
             del sys.modules[name]
+
+
+def test_a_top_level_module_is_identified_with_the_modules_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    tag = hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    module, helper = f"top_{tag}", f"corrections_{tag}"
+    (tmp_path / f"{helper}.py").write_text("scale = 1.0\n")
+    (tmp_path / f"{module}.py").write_text(f"import {helper}\n" + GOOD)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        source = evaluator_source(load_evaluator(f"{module}:Good"))
+        assert source["helpers"] == {f"{helper}.py": hashlib.sha256(b"scale = 1.0\n").hexdigest()}
+    finally:
+        for name in (module, helper):
+            sys.modules.pop(name, None)
+
+
+def test_an_installed_top_level_module_does_not_count_other_distributions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    tag = hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    module, other = f"installed_{tag}", f"distribution_{tag}"
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    (site / f"{other}.py").write_text("")
+    (site / f"{module}.py").write_text(f"import {other}\n" + GOOD)
+    monkeypatch.syspath_prepend(str(site))
+    try:
+        assert evaluator_source(load_evaluator(f"{module}:Good"))["helpers"] == {}
+    finally:
+        for name in (module, other):
+            sys.modules.pop(name, None)
+
+
+def test_a_helper_edited_after_python_imported_it_is_refused_for_another_evaluator(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    # a second evaluator would run the module Python imported for the first, not the file
+    helper = "shared_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / f"{helper}.py").write_text("value = 1\n")
+    for name in ("first", "second"):
+        (tmp_path / f"{name}.py").write_text(f"import {helper}\n" + GOOD)
+    load_evaluator(f"{tmp_path / 'first.py'}:Good")
+    (tmp_path / f"{helper}.py").write_text("value = 2\n")
+    with pytest.raises(
+        EvaluatorLoadError, match=rf"{helper}\.py changed since this process imported it"
+    ):
+        load_evaluator(f"{tmp_path / 'second.py'}:Good")
+    (tmp_path / f"{helper}.py").write_text("value = 1\n")  # what runs: then it is that code
+    second = load_evaluator(f"{tmp_path / 'second.py'}:Good")
+    assert evaluator_source(second)["helpers"] == {
+        f"{helper}.py": hashlib.sha256(b"value = 1\n").hexdigest()
+    }
+
+
+def test_a_helper_imported_before_the_loader_read_it_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    helper = "early_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / f"{helper}.py").write_text("value = 1\n")
+    (tmp_path / "late.py").write_text(f"import {helper}\n" + GOOD)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.import_module(helper)  # which bytes ran is not known to k4opt
+    with pytest.raises(EvaluatorLoadError, match="was imported before load_evaluator read it"):
+        load_evaluator(f"{tmp_path / 'late.py'}:Good")
+
+
+def test_changed_helpers_names_the_modules_edited_since_the_class_was_loaded(
+    with_helpers: Path,
+) -> None:
+    cls = load_evaluator(f"{with_helpers}:Good")
+    assert changed_helpers(cls) == []
+    late = next(with_helpers.parent.glob("late_*.py"))  # imported only when it evaluates
+    late.write_text("value = 200\n")
+    assert changed_helpers(cls) == [late.name]
 
 
 def test_a_module_imported_before_does_not_claim_an_unverified_source_hash(
