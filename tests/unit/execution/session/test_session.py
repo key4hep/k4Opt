@@ -676,6 +676,43 @@ def test_a_check_that_rejects_one_candidate_rejects_only_that_one(
     assert isinstance(outcome, RunOutcome) and outcome.candidate.status == "valid"
 
 
+@pytest.mark.parametrize("required", [False, True])
+def test_only_a_required_evaluation_s_check_rejects_its_candidate(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, required: bool
+) -> None:
+    class Veto(Spy):
+        name = "test.veto"
+
+        @classmethod
+        def check(cls, request: Any) -> None:
+            cls.reject("the readout cannot be built")
+
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["objectives"][0]["evaluator"] = "test.cell_count"
+    veto = {"name": "test.veto", "version": "1", "stage": "simulation"}
+    doc["evaluators"].append(veto | {"collections": {"hits": COLLECTION}, "required": required})
+    if not required:
+        del doc["evaluators"][-1]["required"]
+    problem_file.write_text(yaml.safe_dump(doc))
+    session = EvaluationSession.open(problem_file, [cell_count(), Veto])
+    outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    if required:  # the candidate's status depends on it: its veto rejects the candidate
+        assert outcome == Rejected("gamma/test.veto", "the readout cannot be built")
+        assert not (tmp_path / "a").exists() and fake.calls == []
+        return
+    # a diagnostic decides nothing of the candidate, so it cannot veto it either: it alone is
+    # not run, recorded invalid, and the candidate is evaluated as without it
+    assert isinstance(outcome, RunOutcome) and outcome.candidate.status == "valid"
+    (diagnostic,) = outcome.candidate.diagnostics
+    assert (diagnostic.id.label, diagnostic.status) == ("gamma/test.veto", "invalid")
+    assert diagnostic.message == (
+        "not run: its check() rejected the candidate (the readout cannot be built)"
+    )
+    summary = json.loads(outcome.summary_path.read_text())
+    assessment = Assessment.from_summary(load_problem(problem_file), summary)
+    assert assessment.feasible is True and summary["diagnostics"][0]["status"] == "invalid"
+
+
 @pytest.mark.parametrize("ending", [EvaluationFailed, EvaluationInvalid, ValueError])
 def test_a_check_that_ends_otherwise_than_rejecting_stops_the_session_s_evaluation(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, ending: type[Exception]

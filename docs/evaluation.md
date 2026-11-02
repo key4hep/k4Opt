@@ -125,7 +125,10 @@ What the optional parts do:
   `cls.reject("...")` (it raises `CandidateRejected`) **rejects the candidate**: nothing of it is
   created or run, `k4opt evaluate` says so and exits 1, and an optimizer records the trial as
   `rejected` and goes on with the next candidate. Use it for a requirement the evaluator states
-  on its own request that a candidate can break. Anything else `check` raises stops the
+  on its own request that a candidate can break. Only an evaluation the candidate's status
+  depends on can veto it ([required](problem.md#evaluators)): a diagnostic whose `check` rejects
+  the candidate is not run and is recorded `invalid` ("not run: its check() rejected the
+  candidate (...)"), and the candidate is evaluated as without it. Anything else `check` raises stops the
   evaluation as a misuse (and stops a study): an `EvaluationContractError` for settings no
   candidate could work with, say. `self.fail()` and `self.invalid()` have no place there, since
   nothing has run that could fail or be unusable: in `check` they are a contract error saying so.

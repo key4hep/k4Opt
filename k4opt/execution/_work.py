@@ -319,11 +319,12 @@ def _evaluation(
     """An evaluator created and called once on the files the task reads, which all succeeded,
     and the artifacts it made, hashed once, when it returns.
 
-    An evaluator whose stage's file lacks a collection it declares (or holds it with another
-    type), or reads a file that changed since its task made it, gets a ``failed`` result saying
-    so and is neither created nor called. Its own directory is created first, then its instance
-    within ``output``, then it is called; ``call_seconds`` is the time of the call alone. A file
-    it reads that changes during the call fails it too: the record could not say what it read.
+    An evaluator whose stage's file lacks a collection it declares (or holds it with another type),
+    or reads a file that changed since its task made it, gets a ``failed`` result saying so and is
+    neither created nor called; a diagnostic whose ``check`` rejected the candidate
+    (``spec.declined``) gets an ``invalid`` one. Its own directory is created first, then its
+    instance within ``output``, then it is called; ``call_seconds`` is the time of the call alone. A
+    file it reads that changes during the call fails it too: the record could not say what it read.
     A :class:`~k4opt.evaluation.CandidateRejected` it raises breaks the contract: a candidate is
     rejected in ``check`` alone, before anything of it runs.
     """
@@ -338,6 +339,9 @@ def _evaluation(
             task, result.status, result.message, elapsed_seconds=_since(began), result=result
         ), Observations()
 
+    if spec.declined is not None:  # a diagnostic whose check() rejected the candidate
+        message = f"not run: its check() rejected the candidate ({spec.declined})"
+        return ended(EvaluationResult.invalid(message))
     changed = changed_reads(spec, root, seen)
     if changed:
         return ended(EvaluationResult.failed(_changed_before(changed)))

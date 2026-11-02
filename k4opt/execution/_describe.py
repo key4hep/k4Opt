@@ -163,7 +163,15 @@ def describe(
     request = prepared.requests[task.id]
     timeout = _limit(entry.timeout, default)
     return TaskSpec(
-        workspace.id, task, given, watched, tree, request=request, roles=roles, timeout=timeout
+        workspace.id,
+        task,
+        given,
+        watched,
+        tree,
+        request=request,
+        roles=roles,
+        timeout=timeout,
+        declined=prepared.declined.get(task.id),
     )
 
 

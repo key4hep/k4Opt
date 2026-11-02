@@ -130,7 +130,7 @@ knows the result.
 | `valid`, a limit violated | COMPLETE | the objectives | at least one above zero |
 | `invalid` | FAIL | none | none |
 | `failed` | FAIL | none | none |
-| `rejected`: an evaluator's `check` rejected the candidate; no record, no directory | FAIL | none | none |
+| `rejected`: a required evaluation's `check` rejected the candidate; no record, no directory | FAIL | none | none |
 | interrupted, no record | FAIL | none | none |
 | the trial stopped the study | FAIL | none | none |
 | still running when another trial stopped the study | FAIL, as interrupted | none | none |

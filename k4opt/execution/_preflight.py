@@ -5,8 +5,11 @@
 (:class:`~k4opt.execution._binding._Binding`): the stages of each sample with what the candidate
 sets in them, checked complete; each evaluator's settings with what it sets in them, and the
 request each evaluation gets (:class:`_Prepared`). Then each evaluator class's ``check`` is asked
-about its request: one may reject the candidate (:class:`Rejected`), which is then neither created
-nor run. No instance is created here: an evaluation's instance is created where it runs.
+about its request: a required evaluation may reject the candidate (:class:`Rejected`), which is
+then neither created nor run. A diagnostic cannot: what the candidate's status does not depend on
+cannot veto it either, so a diagnostic whose ``check`` rejects the candidate is only not run, and
+recorded ``invalid``. No instance is created here: an evaluation's instance is created where it
+runs.
 
 ``check`` runs in the session's own process and is not time-limited: it is the evaluator's
 inexpensive check of its request, not part of the evaluation.
@@ -54,19 +57,21 @@ class _Prepared:
     """What the preflight of one candidate established before anything runs: its
     ``configuration``, the stage conditions of each sample with the stages it configures
     (``contexts``, checked complete), and by evaluation, in plan order, the entry that binds it
-    with what the candidate sets (``entries``) and the request each evaluator's ``check``
-    accepted (``requests``)."""
+    with what the candidate sets (``entries``) and the request its evaluator's ``check`` was
+    asked about (``requests``); ``declined`` holds, with its message, each diagnostic whose
+    ``check`` rejected the candidate, which is not run."""
 
     binding: _Binding
     configuration: Configuration
     contexts: Mapping[str, StageContext]  # by sample
     entries: Mapping[TaskId, EvaluatorSpec]
     requests: Mapping[TaskId, EvaluationRequest]
+    declined: Mapping[TaskId, str] = FrozenMap({})
 
 
 def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared | Rejected:
     """Prepare one candidate, configured as ``configuration`` says, before a file is created or a
-    stage runs; :class:`Rejected` if an evaluator's ``check`` rejects it.
+    stage runs; :class:`Rejected` if the ``check`` of a required evaluation rejects it.
 
     Checks that each evaluator class declares what it did when the session bound it, the stages
     of each sample with what the candidate sets in them, complete, the settings of each
@@ -74,7 +79,8 @@ def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared | R
     each evaluator class's ``check`` once with the request its evaluation would get for this
     candidate (its settings and collections resolved, the events, seed and properties of its
     sample; no roles, since nothing exists yet for them to read), in plan order, up to the first
-    that rejects it (:class:`~k4opt.evaluation.CandidateRejected`). Raises
+    required evaluation whose ``check`` rejects it (:class:`~k4opt.evaluation.CandidateRejected`);
+    a diagnostic's rejection only keeps that diagnostic from running (``declined``). Raises
     :class:`EvaluationContractError` for settings that do not match what an evaluator declares
     and for a ``check`` that ends with ``EvaluationFailed`` or ``EvaluationInvalid`` (nothing ran
     that could fail or be invalid), and whatever else a ``check`` or a stage's check raises.
@@ -96,6 +102,7 @@ def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared | R
         context = None if task.sample is None else contexts[task.sample]
         properties = {} if task.sample is None else binding.properties[task.sample]
         requests[task] = _request(context, entries[task], bound.implementation, properties)
+    declined: dict[TaskId, str] = {}
     for task, bound in binding.evaluations:
         check = getattr(bound.implementation, "check", None)
         if check is None:
@@ -103,7 +110,9 @@ def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared | R
         try:
             check(requests[task])
         except CandidateRejected as exc:
-            return Rejected(task.label, str(exc))
+            if binding.plan[task].required:
+                return Rejected(task.label, str(exc))
+            declined[task] = str(exc)  # a diagnostic decides nothing of the candidate
         except (EvaluationFailed, EvaluationInvalid) as exc:
             raise EvaluationContractError(
                 f"evaluator {entries[task].binding!r}: check() ended with "
@@ -117,6 +126,7 @@ def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared | R
         FrozenMap(contexts),
         FrozenMap({task: entries[task] for task, _ in binding.evaluations}),
         FrozenMap(requests),
+        FrozenMap(declined),
     )
 
 

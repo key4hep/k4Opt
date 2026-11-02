@@ -292,7 +292,12 @@ def _evaluations(
         workdir = entry.get("workdir")
         if workdir not in (None, directory):
             raise RecordError(f"{where}: workdir {workdir!r}, but its directory is {directory!r}")
-        if workdir is None and fragment.status in (Status.VALID, Status.INVALID):
+        # a valid or invalid evaluation was called, in its directory, but for a diagnostic whose
+        # check() rejected the candidate: invalid, and not run (a required one rejects it)
+        called = fragment.status == Status.VALID or (
+            fragment.status == Status.INVALID and plan[task].required
+        )
+        if workdir is None and called:
             raise RecordError(
                 f"{where}: it is {fragment.status}, so it was called, yet has no workdir"
             )

@@ -127,7 +127,9 @@ class TaskSpec:
     the stages of its sample as its candidate configures them, for a stage. ``geometry`` says
     how the geometry task works (``None``: there is no geometry), ``supplied`` is a file the
     caller gives for a stage, and ``request`` and ``roles`` are what an evaluation is asked, its
-    request without inputs or a directory. ``cpus`` is how many processors the task keeps busy,
+    request without inputs or a directory, and ``declined`` why its evaluator's ``check``
+    rejected the candidate, for a diagnostic, which is then not run. ``cpus`` is how many
+    processors the task keeps busy,
     and ``timeout`` how many seconds it may run, ``None`` for no limit (the problem's
     ``timeout`` of a stage or an evaluation, :data:`GEOMETRY_TIMEOUT` for the geometry):
     whatever runs the task stops it then, and a stage passes it on to the program it runs.
@@ -145,6 +147,7 @@ class TaskSpec:
     roles: Mapping[str, tuple[RoleInput, ...]] = field(default_factory=lambda: FrozenMap({}))
     cpus: int = 1
     timeout: float | None = None
+    declined: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

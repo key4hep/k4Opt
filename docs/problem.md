@@ -471,7 +471,9 @@ a combined evaluator reads, the geometry). Every other evaluation is a *diagnost
 per candidate like any other, and its result is recorded, but a diagnostic that fails, is
 invalid or is blocked leaves the candidate's status, its objectives and its feasibility as they
 are. So does a stage that only diagnostics read, such as the simulation of a sample measured by
-a diagnostic alone, and a file supplied for it with `--input`. A check meant to veto candidates
+a diagnostic alone, and a file supplied for it with `--input`, and a diagnostic whose evaluator's
+`check` rejects the candidate: it is not run and is recorded `invalid`, where a required
+evaluation's rejection rejects the whole candidate. A check meant to veto candidates
 without an objective or constraint of its own, an overlap check say, therefore needs
 `required: true`:
 
