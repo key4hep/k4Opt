@@ -30,6 +30,7 @@ from k4opt.evaluation import (
 from k4opt.frozen import thaw
 from k4opt.problem import EvaluatorSpec, ProblemSpec, Sample, Stage, parse_problem
 from k4opt.problem import _stages as stages_module
+from k4opt.problem import stages as catalog
 from k4opt.problem._binding import _request
 from k4opt.problem._candidate import CandidateRecord
 from k4opt.problem._evaluate import _evaluate_candidate
@@ -37,11 +38,9 @@ from k4opt.problem._files import _sha256, file_identity
 from k4opt.problem._stages import (
     StageContext,
     StageOutcome,
-    changed_by_geometry,
     check_stages,
     input_files,
     make_stage,
-    plan_stages,
     run_stage,
 )
 from k4opt.problem._tasks import (
@@ -53,6 +52,7 @@ from k4opt.problem._tasks import (
     plan_tasks,
     stage_task,
 )
+from k4opt.problem.stages import changed_by_geometry, plan_stages
 from tests.support import simulation
 from tests.support.evaluators import implementations
 from tests.support.simulation import events_with
@@ -373,25 +373,32 @@ def test_a_failed_stage_blocks_only_the_tasks_that_read_it(
     # stub stage types: two independent branches, the left one fails
     ran: list[str] = []
 
-    def stub(name: str, needs: tuple[str, ...] = (), error: str | None = None) -> Any:
+    def stub(name: str, error: str | None = None) -> Any:
         def run(context: StageContext, inputs: Any, workdir: Any) -> StageOutcome:
             ran.append(name)
             return StageOutcome(error=error)
 
-        return stages_module._Stage(
-            needs, {}, lambda context, provided: None, run, geometry=False, writes=False
-        )
+        return stages_module._Runner(lambda context, provided: None, run)
 
+    needs = {
+        "left": (),
+        "after_left": ("left",),
+        "last": ("after_left",),
+        "right": (),
+        "after_right": ("right",),
+    }
     monkeypatch.setattr(
-        stages_module,
+        catalog,
         "_STAGES",
         {
-            "left": stub("left", error="boom"),
-            "after_left": stub("after_left", ("left",)),
-            "last": stub("last", ("after_left",)),
-            "right": stub("right"),
-            "after_right": stub("after_right", ("right",)),
+            name: catalog.StageType(reads, {}, geometry=False, writes=False)
+            for name, reads in needs.items()
         },
+    )
+    monkeypatch.setattr(
+        stages_module,
+        "_RUNNERS",
+        {name: stub(name, "boom" if name == "left" else None) for name in needs},
     )
 
     def run(task: Task, reads: Any) -> TaskResult:

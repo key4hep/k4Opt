@@ -29,7 +29,6 @@ from k4opt.evaluation import (
 )
 from k4opt.frozen import thaw
 from k4opt.problem._candidate import _validate_candidate
-from k4opt.problem._stages import STAGE_TYPES, changed_by_geometry, stage_output
 from k4opt.problem._tasks import (
     DONE,
     GEOMETRY,
@@ -49,6 +48,7 @@ from k4opt.problem._tasks import (
 from k4opt.problem.contract import Demands, MetricKey, check_bindings, check_entries, check_result
 from k4opt.problem.errors import CandidateError, RecordError
 from k4opt.problem.models import MetricRef, ProblemSpec
+from k4opt.problem.stages import STAGE_TYPES, changed_by_geometry, stage_output
 
 SUMMARY_SCHEMA = "k4opt.run/1"
 

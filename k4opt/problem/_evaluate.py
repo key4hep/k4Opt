@@ -56,12 +56,7 @@ from k4opt.problem._binding import (
 from k4opt.problem._candidate import CandidateRecord, _validate_candidate
 from k4opt.problem._files import NOTHING, Observed, portable, portable_artifact
 from k4opt.problem._schedule import Scheduler
-from k4opt.problem._stages import (
-    STAGE_TYPES,
-    changed_by_geometry,
-    check_run_inputs,
-    stage_output,
-)
+from k4opt.problem._stages import check_run_inputs
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
@@ -82,6 +77,7 @@ from k4opt.problem._work import (
     to_result,
 )
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec, Reference
+from k4opt.problem.stages import STAGE_TYPES, changed_by_geometry, stage_output
 
 
 def _inputs(reads: Mapping[TaskId, TaskResult], root: Path | None) -> dict[str, Path]:

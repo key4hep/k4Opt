@@ -64,11 +64,12 @@ from k4opt.problem._files import (
     portable_artifact,
     stat_of,
 )
-from k4opt.problem._stages import StageContext, make_stage, stage_output
+from k4opt.problem._stages import StageContext, make_stage
 from k4opt.problem._tasks import DONE, GEOMETRY, Kind, PeakMemory, Task, TaskId, TaskResult
 from k4opt.problem.contract import MetricKey, check_result
 from k4opt.problem.errors import RunError
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
+from k4opt.problem.stages import stage_output
 
 SUMMARY_NAME = "summary.json"
 

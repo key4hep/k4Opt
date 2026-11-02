@@ -43,8 +43,8 @@ from typing import Literal
 
 from k4opt.evaluation import Artifact, EvaluationContractError, EvaluationRecord, Status
 from k4opt.frozen import FrozenMap, Json, freeze
-from k4opt.problem._stages import STAGE_TYPES, graph, reads_geometry, writes_files
 from k4opt.problem.models import EvaluatorSpec, MetricRef, Reference, Sample
+from k4opt.problem.stages import STAGE_TYPES, graph, reads_geometry, writes_files
 
 
 class Kind(StrEnum):

@@ -58,7 +58,7 @@ from k4opt.problem._evaluate import Activity, _drive, _finish_plan, _Run
 from k4opt.problem._files import changed_files, readable_identity
 from k4opt.problem._record import SUMMARY_SCHEMA
 from k4opt.problem._schedule import Scheduler
-from k4opt.problem._stages import STAGE_TYPES, input_files, plan_stages
+from k4opt.problem._stages import input_files
 from k4opt.problem._summary import assemble
 from k4opt.problem._tasks import (
     GEOMETRY,
@@ -79,6 +79,7 @@ from k4opt.problem._worker import session_spec
 from k4opt.problem.config import load_problem
 from k4opt.problem.errors import RunError
 from k4opt.problem.models import ProblemSpec
+from k4opt.problem.stages import STAGE_TYPES, plan_stages
 from k4opt.revision import code_identity, code_unchanged
 
 

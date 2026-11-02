@@ -443,8 +443,8 @@ clash with the stages'. The stages take their conditions from their sample, neve
 evaluator, except a time limit, which is the caller's: a stage that runs a program (ddsim)
 longer than the `timeout` of the session kills it and fails. An evaluator has no time limit: one
 that never returns holds its job, or with one job the session, until the session is stopped
-(Ctrl-C, SIGTERM). Stages are internal for now
-(`k4opt.problem._stages`).
+(Ctrl-C, SIGTERM). Stages are internal for now: what each stage type is in
+`k4opt.problem.stages`, how one runs in `k4opt.problem._stages`.
 
 ## Loading an evaluator
 
