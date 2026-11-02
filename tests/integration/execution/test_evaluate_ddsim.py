@@ -70,11 +70,11 @@ def evaluate(
     size: str,
     output: Path,
     evaluators: tuple[str, ...] = (CALO_PHOTON,),
-    jobs: int = 1,
+    workers: int | str = "inline",
 ) -> dict[str, Any]:
     out, err = io.StringIO(), io.StringIO()
     flags = [arg for evaluator in evaluators for arg in ("--evaluator", evaluator)]
-    flags += ["--param", f"{CELL}={size}", "--jobs", str(jobs), "--output", str(output)]
+    flags += ["--param", f"{CELL}={size}", "--workers", str(workers), "--output", str(output)]
     code = main(["evaluate", str(problem), *flags], stdout=out, stderr=err)
     assert code == 0, out.getvalue() + err.getvalue()
     assert "status:      valid" in out.getvalue()
@@ -285,8 +285,10 @@ def test_two_samples_are_simulated_on_one_geometry_and_measured_each_on_its_own(
 
 
 @pytest.fixture(scope="module")
-def pi0_runs(tmp_path_factory: pytest.TempPathFactory, stack: None) -> dict[int, dict[str, Any]]:
-    """The pi0-rejection example at a few events, evaluated with one job and with four."""
+def pi0_runs(
+    tmp_path_factory: pytest.TempPathFactory, stack: None
+) -> dict[int | str, dict[str, Any]]:
+    """The pi0-rejection example at a few events, evaluated inline and with four workers."""
     example = EXAMPLE.with_name("cld-ecal-pi0-rejection.yaml")
     doc = yaml.safe_load(example.read_text())
     doc["stages"]["simulation"]["events"] = EVENTS  # shared by both samples
@@ -302,15 +304,18 @@ def pi0_runs(tmp_path_factory: pytest.TempPathFactory, stack: None) -> dict[int,
             ("ecal_channels.py", "EcalChannels"),
         )
     )
-    return {jobs: evaluate(path, "8.0", base / f"jobs{jobs}", evaluators, jobs) for jobs in (1, 4)}
+    return {
+        workers: evaluate(path, "8.0", base / f"workers{workers}", evaluators, workers)
+        for workers in ("inline", 4)
+    }
 
 
 def test_pi0_example_combines_hashed_histograms_from_two_real_samples(
-    pi0_runs: dict[int, dict[str, Any]],
+    pi0_runs: dict[int | str, dict[str, Any]],
 ) -> None:
     from podio.reading import get_reader
 
-    run = pi0_runs[1]
+    run = pi0_runs["inline"]
     root = Path(run["run_dir"])
     histograms = {}
     for sample, pdg in (("gamma_20gev", 22), ("pi0_20gev", 111)):
@@ -343,13 +348,13 @@ def test_pi0_example_combines_hashed_histograms_from_two_real_samples(
     assert Assessment.from_summary(parse_problem(run["problem"]["definition"]), run).feasible
 
 
-def test_pi0_example_gives_the_same_record_with_four_jobs(
-    pi0_runs: dict[int, dict[str, Any]],
+def test_pi0_example_gives_the_same_record_with_four_workers(
+    pi0_runs: dict[int | str, dict[str, Any]],
 ) -> None:
-    one, four = pi0_runs[1], pi0_runs[4]
-    print(f"pi0 example: {one['elapsed_seconds']:.1f} s with one job, ", end="")
+    one, four = pi0_runs["inline"], pi0_runs[4]
+    print(f"pi0 example: {one['elapsed_seconds']:.1f} s inline, ", end="")
     print(f"{four['elapsed_seconds']:.1f} s with four")
-    assert four["environment"]["observed"]["execution"] == {"backend": "local", "jobs": 4}
+    assert four["environment"]["observed"]["execution"] == {"backend": "process", "workers": 4}
     # the EDM4hep files are not hashed: ROOT may write them a few bytes apart
     assert scientific(one, frozenset({"bytes"})) == scientific(four, frozenset({"bytes"}))
     for sample in ("gamma_20gev", "pi0_20gev"):
@@ -367,7 +372,7 @@ def test_a_worker_that_read_events_with_podio_runs_the_next_simulation(
     """ROOT may leave threads behind in a worker that read a file; ddsim still starts there, by
     a launcher of its own rather than code run between fork and exec."""
     base = tmp_path_factory.mktemp("reused")
-    with EvaluationSession.open(problem, [load_evaluator(CALO_PHOTON)], jobs=2) as session:
+    with EvaluationSession.open(problem, [load_evaluator(CALO_PHOTON)], workers=2) as session:
         # the worker of a simulation counts its events with podio, and runs the next one too
         runs = [session.evaluate({CELL: size}, base / str(size)) for size in (6.0, 7.0)]
     for run in runs:

@@ -442,7 +442,7 @@ evaluator's result holds only what it returned, so its artifact and provenance n
 clash with the stages'. The stages take their conditions from their sample, never from an
 evaluator, except a time limit, which is the caller's: a stage that runs a program (ddsim)
 longer than the `timeout` of the session kills it and fails. An evaluator has no time limit: one
-that never returns holds its job, or with one job the session, until the session is stopped
+that never returns holds its worker, or inline the session, until the session is stopped
 (Ctrl-C, SIGTERM). Stages are internal for now: what each stage type is in
 `k4opt.problem.stages`, how one runs in `k4opt.execution._stages`.
 
@@ -501,7 +501,7 @@ anything of the candidate is created. Setup that is expensive and the same for e
 (a model file, a lookup table) belongs in a module-level cache of the evaluator's own
 (`functools.cache`), not in `__init__`, which runs for every candidate.
 
-With more than one job ([execution](#execution-jobs-and-worker-processes)), `evaluate()` runs
+With workers ([execution](#execution-inline-or-in-worker-processes)), `evaluate()` runs
 in a worker process, which loads the evaluator again by its reference (`FILE.py:Class` or
 `module:Class`): give classes [`load_evaluator`](#loading-an-evaluator) loaded, not ones
 defined in the script that runs the session. The instance checked before anything of the
@@ -642,11 +642,11 @@ Each task that ran also records its peak memory, in bytes, as `peak_memory_bytes
 that did not run):
 
 - `process`: the peak resident memory of the k4opt process that did the task's work (a worker
-  process, or the session's own with one job) while it did it, all it held included (Python,
+  process, or the session's own inline) while it did it, all it held included (Python,
   podio, ROOT, the evaluator). It is measured per task: the process's high-water mark is reset
   before each task (`/proc/self/clear_refs`, Linux), so a worker that is reused does not carry
   one task's peak into the next. A worker resets it before it creates the evaluator's instance,
-  so the instance's creation and its `check()` count too; with one job they ran in the preflight,
+  so the instance's creation and its `check()` count too; inline they ran in the preflight,
   before the task, and do not. `null` where the system cannot reset it.
 - `program`: for a stage that ran a program (ddsim), that program's peak, as the kernel kept it
   when it ended (`wait4`): the largest of ddsim's own and of each process it started and waited
@@ -655,7 +655,7 @@ that did not run):
 
 `peak_memory(summary)` reads them back, by task label, as `PeakMemory(process, program)`; its
 `per_task` is both added: an **estimate** of what the task needs while it runs, however many
-jobs it holds (a simulation's threads share its memory), not a bound. The
+slots it holds (a simulation's threads share its memory), not a bound. The
 two peaks need not come at once, which makes it high; a program that runs several processes at
 once is counted by the largest of them, which makes it low (ddsim is one process, its Geant4
 threads share its memory). A true bound of a process tree needs the kernel's accounting of a
@@ -720,12 +720,12 @@ narrow the gap). k4opt's code is hashed once per process, since Python runs the 
 imported; a session does not open, and does not evaluate or record a candidate, once k4opt's
 files have changed since then, because no hash would then say which code runs. A session
 coordinates its candidates from one thread and is not thread-safe, whatever runs its tasks
-([execution](#execution-jobs-and-worker-processes)).
+([execution](#execution-inline-or-in-worker-processes)).
 
 Whatever proposes candidates (a person, an optimizer) can hand them over one by one:
 
 ```python
-from k4opt.problem import RunRequest
+from k4opt.execution import RunRequest
 
 requests = (RunRequest({"constants.ECal_cell_size": v}, f"runs/{v}mm") for v in (5.0, 7.0))
 with session.evaluate_each(requests) as evaluations:
@@ -733,92 +733,106 @@ with session.evaluate_each(requests) as evaluations:
         ...
 ```
 
-The next request is taken only once the candidates under way leave a job idle, and every
+The next request is taken only once the candidates under way leave a slot idle, and every
 outcome that ended is given back before it; `evaluate()` is one request through the same path.
 Close what `evaluate_each` returns (`with`): that stops whatever still runs, which leaving the
 loop early does not by itself.
 
-### Execution: jobs and worker processes
+### Execution: inline or in worker processes
 
 Each task of a candidate (its geometry, a stage of a sample, an evaluation) is described as plain
 data (its planned task, the files it reads named relative to the candidate's run directory, an
 evaluation's request) and done by one task program, wherever it runs; a scheduler decides from
-what each task reads which tasks may start. `EvaluationSession.open(..., jobs=N)` (`k4opt
-evaluate --jobs N`, and [`k4opt optimize --jobs N`](optimization.md#trials-at-once---jobs) for
-the trials of a study) lets up to N tasks run at once, of one candidate (the simulations of its
-samples, the evaluations of a simulation) and of several (`evaluate_each`), the oldest
-candidate's first:
+what each task reads which tasks may start. `EvaluationSession.open(..., workers=...)` (`k4opt
+evaluate --workers`, and [`k4opt optimize --workers`](optimization.md#trials-at-once---workers)
+for the trials of a study) says where:
 
 ```python
-with EvaluationSession.open(problem, [CaloPhoton], jobs=4) as session:  # stops its workers
+with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # stops its workers
     with session.evaluate_each(requests) as evaluations:
         for request, outcome in evaluations:  # in the order they end
             ...
 ```
 
-- **One job** (the default): every task runs in the session's own thread, one at a time, in
-  plan order, with the evaluator instances the candidate's preflight checked; nothing else is
-  started.
-- **More jobs**: each task runs in a worker process of this machine, started when a task finds
-  none idle (one when the session opens, to check that it can work) and kept for the next tasks;
-  `close()` (or leaving `with`) stops them, and a later evaluation starts new ones. A worker
-  loads the evaluators again by their references and refuses to start (`RunError`) unless they,
-  k4opt's code, `KEY4HEP_STACK` and `K4GEO` are the session's. The session itself then only
-  checks, assesses and writes the records, and it alone writes them.
-- **A job is a processor.** A simulation that ddsim runs on several threads (`numberOfThreads: 4`
-  in its stage) holds as many jobs while it runs, so `--jobs 8` runs two such simulations at
-  once, or one and four single-threaded tasks. One with more threads than there are jobs holds
-  them all and runs alone (the session warns, and says so if it has more threads than the
-  processors this process may use, too). While such a simulation waits for its jobs,
-  later tasks that fit may start instead, at most N of them, so it never waits for ever; with
-  only single-threaded tasks this never happens, and the order is that of one job per task.
-  Threads a library starts of its own (ROOT's implicit multi-threading, BLAS) are not counted.
-- **`auto`** (`jobs="auto"`, `--jobs auto`) is the processors this process may use: its affinity
-  (a Slurm allocation, `taskset`), at most the `cpu.max` quota of its cgroup v2 and of those above
-  it (a container, a systemd unit with `CPUQuota`), rounded up. It knows nothing of other users:
-  on lxplus it is every core of the node (256), which the node's other users share, so give a
-  number there. An HTCondor job without CPU affinity gets the whole machine too: give
-  `--jobs $(request_cpus)`. More jobs than usable processors are warned about.
+- **`"inline"`** (the default of the library and of `k4opt evaluate`): every task runs in the
+  session's own thread, one at a time, in plan order, with the evaluator instances the
+  candidate's preflight checked; nothing else is started. The evaluators are used as they are
+  given, so a class defined in a script, a notebook or a test works. An evaluator that crashes
+  the process (a segfault in native code, the kernel's OOM killer) takes the session with it.
+- **N workers** (`k4opt optimize` runs one by default): each task runs in a worker process of
+  this machine, up to N at once, of one candidate (the simulations of its samples, the
+  evaluations of a simulation) and of several (`evaluate_each`), the oldest candidate's first.
+  A worker is started when a task finds none idle (one when the session opens, to check that it
+  can work) and kept for the next tasks; `close()` (or leaving `with`) stops them, and a later
+  evaluation starts new ones. A worker loads the evaluators again by their references, so they
+  must come from `load_evaluator` (`FILE.py:Class` or `module:Class`); one that was not loaded
+  that way is refused when the session opens (`RunError`), never evaluated inline instead. A
+  worker refuses to start unless the evaluators, k4opt's code, `KEY4HEP_STACK` and `K4GEO` are
+  the session's. The session itself then only checks, assesses and writes the records, and it
+  alone writes them. Even one worker isolates the session from its evaluators: a worker that
+  dies fails only its task (below).
+- **What isolation does not cover.** The new instance of each evaluation is still created, and
+  its `check()` called, in the session's process, for every candidate, before anything of the
+  candidate is created: that is what refuses a candidate early. Keep `__init__` and `check()`
+  light and free of native code; `evaluate()` and the stages are what runs in the workers. A
+  kill of the session's own process (its OOM, `kill -9`) is not survived either:
+  `k4opt optimize --resume` continues the study.
+- **A worker is a processor.** A simulation that ddsim runs on several threads
+  (`numberOfThreads: 4` in its stage) holds as many workers' slots while it runs, so
+  `--workers 8` runs two such simulations at once, or one and four single-threaded tasks. One
+  with more threads than there are workers holds them all and runs alone (the session warns,
+  and says so if it has more threads than the processors this process may use, too). While such
+  a simulation waits for its slots, later tasks that fit may start instead, at most N of them,
+  so it never waits for ever; with only single-threaded tasks this never happens, and the order
+  is that of one worker per task. Threads a library starts of its own (ROOT's implicit
+  multi-threading, BLAS) are not counted.
+- **`auto`** (`workers="auto"`, `--workers auto`) is the processors this process may use: its
+  affinity (a Slurm allocation, `taskset`), at most the `cpu.max` quota of its cgroup v2 and of
+  those above it (a container, a systemd unit with `CPUQuota`), rounded up. It knows nothing of
+  other users: on lxplus it is every core of the node (256), which the node's other users share,
+  so give a number there. An HTCondor job without CPU affinity gets the whole machine too: give
+  `--workers $(request_cpus)`. More workers than usable processors are warned about.
 - **N bounds what k4opt starts, not the memory.** Each record holds the peak memory of every task
   (above), and `k4opt evaluate` prints an estimate of what the task that needs most takes while
-  it runs. Memory goes with the tasks running at once, not with the jobs: N single-threaded
-  simulations need about N times that, but simulations on 4 threads hold 4 jobs each, so at most
-  N/4 of them run, and each needs its memory once (its threads share it). Add the session's own
-  process. Measure one candidate first, then choose N for the memory as much as for the
-  processors, with some room, since it is an estimate; a shared machine (lxplus) is not yours
-  alone. k4opt sets no memory limit of its own.
-- **Records** are the same whatever N: each task gets the same configuration (geometry, stage
-  options and seeds, requests), each record holds its results in plan order with the same
-  statuses, blocking and diagnostics, and deterministic evaluators measure the same. Every
-  summary records how its tasks ran under `environment.observed.execution` (`{"backend":
-  "local", "jobs": 4}`), and each evaluation that ran in a worker its `log`; both are provenance,
-  never part of what was evaluated or of any comparison of records.
+  it runs. Memory goes with the tasks running at once: N single-threaded simulations need about
+  N times that, but simulations on 4 threads hold 4 slots each, so at most N/4 of them run, and
+  each needs its memory once (its threads share it). Add the session's own process. Measure one
+  candidate first, then choose N for the memory as much as for the processors, with some room,
+  since it is an estimate; a shared machine (lxplus) is not yours alone. k4opt sets no memory
+  limit of its own.
+- **Records** are the same whatever runs the tasks: each task gets the same configuration
+  (geometry, stage options and seeds, requests), each record holds its results in plan order
+  with the same statuses, blocking and diagnostics, and deterministic evaluators measure the
+  same. Every summary records how its tasks ran under `environment.observed.execution`
+  (`{"backend": "inline"}`, or `{"backend": "process", "workers": 4}`), and each evaluation that
+  ran in a worker its `log`; both are provenance, never part of what was evaluated or of any
+  comparison of records.
 - **Failures.** An exception of a task (an evaluator's, a contract error) stops its candidate,
-  as with one job: it is raised as itself, with the worker's traceback as its cause, and the
+  wherever it ran: it is raised as itself, with the worker's traceback as its cause, and the
   other tasks of the candidate are stopped; the other candidates go on. A worker that dies (a
   segfault, the kernel's OOM killer) fails only its task, naming the signal, and is replaced:
   the candidate is `failed` if that task was required, a diagnostic otherwise, and its record is
   written as for any failed task. The programs a worker started (ddsim) die with it. A worker
-  that dies making the geometry, or whose task has killed N + 1 workers in a row (`lower
-  --jobs?`), stops its candidate with a `RunError` instead.
+  that dies making the geometry, or whose task has killed N + 1 workers in a row (`fewer
+  --workers?`), stops its candidate with a `RunError` instead.
 - **Stopping.** Ctrl-C reaches only the session, which stops its workers (SIGTERM, then SIGKILL)
   and the simulations they run; a worker also dies when the session's process does (Linux), and
   nothing is published once the evaluations are closed.
 
 - **Watching.** `evaluate_each(requests, activity=...)` calls `activity` in the session's thread
   whenever what runs changes, with an `Activity`: the `candidates` under way and the `busy` of
-  the `capacity` job slots (`k4opt optimize` shows them in its progress bar).
+  the `capacity` slots (`k4opt optimize` shows them in its progress bar).
 
 A summary is published only after the references only a candidate's geometry names are checked
 again against the candidates recorded meanwhile, so two candidates that ran at once never both
 get a record that says they read different files.
 
 **Measured** with `tests/benchmarks/parallel.py`, which runs one fixed set of candidates at
-several numbers of jobs and checks that every record says what the one-job run says (all but
-how it ran). On the fake stack of the tests (8 candidates of two samples, each simulation 2 s of
-processor time; lxplus, 2026-11-01):
+several numbers of workers and checks that every record says what the run with the fewest says
+(all but how it ran). On the fake stack of the tests (8 candidates of two samples, each
+simulation 2 s of processor time; lxplus, 2026-11-01, when one meant inline):
 
-| jobs | wall s | speedup | efficiency | processors busy | occupancy | records |
+| workers | wall s | speedup | efficiency | processors busy | occupancy | records |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 35.4 | 1.00 | 100% | 0.98 | 99% | same |
 | 2 | 18.9 | 1.88 | 94% | 1.92 | 95% | same |
@@ -826,12 +840,12 @@ processor time; lxplus, 2026-11-01):
 | 8 | 5.7 | 6.26 | 78% | 6.93 | 79% | same |
 
 What is lost goes to starting the workers (each imports k4opt, then podio when it first reads a
-file) and to the few candidates at the end, when fewer tasks than jobs are left. Run it with
+file) and to the few candidates at the end, when fewer tasks than workers are left. Run it with
 `--stack real` on the CLD example for the numbers of real simulations, memory included.
 
 **Beyond this machine.** Every task is described as plain data and done by one task program, and
 a record verifies without the session that made it, so a batch system can later run tasks, or
-whole candidates (each a session with its own jobs on one batch node), without a change to the
+whole candidates (each a session with its own workers on one batch node), without a change to the
 problem, the evaluators or the records. Nothing of that exists yet. It would still need the
 files moved to where the tasks run and back, the stack and the evaluators' code provided there
 and checked, credentials on the batch nodes, and its own memory and processor requests.

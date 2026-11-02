@@ -1,7 +1,7 @@
 """Command-line interface of the problem component: ``k4opt evaluate``.
 
     k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] [--param REFERENCE=VALUE ...]
-        [--input SAMPLE/STAGE=FILE ...] [--timeout SECONDS] [--jobs N] --output DIR
+        [--input SAMPLE/STAGE=FILE ...] [--timeout SECONDS] [--workers N|auto|inline] --output DIR
 
 A thin wrapper over :func:`k4opt.execution._session.run_candidate`; :func:`register` plugs it into
 the top-level ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate,
@@ -75,16 +75,16 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         help="kill ddsim if it runs longer than this; the candidate fails (no limit without it)",
     )
     evaluate.add_argument(
-        "-j",
-        "--jobs",
-        type=_jobs,
-        default=1,
-        metavar="N",
+        "--workers",
+        type=workers,
+        default="inline",
+        metavar="N|auto|inline",
         help=(
-            "run at most N tasks at once (simulations of different samples, evaluators, the "
-            "geometry), each in a worker process; a simulation with numberOfThreads holds as "
+            "run the tasks (simulations of different samples, evaluators, the geometry) in N "
+            "worker processes, at most N at once; a simulation with numberOfThreads holds as "
             "many. 'auto': as many as the processors this process may use. It bounds what k4opt "
-            "starts, not the memory of each task. Default 1: one after another"
+            "starts, not the memory of each task. Default inline: one after another, in this "
+            "process"
         ),
     )
     evaluate.add_argument(
@@ -93,15 +93,16 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     evaluate.set_defaults(func=cmd_evaluate)
 
 
-def _jobs(text: str) -> int | str:
-    """``--jobs``: a number (checked by the session) or ``auto``."""
-    if text == "auto":
+def workers(text: str) -> int | str:
+    """``--workers``: a number (checked by the session), ``auto`` or ``inline``; the type of the
+    option of every command that evaluates candidates."""
+    if text in ("auto", "inline"):
         return text
     try:
         return int(text)
     except ValueError:
         raise argparse.ArgumentTypeError(
-            f"expected a number of jobs or auto, got {text!r}"
+            f"expected a number of workers, auto or inline, got {text!r}"
         ) from None
 
 
@@ -183,7 +184,7 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         implementations=implementations,
         inputs=args.input,
         timeout=args.timeout,
-        jobs=args.jobs,
+        workers=args.workers,
         warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
     )
     _report(outcome, out)

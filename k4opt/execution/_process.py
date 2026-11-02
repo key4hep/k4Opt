@@ -1,6 +1,6 @@
 """Internal: the local process backend, which runs the tasks of candidates in worker processes.
 
-:class:`ProcessBackend` keeps up to ``jobs`` worker processes of this machine
+:class:`ProcessBackend` keeps up to ``workers`` worker processes of this machine
 (:mod:`k4opt.execution._worker`), each running one task at a time, and implements the
 :class:`~k4opt.execution._backends.Backend` contract with them: it starts and checks one worker
 at once, sends each task to an idle one, reads back what it left behind, and can stop any of them
@@ -70,21 +70,22 @@ class _Worker:
 
 
 class ProcessBackend:
-    """Runs up to ``jobs`` tasks at once, each in a worker process of this machine.
+    """Runs up to ``workers`` tasks at once, each in a worker process of this machine.
 
     A worker is started when a task finds none idle, set up once with the session ``spec``
     (:class:`~k4opt.execution._worker.SessionSpec`) and kept for the tasks that follow; there are
-    never more than ``jobs``. A worker that dies (a crash, the kernel's OOM killer) fails its task,
-    naming the signal, and is replaced by the next task; its programs (ddsim) are killed with it.
-    A geometry task that dies, or a task whose name has killed ``jobs + 1`` workers in a row,
+    never more than ``workers``. A worker that dies (a crash, the kernel's OOM killer) fails its
+    task, naming the signal, and is replaced by the next task; its programs (ddsim) are killed
+    with it.
+    A geometry task that dies, or a task whose name has killed ``workers + 1`` workers in a row,
     stops its candidate (:class:`~k4opt.execution.RunError`) instead, and so does a worker that
     has not set up the session after a generous deadline: a hung import never holds a job.
     Cancelled tasks end their workers: SIGTERM, then SIGKILL after a grace period.
     """
 
-    def __init__(self, spec: SessionSpec, jobs: int) -> None:
+    def __init__(self, spec: SessionSpec, workers: int) -> None:
         self._spec = spec
-        self._jobs = jobs
+        self._count = workers
         self._workers: list[_Worker] = []
         self._roots: dict[str, Path | None] = {}
         self._deaths: dict[tuple[Kind, str], int] = {}
@@ -92,11 +93,11 @@ class ProcessBackend:
 
     @property
     def capacity(self) -> int:
-        return self._jobs
+        return self._count
 
     def cost(self, cpus: int) -> int:
         """A slot per processor, all of them for a task that keeps more busy (it runs alone)."""
-        return min(max(cpus, 1), self._jobs)
+        return min(max(cpus, 1), self._count)
 
     def start(self) -> None:
         """Start a worker and wait until it is set up; :class:`~k4opt.execution.RunError` if it
@@ -127,7 +128,7 @@ class ProcessBackend:
             worker.ready = message[0] == "ready"
 
     def _spawn(self) -> _Worker:
-        assert len(self._workers) < self._jobs  # the scheduler keeps the tasks within jobs
+        assert len(self._workers) < self._count  # the scheduler keeps the tasks within its workers
         ours, theirs = socket.socketpair()
         # a send to a worker that never reads (hung before it set up) gives up in the end
         ours.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, struct.pack("ll", int(_SETUP), 0))
@@ -258,10 +259,10 @@ class ProcessBackend:
         how = f"the worker process that ran {task.label} died ({_ended(status)})"
         if task == GEOMETRY:
             return handle, RunError(f"{how}; the candidate has no geometry"), Observations()
-        if deaths > self._jobs:
+        if deaths > self._count:
             return (
                 handle,
-                RunError(f"{how}, {deaths} times in a row for {task.name}; lower --jobs?"),
+                RunError(f"{how}, {deaths} times in a row for {task.name}; fewer --workers?"),
                 Observations(),
             )
         return handle, _died(spec, self._roots.get(spec.workspace), how), Observations()
@@ -343,7 +344,7 @@ def _name(spec: TaskSpec) -> tuple[Kind, str]:
     code of the binding's implementation, ddsim, the memory all running tasks take together),
     so its deaths on every sample count as one series, which any task of that name that ends
     resets: a binding that dies on one sample but works on another fails the tasks that die, and
-    stops a candidate only once ``jobs + 1`` of them died with none ending in between."""
+    stops a candidate only once ``workers + 1`` of them died with none ending in between."""
     return spec.task.id.kind, spec.task.id.name
 
 

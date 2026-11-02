@@ -127,7 +127,7 @@ def test_a_record_reads_back_without_any_optimizer(
     session = EvaluationSession.open(problem_file, [toy_significance(), yields()])
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     observed = outcome.summary["environment"]["observed"]  # type: ignore[index]
-    assert observed["execution"] == {"backend": "local", "jobs": 1}
+    assert observed["execution"] == {"backend": "inline"}
     script = (
         "import json, sys\n"
         "sys.modules['optuna'] = None  # importing it fails\n"

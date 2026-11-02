@@ -1,7 +1,7 @@
 """Command-line interface of the optimization component: ``k4opt optimize`` and ``k4opt study``.
 
     k4opt optimize PROBLEM --evaluator FILE.py:Class [--evaluator ...] --trials N --output DIR
-        [--seed S] [--resume] [--storage URL] [--timeout SECONDS] [--jobs N]
+        [--seed S] [--resume] [--storage URL] [--timeout SECONDS] [--workers N|auto|inline]
     k4opt study show DIR [--storage URL]
     k4opt study trial DIR NUMBER [--storage URL]
     k4opt study export DIR --format {csv,json} [--output FILE] [--storage URL]
@@ -20,6 +20,7 @@ import argparse
 from typing import TextIO
 
 from k4opt.evaluation import load_evaluator
+from k4opt.execution.cli import workers
 from k4opt.optimization import StudyResults, load_study, optimize
 from k4opt.optimization._export import FORMATS, export
 from k4opt.optimization._render import Progress, render_study
@@ -85,16 +86,17 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         ),
     )
     parser.add_argument(
-        "-j",
-        "--jobs",
-        type=_jobs,
+        "--workers",
+        type=workers,
         default=1,
-        metavar="N",
+        metavar="N|auto|inline",
         help=(
-            "run at most N tasks at once, of one trial and of several, each in a worker process; "
+            "run the tasks in N worker processes, at most N at once, of one trial and of several; "
             "a simulation with numberOfThreads holds as many. 'auto': as many as the processors "
-            "this process may use. It bounds what k4opt starts, not the memory of each task, "
-            "and is not part of the study. Default 1: one trial after another"
+            "this process may use; 'inline': one task after another in this process, to debug, "
+            "where a crash of an evaluator ends the study. It bounds what k4opt starts, not the "
+            "memory of each task, and is not part of the study. Default 1: one trial after "
+            "another, in one worker"
         ),
     )
     parser.set_defaults(func=cmd_optimize)
@@ -159,18 +161,6 @@ def _register_study(commands: argparse._SubParsersAction[argparse.ArgumentParser
     exported.set_defaults(func=cmd_export)
 
 
-def _jobs(text: str) -> int | str:
-    """``--jobs``: a number (checked by the study) or ``auto``."""
-    if text == "auto":
-        return text
-    try:
-        return int(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"expected a number of jobs or auto, got {text!r}"
-        ) from None
-
-
 def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     implementations = [load_evaluator(reference) for reference in args.evaluator]
     try:
@@ -184,7 +174,7 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 resume=args.resume,
                 storage=args.storage,
                 timeout=args.timeout,
-                jobs=args.jobs,
+                workers=args.workers,
                 warn=progress.warning,
                 progress=progress.trial,
                 activity=progress.activity,

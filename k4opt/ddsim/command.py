@@ -77,7 +77,7 @@ _REFUSED = {
 # options whose value is a file ddsim reads; the caller passes an absolute path and records it
 FILE_OPTIONS = ("physics.pdgfile",)
 
-THREADS = "numberOfThreads"  # Geant4's worker threads: what k4opt counts against --jobs
+THREADS = "numberOfThreads"  # Geant4's worker threads: what k4opt counts against --workers
 
 _NESTED = (
     "write each option under its full ddsim name (physics.list: FTFP_BERT), not as a nested mapping"

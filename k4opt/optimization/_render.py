@@ -110,14 +110,14 @@ class Progress:
 
     The bar shows the new trials that ended against ``trials``, as a bar and a percentage, the
     time since the study began, the time left, the time a trial takes and how the trials ended;
-    with more than one job (:meth:`activity`), also the trials running and the busy job slots.
+    with workers (:meth:`activity`), also the trials running and the busy slots.
     It is redrawn every ``interval`` seconds and after each line printed above it, and left in
     place when the study ends, marked ``✔``, or ``✘`` when it was stopped; a study stopped
     before any of its new trials ended (one that could not start) leaves none. Trials a resume
     recovers are printed but do not advance it.
 
     A trial takes the time from the start of the study to the end of the last trial, divided by
-    the trials that ended: with several jobs, trials end together, and this is how often one
+    the trials that ended: with several workers, trials end together, and this is how often one
     ends. The time left is that of the trials still to run, less the time since the last one
     ended, so it counts down between the ends of trials.
     """
@@ -143,7 +143,7 @@ class Progress:
         self.outcomes: Counter[str] = Counter()
         self.ended = 0  # new trials that ended
         self.running = 0  # trials under way, as the last activity said
-        self.busy, self.capacity = 0, 1  # job slots
+        self.busy, self.capacity = 0, 1  # slots
         self._style = Style(color)
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -187,7 +187,7 @@ class Progress:
             self._print(trial_line(trial, color=self.color), self.out)
 
     def activity(self, activity: Activity) -> None:
-        """Take what runs now: the trials under way and the busy job slots."""
+        """Take what runs now: the trials under way and the busy slots."""
         with self._lock:
             self.running, self.busy = activity.candidates, activity.busy
             self.capacity = activity.capacity

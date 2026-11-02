@@ -7,10 +7,10 @@ coordinator's. A backend never publishes a record, never touches an optimizer's 
 holds nothing of a candidate but the place of its workspace, from :meth:`Backend.open` to
 :meth:`Backend.close_workspace`.
 
-:class:`InlineBackend` runs each task at once, in the caller's thread, one at a time: exactly what
-evaluating a candidate has always done. :class:`~k4opt.execution._process.ProcessBackend` runs
-up to ``jobs`` tasks at once, each in a worker process of this machine. Later backends (a batch
-system) keep the same contract.
+:class:`InlineBackend` runs each task at once, in the caller's thread, one at a time.
+:class:`~k4opt.execution._process.ProcessBackend` runs each task in a worker process of this
+machine, as many at once as it has workers. Later backends (a batch system) keep the same
+contract.
 """
 
 from __future__ import annotations

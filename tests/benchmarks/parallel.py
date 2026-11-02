@@ -1,20 +1,20 @@
-"""Benchmark of ``--jobs``: one fixed set of candidates evaluated with 1, 2, 4 and 8 jobs.
+"""Benchmark of ``--workers``: one fixed set of candidates evaluated with 1, 2, 4 and 8 workers.
 
 Not a test (pytest does not collect it) and no thresholds: it prints, and writes to
-``OUTPUT/benchmark.json``, for each number of jobs
+``OUTPUT/benchmark.json``, for each number of workers
 
-- the wall time, the speedup over one job and the efficiency (speedup / jobs);
+- the wall time, the speedup over one worker and the efficiency (speedup / workers);
 - the processor time used, by k4opt and by everything it started and waited for (workers,
-  ddsim), how many processors that kept busy on average, and the share of the jobs it used;
-- the occupancy of the job slots: the time the tasks took, each times the slots it held, over
-  jobs x wall time (what the scheduling leaves idle). A task's time is the ``elapsed_seconds``
+  ddsim), how many processors that kept busy on average, and the share of the workers it used;
+- the occupancy of the slots: the time the tasks took, each times the slots it held, over
+  workers x wall time (what the scheduling leaves idle). A task's time is the ``elapsed_seconds``
   its summary records: a stage's or the geometry's whole task, an evaluation's ``evaluate()``
   call alone (the record's time; the task's whole time, with making and checking its instance
   and hashing its artifacts, is not written to the summary), so the occupancy leaves out what an
   evaluation spends around that call;
 - the peak memory the records hold: what a task needed at most (k4opt's process and its
   program added, an estimate), ddsim's and k4opt's own, and the session's process;
-- whether every record says what the one-job run says of its candidate (all but how it ran).
+- whether every record says what the one-worker run says of its candidate (all but how it ran).
 
 Every candidate must be valid: one that failed or is invalid stops the benchmark, which would
 otherwise time failures.
@@ -25,7 +25,7 @@ CLD at a few events, two samples per candidate; with ``--stack fake`` the mini g
 fake ddsim of the tests, which keeps a processor busy ``--burn`` seconds per simulation::
 
     python tests/benchmarks/parallel.py --stack real --events 10 --candidates 8 \\
-        --jobs 1 2 4 8 --output /tmp/bench
+        --workers 1 2 4 8 --output /tmp/bench
 """
 
 from __future__ import annotations
@@ -116,20 +116,20 @@ def _tasks(summary: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return entries
 
 
-def valid(summary: dict[str, Any], jobs: int) -> dict[str, Any]:
+def valid(summary: dict[str, Any], workers: int) -> dict[str, Any]:
     """``summary``, if its candidate is valid: one that failed or is invalid (a simulation that
     did not run, an evaluator that failed) took another time and memory than an evaluation, and
-    its records would match those of the same failure with one job. Stops the benchmark
+    its records would match those of the same failure with one worker. Stops the benchmark
     otherwise."""
     if summary.get("status") != "valid":
         raise SystemExit(
-            f"benchmark: with {jobs} job(s), the candidate in {summary.get('run_dir')} is "
+            f"benchmark: with {workers} worker(s), the candidate in {summary.get('run_dir')} is "
             f"{summary.get('status')}: {summary.get('message')}; nothing is measured of failures"
         )
     return summary
 
 
-def held(entry: Mapping[str, Any], jobs: int) -> float:
+def held(entry: Mapping[str, Any], workers: int) -> float:
     """The slot seconds a task held: its time, times the slots it held, as the local backend
     counts them (``ProcessBackend.cost``): a simulation one per thread, at most every slot."""
     seconds = float(entry.get("elapsed_seconds") or 0.0)
@@ -138,11 +138,11 @@ def held(entry: Mapping[str, Any], jobs: int) -> float:
         for arg in entry.get("argv") or ()
         if arg.startswith("--numberOfThreads=")
     ]
-    return seconds * min(max(threads or [1]), jobs)
+    return seconds * min(max(threads or [1]), workers)
 
 
 def run(
-    jobs: int,
+    workers: int,
     path: Path,
     evaluators: list[Any],
     parameter: str,
@@ -156,33 +156,33 @@ def run(
     cpu, began = _cpu(), time.perf_counter()
     summaries = []
     with (
-        EvaluationSession.open(path, evaluators, jobs=jobs) as session,
+        EvaluationSession.open(path, evaluators, workers=workers) as session,
         session.evaluate_each(requests) as evaluations,
     ):
         for _, outcome in evaluations:
             if isinstance(outcome, Exception):
                 raise outcome
-            summaries.append(valid(dict(outcome.summary), jobs))
+            summaries.append(valid(dict(outcome.summary), workers))
     wall = time.perf_counter() - began
     used = _cpu() - cpu
-    used_slots = sum(held(entry, jobs) for s in summaries for entry in _tasks(s))
+    used_slots = sum(held(entry, workers) for s in summaries for entry in _tasks(s))
     memories = [m for s in summaries for m in peak_memory(s).values()]
     per_task = max((m.per_task or 0 for m in memories), default=0)
     programs = max((m.program or 0 for m in memories), default=0)
     processes = max((m.process or 0 for m in memories), default=0)
     session = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
     return {
-        "jobs": jobs,
+        "workers": workers,
         "wall_seconds": wall,
         "cpu_seconds": used,
         "processors_busy": used / wall,
-        "utilization": used / wall / jobs,
-        "occupancy": used_slots / (jobs * wall),
+        "utilization": used / wall / workers,
+        "occupancy": used_slots / (workers * wall),
         "peak_memory_bytes": {
             "per_task": per_task,
             "ddsim": programs,
             "k4opt_task_process": processes,
-            "session_process": session if jobs > 1 else None,  # one job: it ran the tasks
+            "session_process": session,  # the coordinator; its workers ran the tasks
         },
         "candidates": {s["candidate"][parameter]: scientific(s) for s in summaries},
     }
@@ -194,10 +194,10 @@ def _gib(count: int | None) -> str:
 
 def _check(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Refuse what would run something else than asked, or report what was not measured."""
-    if args.jobs[0] != 1:  # speedup and efficiency are over one job, measured
-        parser.error("the first of --jobs must be 1: speedup and efficiency are over one job")
-    if min(args.jobs) < 1 or len(set(args.jobs)) != len(args.jobs):
-        parser.error(f"--jobs must be distinct positive numbers, got {args.jobs}")
+    if args.workers[0] != 1:  # speedup and efficiency are over one worker, measured
+        parser.error("the first of --workers must be 1: speedup and efficiency are over one worker")
+    if min(args.workers) < 1 or len(set(args.workers)) != len(args.workers):
+        parser.error(f"--workers must be distinct positive numbers, got {args.workers}")
     grid = GRIDS[args.stack]
     if not 1 <= args.candidates <= len(grid):
         parser.error(f"--candidates must be 1 to {len(grid)} (the {args.stack} grid)")
@@ -214,7 +214,7 @@ def _check(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--stack", choices=("real", "fake"), default="fake")
-    parser.add_argument("--jobs", type=int, nargs="+", default=[1, 2, 4, 8])
+    parser.add_argument("--workers", type=int, nargs="+", default=[1, 2, 4, 8])
     parser.add_argument("--candidates", type=int, default=8)
     parser.add_argument("--events", type=int, default=10)
     parser.add_argument("--threads", type=int, default=1, help="numberOfThreads (real stack)")
@@ -229,13 +229,15 @@ def main(argv: list[str] | None = None) -> int:
         path, evaluators, parameter = _fake(args.output, args.events, args.burn)
     values = GRIDS[args.stack][: args.candidates]
     results = []
-    for jobs in args.jobs:
-        directory = args.output / f"jobs{jobs}"
-        results.append(run(jobs, path, evaluators, parameter, values, directory))
-        print(f"jobs {jobs}: {results[-1]['wall_seconds']:.1f} s", file=sys.stderr, flush=True)
-    base = results[0]  # one job
+    for workers in args.workers:
+        directory = args.output / f"workers{workers}"
+        results.append(run(workers, path, evaluators, parameter, values, directory))
+        print(
+            f"workers {workers}: {results[-1]['wall_seconds']:.1f} s", file=sys.stderr, flush=True
+        )
+    base = results[0]  # one worker
     print(
-        "| jobs | wall s | speedup | efficiency | CPU s | processors busy | utilization | "
+        "| workers | wall s | speedup | efficiency | CPU s | processors busy | utilization | "
         "occupancy | GiB per task | ddsim GiB | k4opt task GiB | session GiB | records |"
     )
     print("|" + " --- |" * 13)
@@ -243,10 +245,10 @@ def main(argv: list[str] | None = None) -> int:
         speedup = base["wall_seconds"] / result["wall_seconds"]
         same = result["candidates"] == base["candidates"]
         memory = result["peak_memory_bytes"]
-        result |= {"speedup": speedup, "efficiency": speedup / result["jobs"], "same": same}
+        result |= {"speedup": speedup, "efficiency": speedup / result["workers"], "same": same}
         print(
-            f"| {result['jobs']} | {result['wall_seconds']:.1f} | {speedup:.2f} | "
-            f"{speedup / result['jobs']:.0%} | {result['cpu_seconds']:.1f} | "
+            f"| {result['workers']} | {result['wall_seconds']:.1f} | {speedup:.2f} | "
+            f"{speedup / result['workers']:.0%} | {result['cpu_seconds']:.1f} | "
             f"{result['processors_busy']:.2f} | {result['utilization']:.0%} | "
             f"{result['occupancy']:.0%} | {_gib(memory['per_task'])} | {_gib(memory['ddsim'])} | "
             f"{_gib(memory['k4opt_task_process'])} | {_gib(memory['session_process'])} | "

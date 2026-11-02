@@ -105,18 +105,21 @@ def test_a_study_of_the_example_runs_resumes_and_tells_the_optimizer_its_records
     assert [m["uncertainty"] is not None for m in entry["assessment"]["objectives"]] == [True, True]
 
 
-def test_a_study_runs_trials_at_once_and_resumes_with_another_number_of_jobs(
+def test_a_study_runs_trials_at_once_and_resumes_with_another_number_of_workers(
     problem: Path, tmp_path: Path
 ) -> None:
     output = tmp_path / "study"
-    first = optimize(problem, output, "--trials", "4", "--seed", "2", "--jobs", "2")
+    first = optimize(problem, output, "--trials", "4", "--seed", "2", "--workers", "2")
     assert "trials:   4: 4 valid" in first
-    resumed = optimize(problem, output, "--trials", "1", "--resume", "--jobs", "1")
+    resumed = optimize(problem, output, "--trials", "1", "--resume", "--workers", "1")
     assert resumed.startswith("trial 4:") and "trials:   5: 5 valid" in resumed
     spec = load_problem(problem)
-    for number, jobs in ((0, 2), (1, 2), (2, 2), (3, 2), (4, 1)):
+    for number, workers in ((0, 2), (1, 2), (2, 2), (3, 2), (4, 1)):
         summary = json.loads((output / f"trial-{number:06d}" / "summary.json").read_text())
-        assert summary["environment"]["observed"]["execution"] == {"backend": "local", "jobs": jobs}
+        assert summary["environment"]["observed"]["execution"] == {
+            "backend": "process",
+            "workers": workers,
+        }
         assert summary["samples"]["gamma_10gev"]["stages"]["simulation"]["events_read"] == 4
         Assessment.from_summary(spec, summary)
     shown = io.StringIO()

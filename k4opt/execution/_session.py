@@ -42,7 +42,7 @@ from k4opt.execution._binding import (
     _Prepared,
     task_cpus,
 )
-from k4opt.execution._cpus import AUTO, usable_cpus
+from k4opt.execution._cpus import AUTO, INLINE, usable_cpus
 from k4opt.execution._drive import Activity, _drive, _Run
 from k4opt.execution._process import ProcessBackend
 from k4opt.execution._publish import RunOutcome, publish
@@ -180,7 +180,7 @@ class Evaluations:
 
 class EvaluationSession:
     """Candidates of one problem, evaluated with the same evaluators: one task after another in
-    the caller's thread, or up to ``jobs`` tasks at once in worker processes (:meth:`open`).
+    the caller's thread, or as many at once as it has worker processes (:meth:`open`).
 
     :meth:`open` loads the problem file once, so later edits to it do not reach the session,
     binds the evaluator implementations to it and checks what does not depend on a candidate.
@@ -220,7 +220,7 @@ class EvaluationSession:
         inputs: Mapping[TaskId, Path],
         warnings: tuple[str, ...],
         timeout: float | None,
-        jobs: int = 1,
+        workers: int | None = None,
     ) -> None:
         """Use :meth:`open`."""
         self._baseline = baseline
@@ -230,14 +230,17 @@ class EvaluationSession:
         self._timeout = timeout
         # what every task needs, wherever it runs
         self._context = _context(baseline.spec, binding, timeout, baseline.externals)
-        self._execution: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": jobs})
+        execution: dict[str, Json] = {"backend": "inline"}
+        if workers is not None:
+            execution = {"backend": "process", "workers": workers}
+        self._execution: Mapping[str, Json] = FrozenMap(execution)
         self._open: Evaluations | None = None
         self._backend: ProcessBackend | None = None
-        if jobs > 1:  # one worker started at once: one that cannot work refuses here
+        if workers is not None:  # one worker started at once: one that cannot work refuses here
             environment = baseline.process["environment"]
             assert isinstance(environment, Mapping)
             described = session_spec(self._context, binding.evaluations, environment)
-            backend = self._backend = ProcessBackend(described, jobs)
+            backend = self._backend = ProcessBackend(described, workers)
             weakref.finalize(self, backend.close)  # a backstop: close() stops the workers
             try:
                 backend.start()
@@ -253,7 +256,7 @@ class EvaluationSession:
         *,
         inputs: Mapping[str, str | os.PathLike[str]] | None = None,
         timeout: float | None = None,
-        jobs: int | Literal["auto"] = 1,
+        workers: int | Literal["auto", "inline"] = "inline",
     ) -> EvaluationSession:
         """Load the problem file ``problem_path`` to evaluate its candidates with
         ``implementations``.
@@ -267,14 +270,20 @@ class EvaluationSession:
         the candidate, which every outcome says
         (``represents_candidate``). ``timeout`` is how many seconds a stage that runs a program
         (ddsim) may take: one that runs longer is killed, and its candidate fails with the logs
-        kept. ``jobs`` is how many tasks (simulations, evaluations, geometries) may run at once,
-        of one candidate and of several (:meth:`evaluate_each`); with more than one, each runs
-        in a worker process that loads the implementations again by their references, so they
-        must be loaded by :func:`~k4opt.evaluation.load_evaluator`, and one worker is started
-        and checked now. ``"auto"`` is as many jobs as the processors this process may use (its
-        affinity, at most its cgroup's quota). A simulation on several threads
-        (``numberOfThreads``) holds as many jobs while it runs. Close a session
-        (:meth:`close`, or ``with``) to stop its workers.
+        kept. ``workers`` says where the tasks (geometries, simulations, evaluations) run:
+        ``"inline"``, in this process, one after another, with the implementations as given
+        (classes defined in a script or a notebook included); or a number of worker processes,
+        each running one task at a time, of one candidate and of several
+        (:meth:`evaluate_each`), so that a crash or an OOM kill of an evaluator fails its task,
+        not the session. Workers load the implementations again by their references, so they
+        must be loaded by :func:`~k4opt.evaluation.load_evaluator` (a
+        :class:`~k4opt.execution.RunError` otherwise, never a fallback to ``"inline"``); one
+        worker is started and checked now. ``"auto"`` is as many workers as the processors this
+        process may use (its affinity, at most its cgroup's quota). A simulation on several
+        threads (``numberOfThreads``) holds as many workers while it runs. The new instance of
+        each evaluation is still created, and its ``check()`` called, in this process, before
+        anything of its candidate is created. Close a session (:meth:`close`, or ``with``) to
+        stop its workers.
         Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
         stage or input (an :class:`~k4opt.evaluation.EvaluationContractError` for an
         implementation that cannot be created, too), and :class:`~k4opt.execution.RunError` if
@@ -283,7 +292,7 @@ class EvaluationSession:
         """
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         limit = _timeout(timeout)
-        jobs, usable = _jobs(jobs), usable_cpus()
+        count, usable = _workers(workers), usable_cpus()
         spec = load_problem(path)
         supplied = _supplied(spec, inputs or {})
         binding = _bind_problem(spec, implementations, supplied)
@@ -301,23 +310,24 @@ class EvaluationSession:
         named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
         baseline = Baseline.take(path.absolute(), spec, binding, named)
         crowded = []
+        slots = 1 if count is None else count
         for task in binding.plan.tasks:
             cpus = task_cpus(binding, task)
             beyond = f"more than the {usable} processors this process may use"
-            if cpus > jobs:
+            if count is not None and cpus > count:
                 crowded.append(
-                    f"{task.id.label} simulates with {cpus} threads, more than the {jobs} "
-                    f"job(s) of the session: it runs alone, on {cpus} processors"
+                    f"{task.id.label} simulates with {cpus} threads, more than the {count} "
+                    f"worker(s) of the session: it runs alone, on {cpus} processors"
                     + ("" if cpus <= usable else f", {beyond}")
                 )
-            elif cpus > usable:  # within the jobs, which are then too many themselves
+            elif cpus > usable:  # within the workers, which are then too many themselves
                 crowded.append(f"{task.id.label} simulates with {cpus} threads, {beyond}")
-        if jobs > usable:
+        if slots > usable:
             crowded.append(
-                f"{jobs} jobs, more than the {usable} processors this process may use: tasks "
+                f"{slots} workers, more than the {usable} processors this process may use: tasks "
                 "will share processors"
             )
-        return cls(baseline, binding, supplied, (*binding.warnings, *crowded), limit, jobs)
+        return cls(baseline, binding, supplied, (*binding.warnings, *crowded), limit, count)
 
     @property
     def spec(self) -> ProblemSpec:
@@ -333,8 +343,8 @@ class EvaluationSession:
     def warnings(self) -> tuple[str, ...]:
         """Collections an evaluator reads that the simulation is not expected to write; the
         simulation's output decides, so they do not stop an evaluation (each summary keeps them
-        too). Then how the session's jobs suit what it runs: a simulation on more threads than
-        there are jobs, more jobs than processors (how it ran: no summary keeps these)."""
+        too). Then how the session's workers suit what it runs: a simulation on more threads than
+        there are workers, more workers than processors (how it ran: no summary keeps these)."""
         return self._warnings
 
     @property
@@ -434,9 +444,9 @@ class EvaluationSession:
         stopped it instead, if one did (nothing else is then written for it).
 
         The next request is taken from ``requests`` only once the candidates under way leave a
-        job idle (none of their tasks is ready to take it), and every candidate that ended was
+        slot idle (none of their tasks is ready to take it), and every candidate that ended was
         yielded before, so whatever makes the requests (an optimizer) learns from every outcome
-        it can before it proposes again. With one job, that is one candidate at a time, each
+        it can before it proposes again. With one slot, that is one candidate at a time, each
         yielded before the next is taken; with more, the candidates end in any order, each
         with its own record. Close what this returns (``with``) when done with it: that stops
         whatever still runs, as leaving the loop early does not by itself. One at a time per
@@ -601,13 +611,16 @@ def _prepared(run: _Run) -> _Prepared:
     return run.prepared
 
 
-def _jobs(value: int | Literal["auto"]) -> int:
-    """The number of jobs ``value`` says: itself, or for ``"auto"`` the processors this process
-    may use. :class:`RunError` unless it is a positive integer or ``"auto"``."""
+def _workers(value: int | Literal["auto", "inline"]) -> int | None:
+    """The number of worker processes ``value`` says, ``None`` for none (``"inline"``): itself,
+    or for ``"auto"`` the processors this process may use. :class:`RunError` unless it is a
+    positive integer, ``"auto"`` or ``"inline"``."""
+    if value == INLINE:
+        return None
     if value == AUTO:
         return usable_cpus()
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise RunError(f"jobs must be a positive integer or 'auto', got {value!r}")
+        raise RunError(f"workers must be a positive integer, 'auto' or 'inline', got {value!r}")
     return value
 
 
@@ -619,20 +632,24 @@ def run_candidate(
     implementations: Sequence[type[EvaluatorProtocol]],
     inputs: Sequence[str] = (),
     timeout: float | None = None,
-    jobs: int | Literal["auto"] = 1,
+    workers: int | Literal["auto", "inline"] = "inline",
     warn: Callable[[str], None] | None = None,
 ) -> RunOutcome:
     """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
 
     :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
-    ``SAMPLE/STAGE=FILE`` strings, ``timeout`` and ``jobs`` those of
+    ``SAMPLE/STAGE=FILE`` strings, ``timeout`` and ``workers`` those of
     :meth:`EvaluationSession.open`. ``warn``
     is called with each of the session's warnings once the candidate is known to be valid, before
     anything is created, and with its :attr:`~EvaluationSession.notice` of diagnostics; the
     warnings are also kept in the summary.
     """
     with EvaluationSession.open(
-        problem_path, implementations, inputs=_parse_inputs(inputs), timeout=timeout, jobs=jobs
+        problem_path,
+        implementations,
+        inputs=_parse_inputs(inputs),
+        timeout=timeout,
+        workers=workers,
     ) as session:
         values = parse_candidate(session.spec, assignments)
         # a wrong candidate is reported before the warnings

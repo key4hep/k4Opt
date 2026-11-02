@@ -106,11 +106,12 @@ def session_spec(
             or cls.__module__ == "__main__"
         ):
             raise RunError(
-                f"evaluator {bound.entry.name!r}: with more than one job each evaluator runs in a "
+                f"evaluator {bound.entry.name!r}: with workers each evaluator runs in a "
                 "worker process, which loads it again by its reference (FILE.py:Class or "
                 f"module:Class); {cls.__qualname__} was not loaded that way by "
                 "k4opt.evaluation.load_evaluator (or its module was imported before, or is "
-                "__main__), so a worker could not tell it is the same code"
+                "__main__), so a worker could not tell it is the same code; evaluate it "
+                "inline (workers='inline') instead"
             )
         implementations[cls] = Implementation(reference, FrozenMap(source))
     try:

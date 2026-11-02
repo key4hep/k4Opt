@@ -23,7 +23,7 @@ from k4opt.record.errors import RecordError
 from k4opt.record.read import SUMMARY_SCHEMA, _measurement
 from k4opt.record.results import CandidateRecord, PeakMemory, TaskResult
 
-LOCAL: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": 1})
+INLINE: Mapping[str, Json] = FrozenMap({"backend": "inline"})
 """How a session executes its tasks by default: one after another, in its own process."""
 
 
@@ -126,7 +126,7 @@ def assemble(
     taken: Mapping[str, Mapping[str, Json]],
     run: object,
     process: Mapping[str, Json],
-    execution: Mapping[str, Json] = LOCAL,
+    execution: Mapping[str, Json] = INLINE,
 ) -> dict[str, object]:
     """The summary of a candidate, made from its task results and nothing else that ran.
 

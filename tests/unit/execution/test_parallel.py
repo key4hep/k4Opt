@@ -1,4 +1,4 @@
-"""Candidates evaluated with several jobs: their tasks in worker processes, on a fake stack.
+"""Candidates evaluated with workers: their tasks in worker processes, on a fake stack.
 
 The fake ``ddsim`` and ``podio`` (:mod:`tests.support.stack`) and ``test.worker_probe`` do in the
 workers what a test tells them through the environment, which the workers inherit; markers in a
@@ -140,10 +140,10 @@ def session_of(problem: Path) -> Iterator[Opener]:
     ``test.worker_probe`` if it binds that, each closed after the test."""
     opened: list[EvaluationSession] = []
 
-    def open_(jobs: int, path: Path = problem) -> EvaluationSession:
+    def open_(workers: int | str, path: Path = problem) -> EvaluationSession:
         named = {entry["name"] for entry in yaml.safe_load(path.read_text())["evaluators"]}
         probes = [worker_probe()] if "test.worker_probe" in named else []
-        session = EvaluationSession.open(path, [cell_count(), *probes], jobs=jobs)
+        session = EvaluationSession.open(path, [cell_count(), *probes], workers=workers)
         opened.append(session)
         return session
 
@@ -184,7 +184,7 @@ def test_the_simulations_of_two_samples_run_at_once(
     outcome = session_of(2).evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert outcome.candidate.status == "valid", outcome.candidate.message
     summary = verified(outcome)
-    assert summary["environment"]["observed"]["execution"] == {"backend": "local", "jobs": 2}
+    assert summary["environment"]["observed"]["execution"] == {"backend": "process", "workers": 2}
     ended = {path.name for path in marks.glob("*.ended")}
     assert ended == {"a.gamma.ended", "a.pion.ended"}
 
@@ -235,12 +235,12 @@ def test_a_candidate_gives_the_same_record_with_one_job_and_with_four(
 ) -> None:
     problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
     stack.install(monkeypatch, **{"gamma": {"hits": [[1, 2], [3], [4, 5, 6]]}})
-    one = session_of(1, problem).evaluate({RADIUS: 450.0}, tmp_path / "one")
+    one = session_of("inline", problem).evaluate({RADIUS: 450.0}, tmp_path / "one")
     four = session_of(4, problem).evaluate({RADIUS: 450.0}, tmp_path / "four")
     first, second = verified(one), verified(four)
     assert scientific(first) == scientific(second)
-    assert first["environment"]["observed"]["execution"] == {"backend": "local", "jobs": 1}
-    assert second["environment"]["observed"]["execution"] == {"backend": "local", "jobs": 4}
+    assert first["environment"]["observed"]["execution"] == {"backend": "inline"}
+    assert second["environment"]["observed"]["execution"] == {"backend": "process", "workers": 4}
     assert first["samples"]["gamma"]["evaluations"]["p"]["log"] is None
     assert second["samples"]["gamma"]["evaluations"]["p"]["log"] is not None
     assert first["status"] == "valid" and first["metrics"][0]["value"] == 2.0
@@ -351,7 +351,7 @@ def test_an_output_inside_a_recorded_run_directory_is_refused(
     tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stack.install(monkeypatch)
-    session = session_of(1)
+    session = session_of("inline")
     recorded = session.evaluate({RADIUS: 300.0}, tmp_path / "a")
     for inside in (tmp_path / "a" / "b", tmp_path / "a" / "gamma" / "simulation" / "b"):
         with pytest.raises(RunError, match=r"inside .*the run directory of a recorded candidate"):
@@ -372,7 +372,7 @@ def test_an_output_inside_a_directory_with_another_summary_is_accepted(
         (tmp_path / "data" / SUMMARY_NAME).mkdir()
     else:
         (tmp_path / "data" / SUMMARY_NAME).write_text(held)
-    outcome = session_of(1).evaluate({RADIUS: 300.0}, tmp_path / "data" / "a")
+    outcome = session_of("inline").evaluate({RADIUS: 300.0}, tmp_path / "data" / "a")
     assert outcome.candidate.status == "valid"
 
 
@@ -382,14 +382,18 @@ def test_a_dangling_symlink_as_output_is_refused_as_existing(
     stack.install(monkeypatch)
     (tmp_path / "link").symlink_to(tmp_path / "nowhere")
     with pytest.raises(RunError, match=r"link already exists; choose a new directory"):
-        session_of(1).evaluate({RADIUS: 300.0}, tmp_path / "link")
+        session_of("inline").evaluate({RADIUS: 300.0}, tmp_path / "link")
     assert not (tmp_path / "nowhere").exists()
 
 
-@pytest.mark.parametrize("jobs", [1, 2])
+@pytest.mark.parametrize("workers", ["inline", 2])
 @pytest.mark.parametrize("named", ["gamma/simulation#events", "geometry/added.xml"])
 def test_a_file_changed_after_the_last_task_keeps_the_record_from_being_written(
-    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, jobs: int, named: str
+    tmp_path: Path,
+    session_of: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+    workers: int | str,
+    named: str,
 ) -> None:
     # every task that read the file found it as it was made; only the candidate's own check,
     # once all its tasks ended, can tell that its record would not say what the files hold
@@ -407,7 +411,7 @@ def test_a_file_changed_after_the_last_task_keeps_the_record_from_being_written(
 
     monkeypatch.setattr(_session, "publish", publishing)
     with pytest.raises(RunError, match=rf"^{named} changed after it was made, so the record"):
-        session_of(jobs).evaluate({RADIUS: 300.0}, tmp_path / "a")
+        session_of(workers).evaluate({RADIUS: 300.0}, tmp_path / "a")
     assert not (tmp_path / "a" / SUMMARY_NAME).exists()
 
 
@@ -419,7 +423,7 @@ def threaded(path: Path, threads: int) -> Path:
     return path
 
 
-def test_a_simulation_on_several_threads_holds_as_many_jobs(
+def test_a_simulation_on_several_threads_holds_as_many_workers(
     tmp_path: Path,
     doc: dict[str, Any],
     marks: Path,
@@ -434,7 +438,7 @@ def test_a_simulation_on_several_threads_holds_as_many_jobs(
     assert "--numberOfThreads=2" in simulated["argv"]
 
     stack.install(monkeypatch, marks)
-    session = session_of(2, problem)  # the gamma simulation takes both jobs: it runs alone
+    session = session_of(2, problem)  # the gamma simulation takes both workers: it runs alone
     assert not [warning for warning in session.warnings if "threads" in warning]
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "b")
     assert outcome.candidate.status == "valid", outcome.candidate.message
@@ -444,7 +448,7 @@ def test_a_simulation_on_several_threads_holds_as_many_jobs(
     assert ended[first] <= times[second]  # one after the other
     warned = [warning for warning in session_of(1, problem).warnings if "threads" in warning]
     assert warned == [
-        "gamma/simulation simulates with 2 threads, more than the 1 job(s) of the session: it "
+        "gamma/simulation simulates with 2 threads, more than the 1 worker(s) of the session: it "
         "runs alone, on 2 processors"
     ]
 
@@ -525,7 +529,7 @@ def test_with_one_job_the_session_records_its_own_peak_memory(
     tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stack.install(monkeypatch, **{"gamma": {"allocate": 200}})
-    summary = verified(session_of(1).evaluate({RADIUS: 450.0}, tmp_path / "a"))
+    summary = verified(session_of("inline").evaluate({RADIUS: 450.0}, tmp_path / "a"))
     memory = {
         sample: summary["samples"][sample]["stages"]["simulation"]["peak_memory_bytes"]
         for sample in ("gamma", "pion")
@@ -577,6 +581,7 @@ def test_an_exception_that_cannot_be_rebuilt_is_raised_as_a_task_error() -> None
     assert isinstance(error.__cause__, _worker.RemoteTraceback)
 
 
+@pytest.mark.parametrize("workers", [1, 2])
 @pytest.mark.parametrize(
     ("killed", "required", "status", "message"),
     [
@@ -596,7 +601,10 @@ def test_a_process_killed_like_the_oom_killer_does_fails_its_task_and_leaves_not
     required: bool,
     status: str,
     message: str | None,
+    workers: int,
 ) -> None:
+    # with one worker as with several: the crash of an evaluator, or the kernel's OOM killer,
+    # fails its task, never the session that coordinates the candidates
     problem = write_problem(tmp_path / "probe.yaml", doc, ("p",), required=required)
     told: dict[str, Any] = {
         "ddsim": {"a.gamma": {"kill": "self"}},
@@ -604,7 +612,7 @@ def test_a_process_killed_like_the_oom_killer_does_fails_its_task_and_leaves_not
     }.get(killed, {})
     stack.install(monkeypatch, marks, **told)
     probe(monkeypatch, **({"a.p": {"kill": True}} if "evaluation" in killed else {}))
-    session = session_of(2, problem)
+    session = session_of(workers, problem)
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert outcome.candidate.status == status
     summary = verified(outcome)  # a complete record of what happened, on disk
@@ -658,14 +666,14 @@ def test_workers_that_keep_dying_on_one_task_stop_its_candidates(
     stopped = [o for o in ended if isinstance(o, RunError)]
     assert len(failed) == 2 and all(o.candidate.status == "failed" for o in failed)
     (error,) = stopped
-    assert "3 times in a row for p; lower --jobs?" in str(error)
+    assert "3 times in a row for p; fewer --workers?" in str(error)
 
 
 def test_the_deaths_of_one_binding_count_together_on_every_sample(
     tmp_path: Path, doc: dict[str, Any], session_of: Opener, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # one implementation's code, and memory pressure, do not stop at a sample: deaths of p on
-    # gamma and on pion are one series, which stops a candidate after jobs + 1 of them
+    # gamma and on pion are one series, which stops a candidate after workers + 1 of them
     problem = write_problem(tmp_path / "probe.yaml", doc, ("p",), probed=("gamma", "pion"))
     stack.install(monkeypatch)
     probe(monkeypatch, p={"kill": True})
@@ -673,7 +681,7 @@ def test_the_deaths_of_one_binding_count_together_on_every_sample(
     with session_of(2, problem).evaluate_each(requests) as evaluations:
         ended = [outcome for _, outcome in evaluations]
     stopped = [o for o in ended if isinstance(o, RunError)]
-    assert stopped and all("times in a row for p; lower --jobs?" in str(o) for o in stopped)
+    assert stopped and all("times in a row for p; fewer --workers?" in str(o) for o in stopped)
     assert all(o.candidate.status == "failed" for o in ended if isinstance(o, RunOutcome))
 
 
@@ -745,7 +753,7 @@ def test_interrupting_the_command_leaves_no_worker_nor_simulation(
     stack.install(monkeypatch, marks, **{"*": {"sleep": 600}})
     path = os.pathsep.join([str(stack.FAKE_STACK / "python"), str(REPO), os.environ["PYTHONPATH"]])
     command = [sys.executable, "-m", "k4opt", "evaluate", str(problem)]
-    command += ["--evaluator", CELL_COUNT, "--param", f"{RADIUS}=450", "--jobs", "2"]
+    command += ["--evaluator", CELL_COUNT, "--param", f"{RADIUS}=450", "--workers", "2"]
     command += ["--output", str(tmp_path / "a")]
     process = subprocess.Popen(
         command, env=os.environ | {"PYTHONPATH": path}, stderr=subprocess.PIPE
@@ -766,7 +774,7 @@ def test_interrupting_the_command_leaves_no_worker_nor_simulation(
     assert not (tmp_path / "a" / SUMMARY_NAME).exists()
 
 
-def test_the_command_evaluates_with_several_jobs(
+def test_the_command_evaluates_with_several_workers(
     tmp_path: Path,
     problem: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -775,15 +783,17 @@ def test_the_command_evaluates_with_several_jobs(
     stack.install(monkeypatch, **{"pion": {"allocate": 300}})
     output = tmp_path / "a"
     argv = ["evaluate", str(problem), "--evaluator", CELL_COUNT, "--param", f"{RADIUS}=450"]
-    assert main([*argv, "-j", "2", "--output", str(output)]) == 0, capsys.readouterr().err
+    assert main([*argv, "--workers", "2", "--output", str(output)]) == 0, capsys.readouterr().err
     if sys.platform.startswith("linux"):  # the task that needs most: the pions' ddsim
         line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("memory:"))
         assert " per task (estimate), for pion/simulation (k4opt " in line and ", ddsim 3" in line
     summary = json.loads((output / SUMMARY_NAME).read_text())
-    assert summary["environment"]["observed"]["execution"] == {"backend": "local", "jobs": 2}
+    assert summary["environment"]["observed"]["execution"] == {"backend": "process", "workers": 2}
     assert stack.workers() == []  # the command's session closed its workers
-    assert main([*argv, "--jobs", "0", "--output", str(tmp_path / "b")]) == 1
-    assert "jobs must be a positive integer or 'auto', got 0" in capsys.readouterr().err
+    assert main([*argv, "--workers", "0", "--output", str(tmp_path / "b")]) == 1
+    assert (
+        "workers must be a positive integer, 'auto' or 'inline', got 0" in capsys.readouterr().err
+    )
 
 
 # --- what the workers must share with the session ---------------------------------------------
@@ -847,10 +857,10 @@ def test_a_worker_that_hangs_while_it_sets_up_is_stopped(
         marker.touch()
         monkeypatch.setattr(_process, "_SETUP", 2.0)
         with pytest.raises(RunError, match=message):
-            EvaluationSession.open(problem, [implementation], jobs=2)
+            EvaluationSession.open(problem, [implementation], workers=2)
         assert stack.workers() == []
         return
-    with EvaluationSession.open(problem, [implementation], jobs=2) as session:
+    with EvaluationSession.open(problem, [implementation], workers=2) as session:
         marker.touch()  # the second worker starts once both simulations are ready
         monkeypatch.setattr(_process, "_SETUP", 2.0)
         with pytest.raises(RunError, match=message):
@@ -920,22 +930,35 @@ def test_a_worker_found_dead_as_its_setup_deadline_passes_is_ended_once(tmp_path
     assert backend._workers == []
 
 
-@pytest.mark.parametrize("jobs", [1, 2])
+@pytest.mark.parametrize("workers", ["inline", 2])
 def test_the_session_keeps_the_preflight_instances_only_when_it_evaluates_with_them(
-    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, jobs: int
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, workers: int | str
 ) -> None:
     stack.install(monkeypatch)
-    run = session_of(jobs)._start(RunRequest({RADIUS: 450.0}, tmp_path / "a"))
+    run = session_of(workers)._start(RunRequest({RADIUS: 450.0}, tmp_path / "a"))
     assert run.prepared is not None
     assert len(run.prepared.entries) == len(run.prepared.requests) == 2  # for the records
-    assert len(run.prepared.instances) == (2 if jobs == 1 else 0)
+    assert len(run.prepared.instances) == (2 if workers == "inline" else 0)
 
 
+@pytest.mark.parametrize("workers", [1, 2, "auto"])
 def test_an_evaluator_a_worker_cannot_load_again_is_refused_when_the_session_opens(
-    problem: Path,
+    problem: Path, workers: int | str
 ) -> None:
-    with pytest.raises(RunError, match=r"was not loaded that way by k4opt\.evaluation"):
-        EvaluationSession.open(problem, implementations(cell_count()()), jobs=2)
+    # never evaluated inline instead: the session runs where it was asked to, or not at all
+    with pytest.raises(RunError, match=r"was not loaded that way by k4opt\.evaluation.*inline"):
+        EvaluationSession.open(problem, implementations(cell_count()()), workers=workers)  # type: ignore[arg-type]
+    assert stack.workers() == []
+
+
+def test_an_evaluator_given_as_it_is_evaluates_inline(
+    tmp_path: Path, problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch)
+    with EvaluationSession.open(problem, implementations(cell_count()())) as session:
+        outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert outcome.candidate.status == "valid", outcome.candidate.message
+    assert outcome.summary["environment"]["observed"]["execution"] == {"backend": "inline"}  # type: ignore[index]
     assert stack.workers() == []
 
 
@@ -962,7 +985,7 @@ def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
         )
         message = "KEY4HEP_STACK is .* in a worker process, not '/other/stack' as in the session"
     with pytest.raises(RunError, match=message):
-        EvaluationSession.open(problem, [implementation], jobs=2)
+        EvaluationSession.open(problem, [implementation], workers=2)
     assert stack.workers() == []
 
 

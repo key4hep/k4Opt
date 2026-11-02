@@ -1,4 +1,4 @@
-"""``--jobs auto``: the processors this process may use, from its affinity and its cgroup v2
+"""``--workers auto``: the processors this process may use, from its affinity and its cgroup v2
 quota, and how a session takes it."""
 
 from __future__ import annotations
@@ -112,51 +112,55 @@ def test_this_machine_resolves_to_a_positive_number_of_processors() -> None:
     assert usable_cpus() >= 1
 
 
-def test_auto_takes_as_many_jobs_as_usable_processors(
+def test_auto_takes_as_many_workers_as_usable_processors(
     problem_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(_session, "usable_cpus", lambda: 3)
-    with EvaluationSession.open(problem_file, [cell_count()], jobs="auto") as session:
-        assert session._execution["jobs"] == 3
+    with EvaluationSession.open(problem_file, [cell_count()], workers="auto") as session:
+        assert session._execution == {"backend": "process", "workers": 3}
         assert not [warning for warning in session.warnings if "processors" in warning]
 
 
-def test_more_jobs_than_processors_are_warned_about(
+def test_more_workers_than_processors_are_warned_about(
     problem_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(_session, "usable_cpus", lambda: 1)
-    with EvaluationSession.open(problem_file, [cell_count()], jobs=2) as session:
+    with EvaluationSession.open(problem_file, [cell_count()], workers=2) as session:
         assert [w for w in session.warnings if "processors" in w] == [
-            "2 jobs, more than the 1 processors this process may use: tasks will share processors"
+            "2 workers, more than the 1 processors this process may use: tasks will share "
+            "processors"
         ]
 
 
-ALONE = "gamma/simulation simulates with 4 threads, more than the {} job(s) of the session: it "
+ALONE = "gamma/simulation simulates with 4 threads, more than the {} worker(s) of the session: it "
 ALONE += "runs alone, on 4 processors"
 BEYOND = "more than the 2 processors this process may use"
 
 
 @pytest.mark.parametrize(
-    ("jobs", "usable", "warned"),
+    ("workers", "usable", "warned"),
     [
         ("auto", 2, [f"{ALONE.format(2)}, {BEYOND}"]),
         (1, 2, [f"{ALONE.format(1)}, {BEYOND}"]),
         (1, 8, [ALONE.format(1)]),
-        # within the jobs, which are too many themselves: it shares processors even alone
+        # inline, every task runs alone anyway: only processors it does not have are told
+        ("inline", 2, [f"gamma/simulation simulates with 4 threads, {BEYOND}"]),
+        ("inline", 8, []),
+        # within the workers, which are too many themselves: it shares processors even alone
         (
             8,
             2,
             [
                 f"gamma/simulation simulates with 4 threads, {BEYOND}",
-                f"8 jobs, {BEYOND}: tasks will share processors",
+                f"8 workers, {BEYOND}: tasks will share processors",
             ],
         ),
     ],
 )
-def test_a_simulation_on_more_threads_than_jobs_or_processors_is_warned_about(
+def test_a_simulation_on_more_threads_than_workers_or_processors_is_warned_about(
     problem_file: Path,
     monkeypatch: pytest.MonkeyPatch,
-    jobs: int | str,
+    workers: int | str,
     usable: int,
     warned: list[str],
 ) -> None:
@@ -164,21 +168,23 @@ def test_a_simulation_on_more_threads_than_jobs_or_processors_is_warned_about(
     document["samples"]["gamma"]["simulation"]["numberOfThreads"] = 4
     problem_file.write_text(yaml.safe_dump(document))
     monkeypatch.setattr(_session, "usable_cpus", lambda: usable)
-    with EvaluationSession.open(problem_file, [cell_count()], jobs=jobs) as session:  # type: ignore[arg-type]
+    with EvaluationSession.open(problem_file, [cell_count()], workers=workers) as session:  # type: ignore[arg-type]
         assert [w for w in session.warnings if "processors" in w] == warned
 
 
-@pytest.mark.parametrize("jobs", [0, -2, True, 1.5, "2", "all"])
-def test_jobs_must_be_a_positive_integer_or_auto(problem_file: Path, jobs: object) -> None:
-    with pytest.raises(RunError, match="jobs must be a positive integer or 'auto'"):
-        EvaluationSession.open(problem_file, [cell_count()], jobs=jobs)  # type: ignore[arg-type]
+@pytest.mark.parametrize("workers", [0, -2, True, 1.5, "2", "all", None])
+def test_workers_must_be_a_positive_integer_auto_or_inline(
+    problem_file: Path, workers: object
+) -> None:
+    with pytest.raises(RunError, match="workers must be a positive integer, 'auto' or 'inline'"):
+        EvaluationSession.open(problem_file, [cell_count()], workers=workers)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("command", ["evaluate", "optimize"])
-def test_the_command_lines_take_a_number_or_auto(
+def test_the_command_lines_take_a_number_auto_or_inline(
     command: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with pytest.raises(SystemExit) as info:
-        main([command, "problem.yaml", "--jobs", "many"])
+        main([command, "problem.yaml", "--workers", "many"])
     assert info.value.code == 2  # a usage error, before anything is read
-    assert "expected a number of jobs or auto, got 'many'" in capsys.readouterr().err
+    assert "expected a number of workers, auto or inline, got 'many'" in capsys.readouterr().err

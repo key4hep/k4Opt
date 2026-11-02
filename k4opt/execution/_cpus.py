@@ -1,10 +1,10 @@
-"""Internal: how many processors this process may use, for ``--jobs auto``.
+"""Internal: how many processors this process may use, for ``--workers auto``.
 
 The processors it may run on (its affinity: a Slurm allocation, ``taskset``) and, where the
 system has cgroups v2, the processor time its cgroup and every cgroup above it that it can see
 may take (``cpu.max``: a container, a systemd unit with ``CPUQuota``), rounded up. Nothing else:
 not the other users of a shared machine, nor memory, nor a batch system's request that is not
-enforced as one of these (HTCondor without affinity), for which ``--jobs`` is given as a number.
+enforced as one of these (HTCondor without affinity), for which ``--workers`` is given as a number.
 """
 
 from __future__ import annotations
@@ -14,6 +14,10 @@ import os
 from pathlib import Path, PurePosixPath
 
 AUTO = "auto"
+"""As many workers as the processors this process may use."""
+
+INLINE = "inline"
+"""No worker: every task runs in the session's own process, one after another."""
 
 _PROC = Path("/proc/self/cgroup")
 _MOUNTINFO = Path("/proc/self/mountinfo")

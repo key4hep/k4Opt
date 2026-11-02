@@ -138,7 +138,7 @@ def test_trials_run_at_once_and_the_optimizer_is_asked_only_for_an_idle_job(
     output = tmp_path / "s"
     seen: list[Activity] = []
     report = optimize(
-        write_problem(), [gated], output, trials=7, seed=1, jobs=3, activity=seen.append
+        write_problem(), [gated], output, trials=7, seed=1, workers=3, activity=seen.append
     )
     assert [trial.status for trial in report.trials] == ["valid"] * 7
     assert max(in_flight) == 3
@@ -151,7 +151,10 @@ def test_trials_run_at_once_and_the_optimizer_is_asked_only_for_an_idle_job(
     assert [trial.number for trial in results.trials] == list(range(7))
     for number in range(7):
         record = json.loads((output / f"trial-{number:06d}" / "summary.json").read_text())
-        assert record["environment"]["observed"]["execution"] == {"backend": "local", "jobs": 3}
+        assert record["environment"]["observed"]["execution"] == {
+            "backend": "process",
+            "workers": 3,
+        }
     stopped(output, marks)
 
 
@@ -166,7 +169,7 @@ def test_a_trial_that_stops_the_study_closes_the_trials_still_running_as_interru
     gate(monkeypatch, marks, gate=3, **{"await": waiting, "raise": ["trial-000001"]})
     output = tmp_path / "s"
     with pytest.raises(OptimizationError, match=r"trial 1 stops the study \(trial-000001 is FAIL"):
-        optimize(write_problem(), [gated], output, trials=5, seed=1, jobs=3)
+        optimize(write_problem(), [gated], output, trials=5, seed=1, workers=3)
     trials = {trial.number: trial for trial in optuna_study(output).trials}
     assert {number: trial.state for number, trial in trials.items()} == {
         0: TrialState.FAIL,
@@ -249,7 +252,7 @@ def test_a_trial_that_cannot_be_told_settles_with_the_trials_still_running(
     output = tmp_path / "s"
     expected = KeyboardInterrupt if error is None else OptimizationError
     with pytest.raises(expected) as info:
-        optimize(write_problem(), [gated], output, trials=5, seed=1, jobs=3)
+        optimize(write_problem(), [gated], output, trials=5, seed=1, workers=3)
     if error is not None:
         assert str(info.value).startswith("trial 0 stops the study (trial-000000 is FAIL): ")
         assert error in str(info.value)
@@ -279,7 +282,7 @@ def test_a_tell_that_commits_and_then_raises_is_not_told_again(
     gate(monkeypatch, marks, gate=3, **{"await": held(marks, "trial-000001", "trial-000002")})
     output = tmp_path / "s"
     with pytest.raises(OptimizationError) as info:
-        optimize(write_problem(), [gated], output, trials=5, seed=1, jobs=3)
+        optimize(write_problem(), [gated], output, trials=5, seed=1, workers=3)
     assert str(info.value).startswith(
         "trial 0 stops the study (trial-000000 is COMPLETE): StorageInternalError: the answer"
     )
@@ -313,7 +316,7 @@ def test_a_storage_that_cannot_be_read_leaves_the_trials_to_the_resume(
     gate(monkeypatch, marks, gate=3, **{"await": held(marks, "trial-000001", "trial-000002")})
     output, problem = tmp_path / "s", write_problem()
     with pytest.raises(OptimizationError) as info:
-        optimize(problem, [gated], output, trials=5, seed=1, jobs=3)
+        optimize(problem, [gated], output, trials=5, seed=1, workers=3)
     assert str(info.value).startswith(
         "trial 0 stops the study (the state of trial-000000 could not be read; k4opt optimize "
         "--resume settles it): StorageInternalError"
@@ -323,7 +326,7 @@ def test_a_storage_that_cannot_be_read_leaves_the_trials_to_the_resume(
     assert states(output) == dict.fromkeys(range(3), TrialState.RUNNING)
     stopped(output, marks)
     gate(monkeypatch, marks)
-    report = optimize(problem, [gated], output, trials=1, resume=True, jobs=2)
+    report = optimize(problem, [gated], output, trials=1, resume=True, workers=2)
     assert [(t.number, t.status, t.recovered) for t in report.trials] == [
         (0, "valid", True),  # its record was published before the storage went away
         (1, "interrupted", True),
@@ -360,7 +363,9 @@ def test_an_interrupted_parallel_study_stops_everything_and_resumes_with_other_j
     waiting = held(marks, "trial-000000", "trial-000001")
     environment = gate(monkeypatch, marks, gate=2, **{"await": waiting})
     reference = f"{tmp_path / 'evaluators' / 'gated.py'}:Probe"
-    command = _optimize(problem, output, reference, "--trials", "4", "--seed", "1", "-j", "2")
+    command = _optimize(
+        problem, output, reference, "--trials", "4", "--seed", "1", "--workers", "2"
+    )
     process = subprocess.Popen(
         command,
         cwd=REPOSITORY,
@@ -384,7 +389,7 @@ def test_an_interrupted_parallel_study_stops_everything_and_resumes_with_other_j
         assert states(output) == {0: TrialState.RUNNING, 1: TrialState.RUNNING}
         (output / ".lock").unlink()  # nothing works on the study any more
     gate(monkeypatch, marks)
-    report = optimize(problem, [gated], output, trials=2, resume=True, jobs=3)
+    report = optimize(problem, [gated], output, trials=2, resume=True, workers=3)
     recovered = how == "sigkill"
     assert [(t.status, t.recovered) for t in report.trials] == [
         ("interrupted", recovered),

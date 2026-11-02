@@ -8,8 +8,8 @@ candidate becomes a COMPLETE trial with its objective values and one constraint 
 (:func:`~k4opt.optimization._optuna.space.constraint_values`); an invalid or failed one a FAIL
 trial, and the study goes on. A trial that breaks the evaluation contract, or whose record does
 not hold up, is FAIL and stops the study, and the trials still running are closed as
-interrupted. With more than one job the session runs several trials at once: the optimizer is
-asked for the next candidate only when a job would be idle, and told each trial as it ends
+interrupted. With more than one worker the session runs several trials at once: the optimizer
+is asked for the next candidate only when a slot would be idle, and told each trial as it ends
 (:func:`_run_trials`).
 """
 
@@ -281,9 +281,9 @@ def _run_trials(
     progress: Progress,
     activity: Watch | None = None,
 ) -> None:
-    """Run ``trials`` new trials, as many at once as the session has jobs, each told as it ends.
+    """Run ``trials`` new trials, as many at once as the session has slots, each told as it ends.
 
-    The optimizer is asked for a candidate only when a job would otherwise be idle, and after
+    The optimizer is asked for a candidate only when a slot would otherwise be idle, and after
     every trial that ended was told. Whatever stops the study first stops the evaluations still
     running; their trials are then closed as interrupted, in number order, and one that cannot
     be is left RUNNING for a resume to settle.
@@ -387,7 +387,7 @@ def optimize(
     resume: bool,
     storage: str | None,
     timeout: float | None,
-    jobs: int | Literal["auto"],
+    workers: int | Literal["auto", "inline"],
     warn: Warn,
     progress: Progress,
     activity: Watch | None = None,
@@ -400,12 +400,12 @@ def optimize(
         raise OptimizationError(f"seed must be in [0, 2**32), got {seed}")
     if resume and seed is not None:
         raise OptimizationError("a resumed study keeps the seed it was made with; leave out --seed")
-    if jobs != "auto" and (isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1):
-        raise OptimizationError(f"jobs must be a positive integer or 'auto', got {jobs!r}")
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
-    # its workers, with more than one job, stop with the study however it ends
-    with EvaluationSession.open(problem, implementations, timeout=timeout, jobs=jobs) as session:
+    # its workers stop with the study however it ends
+    with EvaluationSession.open(
+        problem, implementations, timeout=timeout, workers=workers
+    ) as session:
         return _run_study(
             session,
             directory,

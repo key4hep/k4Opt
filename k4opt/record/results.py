@@ -50,7 +50,7 @@ class PeakMemory:
 
     @property
     def per_task(self) -> int | None:
-        """An estimate of what the task needs while it runs, however many jobs it holds (the
+        """An estimate of what the task needs while it runs, however many slots it holds (the
         threads of a simulation share its memory): both peaks added; ``None`` if neither
         is known. Not a bound: the peaks need not come at once (it is then high), and a program
         that runs several processes at once counts by the largest (it is then low)."""

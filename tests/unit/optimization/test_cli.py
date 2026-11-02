@@ -4,6 +4,7 @@ Optuna."""
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import sys
 from collections.abc import Callable
@@ -114,21 +115,46 @@ def test_a_study_that_cannot_start_or_go_on_exits_1(
     assert err.startswith("k4opt: error: ") and "no study to resume" in err
 
 
-def test_jobs_run_trials_at_once_and_are_no_part_of_the_study(
+def test_workers_run_trials_at_once_and_are_no_part_of_the_study(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
     pytest.importorskip("optuna")
     problem, output = write_problem(), tmp_path / "s"
-    code, out, err = optimize(str(problem), "--trials", "3", "-j", "2", "--output", str(output))
+    code, out, err = optimize(
+        str(problem), "--trials", "3", "--workers", "2", "--output", str(output)
+    )
     assert code == 0, err
     assert [line.split()[2] for line in out.splitlines()[:3]] == ["valid"] * 3
     code, _, err = optimize(
-        str(problem), "--trials", "1", "--jobs", "1", "--resume", "--output", str(output)
+        str(problem), "--trials", "1", "--workers", "1", "--resume", "--output", str(output)
     )
     assert code == 0, err
-    code, out, err = optimize(str(problem), "--trials", "1", "-j", "0", "--output", str(output))
+    code, out, err = optimize(
+        str(problem), "--trials", "1", "--workers", "0", "--output", str(output)
+    )
     assert (code, out) == (1, "")
-    assert "jobs must be a positive integer or 'auto', got 0" in err
+    assert "workers must be a positive integer, 'auto' or 'inline', got 0" in err
+
+
+@pytest.mark.parametrize(
+    ("flags", "execution"),
+    [
+        ((), {"backend": "process", "workers": 1}),  # one worker: a crash fails only its trial
+        (("--workers", "inline"), {"backend": "inline"}),
+    ],
+)
+def test_the_command_runs_each_trial_in_a_worker_unless_told_inline(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    flags: tuple[str, ...],
+    execution: dict[str, object],
+) -> None:
+    pytest.importorskip("optuna")
+    problem, output = write_problem(), tmp_path / "s"
+    code, _, err = optimize(str(problem), "--trials", "1", *flags, "--output", str(output))
+    assert code == 0, err
+    summary = json.loads((output / "trial-000000" / "summary.json").read_text())
+    assert summary["environment"]["observed"]["execution"] == execution
 
 
 def test_a_missing_budget_is_a_usage_error(

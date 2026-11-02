@@ -38,7 +38,7 @@ bar stays under them while the study runs:
 ```
 
 It shows the trials asked for that have ended, the time since the study began, the time left,
-with more than one job the trials running and the job slots they hold (`4 running  8/8
+with several workers the trials running and the slots they hold (`4 running  8/8
 slots`), the time a trial takes and how the trials ended; on a narrow terminal the last of these
 go first. A trial takes the time since the study began divided by the trials that ended: how
 often one ends, which holds when several end together. The time left is that of the trials
@@ -58,7 +58,7 @@ color off.
 | `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)) |
 | `--storage URL` | an Optuna database URL (SQLite on a local disk, PostgreSQL) in place of the journal file in `DIR`; it needs SQLAlchemy, and the same URL on every resume |
 | `--timeout SECONDS` | kill `ddsim` if a trial's simulation runs longer than that: the candidate is `failed`, the trial FAIL, and the study goes on. No limit without it, and none for evaluators. It is recorded in each trial's record and is not part of the study, so a resume may give another one |
-| `--jobs N`, `-j N` | run up to N tasks at once, of one trial and of several, each in a worker process; a simulation on several threads holds as many; `auto`: as many as the processors this process may use ([Trials at once](#trials-at-once---jobs)). Default 1: one trial after another, each task in turn. Not part of the study: a resume may give another one |
+| `--workers N\|auto\|inline` | run the tasks in N worker processes, up to N at once, of one trial and of several; a simulation on several threads holds as many; `auto`: as many as the processors this process may use ([Trials at once](#trials-at-once---workers)). Default 1: one trial after another, each task in turn in one worker, so that an evaluator that crashes or is killed for its memory fails only its trial. `inline`: in this process, to debug, where such a crash ends the study (`--resume` continues it). Not part of the study: a resume may give another one |
 
 The exit status is 0 once every trial asked for has ended, even if candidates were `invalid` or
 `failed`. It is 1 if the study cannot start or resume, a trial stops it, or it is interrupted,
@@ -113,7 +113,7 @@ search toward feasibility, but they do not guarantee it.
 **The sampler.** Optuna's `TPESampler`, made explicitly with its seed, 10 startup trials and
 the constant liar, all recorded, so that a change of Optuna's defaults cannot change a study.
 It proposes at random until 10 trials are COMPLETE, and TPE models the trials from then on. The
-constant liar matters only for [trials at once](#trials-at-once---jobs): a trial still running
+constant liar matters only for [trials at once](#trials-at-once---workers): a trial still running
 counts as one that ended badly, so the sampler does not propose its neighborhood again before it
 knows the result.
 
@@ -196,33 +196,35 @@ Only then is Optuna told. This is also how a resume finishes a trial that an int
 session left with a record, so a recovered trial is told exactly what a live one would have
 been.
 
-## Trials at once: `--jobs`
+## Trials at once: `--workers`
 
-`--jobs N` (`-j N`, `optimize(..., jobs=N)`) runs up to N tasks at once: the geometries,
-simulations and evaluations of one trial and of several, each in a worker process of this
-machine, as [`k4opt evaluate --jobs`](evaluation.md#execution-jobs-and-worker-processes) runs
-them. A simulation on several threads (`numberOfThreads`) holds as many jobs, and `--jobs auto`
-takes as many jobs as the processors this process may use (on lxplus: the whole node, so give a
+`--workers N` (`optimize(..., workers=N)`) runs the tasks in N worker processes of this machine,
+up to N at once: the geometries, simulations and evaluations of one trial and of several, as
+[`k4opt evaluate --workers`](evaluation.md#execution-inline-or-in-worker-processes) runs them.
+`k4opt optimize` runs one worker by default, `optimize()` inline unless told otherwise (its
+evaluators may be classes of a script or a notebook). A simulation on several threads
+(`numberOfThreads`) holds as many slots, and `--workers auto` takes as many workers as the
+processors this process may use (on lxplus: the whole node, so give a
 number there). N bounds the processors k4opt keeps busy, not the memory: evaluate one candidate
 with `k4opt evaluate` first, which prints an estimate of what a task needs while it runs, and
 choose N so that the tasks that can run at once fit, with some room, and the study's own process
-too: N single-threaded simulations need N times that, simulations on T threads hold T jobs each,
+too: N single-threaded simulations need N times that, simulations on T threads hold T slots each,
 so only N/T of them run, each with its memory once. Every trial's record holds the peak memory of
 each of its tasks.
 
 ```bash
 k4opt optimize examples/problem/cld-ecal-granularity.yaml \
   --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
-  --trials 32 --seed 42 --jobs 8 --output runs/cld-ecal-study
+  --trials 32 --seed 42 --workers 8 --output runs/cld-ecal-study
 ```
 
-- **The optimizer is asked for a candidate only when a job would otherwise be idle**, and only
+- **The optimizer is asked for a candidate only when a slot would otherwise be idle**, and only
   after every trial that ended was told. So at most N trials run at once, and fewer when the
-  trials under way have tasks enough for every job.
+  trials under way have tasks enough for every slot.
 - **Each trial is told as it ends**, in the order the trials end, after the same checks of its
-  record as with one job; its line is printed then.
+  record as with one worker; its line is printed then.
 - **Every trial keeps its own directory and record**, and a record is the same whatever N
-  (only `environment.observed.execution` says how its tasks ran). `--jobs` is not part of the
+  (only `environment.observed.execution` says how its tasks ran). `--workers` is not part of the
   study: a study may be resumed with any N.
 - **A trial that stops the study** ([above](#trials-and-their-outcomes)) stops the trials still
   running too: their simulations and evaluations are killed, their directories kept as they
@@ -232,10 +234,11 @@ k4opt optimize examples/problem/cld-ecal-granularity.yaml \
   storage. A trial already COMPLETE or FAIL is not told again, and one whose state cannot be read
   is left RUNNING, for `--resume` to settle, which the error says.
 
-**Reproducibility.** With one job, a seed proposes the same candidates as ever. With more, what
+**Reproducibility.** With one worker (or inline), a seed proposes the same candidates as ever.
+With more, what
 the sampler proposes depends on which trials have ended when it is asked, so two runs of one
 seed take different paths; and the trials still running when the tenth completes were proposed
-at random too, so up to N - 1 more than with one job. Each trial still records its candidate,
+at random too, so up to N - 1 more than with one worker. Each trial still records its candidate,
 its session's sampler seed and its record, and the records of a candidate are the same whatever
 N: the simulation seed is each sample's own.
 
@@ -332,7 +335,7 @@ the same proposals again.
 
 **Ctrl-C and SIGTERM** (`systemctl --user stop`, a batch system ending a job) stop the study
 cleanly. Each running trial is FAIL, or is told its record if one was published just before;
-ddsim is killed, with any process it started, and so are the worker processes of `--jobs`; the
+ddsim is killed, with any process it started, and so are the worker processes; the
 lock is removed; the command exits 1 and says how to resume. A study killed outright (SIGKILL)
 takes its worker processes with it (Linux), and a resume closes the trials it left running.
 
@@ -552,7 +555,7 @@ report = optimize(
     "runs/cld-ecal-study",
     trials=30,
     seed=42,  # or resume=True, storage="postgresql://..."
-    jobs=4,  # tasks at once, of one trial and of several; 1 by default
+    workers=4,  # worker processes, tasks at once; "inline" by default
     warn=print,  # each warning
     progress=print,  # each TrialReport as its trial ends, the recovered ones of a resume first
 )
