@@ -467,10 +467,13 @@ an evaluator that is loaded.
 
 `evaluator_source(cls)` reports the path, size and SHA-256 of the file that defines an
 evaluator class, taken when `load_evaluator` imports it, and whether those are the bytes Python
-`executed`. For `FILE.py:Class` they are (`executed: true`): the bytes hashed are the bytes
-compiled. For `package.module:Class` the file is read right after the import
-(`executed: false`); Python may have run a cached `.pyc` of it, which only an edit that keeps
-size and timestamp leaves stale. The class keeps that identity if its file is later edited or
+`executed`. They are (`executed: true`): `load_evaluator` imports the file from the bytes of its
+source and hashes the bytes it compiled, never a cached `.pyc`, which an edit that keeps size
+and timestamp leaves stale. For `package.module:Class` it finds the module, the packages it is
+in and their local modules as Python's path finder would on `sys.path`, and imports them the
+same way; only a module that is no source file there (one another import finder provides, such
+as some editable installs) is imported by Python itself and read right after the import
+(`executed: false`). The class keeps that identity if its file is later edited or
 removed. A class whose module was imported before `load_evaluator`, or reloaded since
 (`importlib.reload`), carries only its path: hashing the current file would not establish which
 code Python executed. `reference` is what loads the class again: `FILE.py:Class` with the
@@ -484,15 +487,14 @@ reference names, relative to the directory the package is in; a top-level `modul
 counts the modules beside it, as a file does, unless it is installed (in `site-packages` or the
 standard library). They are found in the source, so an import inside a method counts as one at
 the top; a module imported by name at run time (`importlib.import_module`) and a data file the
-evaluator reads are not. The helpers of `FILE.py:Class` are imported from the bytes of their
-source, as the file itself is, never from a cached `.pyc`, so their hashes are those of the code
-that runs; for `package.module:Class` Python imports them itself, and they are read right after
-the import, like the class's own file (`executed: false`). Loading is refused for a helper that
+evaluator reads are not. Helpers are imported from their source too, so their hashes are those
+of the code that runs. Loading is refused for a helper that
 Python imported before and whose file changed since (it keeps running the old module), for one
-that something imported before `load_evaluator` read it, and for one that an evaluator file
-loaded before imports by the same name from elsewhere, also only inside a method. A session checks before and
-after each candidate that every helper still holds what it did when the evaluator was loaded,
-so that one imported inside a method cannot run other code than the record says. To label those, `revision` holds the commit and dirty flag of the git checkout
+that something imported before `load_evaluator` read it, and for one that evaluator code loaded
+before imports by the same name from elsewhere, also only inside a method. A session checks
+before and after each candidate that every helper still holds what it did when the evaluator
+was loaded, so that one imported inside a method cannot run other code than the record says.
+To label those, `revision` holds the commit and dirty flag of the git checkout
 that tracks the file, taken at the same time: an edited file of that checkout shows as
 `dirty: true`. It is `null` for a file that no checkout tracks (outside one, or new or ignored
 in it).

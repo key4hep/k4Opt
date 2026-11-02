@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from k4opt.errors import K4OptError
-from k4opt.evaluation import EvaluatorLoadError, evaluator_source, load_evaluator
+from k4opt.evaluation import EvaluatorLoadError, _imports, evaluator_source, load_evaluator
 from k4opt.evaluation.loader import changed_helpers
 from tests.support.common import git_checkout, requires_git
 
@@ -48,6 +48,16 @@ class NeedsArguments:
 def make_good():
     return Good()
 """
+
+
+@pytest.fixture(autouse=True)
+def new_process() -> Iterator[None]:
+    """Each test loads as a new process would: the modules one served from their source are not
+    the next one's, whose files of the same names are elsewhere."""
+    served = dict(_imports._SERVED)
+    yield
+    _imports._SERVED.clear()
+    _imports._SERVED.update(served)
 
 
 @pytest.fixture
@@ -180,7 +190,7 @@ def test_a_helper_of_the_same_name_from_another_directory_is_refused(
         load_evaluator(f"{files[0]}:Good")
         # Python would give the second file the first one's module
         with pytest.raises(
-            EvaluatorLoadError, match=rf"imports '{name}', which is .*/b/{name}\.py beside it"
+            EvaluatorLoadError, match=rf"imports '{name}', which is .*/b/{name}\.py, but"
         ):
             load_evaluator(f"{files[1]}:Good")
         # evaluators in one directory share their helpers
@@ -190,7 +200,7 @@ def test_a_helper_of_the_same_name_from_another_directory_is_refused(
         sys.modules.pop(name, None)
 
 
-def test_a_module_imported_by_the_loader_is_identified_right_after_the_import(
+def test_a_module_imported_by_the_loader_is_identified_by_the_bytes_it_executed(
     evaluator_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data = evaluator_file.read_bytes()
@@ -198,13 +208,12 @@ def test_a_module_imported_by_the_loader_is_identified_right_after_the_import(
     try:
         cls = load_evaluator("my_evaluator:Good")
         evaluator_file.write_text("# edited after the import\n")
-        # not the bytes Python compiled, which may have come from a cached .pyc
         assert evaluator_source(cls) == {
             "path": str(evaluator_file),
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
             "helpers": {},
-            "executed": False,
+            "executed": True,  # imported from its source, not from a cached .pyc
             "revision": None,
             "reference": "my_evaluator:Good",
         }
@@ -421,6 +430,24 @@ def test_a_helper_another_file_imports_only_when_it_evaluates_is_not_shared(
     load_evaluator(f"{tmp_path / 'a' / 'evaluator.py'}:Good")  # imports nothing yet
     with pytest.raises(EvaluatorLoadError, match=rf"imports '{helper}', which is .*/b/{helper}"):
         load_evaluator(f"{tmp_path / 'b' / 'evaluator.py'}:Good")
+
+
+def test_a_stale_bytecode_cache_of_a_module_cannot_disagree_with_its_hash(
+    evaluator_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    py_compile.compile(str(evaluator_file), doraise=True)
+    original = evaluator_file.stat()
+    data = GOOD.replace('"answer", 42', '"answer", 99').encode()
+    evaluator_file.write_bytes(data)  # Python's own import would run the .pyc of 42
+    os.utime(evaluator_file, ns=(original.st_atime_ns, original.st_mtime_ns))
+    monkeypatch.syspath_prepend(str(evaluator_file.parent))
+    try:
+        cls = load_evaluator("my_evaluator:Good")
+        assert cls().evaluate(None).measurements[0].value == 99  # type: ignore[arg-type]
+        source = evaluator_source(cls)
+        assert (source["sha256"], source["executed"]) == (hashlib.sha256(data).hexdigest(), True)
+    finally:
+        sys.modules.pop("my_evaluator", None)
 
 
 @requires_git
