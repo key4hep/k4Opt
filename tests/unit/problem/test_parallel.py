@@ -283,14 +283,25 @@ def test_concurrent_candidates_each_write_and_record_only_their_own_files(
     assert len(ids) == 3
 
 
-@pytest.mark.parametrize("alias", [False, True])
-def test_an_output_a_candidate_under_way_writes_to_is_refused_as_existing(
-    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, alias: bool
+# where the second candidate writes, from tmp_path, given the first writes to real/a/b
+_OVERLAPS = {
+    "the same directory": ("real/a/b", "already exists; choose a new directory"),
+    "it through a symlink": ("alias/a/b", "already exists; choose a new directory"),
+    "a directory inside it": ("real/a/b/c", "overlaps"),
+    "the directory around it": ("real/a", "overlaps"),
+    "inside it through a dangling symlink": ("ahead/c", "overlaps"),
+}
+
+
+@pytest.mark.parametrize("where", list(_OVERLAPS))
+def test_an_output_that_overlaps_a_candidate_under_way_is_refused(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, where: str
 ) -> None:
     # the first candidate's geometry reaches its worker only once the session took the second
     # request, as when making a geometry takes longer than preparing the next candidate: the
-    # second request, for the same directory (or for it through a symlink), is refused as with
-    # one job, not left to race the first one for it
+    # second request, for a directory that is the first one's, or inside or around it, also
+    # through a symlink to where the first candidate has not written yet, is refused as with
+    # one job, not left to write into the first one's workspace
     stack.install(monkeypatch)
     taken: list[object] = []
     held: list[tuple[TaskSpec, Any]] = []
@@ -317,9 +328,11 @@ def test_an_output_a_candidate_under_way_writes_to_is_refused_as_existing(
     monkeypatch.setattr(_backends.ProcessBackend, "wait", waiting)
     (tmp_path / "real").mkdir()
     (tmp_path / "alias").symlink_to(tmp_path / "real")
-    second = tmp_path / ("alias" if alias else "real") / "a"
+    (tmp_path / "ahead").symlink_to(tmp_path / "real" / "a" / "b" / "x")  # dangling yet
+    relative, refusal = _OVERLAPS[where]
+    second = tmp_path / relative
     requests = [
-        RunRequest({RADIUS: 300.0}, tmp_path / "real" / "a", {"name": "first"}),
+        RunRequest({RADIUS: 300.0}, tmp_path / "real" / "a" / "b", {"name": "first"}),
         RunRequest({RADIUS: 400.0}, second, {"name": "second"}),
     ]
     with session_of(2).evaluate_each(requests) as evaluations:
@@ -327,9 +340,50 @@ def test_an_output_a_candidate_under_way_writes_to_is_refused_as_existing(
     assert taken == ["first", "second"] and not held
     refused, outcome = ended["second"], ended["first"]
     assert isinstance(refused, RunError), refused
-    assert f"output {second} already exists; choose a new directory" in str(refused)
+    assert str(refused).startswith(f"output {second} {refusal}")
     assert isinstance(outcome, RunOutcome) and outcome.candidate.status == "valid"
     assert verified(outcome)["candidate"] == {RADIUS: 300.0}
+    if relative.endswith("/c"):  # nothing was made inside the first one's directory
+        assert not Path(os.path.realpath(second)).exists()
+
+
+def test_an_output_inside_a_recorded_run_directory_is_refused(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch)
+    session = session_of(1)
+    recorded = session.evaluate({RADIUS: 300.0}, tmp_path / "a")
+    for inside in (tmp_path / "a" / "b", tmp_path / "a" / "gamma" / "simulation" / "b"):
+        with pytest.raises(RunError, match=r"inside .*the run directory of a recorded candidate"):
+            session.evaluate({RADIUS: 400.0}, inside)
+        assert not inside.exists()
+    assert verified(recorded)["candidate"] == {RADIUS: 300.0}  # left as it was
+
+
+@pytest.mark.parametrize("held", ["{}", '{"schema": "another/1"}', "not json", None])
+def test_an_output_inside_a_directory_with_another_summary_is_accepted(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, held: str | None
+) -> None:
+    # only a summary of k4opt's schema makes a run directory: another program's summary.json,
+    # or one that cannot be read, is no reason to refuse
+    stack.install(monkeypatch)
+    (tmp_path / "data").mkdir()
+    if held is None:
+        (tmp_path / "data" / SUMMARY_NAME).mkdir()
+    else:
+        (tmp_path / "data" / SUMMARY_NAME).write_text(held)
+    outcome = session_of(1).evaluate({RADIUS: 300.0}, tmp_path / "data" / "a")
+    assert outcome.candidate.status == "valid"
+
+
+def test_a_dangling_symlink_as_output_is_refused_as_existing(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch)
+    (tmp_path / "link").symlink_to(tmp_path / "nowhere")
+    with pytest.raises(RunError, match=r"link already exists; choose a new directory"):
+        session_of(1).evaluate({RADIUS: 300.0}, tmp_path / "link")
+    assert not (tmp_path / "nowhere").exists()
 
 
 def threaded(path: Path, threads: int) -> Path:

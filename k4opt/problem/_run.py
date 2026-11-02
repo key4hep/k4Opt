@@ -15,6 +15,7 @@ constraints (:mod:`k4opt.problem._assess`) and writes its ``summary.json``
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import time
@@ -55,6 +56,7 @@ from k4opt.problem._candidate import (
 from k4opt.problem._cpus import AUTO, usable_cpus
 from k4opt.problem._evaluate import Activity, _drive, _finish_plan, _Run
 from k4opt.problem._files import readable_identity
+from k4opt.problem._record import SUMMARY_SCHEMA
 from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import STAGE_TYPES, input_files, plan_stages
 from k4opt.problem._summary import assemble
@@ -686,18 +688,14 @@ class EvaluationSession:
 
     def _start(self, request: RunRequest, under_way: Collection[Path | None] = ()) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory
-        (not yet created) as its workspace; the directories of the candidates ``under_way``,
-        which their geometry may not have made yet, count as existing, also when named through
-        a symlink."""
+        (not yet created) as its workspace (:func:`_check_output`)."""
         reference = _run_reference(request.run)
         started = time.perf_counter()
         values, key, prepared, overrides = self._prepare(request.candidate)
         if self._backend is not None:  # its workers check and evaluate instances of their own
             prepared = prepared.released()
         run_dir = Path(os.path.abspath(request.output))
-        taken = {root.resolve() for root in under_way if root is not None}
-        if run_dir.exists() or run_dir.is_symlink() or run_dir.resolve() in taken:
-            raise RunError(f"output {run_dir} already exists; choose a new directory")
+        _check_output(run_dir, [root for root in under_way if root is not None])
         return _Run(
             Workspace(str(uuid.uuid4()), run_dir),
             prepared,
@@ -798,6 +796,44 @@ class EvaluationSession:
 
 
 _END = object()  # what the requests give once there are none left; no request is it
+
+
+def _check_output(run_dir: Path, under_way: Iterable[Path]) -> None:
+    """Raise :class:`RunError` unless ``run_dir`` can be a candidate's own new run directory: it
+    does not exist (nor is it a symlink, a dangling one included), it is neither the directory of
+    a candidate ``under_way`` (which its geometry may not have made yet), nor inside or around
+    one, and it is not inside the run directory of a recorded candidate. Each is compared where
+    its symlinks lead (:func:`os.path.realpath`); ``run_dir`` itself is created as given."""
+    if run_dir.exists() or run_dir.is_symlink():
+        raise RunError(f"output {run_dir} already exists; choose a new directory")
+    real = Path(os.path.realpath(run_dir))
+    for root in under_way:
+        other = Path(os.path.realpath(root))
+        if real == other:
+            raise RunError(f"output {run_dir} already exists; choose a new directory")
+        if other in real.parents or real in other.parents:
+            raise RunError(
+                f"output {run_dir} overlaps {root}, the run directory of a candidate under way; "
+                "choose a separate directory"
+            )
+    for parent in real.parents:
+        if _is_run(parent / SUMMARY_NAME):
+            raise RunError(
+                f"output {run_dir} is inside {parent}, the run directory of a recorded "
+                "candidate; choose a directory outside it"
+            )
+
+
+def _is_run(path: Path) -> bool:
+    """Whether ``path`` is the summary of a k4opt run: a JSON object of its schema. A file of
+    that name that is not one (unreadable, another program's) makes no run directory."""
+    try:
+        if not path.is_file():
+            return False
+        data = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, Mapping) and data.get("schema") == SUMMARY_SCHEMA
 
 
 def _prepared(run: _Run) -> _Prepared:
