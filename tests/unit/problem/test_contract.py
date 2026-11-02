@@ -21,6 +21,7 @@ from k4opt.evaluation import (
     EvaluationRequest,
     EvaluationResult,
     Measurement,
+    Quantity,
     load_evaluator,
 )
 from k4opt.execution import EvaluationSession
@@ -38,13 +39,14 @@ class Echo:
 
     name = "test.echo"
     version = "1"
+    settings = {"x": Quantity("mm")}  # the candidate's radius, which it sets
     metrics: dict[tuple[str, str], str] | None = {ECHO: "1"}
     artifacts: dict[str, str] | None = {"note": "what it measured"}
     unit = "1"  # what it measures in
     returned = ("note",)  # the artifacts it returns
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
-        (value,) = request.candidate.values()
+        value = request.settings["x"]
         assert request.workdir is not None
         files = {}
         for name in self.returned:
@@ -75,7 +77,10 @@ def problem_file(tmp_path: Path) -> Path:
         "geometry": MINI_COMPACT,
         "parameters": {
             RADIUS: {
-                "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+                "sets": [
+                    {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+                    {"evaluator": "test.echo", "setting": "x"},
+                ],
                 "type": "continuous",
                 "bounds": [100.0, 600.0],
                 "unit": "mm",
@@ -175,13 +180,14 @@ def test_a_record_is_read_back_without_its_implementation(
     monkeypatch.setattr(sys, "path", list(sys.path))  # load_evaluator puts tmp_path first
     source = tmp_path / "echo_gone.py"
     source.write_text(
-        "from k4opt.evaluation import EvaluationResult, Measurement\n"
+        "from k4opt.evaluation import EvaluationResult, Measurement, Quantity\n"
         "class Echo:\n"
         "    name = 'test.echo'\n"
         "    version = '1'\n"
+        "    settings = {'x': Quantity('mm')}\n"
         f"    metrics = {{{ECHO!r}: '1'}}\n"
         "    def evaluate(self, request):\n"
-        "        (value,) = request.candidate.values()\n"
+        "        value = request.settings['x']\n"
         f"        return EvaluationResult.valid([Measurement(*{ECHO!r}, value, '1')])\n"
     )
     loaded = load_evaluator(f"{source}:Echo")

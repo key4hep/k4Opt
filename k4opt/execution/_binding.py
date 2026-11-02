@@ -378,8 +378,8 @@ def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared:
         sample: context.configured(configuration.samples[sample].stages)
         for sample, context in binding.contexts.items()
     }
-    for sample, context in contexts.items():
-        check_stages(context, *binding.targets[sample], provided=_supplied(binding, sample))
+    for sample, configured in contexts.items():
+        check_stages(configured, *binding.targets[sample], provided=_supplied(binding, sample))
     entries = dict(evaluations(configuration.samples, configuration.evaluators))
     evaluators = {task: (entries[task], _instance(bound)) for task, bound in binding.evaluations}
     for entry, evaluator in evaluators.values():  # before any check(), which may use the candidate

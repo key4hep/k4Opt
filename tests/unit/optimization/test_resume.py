@@ -135,9 +135,13 @@ def two_bindings(write_problem: Callable[..., Path]) -> Path:
 
 
 def _renamed(data: dict[str, Any]) -> None:
-    """The second binding, and the objective on it, under another name."""
+    """The second binding, the objective on it and the setting the parameter sets in it, under
+    another name."""
     data["evaluators"][1]["as"] = "lenient"
     data["objectives"][1]["evaluator"] = "lenient"
+    for destination in data["parameters"][RADIUS]["sets"]:
+        if destination.get("evaluator") == "strict":
+            destination["evaluator"] = "lenient"
 
 
 BINDING_CHANGES: dict[str, Callable[[dict[str, Any]], None]] = {
@@ -444,13 +448,14 @@ UNITS = """
 
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
 
         def __init__(self):  # the same code, configured to report in another unit
             unit = os.environ.get("K4OPT_TEST_UNIT", "mm")
             self.metrics = {("analysis", "a"): unit, ("analysis", "b"): "1/mm"}
 
         def evaluate(self, request):
-            x, *_ = request.candidate.values()
+            x = request.settings["x"]
             return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
 """
 
@@ -472,13 +477,14 @@ ARTIFACTS = """
 
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
         def __init__(self):  # the same code, configured to name its file otherwise
             self.artifacts = {os.environ.get("K4OPT_TEST_ARTIFACT", "plot"): "a and b"}
 
         def evaluate(self, request):
-            x, *_ = request.candidate.values()
+            x = request.settings["x"]
             (name,) = self.artifacts
             path = request.workdir / "plot.txt"
             path.write_text(f"{x} {1 / x}")
@@ -834,10 +840,11 @@ FILE_SIZE = """
     class Probe(Evaluator):
         name, version = "test.file_size", "1"
         stage = "generation"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {"generation.bytes": "B"}
 
         def evaluate(self, request):
-            (x,) = request.candidate.values()
+            x = request.settings["x"]
             return {"generation.bytes": request.inputs["generation"].stat().st_size + x / 1000}
 """
 

@@ -17,7 +17,8 @@ import yaml
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
 RADIUS = "radius"
-READERS = ("test.trade_off", "test.candidate_check")  # each reads the candidate from setting x
+# each reads the candidate from its setting x
+READERS = ("test.trade_off", "test.candidate_check", "test.file_size", "test.slashed")
 A = ("analysis", "a")
 B = ("analysis", "b")
 

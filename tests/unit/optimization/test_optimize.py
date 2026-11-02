@@ -253,6 +253,7 @@ BROKEN = {
 
         class Probe(Evaluator):
             name, version = "test.trade_off", "1"
+            settings = {"x": float}  # the candidate's value, which it sets
             metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
             def evaluate(self, request):
@@ -263,6 +264,7 @@ BROKEN = {
 
         class Probe(Evaluator):
             name, version = "test.trade_off", "1"
+            settings = {"x": float}  # the candidate's value, which it sets
             metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
             def evaluate(self, request):
@@ -274,6 +276,7 @@ BROKEN = {
 
         class Probe(Evaluator):
             name, version = "test.trade_off", "1"
+            settings = {"x": float}  # the candidate's value, which it sets
             metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
             def evaluate(self, request):
@@ -435,6 +438,7 @@ def test_an_evaluator_without_a_source_hash_cannot_make_a_study(
 ) -> None:
     class Inline:  # defined here: its file was imported before anything could hash it
         name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
         def evaluate(self, request: Any) -> Any:
@@ -516,10 +520,11 @@ SLASHED = """
 
     class Probe(Evaluator):
         name, version = "test.slashed", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis/x", "y"): "1", ("analysis", "x/y"): "1"}
 
         def evaluate(self, request):
-            x, *_ = request.candidate.values()
+            x = request.settings["x"]
             return {("analysis/x", "y"): x, ("analysis", "x/y"): -x}
 """
 

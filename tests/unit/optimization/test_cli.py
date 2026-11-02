@@ -217,10 +217,11 @@ ODD = """
 
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
         def evaluate(self, request):
-            x, *_ = request.candidate.values()
+            x = request.settings["x"]
             if x < 300:
                 self.invalid("\\x1b[31mred\\x1b[0m from a log")
             return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
@@ -248,8 +249,8 @@ def test_study_show_trial_and_export_read_a_study_and_change_nothing(
     assert lines[1].startswith("id:         ")
     assert lines[2] == f"directory:  {output} (trials in study.journal)"
     assert lines[3] == (
-        f"parameters: {RADIUS}  continuous [100.0, 600.0] mm  "
-        "(constants.InnerTracker_Barrel_radius_1)"
+        f"parameters: {RADIUS}  continuous [100.0, 600.0]  "
+        "(geometry constants.InnerTracker_Barrel_radius_1, test.trade_off.x)"
     )
     assert lines[4:6] == [
         "objectives: test.trade_off/analysis/a  minimize  (mm)",

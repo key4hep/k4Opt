@@ -236,6 +236,7 @@ def _destinations(
     for item in declared:
         sets: list[Destination] = []
         for path, draft in item.sets:
+            keys: list[tuple[str, ...]]
             if isinstance(draft, GeometryDestination):
                 destination: Destination = draft
                 keys = [("geometry", _canonical(draft, path))]

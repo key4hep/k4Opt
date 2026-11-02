@@ -284,10 +284,11 @@ BROKEN = """
 
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
         def evaluate(self, request):
-            x, *_ = request.candidate.values()
+            x = request.settings["x"]
             return {("analysis", "a"): x}  # not b, which it owns
 """
 

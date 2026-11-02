@@ -35,6 +35,7 @@ BLOCKING = """
 
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
         def evaluate(self, request):
@@ -44,7 +45,7 @@ BLOCKING = """
                 while time.monotonic() < deadline:
                     time.sleep(0.05)
                 self.fail("nobody stopped it")
-            x, *_ = request.candidate.values()
+            x = request.settings["x"]
             return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
 """
 
@@ -56,7 +57,7 @@ INTERRUPTING = """
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
-        settings = {"how": "sigterm"}
+        settings = {"x": float, "how": "sigterm"}
 
         def evaluate(self, request):
             if request.settings["how"] == "sigterm":

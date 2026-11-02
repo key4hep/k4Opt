@@ -79,7 +79,7 @@ objectives:
     stage: simulation
     metric: ecal_barrel.angular_residual
     direction: minimize
-    
+
   - sample: gamma_50gev
     stage: simulation
     metric: ecal_barrel.fired_cells
