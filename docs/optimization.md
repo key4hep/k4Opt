@@ -140,10 +140,10 @@ values. TPE ignores FAIL trials, so a region that is always invalid or rejected 
 again. Treating invalidity as a constraint would be a scientific choice, and it is not made.
 
 A rejected trial has no record: nothing of its candidate was created. What the study keeps of it
-is in the optimizer's storage, `k4opt.status: rejected`, `k4opt.rejected_by` (the evaluation
-whose `check` rejected it, `gamma_10gev/calo.photon`) and `k4opt.message`, and a study read back
-holds exactly that or refuses the trial: with values, a record, other attributes or a trial
-directory, it is not one k4opt made.
+is in the optimizer's storage, `k4opt.status: rejected`, `k4opt.rejected_by` (the required
+evaluation whose `check` rejected it, `gamma_10gev/calo.photon`) and `k4opt.message`, and a study
+read back holds exactly that or refuses the trial: with values, a record, other attributes, a
+trial directory or a rejection by a diagnostic, it is not one k4opt made.
 
 The record's status is decided by its required evaluations: those an objective or constraint
 reads, those marked `required: true`, and what they read
