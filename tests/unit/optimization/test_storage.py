@@ -34,6 +34,28 @@ def test_a_directory_in_use_is_refused_before_the_database_is_reached(
     assert [p.name for p in (tmp_path / "used").iterdir()] == ["notes.txt"]
 
 
+def test_a_dangling_symlink_is_refused_before_the_database_is_reached(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    (tmp_path / "s").symlink_to(tmp_path / "gone")
+    url = f"sqlite:///{tmp_path / 'studies.db'}"
+    with pytest.raises(OptimizationError, match="is in use; resume the study in it"):
+        optimize(write_problem(), [trade_off()], tmp_path / "s", trials=1, storage=url)
+    assert not (tmp_path / "studies.db").exists()
+    assert (tmp_path / "s").is_symlink() and not (tmp_path / "gone").exists()
+
+
+def test_a_symlink_to_an_empty_directory_holds_a_new_study(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "s").symlink_to(tmp_path / "real")
+    url = f"sqlite:///{tmp_path / 'studies.db'}"
+    report = optimize(write_problem(), [trade_off()], tmp_path / "s", trials=1, seed=1, storage=url)
+    assert [t.status for t in report.trials] == ["valid"]
+    assert (tmp_path / "real" / "study.json").is_file() and (tmp_path / "studies.db").is_file()
+
+
 def url_of(path: Path, form: str) -> str:
     """The URL of the SQLite database ``path``: as a path, or as a URI filename (SQLite's
     ``file:`` form, which SQLAlchemy passes on with ``uri=true``)."""

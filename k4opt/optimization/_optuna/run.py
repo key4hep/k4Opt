@@ -509,10 +509,11 @@ def _run_study(
 
 
 def _refuse_used(directory: Path, *ours: str) -> None:
-    """A new study starts in a directory that does not exist or holds nothing (but ``ours``)."""
+    """A new study starts in a directory that does not exist or holds nothing (but ``ours``),
+    also through a symlink; a symlink to nothing, or to no directory, is in use."""
     held = sorted(p.name for p in directory.iterdir()) if directory.is_dir() else []
     if [name for name in held if name not in ours] or (
-        directory.exists() and not directory.is_dir()
+        (directory.exists() or directory.is_symlink()) and not directory.is_dir()
     ):
         raise OptimizationError(
             f"{directory} is in use; resume the study in it with --resume, or choose a new "
