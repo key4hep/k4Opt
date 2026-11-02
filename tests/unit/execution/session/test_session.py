@@ -75,7 +75,11 @@ def test_candidate_is_materialized_with_the_cached_catalog_and_simulated(
 
     ((overrides, catalog),) = seen
     assert overrides == [
-        Override(target=RADIUS, value="450.0*mm", file="compact/det_v1/tracker.xml")
+        Override(
+            target="constants.InnerTracker_Barrel_radius_1",
+            value="450.0*mm",
+            file="compact/det_v1/tracker.xml",
+        )
     ]
     assert catalog is not None  # the one discovered by load_problem, not rediscovered
     assert tree_digest(MINI_GEO) == source_before
@@ -141,7 +145,11 @@ def test_summary_is_written_and_truthful(
     assert on_disk["geometry"]["manifest"] == "geometry/k4opt-manifest.json"
     assert (tmp_path / "a" / on_disk["geometry"]["compact"]).is_file()
     assert on_disk["geometry"]["changes"] == [
-        {"target": RADIUS, "old_value": "400*mm", "new_value": "450.0*mm"}
+        {
+            "target": "constants.InnerTracker_Barrel_radius_1",
+            "old_value": "400*mm",
+            "new_value": "450.0*mm",
+        }
     ]
     # the stages, recorded once, apart from the evaluators that read them
     assert list(on_disk["samples"]["gamma"]["stages"]) == ["generation", "simulation"]
@@ -244,7 +252,7 @@ def test_two_candidates_give_distinct_geometries(
         [f"{RADIUS}=abc"],
         [f"{RADIUS}"],
         [f"{RADIUS}=450", f"{RADIUS}=460"],
-        [f"{RADIUS}=450", "constants.nothing=1"],
+        [f"{RADIUS}=450", "nothing=1"],
         ["InnerTracker_Barrel_radius_1=450"],  # not the canonical reference
     ],
 )
@@ -346,34 +354,45 @@ def test_an_unusable_output_location_is_a_clean_error(
 
 def test_numeric_categories_keep_exact_integers(doc: dict[str, Any]) -> None:
     big = 2**53
-    doc["parameters"][0] = {
-        "geometry": {"constant": "n"},
-        "type": "categorical",
-        "choices": [big, big + 1, 0.5],
+    doc["parameters"] = {
+        "n": {
+            "geometry": {"constant": "n"},
+            "type": "categorical",
+            "choices": [big, big + 1, 0.5],
+        }
     }
     spec = parse_problem(doc)
-    assert parse_candidate(spec, [f"constants.n={big + 1}"]) == {"constants.n": big + 1}
-    assert parse_candidate(spec, [f"constants.n={big}"]) == {"constants.n": big}
-    assert parse_candidate(spec, ["constants.n=0.5"]) == {"constants.n": 0.5}
+    assert parse_candidate(spec, [f"n={big + 1}"]) == {"n": big + 1}
+    assert parse_candidate(spec, [f"n={big}"]) == {"n": big}
+    assert parse_candidate(spec, ["n=0.5"]) == {"n": 0.5}
     from k4opt.problem.candidate import validate_candidate
 
-    _, key_a = validate_candidate(spec, {"constants.n": big})
-    _, key_b = validate_candidate(spec, parse_candidate(spec, [f"constants.n={big + 1}"]))
+    _, key_a = validate_candidate(spec, {"n": big})
+    _, key_b = validate_candidate(spec, parse_candidate(spec, [f"n={big + 1}"]))
     assert key_a != key_b  # two different candidates stay different
 
 
-def test_selector_references_with_equals_signs_can_be_passed(
+def test_a_structured_target_is_set_by_the_name_of_its_parameter(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     ref = "InnerTrackerBarrel.layer[id=1].rphi_layout.nphi"
     doc = yaml.safe_load(problem_file.read_text())
-    doc["parameters"] = [{"geometry": {"target": ref}, "type": "integer", "bounds": [10, 100]}]
+    doc["parameters"] = {
+        "nphi": {"geometry": {"target": ref}, "type": "integer", "bounds": [10, 100]}
+    }
     problem_file.write_text(yaml.safe_dump(doc))
-    assert parse_candidate(load_problem(problem_file), [f"{ref}=90"]) == {ref: 90}
-    outcome = run_candidate(problem_file, [f"{ref}=90"], tmp_path / "a")
-    assert outcome.summary["candidate"] == {ref: 90}
-    with pytest.raises(CandidateError, match="REFERENCE=VALUE"):
-        parse_candidate(load_problem(problem_file), [f"{ref}"])
+    assert parse_candidate(load_problem(problem_file), ["nphi=90"]) == {"nphi": 90}
+    outcome = run_candidate(problem_file, ["nphi=90"], tmp_path / "a")
+    assert outcome.summary["candidate"] == {"nphi": 90}
+    with pytest.raises(CandidateError, match="NAME=VALUE"):
+        parse_candidate(load_problem(problem_file), ["nphi"])
+
+
+def test_a_value_may_hold_an_equals_sign(doc: dict[str, Any]) -> None:
+    doc["parameters"] = {
+        "mode": {"geometry": {"constant": "Mode"}, "type": "categorical", "choices": ["a=b", "c"]}
+    }
+    assert parse_candidate(parse_problem(doc), ["mode=a=b"]) == {"mode": "a=b"}
 
 
 @pytest.mark.parametrize(
@@ -384,16 +403,18 @@ def test_every_spelling_of_a_large_integer_category_stays_exact(
     doc: dict[str, Any], text: str
 ) -> None:
     big = 2**53
-    doc["parameters"][0] = {
-        "geometry": {"constant": "n"},
-        "type": "categorical",
-        "choices": [big, big + 1, 1e23, 0.5],
+    doc["parameters"] = {
+        "n": {
+            "geometry": {"constant": "n"},
+            "type": "categorical",
+            "choices": [big, big + 1, 1e23, 0.5],
+        }
     }
     spec = parse_problem(doc)
-    assert parse_candidate(spec, [f"constants.n={text}"]) == {"constants.n": big + 1}
-    assert parse_candidate(spec, ["constants.n=9007199254740992.0"]) == {"constants.n": big}
-    assert parse_candidate(spec, ["constants.n=1e23"]) == {"constants.n": 1e23}
-    assert parse_candidate(spec, ["constants.n=0.50"]) == {"constants.n": 0.5}
+    assert parse_candidate(spec, [f"n={text}"]) == {"n": big + 1}
+    assert parse_candidate(spec, ["n=9007199254740992.0"]) == {"n": big}
+    assert parse_candidate(spec, ["n=1e23"]) == {"n": 1e23}
+    assert parse_candidate(spec, ["n=0.50"]) == {"n": 0.5}
 
 
 def test_an_undeclared_large_integer_is_not_rounded_into_a_choice(
@@ -401,13 +422,13 @@ def test_an_undeclared_large_integer_is_not_rounded_into_a_choice(
 ) -> None:
     big = 2**53
     doc = yaml.safe_load(problem_file.read_text())
-    doc["parameters"] = [
-        {
+    doc["parameters"] = {
+        RADIUS: {
             "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
             "type": "categorical",
             "choices": [big, big + 2],
         }
-    ]
+    }
     problem_file.write_text(yaml.safe_dump(doc))
     for text in (str(big + 1), f"{big + 1}.0", "9.007199254740993e15"):
         with pytest.raises(CandidateError, match="not one of"):
@@ -417,42 +438,46 @@ def test_an_undeclared_large_integer_is_not_rounded_into_a_choice(
 
 
 def test_a_value_that_only_rounds_to_a_choice_is_rejected(doc: dict[str, Any]) -> None:
-    doc["parameters"][0] = {
-        "geometry": {"constant": "n"},
-        "type": "categorical",
-        "choices": [1, 2],
+    doc["parameters"] = {
+        "n": {
+            "geometry": {"constant": "n"},
+            "type": "categorical",
+            "choices": [1, 2],
+        }
     }
     spec = parse_problem(doc)
     for text in ("1.0000000000000001", "2.0000000000000001", "1.5"):
         with pytest.raises(CandidateError, match="not one of"):
-            parse_candidate(spec, [f"constants.n={text}"])
-    assert parse_candidate(spec, ["constants.n=1.0"]) == {"constants.n": 1}
+            parse_candidate(spec, [f"n={text}"])
+    assert parse_candidate(spec, ["n=1.0"]) == {"n": 1}
 
 
 def test_a_decimal_that_rounds_to_a_float_choice_is_rejected(doc: dict[str, Any]) -> None:
-    doc["parameters"][0] = {
-        "geometry": {"constant": "n"},
-        "type": "categorical",
-        "choices": [2.0**53, 0.1],
+    doc["parameters"] = {
+        "n": {
+            "geometry": {"constant": "n"},
+            "type": "categorical",
+            "choices": [2.0**53, 0.1],
+        }
     }
     spec = parse_problem(doc)
     with pytest.raises(CandidateError, match="not one of"):
-        parse_candidate(spec, [f"constants.n={2**53 + 1}"])
-    assert parse_candidate(spec, ["constants.n=0.1"]) == {"constants.n": 0.1}
-    assert parse_candidate(spec, [f"constants.n={2**53}"]) == {"constants.n": 2.0**53}
+        parse_candidate(spec, [f"n={2**53 + 1}"])
+    assert parse_candidate(spec, ["n=0.1"]) == {"n": 0.1}
+    assert parse_candidate(spec, [f"n={2**53}"]) == {"n": 2.0**53}
 
 
 @pytest.mark.parametrize("text", [str(2**53 + 1), str(10**400), f"-{2**53 + 1}"])
 def test_integer_literals_of_a_continuous_parameter_stay_exact(
     doc: dict[str, Any], text: str
 ) -> None:
-    doc["parameters"][0]["bounds"] = [-(10**401), 10**401]
+    doc["parameters"]["ecal_cell_size"]["bounds"] = [-(10**401), 10**401]
     spec = parse_problem(doc)
-    (value,) = parse_candidate(spec, [f"constants.ECal_cell_size={text}"]).values()
+    (value,) = parse_candidate(spec, [f"ecal_cell_size={text}"]).values()
     assert value == int(text)
     assert isinstance(value, int)  # not rounded through float, no overflow to infinity
-    assert parse_candidate(spec, ["constants.ECal_cell_size=6"]) == {"constants.ECal_cell_size": 6}
-    (small,) = parse_candidate(spec, ["constants.ECal_cell_size=6"]).values()
+    assert parse_candidate(spec, ["ecal_cell_size=6"]) == {"ecal_cell_size": 6}
+    (small,) = parse_candidate(spec, ["ecal_cell_size=6"]).values()
     assert isinstance(small, float)  # ordinary values stay floats: "6.0*mm"
 
 
@@ -460,10 +485,10 @@ def test_integer_literals_of_a_continuous_parameter_stay_exact(
 def test_an_integer_with_more_digits_than_python_converts_is_a_candidate_error(
     doc: dict[str, Any], kind: str
 ) -> None:
-    doc["parameters"][0] = {"geometry": {"constant": "n"}, "type": kind, "bounds": [0, 10]}
+    doc["parameters"] = {"n": {"geometry": {"constant": "n"}, "type": kind, "bounds": [0, 10]}}
     text = "1" * (sys.get_int_max_str_digits() + 1)
     with pytest.raises(CandidateError, match="too many digits"):
-        parse_candidate(parse_problem(doc), [f"constants.n={text}"])
+        parse_candidate(parse_problem(doc), [f"n={text}"])
 
 
 def test_a_home_relative_problem_path_is_recorded_expanded(
@@ -536,15 +561,15 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
 def test_values_become_dd4hep_literals(
     doc: dict[str, Any], parameter: dict[str, Any], value: object, expected: str
 ) -> None:
-    doc["parameters"][0] = {"geometry": {"constant": "x"}, **parameter}
+    doc["parameters"] = {"x": {"geometry": {"constant": "x"}, **parameter}}
     if "bounds" not in parameter and "choices" not in parameter:
-        doc["parameters"][0]["bounds"] = [0, 100]
+        doc["parameters"]["x"]["bounds"] = [0, 100]
     spec = parse_problem(doc)
     assert _xml_value(spec.parameters[0], value) == expected  # type: ignore[arg-type]
 
 
 def test_an_unsupported_unit_is_refused(doc: dict[str, Any]) -> None:
-    doc["parameters"][0]["unit"] = "furlong"
+    doc["parameters"]["ecal_cell_size"]["unit"] = "furlong"
     with pytest.raises(CandidateError, match="furlong"):
         _xml_value(parse_problem(doc).parameters[0], 6.0)
 
@@ -556,11 +581,11 @@ def test_text_values_are_read_by_the_parameter_kind(
     assert parse_candidate(spec, [f"{RADIUS}=6"]) == {RADIUS: 6.0}
     assert parse_candidate(spec, [f"{RADIUS}=1e2"]) == {RADIUS: 100.0}
     assert parse_candidate(spec, [f"{RADIUS}=-.5"]) == {RADIUS: -0.5}
-    doc["parameters"][0] = {"geometry": {"constant": "n"}, "type": "integer", "bounds": [1, 9]}
+    doc["parameters"] = {"n": {"geometry": {"constant": "n"}, "type": "integer", "bounds": [1, 9]}}
     integer = parse_problem(doc)
-    assert parse_candidate(integer, ["constants.n=4"]) == {"constants.n": 4}
+    assert parse_candidate(integer, ["n=4"]) == {"n": 4}
     with pytest.raises(CandidateError, match="integer"):
-        parse_candidate(integer, ["constants.n=4.0"])
+        parse_candidate(integer, ["n=4.0"])
 
 
 def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> None:
@@ -764,7 +789,7 @@ def test_a_session_keeps_the_problem_it_loaded(
     session = EvaluationSession.open(problem_file, [cell_count()])
     definition = session.spec.to_dict()
     doc = yaml.safe_load(problem_file.read_text())
-    doc["parameters"][0]["bounds"] = [100.0, 200.0]  # an edit during a campaign
+    doc["parameters"][RADIUS]["bounds"] = [100.0, 200.0]  # an edit during a campaign
     problem_file.write_text(yaml.safe_dump(doc))
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert outcome.summary["problem"]["definition"] == definition  # type: ignore[index]
@@ -1008,20 +1033,22 @@ def test_a_candidate_records_and_checks_the_external_files_its_values_name(
     monkeypatch.setenv("CAD", str(cad))
     data = yaml.safe_load(problem_file.read_text())
     choices = ["cad/support.stl", "${CAD}/b.stl"]
-    data["parameters"].append(
-        {"geometry": {"target": SUPPORT}, "type": "categorical", "choices": choices}
-    )
+    data["parameters"]["support"] = {
+        "geometry": {"target": SUPPORT},
+        "type": "categorical",
+        "choices": choices,
+    }
     problem_file.write_text(yaml.safe_dump(data))
     session = EvaluationSession.open(problem_file, [cell_count()])
     opened = session.identity()["geometry"]["externals"]  # type: ignore[index]
     assert "${CAD}/b.stl" not in opened
 
-    outcome = session.evaluate({RADIUS: 450.0, SUPPORT: "${CAD}/b.stl"}, tmp_path / "a")
+    outcome = session.evaluate({RADIUS: 450.0, "support": "${CAD}/b.stl"}, tmp_path / "a")
     geometry = outcome.summary["geometry"]
     read = {"path": str(model), "sha256": hashlib.sha256(b"solid b").hexdigest()}
     assert geometry["candidate_externals"] == {"${CAD}/b.stl": read}  # type: ignore[index]
     assert geometry["externals"] == opened  # type: ignore[index]
-    unchanged = session.evaluate({RADIUS: 450.0, SUPPORT: "cad/support.stl"}, tmp_path / "b")
+    unchanged = session.evaluate({RADIUS: 450.0, "support": "cad/support.stl"}, tmp_path / "b")
     assert unchanged.summary["geometry"]["candidate_externals"] == {}  # type: ignore[index]
 
     if when == "between candidates":
@@ -1036,7 +1063,7 @@ def test_a_candidate_records_and_checks_the_external_files_its_values_name(
         monkeypatch.setattr(ddsim_run, "_execute", changing)
         message = r"\$\{CAD\}/b\.stl does not read the files it read when the candidate started"
     with pytest.raises(RunError, match=rf"geometry: {message}.*which has no {SUMMARY_NAME}"):
-        session.evaluate({RADIUS: 500.0, SUPPORT: "${CAD}/b.stl"}, tmp_path / "c")
+        session.evaluate({RADIUS: 500.0, "support": "${CAD}/b.stl"}, tmp_path / "c")
     assert not (tmp_path / "c" / SUMMARY_NAME).exists()
     assert len(fake.calls) == (2 if when == "between candidates" else 3)
 

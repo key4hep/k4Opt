@@ -43,7 +43,8 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 
 parameters:
   # CLD uses 5.1 mm; 20 mm is about the width of a photon shower
-  - geometry:
+  ecal_cell_size:
+    geometry:
       constant: ECal_cell_size
     type: continuous
     bounds: [2.5, 20.0]
@@ -149,10 +150,15 @@ the job of `k4opt.geometry`, not of this component.
 
 ### `parameters`
 
-A list. Each item has a **source** (which thing is varied) and a **kind** (how it varies).
+`parameters` maps a name to a parameter, in the order the problem lists them. The name is
+what identifies the parameter everywhere else: a candidate maps each name to a value
+(`k4opt evaluate --param ecal_cell_size=6.0`, `request.candidate["ecal_cell_size"]`), and
+records, study reports, exports and the optimizer key the values by it. It starts with a
+lowercase letter and holds only lowercase letters, digits and `_`, at most 64 characters.
+Each parameter has a **source** (where its value is set) and a **kind** (how it varies).
 
-Source. The only source defined so far is `geometry`, which reuses the canonical target
-identity of `k4opt.geometry`; no second user-facing name is introduced:
+Source. The only source defined so far is `geometry`: the attribute of the geometry the
+value is written into, named by its canonical target in `k4opt.geometry`:
 
 | Draft key | Canonical target |
 | --- | --- |
@@ -161,9 +167,9 @@ identity of `k4opt.geometry`; no second user-facing name is introduced:
 `constant: NAME` is shorthand for the general form `target: constants.NAME`. Any other
 canonical target reference from `inspect` (for example
 `InnerTrackerBarrel.layer[id=1].rphi_layout.nphi`) is written `geometry: {target: <reference>}`.
-The general form is proposed on the same terms as the rest of this draft. Parameter sources other than geometry
-(e.g. a generator or reconstruction setting) are possible in the abstract model, but no
-syntax is proposed for them here.
+The general form is proposed on the same terms as the rest of this draft. Parameter sources
+other than geometry (a generator or reconstruction setting) would set the same kind of named
+parameter elsewhere; no syntax is proposed for them yet.
 
 Kind. `type` is one of:
 
@@ -177,8 +183,8 @@ Kind. `type` is one of:
 boolean or a string is never a number). `choices` must be a non-empty list of unique strings,
 or of unique booleans, or of unique finite numbers, not a mixture. `bounds`, `choices` and
 `unit` are not interchangeable: `choices` goes with `categorical` only, and a categorical
-parameter has no `unit`. A problem lists at least one parameter, and two parameters must not
-name the same target (`constant: X` and `target: constants.X` are the same target).
+parameter has no `unit`. A problem names at least one parameter, and two parameters must not
+set the same target (`constant: X` and `target: constants.X` are the same target).
 
 Units are explicit: `unit` names the unit of the numbers in `bounds`. k4Opt never infers
 a scientific unit from a textual XML expression such as `5.1*mm`, and it never evaluates
@@ -640,11 +646,10 @@ A candidate is checked against the parameter domains above before it is evaluate
 complete loading operation: it validates the YAML **and** resolves its geometry. It locates
 `geometry` in the active k4geo tree (`$K4GEO` for a relative path), discovers the
 geometry catalog once, including reachable XML includes, and resolves every
-`parameters[*].geometry` selector against it. It fails with a clear error if the geometry
-cannot be located or read, or if a target is missing, malformed or ambiguous. The result
-keeps the discovered geometry and the resolved targets as private state for later reuse;
-they take no part in equality, hashing or `to_dict()`, and the current XML values stay raw
-text (`5.1*mm`).
+`parameters.<name>.geometry` selector against it. It fails with a clear error if the geometry
+cannot be located or read, or if a target is missing, malformed or ambiguous. The result is
+the declarative problem alone; an evaluation session keeps the discovered geometry and the
+resolved targets, whose current XML values stay raw text (`5.1*mm`).
 
 `parse_problem(data)` only validates an already-decoded specification. It is pure: it
 touches neither the file system nor a geometry tree and needs no Key4hep installation.
@@ -671,7 +676,7 @@ A target that exists in several reachable files cannot be selected in `v1alpha1`
 no per-file disambiguator; loading reports every candidate instead of choosing one.
 
 What is checked, with the location of the first problem in the message
-(`parameters[0].bounds: low must be smaller than high, ...`):
+(`parameters.ecal_cell_size.bounds: low must be smaller than high, ...`):
 
 - `schema_version` is exactly `k4opt.problem/v1alpha1`; unknown keys are rejected in every
   section the schema defines (not inside an evaluator's `settings`), as are wrong types.

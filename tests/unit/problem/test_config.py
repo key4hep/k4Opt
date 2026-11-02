@@ -51,6 +51,7 @@ def test_loads_the_checked_in_example() -> None:
     (parameter,) = problem.parameters
     assert parameter.geometry.constant == "ECal_cell_size"
     assert parameter.geometry.canonical_target == "constants.ECal_cell_size"
+    assert parameter.name == "ecal_cell_size"
     assert (parameter.kind, parameter.bounds, parameter.unit) == ("continuous", (2.5, 20.0), "mm")
     assert [(e.name, e.version, e.stage) for e in problem.evaluators] == [
         ("calo.photon", "1", "simulation")
@@ -108,12 +109,12 @@ def test_minimal_document(doc: dict[str, Any]) -> None:
 
 
 def test_integer_and_categorical_parameters(doc: dict[str, Any]) -> None:
-    doc["parameters"] += [
-        {"geometry": {"target": "T.layer[id=1].n"}, "type": "integer", "bounds": [60, 120]},
-        {"geometry": {"constant": "Mode"}, "type": "categorical", "choices": ["a", "b"]},
-        {"geometry": {"constant": "Flag"}, "type": "categorical", "choices": [True, False]},
-        {"geometry": {"constant": "Num"}, "type": "categorical", "choices": [1, 2.5]},
-    ]
+    doc["parameters"] |= {
+        "n": {"geometry": {"target": "T.layer[id=1].n"}, "type": "integer", "bounds": [60, 120]},
+        "mode": {"geometry": {"constant": "Mode"}, "type": "categorical", "choices": ["a", "b"]},
+        "flag": {"geometry": {"constant": "Flag"}, "type": "categorical", "choices": [True, False]},
+        "num": {"geometry": {"constant": "Num"}, "type": "categorical", "choices": [1, 2.5]},
+    }
     kinds = [(p.kind, p.bounds, p.choices) for p in parse_problem(doc).parameters[1:]]
     assert kinds == [
         ("integer", (60, 120), None),
@@ -188,8 +189,11 @@ def test_missing_top_level_sections(doc: dict[str, Any], key: str) -> None:
         ((), "top level: unknown key(s) ['extra']"),
         (("environment",), "environment: unknown key(s) ['extra']"),
         (("environment", "key4hep"), "environment.key4hep: unknown key(s) ['extra']"),
-        (("parameters", 0), "parameters[0]: unknown key(s) ['extra']"),
-        (("parameters", 0, "geometry"), "parameters[0].geometry: unknown key(s) ['extra']"),
+        (("parameters", "ecal_cell_size"), "parameters.ecal_cell_size: unknown key(s) ['extra']"),
+        (
+            ("parameters", "ecal_cell_size", "geometry"),
+            "parameters.ecal_cell_size.geometry: unknown key(s) ['extra']",
+        ),
         (("samples", "gamma"), "samples.gamma: unknown key(s) ['extra']"),
         (("samples", "gamma", "generation"), "samples.gamma.generation: unknown key(s) ['extra']"),
         (("evaluators", 0), "evaluators[0]: unknown key(s) ['extra']"),
@@ -417,9 +421,11 @@ def test_an_objective_names_a_binding_not_an_implementation(doc: dict[str, Any])
         ("environment", [], "environment: must be a mapping, got list"),
         ("environment", {}, "missing required key(s) ['key4hep']"),
         ("geometry", {"entry": "a.xml"}, "geometry: must be a non-empty string, got dict"),
-        ("parameters", {}, "parameters: must be a list, got dict"),
-        ("parameters", [], "parameters: must list at least one parameter"),
-        ("parameters", ["x"], "parameters[0]: must be a mapping, got str"),
+        ("parameters", [], "parameters: must be a mapping, got list"),
+        ("parameters", {}, "parameters: must name at least one parameter"),
+        ("parameters", {"x": "y"}, "parameters.x: must be a mapping, got str"),
+        ("parameters", {"X": {}}, "parameter name 'X' must start with a lowercase letter"),
+        ("parameters", {"a.b": {}}, "parameter name 'a.b' must start with a lowercase letter"),
         ("samples", "ddsim", "samples: must be a mapping"),
         ("samples", ["gamma"], "samples: must be a mapping"),
         ("samples", {}, "samples: must name at least one sample"),
@@ -510,8 +516,8 @@ def test_non_string_keys_in_schema_objects(doc: dict[str, Any]) -> None:
     doc[1] = "x"
     reject(doc, "top level: keys must be strings, got 1")
     del doc[1]
-    doc["parameters"][0][True] = "x"  # YAML 1.1 `yes:` / `on:`
-    reject(doc, "parameters[0]: keys must be strings, got True")
+    doc["parameters"]["ecal_cell_size"][True] = "x"  # YAML 1.1 `yes:` / `on:`
+    reject(doc, "parameters.ecal_cell_size: keys must be strings, got True")
 
 
 # --- parameters ------------------------------------------------------------------------
@@ -546,7 +552,7 @@ def test_non_string_keys_in_schema_objects(doc: dict[str, Any]) -> None:
         ),
         (
             {"geometry": "ECal_cell_size", "type": "continuous", "bounds": [1, 2]},
-            "parameters[1].geometry: must be a mapping",
+            "parameters.added.geometry: must be a mapping",
         ),
         # kinds are mutually exclusive
         (
@@ -668,26 +674,30 @@ def test_non_string_keys_in_schema_objects(doc: dict[str, Any]) -> None:
     ],
 )
 def test_parameter_errors(doc: dict[str, Any], param: dict[str, Any], message: str) -> None:
-    doc["parameters"].append(param)
+    doc["parameters"]["added"] = param
     reject(doc, message)
 
 
-def test_duplicate_parameters_are_rejected(doc: dict[str, Any]) -> None:
-    doc["parameters"].append(
-        {"geometry": {"constant": "ECal_cell_size"}, "type": "continuous", "bounds": [1, 2]}
+def test_parameters_that_set_one_target_are_rejected(doc: dict[str, Any]) -> None:
+    doc["parameters"]["again"] = {
+        "geometry": {"constant": "ECal_cell_size"},
+        "type": "continuous",
+        "bounds": [1, 2],
+    }
+    reject(
+        doc,
+        "parameters.again.geometry: sets the target 'constants.ECal_cell_size' of "
+        "parameters.ecal_cell_size too",
     )
-    reject(doc, "parameters[1]: duplicates parameters[0] (target 'constants.ECal_cell_size')")
 
 
-def test_constant_and_target_spellings_are_duplicates(doc: dict[str, Any]) -> None:
-    doc["parameters"].append(
-        {
-            "geometry": {"target": "constants.ECal_cell_size"},
-            "type": "continuous",
-            "bounds": [1, 2],
-        }
-    )
-    reject(doc, "duplicates parameters[0]")
+def test_constant_and_target_spellings_are_one_target(doc: dict[str, Any]) -> None:
+    doc["parameters"]["again"] = {
+        "geometry": {"target": "constants.ECal_cell_size"},
+        "type": "continuous",
+        "bounds": [1, 2],
+    }
+    reject(doc, "of parameters.ecal_cell_size too")
 
 
 # --- objectives and constraints --------------------------------------------------------
@@ -784,7 +794,9 @@ def test_error_names_the_file_and_location(write: Write) -> None:
     path = write(good_yaml().replace("bounds: [2.5, 20.0]", "bounds: [20.0, 2.5]"))
     with pytest.raises(ProblemConfigError) as info:
         load_problem(path)
-    assert str(info.value).startswith(f"{path}: parameters[0].bounds: low must be smaller")
+    assert str(info.value).startswith(
+        f"{path}: parameters.ecal_cell_size.bounds: low must be smaller"
+    )
 
 
 @pytest.mark.parametrize(
@@ -887,7 +899,7 @@ schema_version: k4opt.problem/v1alpha1
 environment: {key4hep: {channel: release, version: "2026-04-08"}}
 geometry: g.xml
 parameters:
-  - {geometry: {constant: X}, type: integer, bounds: [1, 3]}
+  x: {geometry: {constant: X}, type: integer, bounds: [1, 3]}
 evaluators: [{name: e, version: "1"}]
 objectives:
   - &base {stage: simulation, metric: a, direction: minimize}
@@ -904,7 +916,7 @@ objectives:
 
 @pytest.mark.parametrize("huge", [10**400, -(10**400)], ids=["positive", "negative"])
 def test_huge_integers_are_ordinary_numbers(doc: dict[str, Any], huge: int) -> None:
-    doc["parameters"][0]["bounds"] = sorted([huge, 0])
+    doc["parameters"]["ecal_cell_size"]["bounds"] = sorted([huge, 0])
     doc["constraints"] = [{"stage": "s", "metric": "m", "max": 10**400}]
     doc["samples"]["gamma"]["simulation"]["seed"] = huge
     problem = parse_problem(doc)
@@ -913,7 +925,7 @@ def test_huge_integers_are_ordinary_numbers(doc: dict[str, Any], huge: int) -> N
 
 
 def test_huge_integer_next_to_a_float_bound(doc: dict[str, Any]) -> None:
-    doc["parameters"][0]["bounds"] = [1.5, 10**400]
+    doc["parameters"]["ecal_cell_size"]["bounds"] = [1.5, 10**400]
     assert parse_problem(doc).parameters[0].bounds == (1.5, 10**400)
-    doc["parameters"][0]["bounds"] = [10**400, 1.5]
+    doc["parameters"]["ecal_cell_size"]["bounds"] = [10**400, 1.5]
     reject(doc, "low must be smaller than high")

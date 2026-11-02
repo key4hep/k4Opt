@@ -22,7 +22,7 @@ API, command group, documentation and tests.
 | [`k4opt.execution`](docs/execution.md) | Evaluate candidates end to end: `EvaluationSession` (and `k4opt evaluate` for one candidate) materializes each candidate's geometry, runs each sample's stages once and calls every evaluator, inline or in worker processes, and publishes the candidate's record | in progress |
 | [`k4opt.record`](docs/record.md) | What a candidate's evaluation found, as its `summary.json` holds it: task results, status, measurements and the assessment against the objectives and constraints, read back and checked without the evaluators (`Assessment.from_summary`) | in progress |
 | [`k4opt.ddsim`](docs/ddsim.md) | Run `ddsim` on a prepared geometry with a particle gun or an event file: command from a sample's stages (the ddsim options written the way ddsim reads them), protected options, logs; run once per candidate and sample as its `simulation` stage, whatever number of evaluators read it | first vertical slice |
-| [examples](docs/evaluators.md) | Runnable photon-direction and photon/pi0-separation problems with evaluators to copy from, run with `k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] --param REF=VALUE --output DIR`. The problem asks how fine the CLD ECAL cells should be: finer cells measure a photon's direction better (`calo.photon` measures it) but fire more readout channels. k4opt ships no evaluators | example |
+| [examples](docs/evaluators.md) | Runnable photon-direction and photon/pi0-separation problems with evaluators to copy from, run with `k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] --param NAME=VALUE --output DIR`. The problem asks how fine the CLD ECAL cells should be: finer cells measure a photon's direction better (`calo.photon` measures it) but fire more readout channels. k4opt ships no evaluators | example |
 | [`k4opt.optimization`](docs/optimization.md) | Search a problem's parameters with an existing optimizer (Optuna's TPE sampler): `k4opt optimize` proposes candidates, evaluates each into a trial directory, judges them against the objectives and constraints, and resumes a study only with what it was made with; `k4opt study` (`load_study`) reads a study back, checked and unchanged, to show its trials and Pareto front or export them as CSV or JSON | first version |
 
 The planned components are directions, not commitments; their shape depends on
@@ -79,7 +79,8 @@ name it in a problem, here
 geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml   # relative to $K4GEO
 
 parameters:
-  - geometry:
+  ecal_cell_size:            # the name candidates and records use
+    geometry:
       constant: ECal_cell_size
     type: continuous
     bounds: [2.5, 20.0]
@@ -118,7 +119,7 @@ and evaluate one candidate (about 5 minutes on one core):
 ```bash
 k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
     --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
-    --param constants.ECal_cell_size=10.0 --output runs/cld-ecal-10mm
+    --param ecal_cell_size=10.0 --output runs/cld-ecal-10mm
 ```
 
 or let an optimizer search the cell size, one evaluation per trial:

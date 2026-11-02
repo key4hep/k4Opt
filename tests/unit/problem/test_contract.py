@@ -27,7 +27,7 @@ from k4opt.execution import EvaluationSession
 from k4opt.record import Assessment, RecordError
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
-RADIUS = "constants.InnerTracker_Barrel_radius_1"
+RADIUS = "radius"
 ECHO = ("analysis", "candidate.first_value")
 ECHOED = "evaluations/test.echo"  # the work of the test.echo binding in a record
 DECLARED = "implementations/test.echo"  # what its implementation declares, in a record
@@ -73,14 +73,14 @@ def problem_file(tmp_path: Path) -> Path:
         "name": "contract",
         "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
         "geometry": MINI_COMPACT,
-        "parameters": [
-            {
+        "parameters": {
+            RADIUS: {
                 "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
                 "type": "continuous",
                 "bounds": [100.0, 600.0],
                 "unit": "mm",
             }
-        ],
+        },
         "evaluators": [{"name": "test.echo", "version": "1"}],
         "objectives": [metric | {"direction": "minimize"}],
         "constraints": [metric | {"max": 500, "unit": "1"}],

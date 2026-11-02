@@ -14,7 +14,7 @@ what is evaluated, the [problem](problem.md).
 ```bash
 k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
   --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
-  --param constants.ECal_cell_size=10.0 \
+  --param ecal_cell_size=10.0 \
   --output runs/cld-ecal-10mm
 ```
 
@@ -53,8 +53,8 @@ process, the easiest to debug. Like `--timeout`, it is not part of the problem, 
 One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`); from
 Python, an [`EvaluationSession`](#evaluating-candidates-evaluationsession)
 evaluates many candidates of a problem the same way.
-`--param REFERENCE=VALUE` uses the canonical reference of the problem file and is repeated for
-each declared parameter. `--output` must not exist. Before anything is created, the candidate
+`--param NAME=VALUE` names a parameter of the problem file and is repeated for each of
+them. `--output` must not exist. Before anything is created, the candidate
 (keys, types, bounds), the supplied inputs, the evaluators (each one the problem names given
 once, with its version and the stage it reads, and no other), the settings and collections of
 each binding, the stages of each sample, and the metrics the objectives and constraints name of
@@ -107,8 +107,10 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      not `valid`, or not made from the candidate);
    - `implementations`, each evaluator the problem binds once, by name, in the order it first
      binds them: version, the stage it reads, its source identity (`source`: path, size and
-     SHA-256 of the file defining its class, taken at import, whether they are the bytes
-     `executed`, and the `revision` of the git checkout that tracks it;
+     SHA-256 of the file defining its class, taken at import, the SHA-256 of each module it
+     imports from beside it (`helpers`, checked before and after each candidate), whether they
+     are the bytes `executed`, and the
+     `revision` of the git checkout that tracks it;
      [details](evaluation.md#loading-an-evaluator)), the metrics it declares with their units
      (`metrics`, `null` if it declares none) and the names of the artifacts it declares
      (`artifacts`, `null` if it declares none), and its role declarations
@@ -207,7 +209,7 @@ objectives:
 k4opt evaluate problem.yaml \
   --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
   --evaluator my_cost.py:ReadoutCost \
-  --param constants.ECal_cell_size=10.0 --output runs/cost-10mm
+  --param ecal_cell_size=10.0 --output runs/cost-10mm
 ```
 
 An evaluator that needs other events, another event count or seed measures another sample of the
@@ -231,7 +233,7 @@ session = EvaluationSession.open(
     timeout=3600,  # seconds ddsim may take per candidate; no limit without it
 )
 for size in (5.0, 7.0, 10.0):
-    outcome = session.evaluate({"constants.ECal_cell_size": size}, f"runs/scan/{size}mm")
+    outcome = session.evaluate({"ecal_cell_size": size}, f"runs/scan/{size}mm")
     print(size, outcome.candidate.status, outcome.assessment.feasible)
 ```
 
@@ -277,7 +279,7 @@ Whatever proposes candidates (a person, an optimizer) can hand them over one by 
 ```python
 from k4opt.execution import RunRequest
 
-requests = (RunRequest({"constants.ECal_cell_size": v}, f"runs/{v}mm") for v in (5.0, 7.0))
+requests = (RunRequest({"ecal_cell_size": v}, f"runs/{v}mm") for v in (5.0, 7.0))
 with session.evaluate_each(requests) as evaluations:
     for request, outcome in evaluations:  # outcome: a RunOutcome, or the exception that stopped it
         ...
@@ -315,8 +317,10 @@ with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # sto
   A worker is started when a task finds none idle (one when the session opens, to check that it
   can work) and kept for the next tasks; `close()` (or leaving `with`) stops them, and a later
   evaluation starts new ones. A worker loads the evaluators again by their references, so they
-  must come from `load_evaluator` (`FILE.py:Class` or `module:Class`); one that was not loaded
-  that way is refused when the session opens (`RunError`), never evaluated inline instead. A
+  must come from `load_evaluator` (`FILE.py:Class` or `module:Class`) and be identified by the
+  code that ran (`executed: true`, [details](evaluation.md#loading-an-evaluator)), since a worker
+  that loads it from its source must run what the session did; one that was not is refused when
+  the session opens (`RunError`), never evaluated inline instead. A
   worker refuses to start unless the evaluators, k4opt's code, `KEY4HEP_STACK` and `K4GEO` are
   the session's. The session itself then only checks, assesses and writes the records, and it
   alone writes them. Even one worker isolates the session from its evaluators: a worker that

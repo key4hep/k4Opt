@@ -286,7 +286,7 @@ def recorded(
         for stage, entry in part["stages"].items():
             at = f"{where}: samples.{sample}.stages.{stage}.elapsed_seconds"
             timed[f"{sample}/{stage}"] = _seconds(entry.get("elapsed_seconds"), at)
-    references = [parameter.geometry.canonical_target for parameter in spec.parameters]
+    references = [parameter.name for parameter in spec.parameters]
     result = TrialResult(
         number=number,
         status=summary["status"],

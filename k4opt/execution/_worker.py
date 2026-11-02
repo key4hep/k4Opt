@@ -53,7 +53,8 @@ from k4opt.revision import code_fingerprint
 LOG_NAME = "evaluator.log"
 """The file in an evaluation's own directory that holds what its evaluator printed."""
 
-_IDENTITY = ("path", "bytes", "sha256")  # what tells an implementation's source apart
+# what tells an implementation's source apart, and whether those are the bytes that ran
+_IDENTITY = ("path", "bytes", "sha256", "helpers", "executed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +93,9 @@ def session_spec(
     """The :class:`SessionSpec` of a session with ``context`` whose evaluations are bound as
     ``evaluations``. Raises :class:`~k4opt.execution.RunError` for an implementation a worker could
     not load again by its reference and recognize: one :func:`~k4opt.evaluation.load_evaluator`
-    did not load from its file, or that comes from ``__main__``."""
+    did not load from its file, or that comes from ``__main__``, and for one whose identity is not
+    of the code that runs (``executed``): a worker that loads it from its source could run other
+    code than this process did."""
     implementations: dict[type, Implementation] = {}
     for _, bound in evaluations:
         cls = bound.implementation
@@ -112,6 +115,14 @@ def session_spec(
                 "k4opt.evaluation.load_evaluator (or its module was imported before, or is "
                 "__main__), so a worker could not tell it is the same code; evaluate it "
                 "inline (workers='inline') instead"
+            )
+        if source.get("executed") is not True:
+            raise RunError(
+                f"evaluator {bound.entry.name!r}: the code it runs here is not known to be the "
+                "source its hash names (an import hook imported it, or a module it imports, "
+                "perhaps from a cached .pyc), so a worker process that loads it again could run "
+                "other code; load it from source files Python's path finder imports, or as "
+                "FILE.py:Class, or evaluate it inline (workers='inline')"
             )
         implementations[cls] = Implementation(reference, FrozenMap(source))
     try:
@@ -211,8 +222,8 @@ class Session:
             then = {key: implementation.source.get(key) for key in _IDENTITY}
             if {key: loaded.get(key) for key in _IDENTITY} != then:
                 raise RunError(
-                    f"evaluator {implementation.reference}: {then['path']} changed after the "
-                    "session loaded it; open a new session"
+                    f"evaluator {implementation.reference}: {then['path']} or a module it "
+                    "imports changed after the session loaded it; open a new session"
                 )
         context, bound = pickle.loads(spec.payload)
         assert isinstance(context, SessionContext)

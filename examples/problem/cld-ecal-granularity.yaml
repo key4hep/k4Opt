@@ -25,7 +25,8 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 
 parameters:
   # CLD uses 5.1 mm; 20 mm is about the width of a photon shower
-  - geometry:
+  ecal_cell_size:
+    geometry:
       constant: ECal_cell_size
     type: continuous
     bounds: [2.5, 20.0]

@@ -19,12 +19,13 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from k4opt import __version__
+from k4opt.evaluation.loader import changed_code, evaluator_source
 from k4opt.execution._binding import _Binding, _implementations
 from k4opt.execution._files import readable_identity
 from k4opt.execution._work import content
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
-from k4opt.problem.models import ProblemSpec
+from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.record.results import TaskResult
 from k4opt.revision import code_identity, code_unchanged
 
@@ -39,44 +40,50 @@ def check_code() -> None:
 
 
 class Baseline:
-    """What a session evaluates with: the problem at ``path`` as loaded (``spec``), the files
+    """What a session evaluates with: the problem as loaded (``problem``), the files
     the stages read with their identities by where they are named (``files``), what the
     geometry's external references read (``externals``), what a record says of each
     implementation (``taken``) and of the process (``process``: k4opt's code and the
-    environment)."""
+    environment), and the implementations by name (``classes``)."""
 
-    __slots__ = ("_read", "externals", "files", "path", "process", "spec", "taken")
+    __slots__ = ("_read", "classes", "externals", "files", "problem", "process", "taken")
 
     def __init__(
         self,
-        path: Path,
-        spec: ProblemSpec,
+        problem: ResolvedProblem,
         files: Mapping[str, tuple[Path, Mapping[str, Json] | None]],
         externals: Mapping[str, Json],
         taken: Mapping[str, Mapping[str, Json]],
         process: Mapping[str, Json],
+        classes: Mapping[str, type] | None = None,
     ) -> None:
-        self.path = path
-        self.spec = spec
+        self.problem = problem
         self.files = FrozenMap(files)
         self.externals = externals
         self.taken = FrozenMap(taken)
         self.process = process
+        self.classes = FrozenMap(classes or {})
         # what the external references only candidates have read, by reference, without the path
         self._read: dict[str, Json] = {}
 
+    @property
+    def spec(self) -> ProblemSpec:
+        return self.problem.spec
+
+    @property
+    def path(self) -> Path:
+        return self.problem.path
+
     @classmethod
     def take(
-        cls, path: Path, spec: ProblemSpec, binding: _Binding, named: Mapping[str, Path]
+        cls, problem: ResolvedProblem, binding: _Binding, named: Mapping[str, Path]
     ) -> Baseline:
-        """What a session of the problem ``spec`` loaded from ``path``, bound as ``binding``,
-        evaluates with, taken now; ``named`` are the files its stages read, by where they are
-        named. Raises :class:`RunError` if k4opt's code changed since this process identified
-        it."""
+        """What a session of ``problem``, bound as ``binding``, evaluates with, taken now;
+        ``named`` are the files its stages read, by where they are named. Raises
+        :class:`RunError` if k4opt's code changed since this process identified it."""
         # an unreadable file has no identity: its stage reports it, and a record still names it
         files = {label: (file, readable_identity(file)) for label, file in named.items()}
-        assert spec._source is not None
-        externals = freeze(spec._source.external_files(spec._catalog), "geometry", RunError)
+        externals = freeze(problem.source.external_files(problem.catalog), "geometry", RunError)
         assert isinstance(externals, Mapping)
         # before anything runs, so that an edit to the checkout during a long run is not
         # recorded as the code that ran, nor a later change of the environment as the session's
@@ -86,14 +93,13 @@ class Baseline:
         )
         check_code()
         assert isinstance(process, Mapping)
-        return cls(path, spec, files, externals, _implementations(binding), process)
+        classes = {b.probe.declaration.name: b.probe.cls for b in binding.evaluators}
+        return cls(problem, files, externals, _implementations(binding), process, classes)
 
     def identity(self) -> dict[str, object]:
         """What the session evaluates with, as plain JSON-compatible data
         (:meth:`~k4opt.execution.EvaluationSession.identity`). A fresh copy on every call."""
-        source, catalog = self.spec._source, self.spec._catalog
-        assert source is not None
-        assert catalog is not None
+        source, catalog = self.problem.source, self.problem.catalog
         process = thaw(self.process)
         assert isinstance(process, dict)
         return {
@@ -127,12 +133,39 @@ class Baseline:
                 )
 
     def verify(self) -> None:
-        """Raise :class:`RunError` if the environment, k4opt's code, a file the stages read or
-        what the geometry's external references read changed since the session opened."""
+        """Raise :class:`RunError` if the environment, k4opt's code, a file the stages read,
+        what the geometry's external references read, the identity of an implementation or a
+        module it imports changed since the session opened."""
         self._verify_environment()
         check_code()
         self.verify_inputs()
         self._verify_externals()
+        self._verify_implementations()
+
+    def _verify_implementations(self) -> None:
+        """Each implementation is still identified as when the session opened: loading another
+        file that imports its class (and may change it) in this process identifies it by that
+        file, and the class the session evaluates with may have changed. And the code each runs
+        is what its identity says (:func:`~k4opt.evaluation.loader.changed_code`): the module its
+        reference names, not reloaded since, and the modules it imports from beside it, one it
+        imports only when it evaluates (inside a function) too."""
+        for name, implementation in self.classes.items():
+            source = self.taken[name]["source"]
+            assert isinstance(source, Mapping)
+            now = evaluator_source(implementation)
+            if any(now.get(key) != source.get(key) for key in ("path", "sha256", "helpers")):
+                raise RunError(
+                    f"evaluator {name!r}: its class was loaded again in this process, through "
+                    f"{now.get('reference')}, which may have changed it; open the session in a new "
+                    "process"
+                )
+            changed = changed_code(implementation)
+            if changed:
+                raise RunError(
+                    f"evaluator {name!r}: {', '.join(changed)} changed after the session loaded "
+                    "it; evaluate with the code it was loaded with, or open a new session in a new "
+                    "process"
+                )
 
     def check_read(self, externals: Mapping[str, Mapping[str, Json]]) -> None:
         """Raise :class:`RunError` if a reference only candidates name reads other files than
@@ -151,9 +184,7 @@ class Baseline:
         self._read |= {ref: content(entry) for ref, entry in externals.items()}
 
     def _verify_externals(self) -> None:
-        source = self.spec._source
-        assert source is not None
-        now = source.external_files(self.spec._catalog)
+        now = self.problem.source.external_files(self.problem.catalog)
         for ref, opened in self.externals.items():
             if now.get(ref) != thaw(opened):
                 path = (now.get(ref) or {}).get("path") or "no file"

@@ -94,7 +94,7 @@ def trial_result(
     A resume checks each trial with it, before it recovers or proposes any.
     """
     number, attrs = frozen.number, frozen.user_attrs
-    references = [parameter.geometry.canonical_target for parameter in spec.parameters]
+    references = [parameter.name for parameter in spec.parameters]
     unknown = [key for key in frozen.params if key not in references]
     if unknown:
         raise OptimizationError(

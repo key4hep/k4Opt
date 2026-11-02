@@ -33,10 +33,18 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from k4opt.ddsim import FILE_OPTIONS, check_arguments, check_particle_gun, simulate
+from k4opt.ddsim import (
+    FILE_OPTIONS,
+    check_arguments,
+    check_particle_gun,
+    output_collections,
+    simulate,
+    threads,
+)
 from k4opt.evaluation import EvaluationContractError, EvaluationFailed, count_events
 from k4opt.execution._files import file_identity, readable_identity
 from k4opt.frozen import Json
+from k4opt.geometry import Catalog
 from k4opt.problem.models import ProblemSpec, Stage
 from k4opt.problem.stages import (
     executors,
@@ -73,9 +81,9 @@ class StageContext:
     die_with_parent: bool = field(default=False, compare=False, repr=False)
 
     @classmethod
-    def of(cls, spec: ProblemSpec, sample: str) -> StageContext:
-        """The stages of the sample ``sample`` of ``spec``."""
-        return cls(spec.samples[sample].stages, spec._directory, sample=sample)
+    def of(cls, spec: ProblemSpec, sample: str, directory: Path | None = None) -> StageContext:
+        """The stages of the sample ``sample`` of ``spec``, whose file is in ``directory``."""
+        return cls(spec.samples[sample].stages, directory, sample=sample)
 
     def where(self, stage: str) -> str:
         """Where the problem defines ``stage``: ``samples.<sample>.<stage>``."""
@@ -251,21 +259,51 @@ def _inspect_simulation(context: StageContext, path: Path) -> tuple[dict[str, Js
     return observed, None
 
 
+def _simulation_cpus(stage: Stage) -> int:
+    return threads(stage.options) if stage.executor == "ddsim" else 1
+
+
+def _simulated_collections(stage: Stage, catalog: Catalog) -> list[str] | None:
+    return sorted(output_collections(catalog.readouts)) if stage.executor == "ddsim" else None
+
+
 @dataclass(frozen=True, slots=True)
 class _Runner:
     """How a stage type runs: what checks that it can run in a context (``check``, given the
     stages the caller supplies), what runs it (``run``, given the files it reads and its
-    directory), and what checks its main output, whether it ran or was given (``inspect``)."""
+    directory), what checks its main output, whether it ran or was given (``inspect``), how many
+    processors running a stage keeps busy (``cpus``) and which collections it is expected to
+    write for a geometry, if anything predicts them (``collections``)."""
 
     check: Callable[[StageContext, Collection[str]], None]
     run: Callable[[StageContext, Mapping[str, Path], Path | None], StageOutcome]
     inspect: Callable[[StageContext, Path], tuple[dict[str, Json], str | None]] | None = None
+    cpus: Callable[[Stage], int] = lambda stage: 1
+    collections: Callable[[Stage, Catalog], list[str] | None] = lambda stage, catalog: None
 
 
 _RUNNERS: Mapping[str, _Runner] = {
     "generation": _Runner(_check_generation, _run_generation),
-    "simulation": _Runner(_check_simulation, _run_simulation, _inspect_simulation),
+    "simulation": _Runner(
+        _check_simulation,
+        _run_simulation,
+        _inspect_simulation,
+        cpus=_simulation_cpus,
+        collections=_simulated_collections,
+    ),
 }
+
+
+def stage_cpus(name: str, stage: Stage) -> int:
+    """How many processors running ``stage``, of the type ``name``, keeps busy: the threads of a
+    simulation ddsim runs (``numberOfThreads``), one for anything else."""
+    return _RUNNERS[name].cpus(stage)
+
+
+def expected_collections(name: str, stage: Stage, catalog: Catalog) -> list[str] | None:
+    """The collections ``stage``, of the type ``name``, is expected to write for the geometry
+    ``catalog``, sorted: for ddsim those of its readouts; ``None`` if nothing predicts them."""
+    return _RUNNERS[name].collections(stage, catalog)
 
 
 def stage_logs(stage: str, directory: Path) -> dict[str, Path]:

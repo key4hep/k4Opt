@@ -187,7 +187,7 @@ def _geometry(
         given = portable(work.given, root)
         outcome = TaskOutcome(task, DONE, output=given, elapsed_seconds=_since(began))
         return outcome, Observations(tree=None if tree is None else tree.stats)
-    source, catalog = context.spec._source, context.spec._catalog
+    source, catalog = context.source, context.catalog
     assert source is not None
     assert root is not None
     assert own is not None

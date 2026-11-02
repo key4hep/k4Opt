@@ -69,9 +69,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
     verifies changed while it ran, a file a task made is no longer what its record says, or a
     reference only its geometry names reads other files than for a candidate recorded meanwhile:
     that raises :class:`RunError`."""
-    spec = baseline.spec
-    source = spec._source
-    assert source is not None
+    spec, source = baseline.spec, baseline.problem.source
     run_dir = run.workspace.root
     assert run_dir is not None
     record = _finish_plan(run)

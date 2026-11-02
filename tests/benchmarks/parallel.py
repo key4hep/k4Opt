@@ -52,8 +52,8 @@ from k4opt.record import peak_memory  # noqa: E402
 from tests.support.common import scientific  # noqa: E402
 
 EXAMPLES = REPOSITORY / "examples"
-CELL = "constants.ECal_cell_size"
-RADIUS = "constants.InnerTracker_Barrel_radius_1"
+CELL = "ecal_cell_size"
+RADIUS = "radius"
 GRIDS = {  # the candidates of each stack, the first --candidates of them evaluated
     "real": [4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0],
     "fake": [150.0 + 50 * n for n in range(8)],

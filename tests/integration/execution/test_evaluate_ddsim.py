@@ -34,7 +34,7 @@ from tests.support.geometry import CLD_COMPACT
 pytestmark = pytest.mark.integration
 
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-granularity.yaml"
-CELL = "constants.ECal_cell_size"
+CELL = "ecal_cell_size"
 COLLECTION = "ECalBarrelCollection"
 EVENTS = 4
 SAMPLE = "gamma_10gev"  # the example's one sample

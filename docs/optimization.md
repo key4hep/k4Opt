@@ -19,7 +19,7 @@ k4opt optimize examples/problem/cld-ecal-granularity.yaml \
 It prints each trial as it ends, and the study at the end (the values here are illustrative):
 
 ```text
-trial 0:   valid    feasible    constants.ECal_cell_size=9.79789  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227
+trial 0:   valid    feasible    ecal_cell_size=9.79789  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227
 trial 1:   failed   simulation failed: ddsim exited with status 1 (...); blocked: calo.photon  trial-000001/summary.json
 ...
 study:    cld-ecal-granularity-3f9c2a1b, 2 objective(s), 0 limit(s), runs/cld-ecal-study/study.json
@@ -68,7 +68,7 @@ Everything else in k4opt works without it.
 
 ## What the optimizer searches, and what it is told
 
-**Parameters.** Each parameter becomes one distribution, named by its canonical reference:
+**Parameters.** Each parameter becomes one distribution, named by the parameter's name:
 
 | Parameter | Searched as | Refused when the study is made |
 | --- | --- | --- |
@@ -296,7 +296,7 @@ directory itself is fine: a trial's record names the files of its run directory 
 | --- | --- | --- |
 | problem | its definition, but not its `name` | the path of the file |
 | files the problem names | size and SHA-256 of each | their paths |
-| evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units and the artifacts it declares (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
+| evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash, or whose hash is not known to be of the code that runs, `executed: false`, cannot make a study) and of the modules it imports from beside it (`helpers`), the metrics it declares with their units and the artifacts it declares (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
 | k4opt | the SHA-256 of its code | version, git commit |
@@ -310,8 +310,8 @@ directory that holds no `study.json`; using a study directory without
 `--resume` is refused too. A changed Optuna version and changed k4opt code have no override:
 install the recorded Optuna version, and run a long campaign from a k4opt checkout of its own.
 A resume only warns when an evaluator's git checkout is at another commit or has other
-uncommitted changes: the evaluator's own file is unchanged, but helper modules beside it may
-not be. Helper modules outside a git checkout are not tracked at all.
+uncommitted changes: the evaluator's file and the modules it imports are unchanged (a change of
+either refuses the resume), but other files beside them, such as data it reads, may not be.
 
 Within a session, the files the problem names, the files the geometry's external references
 read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are checked before each candidate and again
@@ -381,7 +381,9 @@ PostgreSQL), while the trial directories stay in the study directory. A new stud
 directory first, so a directory in use leaves the database untouched; then the database is
 reached, and set up once, before the study directory is made, so a wrong URL creates nothing. A
 relative SQLite path is relative to the working directory, and the SQLite file of a new study
-must lie outside its directory, which holds only what k4opt makes. Its password and the
+must lie outside its directory, which holds only what k4opt makes. A SQLite database in memory
+or a temporary one (`sqlite://`, `sqlite:///:memory:`, `mode=memory`) is refused: it would lose
+the trials when k4opt exits. Its password and the
 values of its query parameters are never recorded or shown, also not in an error from the
 database, and every resume needs the same URL.
 
@@ -409,13 +411,13 @@ with their values to 6 significant digits (the values here are illustrative). It
 study:      cld-ecal-granularity-3f9c2a1b, created 2026-10-30T12:00:00+00:00
 id:         3f9c2a1b-5d0e-4f43-9a52-77c1d2e0b6a4
 directory:  /home/me/runs/cld-ecal-study (trials in study.journal)
-parameters: constants.ECal_cell_size  continuous [2.5, 20.0] mm
+parameters: ecal_cell_size  continuous [2.5, 20.0] mm  (constants.ECal_cell_size)
 objectives: gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual  minimize  (mrad)
             gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells  minimize  (1)
 limits:     none
 trials:     30: 28 valid (28 feasible, 0 infeasible), 1 invalid, 1 failed
 pareto:     0, 4, 7
-            trial 0:  constants.ECal_cell_size=9.79789 mm  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948 mrad  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227 1
+            trial 0:  ecal_cell_size=9.79789 mm  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948 mrad  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227 1
             ...
 ```
 
@@ -524,7 +526,7 @@ or the number 1: the JSON export is the typed one.
       "status": "valid",
       "outcome": "feasible",
       "recovered": false,
-      "candidate": {"constants.ECal_cell_size": 9.797885082295046},
+      "candidate": {"ecal_cell_size": 9.797885082295046},
       "assessment": {"feasible": true, "objectives": [], "limits": []},
       "elapsed_seconds": 291.3,
       "stage_seconds": {"gamma_10gev/generation": 0.4, "gamma_10gev/simulation": 280.2},

@@ -62,7 +62,8 @@ def test_a_study_reads_back_with_its_problem_and_every_trial_as_recorded(
     assert isinstance(study, StudyResults)
     assert (study.name, study.id, study.directory) == (report.name, report.id, output)
     (parameter,) = study.problem.parameters
-    assert (parameter.geometry.canonical_target, parameter.kind) == (RADIUS, "categorical")
+    assert (parameter.name, parameter.kind) == (RADIUS, "categorical")
+    assert parameter.geometry.canonical_target == "constants.InnerTracker_Barrel_radius_1"
     assert parameter.choices == (300, 500, 170, 120)
     assert [(o.metric, o.direction) for o in study.problem.objectives] == [
         ("a", "minimize"),

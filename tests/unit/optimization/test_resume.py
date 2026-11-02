@@ -4,8 +4,12 @@ session left behind."""
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.abc
+import importlib.util
 import json
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -18,7 +22,7 @@ pytest.importorskip("optuna")
 import optuna
 from optuna.trial import TrialState
 
-from k4opt.evaluation import load_evaluator
+from k4opt.evaluation import evaluator_source, load_evaluator
 from k4opt.optimization import OptimizationError, optimize
 from k4opt.optimization._optuna import tell as adapter
 from k4opt.optimization._optuna.space import search_space
@@ -27,6 +31,7 @@ from tests.support import simulation
 from tests.support.common import git, git_checkout, requires_git, tree_digest
 from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, trade_off, yields
 from tests.support.geometry import MINI_GEO
+from tests.support.imports import FromFile
 from tests.unit.optimization.conftest import (
     RADIUS,
     TRADE,
@@ -34,6 +39,7 @@ from tests.unit.optimization.conftest import (
     evaluator_from,
     left_running,
     optuna_study,
+    problem_document,
     summary,
 )
 
@@ -66,7 +72,10 @@ def _edit(path: Path, change: Callable[[dict[str, Any]], None]) -> None:
 
 
 PROBLEM_CHANGES: dict[str, tuple[Callable[[dict[str, Any]], None], str]] = {
-    "bounds": (lambda d: d["parameters"][0].update(bounds=[100.0, 500.0]), "parameters changed"),
+    "bounds": (
+        lambda d: d["parameters"][RADIUS].update(bounds=[100.0, 500.0]),
+        "parameters changed",
+    ),
     "direction": (lambda d: d["objectives"][0].update(direction="maximize"), "objectives changed"),
     "limit": (
         lambda d: d.update(
@@ -79,6 +88,23 @@ PROBLEM_CHANGES: dict[str, tuple[Callable[[dict[str, Any]], None], str]] = {
         "evaluators changed",
     ),
 }
+
+
+def test_a_study_does_not_resume_with_its_parameters_in_another_order(tmp_path: Path) -> None:
+    # candidates, the sampler and evaluators (test.trade_off reads the first value) follow it
+    document = problem_document()
+    document["parameters"]["world"] = {
+        "geometry": {"constant": "world_side"},
+        "type": "continuous",
+        "bounds": [1.0, 2.0],
+    }
+    problem, output = tmp_path / "problem.yaml", tmp_path / "s"
+    problem.write_text(yaml.safe_dump(document, sort_keys=False))
+    run(problem, output, 1, seed=1)
+    document["parameters"] = dict(reversed(document["parameters"].items()))
+    problem.write_text(yaml.safe_dump(document, sort_keys=False))
+    with pytest.raises(OptimizationError, match="the problem's parameters changed"):
+        run(problem, output, 1, resume=True)
 
 
 @pytest.mark.parametrize("change", sorted(PROBLEM_CHANGES))
@@ -194,7 +220,7 @@ def test_a_file_only_candidates_name_reads_alike_in_every_trial_of_a_study(
         "type": "categorical",
         "choices": ["${CAD}/b.stl"],
     }
-    _edit(problem, lambda d: d["parameters"].append(support))
+    _edit(problem, lambda d: d["parameters"].update(support=support))
     run(problem, output, 2, seed=1)
     read = {"path": str(model), "sha256": hashlib.sha256(b"solid b").hexdigest()}
     for number in (0, 1):
@@ -228,6 +254,188 @@ def test_a_study_does_not_resume_with_other_evaluator_code(
         OptimizationError, match=r"evaluator 'test\.trade_off': .*trade_off\.py changed"
     ):
         run(problem, output, 1, resume=True, evaluators=[edited])
+
+
+def test_a_study_does_not_resume_with_another_module_its_evaluator_imports(
+    tmp_path: Path, write_problem: Callable[..., Path], request: pytest.FixtureRequest
+) -> None:
+    source = Path(TRADE_OFF.partition(":")[0])
+    helper = "corrections_of_resume"
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / "evaluators").mkdir()
+    (tmp_path / "evaluators" / f"{helper}.py").write_text("scale = 1.0\n")
+    copy = tmp_path / "evaluators" / "trade_off.py"
+    copy.write_text(f"import {helper}\n" + source.read_text())
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1, evaluators=[load_evaluator(f"{copy}:TradeOff")])
+    (tmp_path / "evaluators" / f"{helper}.py").write_text("scale = 2.0\n")
+    # a new process loads it anew; here, a copy of it that Python has not imported yet
+    del sys.modules[helper]
+    again = tmp_path / "evaluators" / "trade_off_again.py"
+    again.write_bytes(copy.read_bytes())
+    edited = load_evaluator(f"{again}:TradeOff")
+    with pytest.raises(
+        OptimizationError,
+        match=rf"evaluator 'test\.trade_off': the modules .*trade_off_again\.py imports changed: "
+        rf"{helper}\.py",
+    ):
+        run(problem, output, 1, resume=True, evaluators=[edited])
+
+
+def test_a_module_its_evaluator_imports_that_changes_during_a_study_stops_it(
+    tmp_path: Path, write_problem: Callable[..., Path], request: pytest.FixtureRequest
+) -> None:
+    # one imported only when the evaluator runs would run the new code under the old identity
+    helper = "edited_during_study"
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / "evaluators").mkdir()
+    (tmp_path / "evaluators" / f"{helper}.py").write_text("scale = 1.0\n")
+    copy = tmp_path / "evaluators" / "trade_off.py"
+    copy.write_text(f"import {helper}\n" + Path(TRADE_OFF.partition(":")[0]).read_text())
+
+    def change(trial: Any) -> None:  # after the first trial, while the study runs
+        (tmp_path / "evaluators" / f"{helper}.py").write_text("scale = 2.0\n")
+
+    with pytest.raises(
+        OptimizationError,
+        match=rf"trial 1 stops the study.*{helper}\.py changed after the session loaded it",
+    ):
+        run(
+            write_problem(),
+            tmp_path / "s",
+            3,
+            seed=1,
+            evaluators=[load_evaluator(f"{copy}:TradeOff")],
+            progress=change,
+        )
+
+
+def test_a_study_does_not_resume_with_another_file_that_re_exports_its_evaluator(
+    tmp_path: Path, write_problem: Callable[..., Path], request: pytest.FixtureRequest
+) -> None:
+    helper = "trade_off_defined_here"
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / "evaluators").mkdir()
+    (tmp_path / "evaluators" / f"{helper}.py").write_bytes(
+        Path(TRADE_OFF.partition(":")[0]).read_bytes()
+    )
+
+    def wrapper(name: str, scale: int) -> Any:
+        path = tmp_path / "evaluators" / f"{name}.py"
+        path.write_text(f"from {helper} import TradeOff\n\nTradeOff.scale = {scale}\n")
+        return load_evaluator(f"{path}:TradeOff")
+
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1, evaluators=[wrapper("wrapper", 2)])
+    with pytest.raises(
+        OptimizationError, match=r"evaluator 'test\.trade_off': .*wrapper_again\.py changed"
+    ):
+        run(problem, output, 1, resume=True, evaluators=[wrapper("wrapper_again", 3)])
+
+
+def test_a_study_does_not_resume_with_another_module_that_re_exports_its_evaluator(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    implementation, wrapper = "trade_off_implemented", "trade_off_wrapper"
+    request.addfinalizer(lambda: [sys.modules.pop(n, None) for n in (implementation, wrapper)])
+    (tmp_path / f"{implementation}.py").write_bytes(Path(TRADE_OFF.partition(":")[0]).read_bytes())
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def wrapped(scale: int) -> Any:  # as a new process loads the module the file holds now
+        sys.modules.pop(wrapper, None)
+        (tmp_path / f"{wrapper}.py").write_text(
+            f"from {implementation} import TradeOff\n\nTradeOff.scale = {scale}\n"
+        )
+        return load_evaluator(f"{wrapper}:TradeOff")
+
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1, evaluators=[wrapped(2)])
+    with pytest.raises(
+        OptimizationError, match=rf"evaluator 'test\.trade_off': .*{wrapper}\.py changed"
+    ):
+        run(problem, output, 1, resume=True, evaluators=[wrapped(3)])
+
+
+def test_a_study_stops_when_another_file_that_changes_its_evaluator_class_is_loaded(
+    tmp_path: Path, write_problem: Callable[..., Path], request: pytest.FixtureRequest
+) -> None:
+    # both files give one class, which the second changes under the study's feet
+    implementation = "trade_off_shared"
+    request.addfinalizer(lambda: sys.modules.pop(implementation, None))
+    (tmp_path / f"{implementation}.py").write_bytes(Path(TRADE_OFF.partition(":")[0]).read_bytes())
+    for name, scale in (("wrapper_a", 2), ("wrapper_b", 3)):
+        (tmp_path / f"{name}.py").write_text(
+            f"from {implementation} import TradeOff\n\nTradeOff.scale = {scale}\n"
+        )
+
+    def load_b(trial: Any) -> None:  # after the first trial, while the study runs
+        load_evaluator(f"{tmp_path / 'wrapper_b.py'}:TradeOff")
+
+    with pytest.raises(
+        OptimizationError,
+        match=r"trial 1 stops the study.*its class was loaded again in this process, through "
+        r".*wrapper_b\.py:TradeOff",
+    ):
+        run(
+            write_problem(),
+            tmp_path / "s",
+            3,
+            seed=1,
+            evaluators=[load_evaluator(f"{tmp_path / 'wrapper_a.py'}:TradeOff")],
+            progress=load_b,
+        )
+
+
+def test_a_study_refuses_an_evaluator_whose_executed_code_is_not_known(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    module = "trade_off_hooked"
+    request.addfinalizer(lambda: sys.modules.pop(module, None))
+    file = tmp_path / f"{module}.py"
+    file.write_bytes(Path(TRADE_OFF.partition(":")[0]).read_bytes())
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sys, "meta_path", [FromFile(module, file), *sys.meta_path])
+    evaluator = load_evaluator(f"{module}:TradeOff")
+    source = evaluator_source(evaluator)
+    assert source["sha256"] is not None and source["executed"] is False
+    with pytest.raises(OptimizationError, match="the code it runs is not known to be the source"):
+        run(write_problem(), tmp_path / "s", 1, seed=1, evaluators=[evaluator])
+    assert not (tmp_path / "s").exists()
+
+
+def test_a_study_stops_when_its_evaluator_module_is_reloaded(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    module = "trade_off_reloaded"
+    request.addfinalizer(lambda: sys.modules.pop(module, None))
+    file = tmp_path / f"{module}.py"
+    file.write_text("SCALE = 2\n" + Path(TRADE_OFF.partition(":")[0]).read_text())
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def reload(trial: Any) -> None:  # after the first trial, while the study runs
+        file.write_text(file.read_text().replace("SCALE = 2", "SCALE = 31"))
+        importlib.reload(sys.modules[module])
+
+    with pytest.raises(
+        OptimizationError, match=rf"trial 1 stops the study.*{module}\.py \(reloaded\) changed"
+    ):
+        run(
+            write_problem(),
+            tmp_path / "s",
+            3,
+            seed=1,
+            evaluators=[load_evaluator(f"{module}:TradeOff")],
+            progress=reload,
+        )
 
 
 UNITS = """
@@ -418,7 +626,7 @@ def test_another_revision_of_an_evaluators_checkout_only_warns(
     evaluator = load_evaluator(f"{clone}/trade_off.py:TradeOff")
     report = run(problem, output, 1, resume=True, evaluators=[evaluator], **log.kwargs())
     assert len(report.trials) == 2
-    assert any("helper modules beside it may not be" in w for w in log.warnings)
+    assert any("other files beside them may not be" in w for w in log.warnings)
 
 
 # --- recovery --------------------------------------------------------------------------------

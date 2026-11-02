@@ -32,6 +32,7 @@ from typing import Any
 
 from k4opt.jsonio import write_json
 from k4opt.optimization.errors import OptimizationError
+from k4opt.problem.models import ordered
 
 STUDY_NAME = "study.json"
 STUDY_SCHEMA = "k4opt.study/1"
@@ -189,7 +190,7 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
     """What must be equal for two runs to belong to one study, from an identity
     (:meth:`k4opt.execution.EvaluationSession.identity`, or ``study.json`` which holds one)."""
     try:
-        definition = dict(identity["problem"]["definition"])
+        definition = ordered(identity["problem"]["definition"])
         definition.pop("name", None)  # a label, the file name by default
         return {
             "problem": definition,
@@ -201,6 +202,7 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
                 name: {
                     "version": entry["version"],
                     "sha256": entry["source"].get("sha256"),
+                    "helpers": entry["source"].get("helpers"),
                     # the units its values are in: an instance can declare them otherwise
                     "metrics": entry.get("metrics"),
                     "artifacts": entry.get("artifacts"),
@@ -226,14 +228,25 @@ def digest(identity: Mapping[str, Any]) -> str:
 
 
 def unhashed(identity: Mapping[str, Any]) -> list[str]:
-    """Why an identity cannot identify a study: evaluators without a source hash, or a file the
-    problem names that could not be read."""
-    reasons = [
-        f"evaluator {name!r} has no source hash: its module was imported before "
-        "load_evaluator could hash it, so load it with load_evaluator in a new process"
-        for name, entry in identity["implementations"].items()
-        if not entry["source"].get("sha256")
-    ]
+    """Why an identity cannot identify a study: evaluators without a source hash, or whose hash
+    is not known to be that of the code that runs (``executed``), or a file the problem names
+    that could not be read."""
+    reasons = []
+    for name, entry in identity["implementations"].items():
+        source = entry["source"]
+        if not source.get("sha256"):
+            reasons.append(
+                f"evaluator {name!r} has no source hash: its module was imported before "
+                "load_evaluator could hash it, or is no source file on disk (in a ZIP archive, "
+                "say), so load it with load_evaluator in a new process, from a source file"
+            )
+        elif source.get("executed") is not True:
+            reasons.append(
+                f"evaluator {name!r}: the code it runs is not known to be the source its hash "
+                "names (an import hook imported it, or a module it imports, perhaps from a cached "
+                ".pyc), so load it from source files Python's path finder imports, or as "
+                "FILE.py:Class"
+            )
     reasons += [
         f"{label}: {entry['path']} cannot be read"
         for label, entry in identity["inputs"].items()
@@ -267,6 +280,17 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
             new, entry = new_implementations[name], current["implementations"][name]
             if old["sha256"] != new["sha256"]:
                 found.append(f"evaluator {name!r}: {entry['source'].get('path')} changed")
+            elif old["helpers"] != new["helpers"]:
+                then_, now_helpers = old["helpers"] or {}, new["helpers"] or {}
+                changed = [
+                    module
+                    for module in dict.fromkeys([*then_, *now_helpers])
+                    if then_.get(module) != now_helpers.get(module)
+                ]
+                found.append(
+                    f"evaluator {name!r}: the modules {entry['source'].get('path')} imports "
+                    f"changed: {', '.join(changed)}"
+                )
             elif old["metrics"] != new["metrics"]:
                 found.append(
                     f"evaluator {name!r} declares other metrics or units: "
@@ -302,11 +326,13 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
 
 
 def dirty_checkouts(implementations: Mapping[str, Mapping[str, Any]]) -> list[str]:
-    """The implementations whose git checkout has uncommitted changes: helper modules beside
-    their file are then identified by neither its hash nor a commit."""
+    """The implementations whose git checkout has uncommitted changes: what the hashes of their
+    file and the modules it imports leave out (data files, modules imported by name at run time)
+    is then identified by no commit either."""
     return [
         f"evaluator {name!r}: the checkout of {entry['source'].get('path')} has "
-        "uncommitted changes, so the helper modules beside it are not identified"
+        "uncommitted changes, so files beside it that it does not import (data, modules imported "
+        "at run time) are not identified"
         for name, entry in implementations.items()
         if (entry["source"].get("revision") or {}).get("dirty")
     ]
@@ -314,8 +340,9 @@ def dirty_checkouts(implementations: Mapping[str, Mapping[str, Any]]) -> list[st
 
 def revision_warnings(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
     """The implementations whose git checkout is at another commit, or clean or dirty otherwise,
-    than when the study was made: their own file is unchanged, but helpers beside it may not
-    be. ``study`` and ``current`` hold the same implementations, by name."""
+    than when the study was made: their file and the modules it imports are unchanged, but
+    other files beside them may not be. ``study`` and ``current`` hold the same
+    implementations, by name."""
     warnings = []
     for name, old in study.items():
         new = current[name]
@@ -323,8 +350,8 @@ def revision_warnings(study: Mapping[str, Any], current: Mapping[str, Any]) -> l
         if then != now_:
             warnings.append(
                 f"evaluator {name!r}: the checkout of {new['source'].get('path')} is at "
-                f"{now_} now, at {then} when the study was made; its own file is unchanged, "
-                "helper modules beside it may not be"
+                f"{now_} now, at {then} when the study was made; its file and the modules it "
+                "imports are unchanged, other files beside them may not be"
             )
     return warnings
 
@@ -385,7 +412,9 @@ def check_record(
         raise OptimizationError(f"{where} does not hold the study's evaluators")
     for name, old in study["implementations"].items():
         new = implementations[name]
-        if _get(new, "source", "sha256") != old["source"].get("sha256"):
+        if _get(new, "source", "sha256") != old["source"].get("sha256") or _get(
+            new, "source", "helpers"
+        ) != old["source"].get("helpers"):
             raise OptimizationError(f"{where}: evaluator {name!r} ran other code than the study's")
         if _get(new, "metrics") != old.get("metrics"):
             raise OptimizationError(

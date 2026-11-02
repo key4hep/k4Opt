@@ -129,7 +129,7 @@ class CellCount:
     version = "1"
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
-        size = request.candidate["constants.ECal_cell_size"]
+        size = request.candidate["ecal_cell_size"]
         if not isinstance(size, float):
             return EvaluationResult.failed("ECal_cell_size must be a float")
         return EvaluationResult.valid(
@@ -215,7 +215,7 @@ model; the toy is a data-flow test.
 
 | Field | Meaning |
 | --- | --- |
-| `candidate` | parameter values for this evaluation, keyed by the canonical parameter identity (a geometry parameter: its canonical target such as `constants.ECal_cell_size`); booleans, integers, finite floats or strings. Not checked against bounds |
+| `candidate` | parameter values for this evaluation, keyed by the names the problem gives its parameters (`ecal_cell_size`); booleans, integers, finite floats or strings. Not checked against bounds |
 | `settings` | the evaluator-defined `settings` of its entry in `evaluators`, with the declared defaults and each quantity as a float in its declared unit; nested data, copied and read-only |
 | `collections` | role to the name of the collection it reads: the one the problem's entry names, or the declared default |
 | `inputs` | role name to local `Path` of an already prepared artifact: the main output of each stage it reads, by stage (`inputs["simulation"]`, an EDM4hep file), and the compact XML snapshot as `inputs["geometry"]`. The evaluator documents the roles it accepts |
@@ -456,28 +456,64 @@ module and returns the class, after checking that it is a class with an `evaluat
 `k4opt evaluate --evaluator` uses. The file is executed as ordinary Python: name only evaluators you trust. Like `python file.py`, its
 directory is put on `sys.path` (and stays there), so an evaluator can import helper modules next
 to it, at the top of the file or inside a method. Python caches modules by name for the whole
-process, so two evaluator files that each import a helper called `metrics` share whichever was
-imported first. For one study this is fine. When several studies run in one process, give the
-helpers unique names or, better, install the study as a package and use
-`package.module:Class`; the same holds for the several evaluators of one problem. It is not a
+process, so a second evaluator file that imports a helper `metrics` from its own directory would
+get the first one's: `load_evaluator` refuses it, naming both files. Evaluators in one directory
+share their helpers; evaluators in different directories need helpers of different names or,
+better, packages of their own (`package.module:Class`). A file is executed once per process:
+loading it again gives the same class, and raises `EvaluatorLoadError` if the file or a helper
+it imports changed since; load it in a new process then. It is not a
 registry; the `name` of each entry of `evaluators` stays a label that must equal the `name` of
 an evaluator that is loaded.
 
 `evaluator_source(cls)` reports the path, size and SHA-256 of the file that defines an
-evaluator class, taken when `load_evaluator` imports it, and whether those are the bytes Python
-`executed`. For `FILE.py:Class` they are (`executed: true`): the bytes hashed are the bytes
-compiled. For `package.module:Class` the file is read right after the import
-(`executed: false`); Python may have run a cached `.pyc` of it, which only an edit that keeps
-size and timestamp leaves stale. The class keeps that identity if its file is later edited or
+evaluator class (for `FILE.py:Class`, that file, also when it imports the class from a helper
+and perhaps changes it: the helper is among its `helpers`), taken when `load_evaluator` imports
+it, and whether those are the bytes Python
+`executed`. They are (`executed: true`): `load_evaluator` imports the file from the bytes of its
+source and hashes the bytes it compiled, never a cached `.pyc`, which an edit that keeps size
+and timestamp leaves stale. For `package.module:Class` it finds the module, the packages it is
+in and their local modules as Python's path finder would on `sys.path`, and imports them the
+same way; only a module that is no source file there (one another import finder provides, such
+as some editable installs, or a module in a ZIP archive) is imported by Python itself: read
+right after the import (`executed: false`), or not identified by a hash at all when it is no
+file on disk. Plain evaluation accepts such an identity; a study refuses it. The class keeps that identity if its file is later edited or
 removed. A class whose module was imported before `load_evaluator`, or reloaded since
 (`importlib.reload`), carries only its path: hashing the current file would not establish which
 code Python executed. `reference` is what loads the class again: `FILE.py:Class` with the
 file's absolute path, or `package.module:Class` as given; `null` for a class `load_evaluator`
-did not load. It is provenance only: a study compares the SHA-256, not where the file is. Only the defining file is
-identified, not imported helpers. To label those, `revision` holds the commit and dirty flag of
-the git checkout that tracks the file, taken at the same time: an edited helper module of that
-checkout shows as `dirty: true`. It is `null` for a file that no checkout tracks (outside one,
-or new or ignored in it), and helpers outside a checkout are not tracked at all.
+did not load. It is provenance only: a study compares the SHA-256, not where the file is.
+`helpers` holds the SHA-256 of each module the file imports from beside it, directly or through
+one another, by its path relative to the file's directory. For `package.module:Class` they are
+the modules of the same top-level package (and of the reference's) that it imports, together
+with the package `__init__.py` files Python runs to reach the class and the module the
+reference names, relative to the directory the package is in; a top-level `module:Class`
+counts the modules beside it, as a file does, unless it is installed (in `site-packages` or the
+standard library). They are found in the source, so an import inside a method counts as one at
+the top; a module imported by name at run time (`importlib.import_module`) and a data file the
+evaluator reads are not. Helpers are imported from their source too, so their hashes are those
+of the code that runs; they are otherwise imported as Python imports a source file, so a
+package's resources (`importlib.resources`, `pkgutil.get_data`) read as usual. Which file a
+helper is, Python's path finder decides on the current `sys.path` (a package before a module of
+its name, an earlier path entry before a later one), and k4opt never imports another file than
+it would: its source finder comes right after any import hook installed before Python's path
+finder, a helper beside the evaluator that Python would take from elsewhere (another file, or an
+import hook's module) refuses the load, one imported by another hook from the same file makes
+the identity `executed: false`, and a session stops if one is imported from another file
+later. Loading is refused for a helper that
+Python imported before and whose file changed since (it keeps running the old module), for one
+that something imported before `load_evaluator` read it, and for one that evaluator code loaded
+before imports by the same name from elsewhere, also only inside a method. A session checks
+before and after each candidate that every helper still holds what it did when the evaluator
+was loaded, so that one imported inside a method cannot run other code than the record says,
+that the module its reference names was not reloaded (`importlib.reload` executes it again in
+place, and the class's methods read its new globals), and that its class is still identified
+as then: loading, in the same process, another file that
+imports the same class and may change it identifies the class by that file and stops the
+session.
+To label those, `revision` holds the commit and dirty flag of the git checkout
+that tracks the file, taken at the same time: an edited file of that checkout shows as
+`dirty: true`. It is `null` for a file that no checkout tracks (outside one, or new or ignored
+in it).
 
 ## Lifecycle: a class, and an instance per candidate
 

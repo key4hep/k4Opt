@@ -47,6 +47,7 @@ from k4opt.optimization._optuna.storage import (
     open_storage,
     redacted,
     sqlite_file,
+    transient,
 )
 from k4opt.optimization._optuna.tell import (
     Progress,
@@ -192,6 +193,12 @@ def optimize(
         raise OptimizationError(f"seed must be in [0, 2**32), got {seed}")
     if resume and seed is not None:
         raise OptimizationError("a resumed study keeps the seed it was made with; leave out --seed")
+    if storage is not None and transient(storage):
+        raise OptimizationError(
+            f"--storage {redacted(storage)}: a SQLite database in memory or a temporary one keeps "
+            "no trials once k4opt exits, so the study could not be resumed or read; name a "
+            "database file, or leave out --storage to keep the trials in the study directory"
+        )
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
     # its workers stop with the study however it ends

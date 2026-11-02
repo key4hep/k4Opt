@@ -6,7 +6,7 @@ command line::
 
     k4opt evaluate examples/problem/cld-ecal-granularity.yaml \\
         --evaluator examples/evaluators/calo_photon.py:CaloPhoton \\
-        --param constants.ECal_cell_size=10.0 --output runs/cld-ecal-10mm
+        --param ecal_cell_size=10.0 --output runs/cld-ecal-10mm
 
 It only reads: ``stage = "simulation"`` makes k4opt run the problem's stages (the gun and
 ``ddsim``) first, check that the EDM4hep file holds the requested events and hand it over. The

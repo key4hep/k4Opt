@@ -10,7 +10,7 @@ admits it into a new run directory of its own and runs its tasks there
 it, each pipeline stage of each sample runs once and each evaluation measures its sample, or the
 candidate, with its new instance. Its record is then checked and published
 (:mod:`k4opt.execution._publish`). :func:`run_candidate` evaluates one candidate given as
-``REFERENCE=VALUE`` strings.
+``NAME=VALUE`` strings.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.problem.candidate import geometry_overrides, parse_candidate, validate_candidate
-from k4opt.problem.config import load_problem
+from k4opt.problem.config import resolve_problem
 from k4opt.problem.models import ProblemSpec
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES, plan_stages
@@ -229,7 +229,10 @@ class EvaluationSession:
         self._warnings = warnings
         self._timeout = timeout
         # what every task needs, wherever it runs
-        self._context = _context(baseline.spec, binding, timeout, baseline.externals)
+        problem = baseline.problem
+        self._context = _context(
+            problem.spec, binding, timeout, baseline.externals, problem.source, problem.catalog
+        )
         execution: dict[str, Json] = {"backend": "inline"}
         if workers is not None:
             execution = {"backend": "process", "workers": workers}
@@ -293,9 +296,12 @@ class EvaluationSession:
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         limit = _timeout(timeout)
         count, usable = _workers(workers), usable_cpus()
-        spec = load_problem(path)
+        problem = resolve_problem(path)
+        spec = problem.spec
         supplied = _supplied(spec, inputs or {})
-        binding = _bind_problem(spec, implementations, supplied)
+        binding = _bind_problem(
+            spec, implementations, supplied, directory=problem.directory, catalog=problem.catalog
+        )
         named: dict[str, Path] = {}
         for sample, context in binding.contexts.items():
             given = {task.name for task in supplied if task.sample == sample}
@@ -308,7 +314,7 @@ class EvaluationSession:
                     )
             named |= input_files(context, *targets, provided=given)
         named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
-        baseline = Baseline.take(path.absolute(), spec, binding, named)
+        baseline = Baseline.take(problem, binding, named)
         crowded = []
         slots = 1 if count is None else count
         for task in binding.plan.tasks:
@@ -398,7 +404,7 @@ class EvaluationSession:
     def check(self, candidate: Mapping[str, Scalar]) -> None:
         """Check ``candidate`` as :meth:`evaluate` does before it creates anything, and stop there.
 
-        ``candidate`` maps each canonical parameter reference to its value. Raises
+        ``candidate`` maps the name of each parameter to its value. Raises
         :class:`~k4opt.problem.CandidateError` for a value outside its domain, what creating an
         evaluator or its ``check()`` raises for the request this candidate gives it, and
         :class:`~k4opt.execution.RunError` for a file the stages or the geometry read, the
@@ -415,7 +421,7 @@ class EvaluationSession:
     ) -> RunOutcome:
         """Evaluate ``candidate`` into the new directory ``output`` and write its summary there.
 
-        ``candidate`` maps each canonical parameter reference to its value. ``run`` is recorded
+        ``candidate`` maps the name of each parameter to its value. ``run`` is recorded
         as the summary's ``run``: JSON-compatible data that says what the record was made for
         (a study and a trial, say). Raises a :class:`~k4opt.errors.K4OptError` before anything
         is created for what :meth:`check` refuses, an existing ``output`` or an unusable
@@ -561,7 +567,7 @@ class EvaluationSession:
         values, key = validate_candidate(spec, candidate)
         self._baseline.verify()  # first: a file that is gone changed, more than it is missing
         prepared = _preflight(self._binding, values)
-        overrides = geometry_overrides(spec, values)
+        overrides = geometry_overrides(self._baseline.problem, values)
         return values, key, prepared, overrides
 
 
@@ -635,7 +641,7 @@ def run_candidate(
     workers: int | Literal["auto", "inline"] = "inline",
     warn: Callable[[str], None] | None = None,
 ) -> RunOutcome:
-    """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
+    """Evaluate the candidate given as ``NAME=VALUE`` strings; ``output`` must not exist.
 
     :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
     ``SAMPLE/STAGE=FILE`` strings, ``timeout`` and ``workers`` those of

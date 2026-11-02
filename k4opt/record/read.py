@@ -31,7 +31,7 @@ from k4opt.frozen import thaw
 from k4opt.problem.candidate import validate_candidate
 from k4opt.problem.contract import Demands, MetricKey, check_bindings, check_entries, check_result
 from k4opt.problem.errors import CandidateError
-from k4opt.problem.models import MetricRef, ProblemSpec
+from k4opt.problem.models import MetricRef, ProblemSpec, ordered
 from k4opt.problem.plan import (
     GEOMETRY,
     Kind,
@@ -94,8 +94,9 @@ def _check_problem(spec: ProblemSpec, record: Mapping[str, object]) -> None:
     definition = _mapping(
         _mapping(record.get("problem"), "problem").get("definition"), "definition"
     )
-    expected = _plain(spec.to_dict())
-    assert isinstance(expected, dict)
+    plain = _plain(spec.to_dict())
+    assert isinstance(plain, dict)
+    expected, definition = ordered(plain), ordered(definition)  # in the order the problem defines
     keys = dict.fromkeys([*expected, *definition])
     differ = [k for k in keys if k != "name" and definition.get(k) != expected.get(k)]
     if differ:

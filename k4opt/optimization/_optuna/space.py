@@ -29,7 +29,7 @@ def _float_bound(name: str, value: int | float) -> float:
 
 
 def search_space(spec: ProblemSpec) -> dict[str, BaseDistribution]:
-    """The distribution of each parameter, by canonical reference, in problem order.
+    """The distribution of each parameter, by name, in problem order.
 
     Continuous parameters are sampled uniformly between their bounds, with no log scale and no
     step; their bounds must be floats exactly, and so must their range. Integer bounds must stay
@@ -38,7 +38,7 @@ def search_space(spec: ProblemSpec) -> dict[str, BaseDistribution]:
     """
     space: dict[str, BaseDistribution] = {}
     for parameter in spec.parameters:
-        name = parameter.geometry.canonical_target
+        name = parameter.name
         if parameter.kind == "categorical":
             assert parameter.choices is not None
             space[name] = CategoricalDistribution(list(parameter.choices))

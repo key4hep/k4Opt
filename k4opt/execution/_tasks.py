@@ -39,7 +39,7 @@ from k4opt.evaluation import (
 from k4opt.execution._files import Stat
 from k4opt.execution._stages import StageContext
 from k4opt.frozen import FrozenMap, Json
-from k4opt.geometry import Override
+from k4opt.geometry import Catalog, GeometrySource, Override
 from k4opt.problem.contract import MetricKey
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
 from k4opt.problem.plan import Task, TaskId
@@ -74,15 +74,20 @@ class Measuring:
 
 @dataclass(frozen=True, slots=True)
 class SessionContext:
-    """What every task of a session needs: the problem ``spec`` (with its geometry source), the
-    stage conditions of each sample (``contexts``, the session's time limit included), what each
-    evaluation must measure (``evaluations``) and what the external references of the session's
-    geometry read (``externals``), which a candidate's own references are compared with."""
+    """What every task of a session needs: the problem ``spec``, the stage conditions of each
+    sample (``contexts``, the session's time limit included), what each evaluation must measure
+    (``evaluations``), what the external references of the session's geometry read
+    (``externals``), which a candidate's own references are compared with, and the geometry
+    candidates start from (``source``, discovered as ``catalog``; none where every candidate is
+    given its geometry)."""
 
     spec: ProblemSpec
     contexts: Mapping[str, StageContext]
     evaluations: Mapping[TaskId, Measuring]
     externals: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    source: GeometrySource | None = None
+    # what discovering ``source`` gives, kept to discover it once: not compared
+    catalog: Catalog | None = field(default=None, compare=False)
     # the collection names of each stage file, by path and stat, so that a file several
     # evaluations read is listed once; a cache of this process, never part of a description,
     # which keeps the files of the last few candidates only

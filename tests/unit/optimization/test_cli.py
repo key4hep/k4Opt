@@ -43,7 +43,7 @@ def test_the_command_prints_each_trial_and_the_study(
         ["trial", "1:"],
         ["trial", "2:"],
     ]
-    assert all("constants.InnerTracker_Barrel_radius_1=" in line for line in lines[:3])
+    assert all("radius=" in line for line in lines[:3])
     assert all(
         "test.trade_off/analysis/a=" in line and "test.trade_off/analysis/b=" in line
         for line in lines[:3]
@@ -247,7 +247,10 @@ def test_study_show_trial_and_export_read_a_study_and_change_nothing(
     assert lines[0].startswith("study:      trade-")
     assert lines[1].startswith("id:         ")
     assert lines[2] == f"directory:  {output} (trials in study.journal)"
-    assert lines[3] == f"parameters: {RADIUS}  continuous [100.0, 600.0] mm"
+    assert lines[3] == (
+        f"parameters: {RADIUS}  continuous [100.0, 600.0] mm  "
+        "(constants.InnerTracker_Barrel_radius_1)"
+    )
     assert lines[4:6] == [
         "objectives: test.trade_off/analysis/a  minimize  (mm)",
         "            test.trade_off/analysis/b  minimize  (1/mm)",

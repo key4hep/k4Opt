@@ -47,9 +47,10 @@ from tests.support import stack
 from tests.support.common import scientific
 from tests.support.evaluators import CELL_COUNT, cell_count, implementations, worker_probe
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
+from tests.support.imports import FromFile
 from tests.support.stack import alive, eventually
 
-RADIUS = "constants.InnerTracker_Barrel_radius_1"
+RADIUS = "radius"
 SUPPORT = "InnerTrackerSupportCAD.shape.ref"  # cad/support.stl in the mini geometry
 REPO = Path(__file__).resolve().parents[3]
 
@@ -81,8 +82,14 @@ def write_problem(
     as each of ``probes`` (``required`` or a diagnostic); an objective on ``gamma``."""
     doc = copy.deepcopy(doc)
     doc["geometry"] = MINI_COMPACT
-    doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
-    doc["parameters"][0]["bounds"] = [100.0, 600.0]
+    doc["parameters"] = {
+        RADIUS: {
+            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "type": "continuous",
+            "bounds": [100.0, 600.0],
+            "unit": "mm",
+        }
+    }
     gamma = doc["samples"]["gamma"]
     gamma["simulation"].update(events=3, seed=5)
     pion = copy.deepcopy(gamma)
@@ -966,17 +973,30 @@ def test_an_evaluator_given_as_it_is_evaluates_inline(
     assert stack.workers() == []
 
 
-@pytest.mark.parametrize("differs", ["evaluator file", "k4opt code", "KEY4HEP_STACK"])
+@pytest.mark.parametrize(
+    "differs", ["evaluator file", "evaluator helper", "k4opt code", "KEY4HEP_STACK"]
+)
 def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
-    tmp_path: Path, problem: Path, monkeypatch: pytest.MonkeyPatch, differs: str
+    tmp_path: Path,
+    problem: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    differs: str,
 ) -> None:
     source = REPO / "tests" / "support" / "cell_count.py"
     edited = tmp_path / "edited_count.py"
-    edited.write_bytes(source.read_bytes())
+    helper = tmp_path / f"count_helper_{differs.replace(' ', '_')}.py"  # one name per helper file
+    helper.write_text("value = 1\n")
+    edited.write_text(f"import {helper.stem}\n" + source.read_text())
+    request.addfinalizer(lambda: sys.modules.pop(helper.stem, None))
     implementation = load_evaluator(f"{edited}:CellCount")
+    changed = rf"evaluator {edited}:CellCount: {edited} or a module it imports changed after the"
     if differs == "evaluator file":
-        edited.write_text(source.read_text() + "# edited after it was loaded\n")
-        message = rf"evaluator {edited}:CellCount: {edited} changed after the session loaded it"
+        edited.write_text(edited.read_text() + "# edited after it was loaded\n")
+        message = changed
+    elif differs == "evaluator helper":
+        helper.write_text("value = 2\n")
+        message = changed
     elif differs == "k4opt code":
         monkeypatch.setattr(_worker, "code_fingerprint", lambda: "another checkout")
         message = "a worker process runs other k4opt code than the session"
@@ -989,6 +1009,23 @@ def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
         )
         message = "KEY4HEP_STACK is .* in a worker process, not '/other/stack' as in the session"
     with pytest.raises(RunError, match=message):
+        EvaluationSession.open(problem, [implementation], workers=2)
+    assert stack.workers() == []
+
+
+def test_workers_refuse_an_evaluator_whose_code_here_is_not_known(
+    tmp_path: Path, problem: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    # imported here through a hook (perhaps from a cached .pyc), a worker would load it from its
+    # source: the same hash, perhaps other code
+    module = "count_through_a_hook"
+    request.addfinalizer(lambda: sys.modules.pop(module, None))
+    file = tmp_path / f"{module}.py"
+    file.write_bytes((REPO / "tests" / "support" / "cell_count.py").read_bytes())
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sys, "meta_path", [FromFile(module, file), *sys.meta_path])
+    implementation = load_evaluator(f"{module}:CellCount")
+    with pytest.raises(RunError, match="the code it runs here is not known to be the source"):
         EvaluationSession.open(problem, [implementation], workers=2)
     assert stack.workers() == []
 
@@ -1016,9 +1053,11 @@ def test_concurrent_candidates_that_read_one_reference_alike_are_both_recorded_e
     problem = write_problem(tmp_path / "cad.yaml", doc)
     data = yaml.safe_load(problem.read_text())
     choices = ["cad/support.stl", "${CAD}/b.stl"]
-    data["parameters"].append(
-        {"geometry": {"target": SUPPORT}, "type": "categorical", "choices": choices}
-    )
+    data["parameters"]["support"] = {
+        "geometry": {"target": SUPPORT},
+        "type": "categorical",
+        "choices": choices,
+    }
     problem.write_text(yaml.safe_dump(data))
     summary = {name: str(tmp_path / name / SUMMARY_NAME) for name in "ab"}
     told: dict[str, Any] = {
@@ -1030,7 +1069,7 @@ def test_concurrent_candidates_that_read_one_reference_alike_are_both_recorded_e
         None: {"a.gamma": {"await": ["b.gamma.started"]}},
     }[first]
     stack.install(monkeypatch, marks, **told)
-    candidate = {RADIUS: 450.0, SUPPORT: "${CAD}/b.stl"}
+    candidate = {RADIUS: 450.0, "support": "${CAD}/b.stl"}
 
     def requests() -> Iterator[RunRequest]:
         yield RunRequest(candidate, tmp_path / "a")

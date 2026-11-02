@@ -115,8 +115,8 @@ def _front_line(trial: TrialResult, results: StudyResults, style: Style) -> str:
     assert trial.assessment is not None
     assert trial.assessment.objectives is not None
     candidate = [
-        style.dim(f"{printable(p.geometry.canonical_target)}=")
-        + style.cyan(_measured(trial.candidate[p.geometry.canonical_target], p.unit, exact=False))
+        style.dim(f"{printable(p.name)}=")
+        + style.cyan(_measured(trial.candidate[p.name], p.unit, exact=False))
         for p in results.problem.parameters
     ]
     objectives = [
@@ -139,7 +139,8 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
     directory = f"{printable(results.directory)} (trials in {printable(where)})"
     _print(out, style, "directory", [directory])
     parameters = [
-        f"{printable(p.geometry.canonical_target)}  {_domain(p)}" for p in spec.parameters
+        f"{printable(p.name)}  {_domain(p)}  ({printable(p.geometry.canonical_target)})"
+        for p in spec.parameters
     ]
     _print(out, style, "parameters", parameters)
     objectives = [
@@ -184,10 +185,10 @@ def render_trial(
     _print(out, style, "trial", [f"{style.bold(str(trial.number))}: {', '.join(state)}"])
     _print(out, style, "study", [printable(f"{results.name}, {results.study_path}")])
     candidate = [
-        f"{printable(p.geometry.canonical_target)} = "
+        f"{printable(p.name)} = "
         + (
-            _measured(trial.candidate[p.geometry.canonical_target], p.unit, exact=True)
-            if p.geometry.canonical_target in trial.candidate
+            _measured(trial.candidate[p.name], p.unit, exact=True)
+            if p.name in trial.candidate
             else "not proposed yet"
         )
         for p in spec.parameters

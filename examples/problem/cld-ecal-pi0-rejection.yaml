@@ -6,7 +6,8 @@ environment:
   key4hep: {channel: nightly, version: "2026-10-20"}
 geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 parameters:
-  - geometry: {constant: ECal_cell_size}
+  ecal_cell_size:
+    geometry: {constant: ECal_cell_size}
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm

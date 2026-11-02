@@ -35,8 +35,10 @@ def evaluate_candidate(
     *,
     inputs: Mapping[str, Path] | None = None,
     workdir: Path | None = None,
+    directory: Path | None = None,
 ) -> CandidateRecord:
-    """Evaluate one complete ``candidate`` of ``spec`` with an instance of each implementation.
+    """Evaluate one complete ``candidate`` of ``spec``, whose file is in ``directory``, with an
+    instance of each implementation.
 
     The candidate maps each canonical parameter reference to a scalar; ``implementations`` (an
     evaluator class, say) implement the problem's ``evaluators``, in any order. Before any stage
@@ -70,7 +72,7 @@ def evaluate_candidate(
                 f"{', '.join(STAGE_TYPES)}"
             )
         supplied[stage_task(stage, sample)] = Path(os.path.abspath(path))
-    binding = _bind_problem(spec, implementations, supplied)
+    binding = _bind_problem(spec, implementations, supplied, directory=directory)
     planned = {task.id for task in binding.plan.of(Kind.STAGE)}
     for task in supplied:  # a file no task reads would be dropped without a word
         if task not in planned:

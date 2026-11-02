@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import shutil
 import subprocess
@@ -13,7 +12,8 @@ import pytest
 import yaml
 
 from k4opt.geometry import GeometryError, GeometrySource, IncludeError, SourceError
-from k4opt.problem import ProblemConfigError, ProblemSpec, load_problem, parse_problem
+from k4opt.problem import ProblemConfigError, load_problem, parse_problem
+from k4opt.problem.config import resolve_problem
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
 pytestmark = pytest.mark.usefixtures("mini_k4geo")
@@ -27,7 +27,8 @@ def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def problem_doc(doc: dict[str, Any]) -> dict[str, Any]:
     doc["geometry"] = MINI_COMPACT
-    doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
+    cell = doc["parameters"].pop("ecal_cell_size")
+    doc["parameters"]["radius"] = cell | {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}}
     return doc
 
 
@@ -37,37 +38,37 @@ def write_problem(tmp_path: Path, doc: dict[str, Any]) -> Path:
     return path
 
 
-def targets(problem: ProblemSpec) -> tuple[Any, ...]:
-    return problem._targets
-
-
 def test_load_resolves_a_constant(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
-    problem = load_problem(write_problem(tmp_path, problem_doc))
-    (target,) = targets(problem)
+    problem = resolve_problem(write_problem(tmp_path, problem_doc))
+    (target,) = problem.targets
     assert target.target == "constants.InnerTracker_Barrel_radius_1"
     assert target.value == "400*mm"  # raw text, neither evaluated nor converted
     assert target.file == "compact/det_v1/tracker.xml"
     assert target.line is not None
-    assert problem._source == GeometrySource(MINI_COMPACT)
+    assert problem.source == GeometrySource(MINI_COMPACT)
+    assert problem.path == tmp_path / "problem.yaml"
+    assert problem.directory == tmp_path
 
 
 def test_load_resolves_a_structured_target(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
     ref = "InnerTrackerBarrel.layer[id=1].rphi_layout.nphi"
-    problem_doc["parameters"][0] = {
+    problem_doc["parameters"]["radius"] = {
         "geometry": {"target": ref},
         "type": "integer",
         "bounds": [10, 100],
     }
-    (target,) = targets(load_problem(write_problem(tmp_path, problem_doc)))
+    (target,) = resolve_problem(write_problem(tmp_path, problem_doc)).targets
     assert (target.target, target.attribute, target.value) == (ref, "nphi", "43*2")
 
 
 def test_parameters_resolve_in_order_with_one_discovery(
     tmp_path: Path, problem_doc: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    problem_doc["parameters"].append(
-        {"geometry": {"constant": "world_side"}, "type": "continuous", "bounds": [1.0, 2.0]}
-    )
+    problem_doc["parameters"]["world_side"] = {
+        "geometry": {"constant": "world_side"},
+        "type": "continuous",
+        "bounds": [1.0, 2.0],
+    }
     calls: list[GeometrySource] = []
     discover = GeometrySource.discover
 
@@ -76,14 +77,13 @@ def test_parameters_resolve_in_order_with_one_discovery(
         return discover(self)
 
     monkeypatch.setattr(GeometrySource, "discover", counting)
-    problem = load_problem(write_problem(tmp_path, problem_doc))
+    problem = resolve_problem(write_problem(tmp_path, problem_doc))
     assert len(calls) == 1
-    assert [t.target for t in targets(problem)] == [
+    assert [t.target for t in problem.targets] == [
         "constants.InnerTracker_Barrel_radius_1",
         "constants.world_side",
     ]
-    assert problem._catalog is not None
-    assert problem._catalog.root == problem._source.root  # type: ignore[union-attr]
+    assert problem.catalog.root == problem.source.root
 
 
 @pytest.mark.parametrize(
@@ -97,20 +97,21 @@ def test_parameters_resolve_in_order_with_one_discovery(
 def test_missing_or_malformed_target(
     tmp_path: Path, problem_doc: dict[str, Any], selector: dict[str, str], message: str
 ) -> None:
-    problem_doc["parameters"].insert(0, copy.deepcopy(problem_doc["parameters"][0]))
-    problem_doc["parameters"][1]["geometry"] = selector
-    with pytest.raises(ProblemConfigError, match=r"parameters\[1\]\.geometry") as info:
+    problem_doc["parameters"]["other"] = problem_doc["parameters"]["radius"] | {
+        "geometry": selector
+    }
+    with pytest.raises(ProblemConfigError, match=r"parameters\.other\.geometry") as info:
         load_problem(write_problem(tmp_path, problem_doc))
     assert message in str(info.value)
     assert isinstance(info.value.__cause__, GeometryError)
 
 
 def test_ambiguous_target_is_not_guessed(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
-    problem_doc["parameters"][0]["geometry"] = {"constant": "Tracker_cooling_gap"}
+    problem_doc["parameters"]["radius"]["geometry"] = {"constant": "Tracker_cooling_gap"}
     with pytest.raises(ProblemConfigError) as info:
         load_problem(write_problem(tmp_path, problem_doc))
     message = str(info.value)
-    assert "parameters[0].geometry" in message
+    assert "parameters.radius.geometry" in message
     assert "'constants.Tracker_cooling_gap'" in message
     assert "cannot currently be selected unambiguously" in message
     assert "compact/det_v1/tracker.xml" in message
@@ -147,20 +148,16 @@ def test_parse_problem_needs_no_geometry(
 ) -> None:
     monkeypatch.delenv("K4GEO")
     problem_doc["geometry"] = "does/not/exist.xml"
-    problem = parse_problem(problem_doc)
-    assert (problem._source, problem._catalog, problem._targets) == (None, None, ())
+    assert parse_problem(problem_doc).geometry == "does/not/exist.xml"
 
 
-def test_runtime_state_is_not_part_of_the_problem(
-    tmp_path: Path, problem_doc: dict[str, Any]
-) -> None:
+def test_a_loaded_problem_is_the_parsed_one(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
     loaded = load_problem(write_problem(tmp_path, problem_doc))
     parsed = parse_problem(problem_doc, source=tmp_path / "problem.yaml")
     assert loaded == parsed
     assert hash(loaded) == hash(parsed)
     assert loaded.to_dict() == parsed.to_dict()
     assert parse_problem(loaded.to_dict()) == loaded
-    assert "_catalog" not in repr(loaded)
 
 
 def _tree_hash(root: Path) -> dict[str, str]:

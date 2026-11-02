@@ -38,7 +38,7 @@ def trial(number: int, status: str = "valid", **fields: Any) -> TrialReport:
     if status == "valid":
         fields = {"feasible": True, "objectives": {"test.trade_off/analysis/a": 1 / 3}, **fields}
     return TrialReport(
-        number, Path(f"trial-{number:06d}"), {"constants.x": 498.78582224598927}, status, **fields
+        number, Path(f"trial-{number:06d}"), {"x": 498.78582224598927}, status, **fields
     )
 
 
@@ -59,7 +59,7 @@ def progress(
 
 def test_a_trial_is_one_line_and_its_values_are_shown_to_6_significant_digits() -> None:
     assert trial_line(trial(0)) == (
-        "trial 0:   valid    feasible    constants.x=498.786  test.trade_off/analysis/a=0.333333"
+        "trial 0:   valid    feasible    x=498.786  test.trade_off/analysis/a=0.333333"
     )
     failed = trial(12, "failed", record="r", message="ddsim exited with status 1")
     assert trial_line(failed) == (

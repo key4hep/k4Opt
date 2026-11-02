@@ -99,7 +99,7 @@ k4opt evaluate examples/problem/cld-ecal-pi0-rejection.yaml \
     --evaluator examples/evaluators/shower_shape.py:ShowerShape \
     --evaluator examples/evaluators/separation.py:Separation \
     --evaluator examples/evaluators/ecal_channels.py:EcalChannels \
-    --param constants.ECal_cell_size=8.0 --output runs/cld-pi0-8mm
+    --param ecal_cell_size=8.0 --output runs/cld-pi0-8mm
 ```
 
 Use the same three `--evaluator` arguments with `k4opt optimize`, replacing `--param` with

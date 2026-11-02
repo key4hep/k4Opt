@@ -1,6 +1,6 @@
 """Command-line interface of the problem component: ``k4opt evaluate``.
 
-    k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] [--param REFERENCE=VALUE ...]
+    k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] [--param NAME=VALUE ...]
         [--input SAMPLE/STAGE=FILE ...] [--timeout SECONDS] [--workers N|auto|inline] --output DIR
 
 A thin wrapper over :func:`k4opt.execution._session.run_candidate`; :func:`register` plugs it into
@@ -53,8 +53,8 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "--param",
         action="append",
         default=[],
-        metavar="REFERENCE=VALUE",
-        help="value of a declared parameter, e.g. constants.ECal_cell_size=6.0 (repeatable)",
+        metavar="NAME=VALUE",
+        help="value of a parameter of the problem, e.g. ecal_cell_size=6.0 (repeatable)",
     )
     evaluate.add_argument(
         "--input",

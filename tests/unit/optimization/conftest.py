@@ -15,7 +15,7 @@ import yaml
 
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
-RADIUS = "constants.InnerTracker_Barrel_radius_1"
+RADIUS = "radius"
 A = ("analysis", "a")
 B = ("analysis", "b")
 
@@ -41,15 +41,15 @@ def problem_document(
         "name": "trade",
         "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
         "geometry": MINI_COMPACT,
-        "parameters": [
-            parameter
+        "parameters": {
+            RADIUS: parameter
             or {
                 "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
                 "type": "continuous",
                 "bounds": [100.0, 600.0],
                 "unit": "mm",
             }
-        ],
+        },
         "evaluators": evaluators or [{"name": "test.trade_off", "version": "1"}],
         "objectives": [
             dict(zip(("evaluator", "stage", "metric", "direction")[-len(o) :], o, strict=True))

@@ -26,7 +26,7 @@ from k4opt.problem import CandidateError, ProblemSpec, parse_problem
 from tests.support.evaluate import evaluate_candidate
 from tests.support.evaluators import implementations
 
-CELL = "constants.ECal_cell_size"
+CELL = "ecal_cell_size"
 
 
 class Toy:
@@ -58,17 +58,18 @@ def evaluate_one(
     return record
 
 
-def make(doc: dict[str, Any], *parameters: dict[str, Any]) -> ProblemSpec:
+def make(doc: dict[str, Any], *parameters: tuple[str, dict[str, Any]]) -> ProblemSpec:
     """``doc`` with ``parameters``, measured by a toy that reads no stage, so it has none."""
     doc = copy.deepcopy(doc)
     if parameters:
-        doc["parameters"] = list(parameters)
+        doc["parameters"] = dict(parameters)
     del doc["samples"], doc["evaluators"][0]["stage"]
     return parse_problem(doc)
 
 
-def param(name: str, kind: str, **extra: Any) -> dict[str, Any]:
-    return {"geometry": {"constant": name}, "type": kind, **extra}
+def param(name: str, kind: str, **extra: Any) -> tuple[str, dict[str, Any]]:
+    """The parameter ``name``, setting the constant of that name."""
+    return name, {"geometry": {"constant": name}, "type": kind, **extra}
 
 
 @pytest.fixture
@@ -102,7 +103,7 @@ def test_success_builds_request_and_record(spec: ProblemSpec, tmp_path: Path) ->
     ("candidate", "match"),
     [
         ({}, CELL),
-        ({CELL: 5.0, "constants.Other": 1}, "constants.Other"),
+        ({CELL: 5.0, "other": 1}, "other"),
         ({CELL: 5.0, 3: 1}, "keys must be strings"),
         ([(CELL, 5.0)], "mapping"),
         ({CELL: "5"}, CELL),
@@ -135,13 +136,13 @@ def test_continuous_bounds_inclusive_and_numeric_equivalence(spec: ProblemSpec) 
 
 def test_negative_zero_and_zero(doc: dict[str, Any]) -> None:
     s = make(doc, param("x", "continuous", bounds=[-1, 1]))
-    keys = {evaluate_one(s, {"constants.x": v}, Toy()).candidate_key for v in (0, 0.0, -0.0)}
-    assert keys == {(("constants.x", "continuous", "num", "0"),)}
+    keys = {evaluate_one(s, {"x": v}, Toy()).candidate_key for v in (0, 0.0, -0.0)}
+    assert keys == {(("x", "continuous", "num", "0"),)}
 
 
 def test_integer_parameter(doc: dict[str, Any]) -> None:
     s = make(doc, param("n", "integer", bounds=[1, 10**400]))
-    ref = "constants.n"
+    ref = "n"
     for good in (1, 10, 10**400):
         record = evaluate_one(s, {ref: good}, Toy())
         assert record.request.candidate[ref] == good  # no float conversion, no overflow
@@ -153,8 +154,8 @@ def test_integer_parameter(doc: dict[str, Any]) -> None:
 
 def test_huge_continuous_int_stays_exact(doc: dict[str, Any]) -> None:
     s = make(doc, param("x", "continuous", bounds=[0, 10**400]))
-    a = evaluate_one(s, {"constants.x": 10**399 + 1}, Toy()).candidate_key
-    b = evaluate_one(s, {"constants.x": 10**399}, Toy()).candidate_key
+    a = evaluate_one(s, {"x": 10**399 + 1}, Toy()).candidate_key
+    b = evaluate_one(s, {"x": 10**399}, Toy()).candidate_key
     assert a != b
 
 
@@ -165,24 +166,24 @@ def test_categorical_kinds(doc: dict[str, Any]) -> None:
         param("b", "categorical", choices=[True, False]),
         param("n", "categorical", choices=[1, 2.5]),
     )
-    base = {"constants.s": "1", "constants.b": True, "constants.n": 1}
+    base = {"s": "1", "b": True, "n": 1}
     record = evaluate_one(s, base, Toy())
     assert [part[2:] for part in record.candidate_key] == [
         ("str", "1"),
         ("bool", "true"),
         ("num", "1e0"),
     ]
-    same = evaluate_one(s, {**base, "constants.n": 1.0}, Toy())
+    same = evaluate_one(s, {**base, "n": 1.0}, Toy())
     assert same.candidate_key == record.candidate_key
     for bad in (
-        {"constants.s": 1},
-        {"constants.s": "b"},
-        {"constants.b": 1},
-        {"constants.b": "true"},
-        {"constants.n": True},
-        {"constants.n": "1"},
-        {"constants.n": 3},
-        {"constants.n": float("nan")},
+        {"s": 1},
+        {"s": "b"},
+        {"b": 1},
+        {"b": "true"},
+        {"n": True},
+        {"n": "1"},
+        {"n": 3},
+        {"n": float("nan")},
     ):
         with pytest.raises(CandidateError):
             evaluate_one(s, {**base, **bad}, Toy())
@@ -191,25 +192,25 @@ def test_categorical_kinds(doc: dict[str, Any]) -> None:
 def test_bool_choice_not_confused_with_numeric_one(doc: dict[str, Any]) -> None:
     sb = make(doc, param("p", "categorical", choices=[True, False]))
     sn = make(doc, param("p", "categorical", choices=[0, 1]))
-    assert evaluate_one(sb, {"constants.p": True}, Toy()).candidate_key != (
-        evaluate_one(sn, {"constants.p": 1}, Toy()).candidate_key
+    assert evaluate_one(sb, {"p": True}, Toy()).candidate_key != (
+        evaluate_one(sn, {"p": 1}, Toy()).candidate_key
     )
     with pytest.raises(CandidateError):
-        evaluate_one(sn, {"constants.p": True}, Toy())
+        evaluate_one(sn, {"p": True}, Toy())
 
 
 def test_key_and_request_follow_problem_order(doc: dict[str, Any]) -> None:
     s = make(doc, param("b", "integer", bounds=[0, 5]), param("a", "integer", bounds=[0, 5]))
-    record = evaluate_one(s, {"constants.a": 1, "constants.b": 2}, Toy())
-    assert list(record.request.candidate) == ["constants.b", "constants.a"]
-    assert [part[0] for part in record.candidate_key] == ["constants.b", "constants.a"]
+    record = evaluate_one(s, {"a": 1, "b": 2}, Toy())
+    assert list(record.request.candidate) == ["b", "a"]
+    assert [part[0] for part in record.candidate_key] == ["b", "a"]
 
 
 def test_kind_is_part_of_the_key(doc: dict[str, Any]) -> None:
     c = make(doc, param("p", "continuous", bounds=[0, 5]))
     i = make(doc, param("p", "integer", bounds=[0, 5]))
-    assert evaluate_one(c, {"constants.p": 1}, Toy()).candidate_key != (
-        evaluate_one(i, {"constants.p": 1}, Toy()).candidate_key
+    assert evaluate_one(c, {"p": 1}, Toy()).candidate_key != (
+        evaluate_one(i, {"p": 1}, Toy()).candidate_key
     )
 
 
@@ -335,7 +336,7 @@ def test_evaluation_package_stays_independent_of_problem() -> None:
 
 def test_float_and_int_with_different_values_have_different_keys(doc: dict[str, Any]) -> None:
     s = make(doc, param("x", "continuous", bounds=[0, 10**30]))
-    ref = "constants.x"
+    ref = "x"
     exact = evaluate_one(s, {ref: 10**23}, Toy()).candidate_key
     rounded = evaluate_one(s, {ref: 1e23}, Toy()).candidate_key
     assert 10**23 != 1e23

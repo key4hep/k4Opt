@@ -11,8 +11,8 @@ sensible, is deliberately not decided. See ``docs/problem.md``.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -49,6 +49,7 @@ from k4opt.problem.models import (
     Parameter,
     ParameterKind,
     ProblemSpec,
+    ResolvedProblem,
 )
 from k4opt.yamlio import UniqueKeyLoader
 
@@ -76,6 +77,7 @@ _CHANNELS = ("release", "nightly")
 _KINDS = ("continuous", "integer", "categorical")
 _DIRECTIONS = ("minimize", "maximize")
 _SCHEMA_FAMILY = "k4opt.problem/"
+_PARAMETER_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
@@ -85,8 +87,14 @@ def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
     discovered once; every ``parameters[*].geometry`` must then select exactly one attribute
     of it. Raises :class:`ProblemConfigError` for an invalid document or an unresolvable
     target and :class:`~k4opt.geometry.GeometryError` when the geometry itself cannot be
-    located or read. The result keeps the discovered geometry for later use.
+    located or read.
     """
+    return resolve_problem(path).spec
+
+
+def resolve_problem(path: str | os.PathLike[str]) -> ResolvedProblem:
+    """:func:`load_problem`, keeping what it resolved: the discovered geometry and the attribute
+    each parameter sets."""
     problem_path = Path(path).expanduser()
     if not problem_path.is_file():
         raise ProblemConfigError(f"{problem_path}: problem file not found")
@@ -121,14 +129,14 @@ def parse_problem(data: object, *, source: str | os.PathLike[str] | None = None)
         raise ProblemConfigError(f"{where}document is nested too deeply") from exc
 
 
-def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ProblemSpec:
-    """Return ``spec`` with its geometry discovered once and every parameter target resolved."""
+def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ResolvedProblem:
+    """``spec`` with its geometry discovered once and every parameter target resolved."""
     source = GeometrySource(spec.geometry)
     catalog = source.discover()
     targets = []
-    for index, parameter in enumerate(spec.parameters):
+    for parameter in spec.parameters:
         reference = parameter.geometry.canonical_target
-        where = f"{problem_path}: parameters[{index}].geometry: target {reference!r}"
+        where = f"{problem_path}: parameters.{parameter.name}.geometry: target {reference!r}"
         try:
             targets.append(catalog.lookup(reference))
         except AmbiguousTargetError as exc:
@@ -144,13 +152,7 @@ def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ProblemSpec:
             raise ProblemConfigError(
                 f"{where} cannot be resolved in {source.compact}: {exc}"
             ) from exc
-    return replace(
-        spec,
-        _source=source,
-        _catalog=catalog,
-        _targets=tuple(targets),
-        _directory=problem_path.parent.absolute(),
-    )
+    return ResolvedProblem(spec, problem_path.absolute(), source, catalog, tuple(targets))
 
 
 # --- helpers ---------------------------------------------------------------------------
@@ -223,23 +225,31 @@ def _environment(raw: object) -> Environment:
 
 
 def _parameters(raw: object) -> tuple[Parameter, ...]:
-    items = _sequence(raw, "parameters")
-    if not items:
-        raise _fail("parameters", "must list at least one parameter")
-    parameters = [_parameter(item, f"parameters[{i}]") for i, item in enumerate(items)]
-    first: dict[str, int] = {}
-    for index, parameter in enumerate(parameters):
+    m = _mapping(raw, "parameters", tuple(raw) if isinstance(raw, Mapping) else ())
+    if not m:
+        raise _fail("parameters", "must name at least one parameter")
+    parameters = []
+    first: dict[str, str] = {}
+    for name, value in m.items():
+        if not _PARAMETER_NAME.fullmatch(name):
+            raise _fail(
+                "parameters",
+                f"parameter name {_show(name)} must start with a lowercase letter and hold only "
+                "lowercase letters, digits and '_', at most 64 characters",
+            )
+        parameter = _parameter(name, value, f"parameters.{name}")
         target = parameter.geometry.canonical_target
         if target in first:
             raise _fail(
-                f"parameters[{index}]",
-                f"duplicates parameters[{first[target]}] (target {target!r})",
+                f"parameters.{name}.geometry",
+                f"sets the target {target!r} of parameters.{first[target]} too",
             )
-        first[target] = index
+        first[target] = name
+        parameters.append(parameter)
     return tuple(parameters)
 
 
-def _parameter(raw: object, path: str) -> Parameter:
+def _parameter(name: str, raw: object, path: str) -> Parameter:
     m = _mapping(raw, path, ("geometry", "type", "bounds", "choices", "unit"), ("geometry", "type"))
     selector = _selector(m["geometry"], f"{path}.geometry")
     kind = cast(ParameterKind, _choice(m["type"], f"{path}.type", _KINDS))
@@ -251,12 +261,13 @@ def _parameter(raw: object, path: str) -> Parameter:
                 raise _fail(path, f"{key!r} is not allowed for a categorical parameter")
         if "choices" not in m:
             raise _fail(path, "categorical parameter needs 'choices'")
-        return Parameter(selector, kind, choices=_choices(m["choices"], f"{path}.choices"))
+        return Parameter(name, selector, kind, choices=_choices(m["choices"], f"{path}.choices"))
     if "choices" in m:
         raise _fail(path, f"'choices' is only allowed for a categorical parameter, not {kind}")
     if "bounds" not in m:
         raise _fail(path, f"{kind} parameter needs 'bounds'")
-    return Parameter(selector, kind, bounds=_bounds(m["bounds"], f"{path}.bounds", kind), unit=unit)
+    bounds = _bounds(m["bounds"], f"{path}.bounds", kind)
+    return Parameter(name, selector, kind, bounds=bounds, unit=unit)
 
 
 def _selector(raw: object, path: str) -> GeometrySelector:

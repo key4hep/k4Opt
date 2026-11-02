@@ -103,9 +103,9 @@ def _json_mapping(value: Mapping[str, Json], what: str) -> FrozenMap[str, Json]:
 class EvaluationRequest:
     """Everything an evaluator is given for one candidate.
 
-    ``candidate`` holds the parameter values, keyed by the problem's canonical parameter
-    identity (for a geometry parameter the canonical target, ``constants.ECal_cell_size``);
-    the request does not check them against any search domain. ``settings`` is the
+    ``candidate`` holds the parameter values, keyed by the names the problem gives its
+    parameters (``ecal_cell_size``); the request does not check them against any search
+    domain. ``settings`` is the
     evaluator-defined content of its entry in ``evaluators``, with defaults filled in and each
     quantity in its declared unit. ``collections`` maps each role the evaluator reads to the
     collection the problem names for it (or the declared default). ``inputs`` names already prepared
@@ -438,7 +438,7 @@ class RoleInput:
 
 
 type CandidateKey = tuple[tuple[str, str, str, str], ...]
-"""Identity of a candidate within one problem: per parameter ``(reference, kind, tag, value)``."""
+"""Identity of a candidate within one problem: per parameter ``(name, kind, tag, value)``."""
 
 
 @dataclass(frozen=True, slots=True)
