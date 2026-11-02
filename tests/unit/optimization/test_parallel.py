@@ -25,8 +25,8 @@ pytest.importorskip("optuna")
 from optuna.exceptions import StorageInternalError
 from optuna.trial import TrialState
 
+from k4opt.execution import Activity, Evaluations
 from k4opt.optimization import OptimizationError, load_study, optimize
-from k4opt.problem import Activity, Evaluations
 from tests.support import stack
 from tests.support.stack import alive, eventually
 from tests.unit.optimization.conftest import evaluator_from, optuna_study

@@ -25,7 +25,8 @@ from k4opt.optimization import OptimizationError, StudyResults, TrialResult, loa
 from k4opt.optimization._optuna.space import search_space
 from k4opt.optimization._results import OUTCOMES, pareto_front, recorded, recorded_problem
 from k4opt.optimization._study import read_study
-from k4opt.problem import Assessment, load_problem, parse_problem
+from k4opt.problem import load_problem, parse_problem
+from k4opt.record import Assessment
 from tests.support import simulation
 from tests.support.common import tree_digest
 from tests.support.evaluators import TRADE_OFF, cell_count, hit_energy, trade_off

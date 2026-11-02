@@ -6,7 +6,7 @@ own public API, errors and command group:
 * :mod:`k4opt.geometry` - discover and override parameters in DD4hep XML detector
   descriptions and materialize modified geometries.
 * :mod:`k4opt.problem` - load and validate the declarative definition of an optimization
-  problem, and evaluate its candidates (:class:`k4opt.problem.EvaluationSession`).
+  problem, and evaluate its candidates (:class:`k4opt.execution.EvaluationSession`).
 * :mod:`k4opt.evaluation` - the contract an evaluator implements: request, result,
   measurements.
 * :mod:`k4opt.ddsim` - run Key4hep's ``ddsim`` on a prepared geometry.

@@ -10,7 +10,8 @@ from optuna.distributions import (
 )
 
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import Assessment, ProblemSpec
+from k4opt.problem import ProblemSpec
+from k4opt.record import Assessment
 
 _EXACT_INTEGERS = 2**53  # TPE samples integers through floats, exact up to here
 

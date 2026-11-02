@@ -17,8 +17,8 @@ from collections.abc import Callable
 from types import TracebackType
 from typing import Any, TextIO
 
+from k4opt.execution import Activity
 from k4opt.optimization._study import StudyReport, TrialReport
-from k4opt.problem import Activity
 from k4opt.terminal import Style, printable, width
 
 BAR_WIDTH = 40

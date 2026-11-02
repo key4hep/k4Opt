@@ -19,9 +19,11 @@ from optuna.study import StudyDirection
 from optuna.trial import TrialState
 
 from k4opt.evaluation import EvaluationContractError
+from k4opt.execution import Evaluations
 from k4opt.optimization import STUDY_NAME, OptimizationError, optimize
 from k4opt.optimization._render import trial_line
-from k4opt.problem import Assessment, Evaluations, load_problem
+from k4opt.problem import load_problem
+from k4opt.record import Assessment
 from tests.support import simulation
 from tests.support.evaluators import (
     candidate_check,

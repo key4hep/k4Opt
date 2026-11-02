@@ -23,7 +23,8 @@ from k4opt.evaluation import (
     Measurement,
     load_evaluator,
 )
-from k4opt.problem import Assessment, EvaluationSession, RecordError
+from k4opt.execution import EvaluationSession
+from k4opt.record import Assessment, RecordError
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
 RADIUS = "constants.InnerTracker_Barrel_radius_1"

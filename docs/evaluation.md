@@ -444,7 +444,7 @@ evaluator, except a time limit, which is the caller's: a stage that runs a progr
 longer than the `timeout` of the session kills it and fails. An evaluator has no time limit: one
 that never returns holds its job, or with one job the session, until the session is stopped
 (Ctrl-C, SIGTERM). Stages are internal for now: what each stage type is in
-`k4opt.problem.stages`, how one runs in `k4opt.problem._stages`.
+`k4opt.problem.stages`, how one runs in `k4opt.execution._stages`.
 
 ## Loading an evaluator
 
@@ -549,7 +549,7 @@ geometry fingerprint or a complete evaluation-cache key.
 
 ### Internal bridge (not the physicist-facing workflow)
 
-`k4opt.problem._evaluate._evaluate_candidate(spec, candidate, evaluators, *, inputs=None,
+`k4opt.execution._drive._evaluate_candidate(spec, candidate, evaluators, *, inputs=None,
 workdir=None)` connects a `ProblemSpec` to explicitly supplied evaluators and returns a
 `CandidateRecord`. It is private and meant for tests; the public entry point is
 [`EvaluationSession`](#evaluating-candidates-evaluationsession), which takes the problem file.
@@ -674,7 +674,7 @@ comparison of records reads them.
 
 ## Evaluating candidates: `EvaluationSession`
 
-`k4opt.problem.EvaluationSession` evaluates candidates of one problem file,
+`k4opt.execution.EvaluationSession` evaluates candidates of one problem file,
 each into a run directory of its own with a `summary.json`, exactly as `k4opt evaluate` does
 for one ([evaluators](evaluators.md#k4opt-evaluate)). It knows no optimizer: a scan by hand, a
 script and an optimization library call it the same way, with candidates given as values.

@@ -14,13 +14,7 @@ import pytest
 import yaml
 
 from k4opt import ConfigError, K4OptError
-from k4opt.problem import (
-    MetricRef,
-    ProblemConfigError,
-    Reference,
-    load_problem,
-    parse_problem,
-)
+from k4opt.problem import MetricRef, ProblemConfigError, Reference, load_problem, parse_problem
 
 Write = Callable[..., Path]
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-granularity.yaml"

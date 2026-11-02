@@ -21,7 +21,8 @@ import pytest
 import yaml
 
 from k4opt.cli import main
-from k4opt.problem import Assessment, load_problem
+from k4opt.problem import load_problem
+from k4opt.record import Assessment
 from tests.support.evaluators import CALO_PHOTON
 from tests.support.geometry import CLD_COMPACT
 

@@ -1,7 +1,7 @@
 """Internal: a study run by :func:`k4opt.optimization.optimize`.
 
 Optuna's TPE sampler proposes each candidate. k4opt evaluates it with an
-:class:`~k4opt.problem.EvaluationSession` into the trial's directory, and Optuna is told the
+:class:`~k4opt.execution.EvaluationSession` into the trial's directory, and Optuna is told the
 result as the trial's ``summary.json`` says it, read back from disk and validated against the
 study (:func:`_report`): what the optimizer learns is always what the record holds. A valid
 candidate becomes a COMPLETE trial with its objective values and one constraint value per limit
@@ -34,6 +34,7 @@ from optuna.trial import FrozenTrial, Trial, TrialState
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import EvaluatorProtocol
+from k4opt.execution import Activity, EvaluationSession, RunOutcome, RunRequest
 from k4opt.optimization._optuna.optimizer import (
     CONSTANT_LIAR,
     STARTUP_TRIALS,
@@ -69,16 +70,8 @@ from k4opt.optimization._study import (
     write_study,
 )
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import (
-    SUMMARY_NAME,
-    Activity,
-    Assessment,
-    EvaluationSession,
-    ProblemSpec,
-    RecordError,
-    RunOutcome,
-    RunRequest,
-)
+from k4opt.problem import ProblemSpec
+from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 
 _MESSAGE = 1000  # characters of a message kept in the optimizer's storage; the record has all
 

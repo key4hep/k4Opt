@@ -12,8 +12,8 @@ measures, and the stages it depends on, available.
 This module says what each stage type is: the stages it reads, its executors and the options
 each takes, whether it reads the candidate's geometry or writes files, the name of its main
 output and of its logs. :mod:`k4opt.problem.config` checks a problem against it, the plan of a
-candidate's tasks (:mod:`k4opt.problem._tasks`) follows it, and a record is read back against
-it. How a stage runs is the execution's (:mod:`k4opt.problem._stages`): a new stage type is one
+candidate's tasks (:mod:`k4opt.problem.plan`) follows it, and a record is read back against
+it. How a stage runs is the execution's (:mod:`k4opt.execution._stages`): a new stage type is one
 entry here and one runner there.
 
 Pipeline stages are steps that run. The ``stage`` of a measurement, objective or constraint

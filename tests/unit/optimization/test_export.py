@@ -28,7 +28,8 @@ from k4opt.optimization import (
 )
 from k4opt.optimization._export import columns, export, to_csv, to_json
 from k4opt.optimization._show import LABEL, render_results, render_trial
-from k4opt.problem import Assessment, ObjectiveValue, parse_problem
+from k4opt.problem import parse_problem
+from k4opt.record import Assessment, ObjectiveValue
 from tests.support import simulation
 from tests.support.common import tree_digest
 from tests.support.evaluators import cell_count, trade_off

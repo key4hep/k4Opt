@@ -23,7 +23,6 @@ import yaml
 from k4opt.ddsim import DdsimError
 from k4opt.frozen import Json
 from k4opt.geometry import AmbiguousTargetError, GeometrySource, TargetError
-from k4opt.problem._tasks import RESERVED_NAMES
 from k4opt.problem.errors import ProblemConfigError
 from k4opt.problem.models import (
     SCHEMA_VERSION,
@@ -45,6 +44,7 @@ from k4opt.problem.models import (
     Stage,
     freeze,
 )
+from k4opt.problem.plan import RESERVED_NAMES
 from k4opt.problem.stages import STAGE_TYPES, changed_by_geometry, executors, stage_reads
 from k4opt.yamlio import UniqueKeyLoader
 

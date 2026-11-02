@@ -34,10 +34,10 @@ from collections.abc import Callable, Iterator, Sequence
 from typing import Literal
 
 from k4opt.evaluation import EvaluatorProtocol
+from k4opt.execution import Activity
 from k4opt.optimization._results import StudyResults, TrialResult
 from k4opt.optimization._study import STUDY_NAME, StudyReport, TrialReport
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import Activity
 
 __all__ = [
     "STUDY_NAME",
@@ -96,13 +96,13 @@ def optimize(
     another one. ``jobs`` is how many tasks (simulations, evaluations, geometries) may run at
     once, of one trial and of several, each in a worker process when more than one, or
     ``"auto"``: as many as the processors this process may use
-    (:meth:`~k4opt.problem.EvaluationSession.open`); the optimizer is asked for a candidate only
+    (:meth:`~k4opt.execution.EvaluationSession.open`); the optimizer is asked for a candidate only
     when a job would otherwise be idle, and told each trial as it ends. Like ``timeout``, it is
     not part of the study.
 
     ``warn`` is called with each warning, ``progress`` with each trial as it ends, the trials a
     resume finishes first (``recovered``), and ``activity`` with what runs whenever that changes
-    (:class:`~k4opt.problem.Activity`: trials under way, busy job slots). Invalid and failed
+    (:class:`~k4opt.execution.Activity`: trials under way, busy job slots). Invalid and failed
     candidates are FAIL trials and the study goes on. Raises :class:`OptimizationError` for a
     study that cannot start or resume, and when a trial stops it (a broken evaluation contract,
     a record that does not hold up); a :class:`~k4opt.errors.K4OptError` for an invalid problem

@@ -47,7 +47,8 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY))
 
 from k4opt.evaluation import load_evaluator  # noqa: E402
-from k4opt.problem import EvaluationSession, RunRequest, peak_memory  # noqa: E402
+from k4opt.execution import EvaluationSession, RunRequest  # noqa: E402
+from k4opt.record import peak_memory  # noqa: E402
 from tests.support.common import scientific  # noqa: E402
 
 EXAMPLES = REPOSITORY / "examples"
@@ -81,8 +82,8 @@ def _real(directory: Path, events: int, threads: int) -> tuple[Path, list[Any], 
 def _fake(directory: Path, events: int, burn: float) -> tuple[Path, list[Any], str]:
     from tests.support import stack
     from tests.support.evaluators import cell_count
-    from tests.unit.problem.conftest import _BASE
-    from tests.unit.problem.test_parallel import write_problem
+    from tests.support.problems import BASE as _BASE
+    from tests.unit.execution.test_parallel import write_problem
 
     os.environ["PATH"] = f"{stack.FAKE_STACK / 'bin'}{os.pathsep}{os.environ['PATH']}"
     sys.path.insert(0, str(stack.FAKE_STACK / "python"))  # the workers get this path too

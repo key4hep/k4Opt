@@ -19,8 +19,8 @@ from collections.abc import Collection, Mapping, Sequence
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import Declaration, Measurement, Status
-from k4opt.problem._tasks import TaskId, reference_task
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
+from k4opt.problem.plan import TaskId, reference_task
 
 type MetricKey = tuple[str, str]
 """A metric as an evaluator declares and measures it: ``(stage, metric)``."""

@@ -66,7 +66,7 @@ def alive(pid: int) -> bool:
 
 
 def workers(parent: int | None = None) -> list[int]:
-    """The worker processes (:mod:`k4opt.problem._worker`) of the process ``parent`` (this one by
+    """The worker processes (:mod:`k4opt.execution._worker`) of the process ``parent`` (this one by
     default) that are alive."""
     parent = os.getpid() if parent is None else parent
     found = []
@@ -79,7 +79,7 @@ def workers(parent: int | None = None) -> list[int]:
         except OSError:
             continue
         ppid = int(stat.rpartition(")")[2].split()[1])
-        if ppid == parent and b"k4opt.problem._worker" in command and alive(int(entry.name)):
+        if ppid == parent and b"k4opt.execution._worker" in command and alive(int(entry.name)):
             found.append(int(entry.name))
     return found
 
