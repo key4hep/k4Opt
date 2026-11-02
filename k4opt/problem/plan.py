@@ -41,7 +41,16 @@ from enum import StrEnum
 from typing import Literal
 
 from k4opt.evaluation import EvaluationContractError
-from k4opt.problem.models import EvaluatorSpec, MetricRef, Reference, Sample
+from k4opt.problem.models import (
+    EvaluatorSpec,
+    GeometryDestination,
+    MetricRef,
+    Parameter,
+    Reference,
+    Sample,
+    SettingDestination,
+    StageDestination,
+)
 from k4opt.problem.stages import STAGE_TYPES, graph, reads_geometry, writes_files
 
 
@@ -123,7 +132,9 @@ class Task:
     ``directory`` is relative to the candidate's run directory, ``None`` for a task that writes
     nothing. ``given`` says how a stage that does not run is given: as a ``file`` of the problem,
     or ``supplied`` by the caller. ``required`` says whether the candidate's status depends on
-    it; a task that is not required is a diagnostic.
+    it; a task that is not required is a diagnostic. ``varies`` names the parameters whose
+    values reach what the task stands for, in problem order (:func:`varied`): none for a task
+    every candidate does alike.
     """
 
     id: TaskId
@@ -131,6 +142,7 @@ class Task:
     directory: str | None = None
     given: Literal["file", "supplied"] | None = None
     required: bool = False
+    varies: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,16 +187,79 @@ class Plan:
         return tuple(task for task in self.tasks if not task.required)
 
 
+def varied(
+    samples: Mapping[str, Sample],
+    evaluators: Sequence[EvaluatorSpec],
+    parameters: Sequence[Parameter],
+) -> dict[TaskId, tuple[str, ...]]:
+    """The parameters whose values reach each task of a problem with ``samples``, ``evaluators``
+    and ``parameters``, by task, each in problem order.
+
+    The geometry is reached by the parameters that set an attribute of it; a stage of a sample
+    by those that set one of its options, those that reach the geometry if it reads it, and those
+    that reach the stages of the sample it reads; an evaluation by those that set one of its
+    settings and those that reach the geometry and what it reads. A stage given as a file, by the
+    problem or the caller, is reached as the stage it stands for would be: a parameter that
+    reaches it means the file was not made from the candidate (the problem refuses such a
+    ``file``; a supplied one does not represent the candidate, :func:`represents_candidate`).
+    """
+    order = [parameter.name for parameter in parameters]
+    geometry: set[str] = set()
+    options: dict[tuple[str, str], set[str]] = {}  # by (sample, stage)
+    settings: dict[str, set[str]] = {}  # by binding
+    for parameter in parameters:
+        for destination in parameter.targets:
+            if isinstance(destination, GeometryDestination):
+                geometry.add(parameter.name)
+            elif isinstance(destination, StageDestination):
+                for sample in destination.samples:
+                    options.setdefault((sample, destination.stage), set()).add(parameter.name)
+            elif isinstance(destination, SettingDestination):
+                settings.setdefault(destination.evaluator, set()).add(parameter.name)
+    reach: dict[TaskId, set[str]] = {GEOMETRY: geometry}
+    for sample, spec in samples.items():
+        for name, reads in graph(list(spec.stages), ()):
+            if name not in spec.stages:
+                continue
+            found = set(options.get((sample, name), ()))
+            if reads_geometry(name):
+                found |= geometry
+            for need in reads:
+                found |= reach.get(stage_task(need, sample), set())
+            reach[stage_task(name, sample)] = found
+    for task, entry in evaluations(samples, evaluators):
+        found = settings.get(entry.binding, set()) | geometry
+        if task.sample is not None:
+            assert entry.stage is not None  # an evaluation of a sample reads one of its stages
+            found |= reach.get(stage_task(entry.stage, task.sample), set())
+        for item in entry.reads:
+            found |= reach.get(reference_task(item), set())
+        reach[task] = found
+    return {task: tuple(name for name in order if name in found) for task, found in reach.items()}
+
+
+def represents_candidate(plan: Plan) -> bool:
+    """Whether a candidate evaluated by ``plan`` is evaluated from its own values alone: no
+    required stage that a parameter reaches was supplied by the caller (a supplied file cannot
+    be the stage of this candidate). It says nothing of whether a supplied stage that no
+    parameter reaches is the stage the problem defines: k4opt identifies such a file, and
+    cannot tell how it was made."""
+    return not any(
+        task.given == "supplied" and task.required and task.varies for task in plan.tasks
+    )
+
+
 def plan_tasks(
     samples: Mapping[str, Sample],
     evaluators: Sequence[EvaluatorSpec],
     supplied: Collection[TaskId] = (),
     *,
     references: Collection[MetricRef],
+    parameters: Sequence[Parameter] = (),
 ) -> Plan:
     """The plan of a problem with ``samples`` and ``evaluators`` (in problem order), the stages
-    in ``supplied`` given by the caller, and the metrics its objectives and constraints name,
-    ``references``.
+    in ``supplied`` given by the caller, the metrics its objectives and constraints name,
+    ``references``, and its ``parameters``, whose values reach the tasks as :func:`varied` says.
 
     The stages planned of a sample are those its evaluators and the roles of combined evaluators
     read (:func:`read_stages`) and the stages these read, except that a stage given as a file
@@ -235,4 +310,10 @@ def plan_tasks(
         if each.id in needed:
             needed.update(each.needs)
     assert needed <= {each.id for each in tasks}  # the problem names only evaluations it has
-    return Plan(tuple(replace(each, required=each.id in needed) for each in tasks))
+    reach = varied(samples, evaluators, parameters)
+    return Plan(
+        tuple(
+            replace(each, required=each.id in needed, varies=reach.get(each.id, ()))
+            for each in tasks
+        )
+    )

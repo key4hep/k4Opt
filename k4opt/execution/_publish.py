@@ -31,13 +31,15 @@ from k4opt.record.write import SUMMARY_NAME, assemble
 
 @dataclass(frozen=True, slots=True)
 class RunOutcome:
-    """What one run produced: the candidate's record, the written summary and where it is, and
-    the candidate's assessment against the objectives and constraints."""
+    """What one run produced: the candidate's record, the written summary and where it is, the
+    fingerprint of the geometry it was evaluated with (provenance: candidates that differ only
+    in what they set elsewhere, a ddsim option say, share it) and the candidate's assessment
+    against the objectives and constraints."""
 
     candidate: CandidateRecord
     summary: Mapping[str, object]
     run_dir: Path
-    fingerprint: str
+    geometry_fingerprint: str
     assessment: Assessment
 
     @property
@@ -73,6 +75,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
     run_dir = run.workspace.root
     assert run_dir is not None
     record = _finish_plan(run)
+    assert run.prepared is not None
     geometry = record.results[GEOMETRY]
     externals = candidate_reads(geometry)
     try:
@@ -113,6 +116,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
         baseline.taken,
         run.reference,
         baseline.process,
+        run.prepared.configuration,
         execution,
     )
     try:

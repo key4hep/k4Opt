@@ -32,6 +32,8 @@ CELL = "ecal_cell_size"
 class Toy:
     name = "calo.single_particle_shower"
     version = "1"
+    # the setting a parameter sets in tests of large numbers, which no geometry takes
+    settings = {"collection": str, "value": 0.0}
 
     def __init__(self, result: EvaluationResult | None = None) -> None:
         self.calls: list[EvaluationRequest] = []
@@ -69,7 +71,11 @@ def make(doc: dict[str, Any], *parameters: tuple[str, dict[str, Any]]) -> Proble
 
 def param(name: str, kind: str, **extra: Any) -> tuple[str, dict[str, Any]]:
     """The parameter ``name``, setting the constant of that name."""
-    return name, {"geometry": {"constant": name}, "type": kind, **extra}
+    return name, {"targets": {"geometry": name}, "type": kind, **extra}
+
+
+VALUE = {"evaluators": {Toy.name: "value"}}
+"""A setting of the toy, which takes any number; a geometry takes those a double holds."""
 
 
 @pytest.fixture
@@ -84,10 +90,9 @@ def test_success_builds_request_and_record(spec: ProblemSpec, tmp_path: Path) ->
     assert len(toy.calls) == 1
     request = toy.calls[0]
     assert record.request == request  # what it was asked, as plain data
-    assert dict(request.candidate) == {CELL: 6}
     # it reads no stage, so it has no events or seed of one
     assert request.events is None and request.seed is None
-    assert dict(request.settings) == dict(spec.evaluators[0].settings)
+    assert dict(request.settings) == dict(spec.evaluators[0].settings) | {"value": 0.0}
     assert request.inputs["geometry"] == geometry
     # each evaluator writes in a directory of its own, created for the call
     assert request.workdir == tmp_path / "evaluators" / Toy.name and request.workdir.is_dir()
@@ -141,11 +146,11 @@ def test_negative_zero_and_zero(doc: dict[str, Any]) -> None:
 
 
 def test_integer_parameter(doc: dict[str, Any]) -> None:
-    s = make(doc, param("n", "integer", bounds=[1, 10**400]))
+    s = make(doc, param("n", "integer", bounds=[1, 10**400], targets=VALUE))
     ref = "n"
     for good in (1, 10, 10**400):
         record = evaluate_one(s, {ref: good}, Toy())
-        assert record.request.candidate[ref] == good  # no float conversion, no overflow
+        assert record.request.settings["value"] == good  # no float conversion, no overflow
     assert evaluate_one(s, {ref: 10**400}, Toy()).candidate_key[0][3] == "1e400"
     for bad in (True, 1.0, 2.5, "1", 0, 10**400 + 1):
         with pytest.raises(CandidateError, match=ref):
@@ -153,7 +158,7 @@ def test_integer_parameter(doc: dict[str, Any]) -> None:
 
 
 def test_huge_continuous_int_stays_exact(doc: dict[str, Any]) -> None:
-    s = make(doc, param("x", "continuous", bounds=[0, 10**400]))
+    s = make(doc, param("x", "continuous", bounds=[0, 10**400], targets=VALUE))
     a = evaluate_one(s, {"x": 10**399 + 1}, Toy()).candidate_key
     b = evaluate_one(s, {"x": 10**399}, Toy()).candidate_key
     assert a != b
@@ -199,10 +204,9 @@ def test_bool_choice_not_confused_with_numeric_one(doc: dict[str, Any]) -> None:
         evaluate_one(sn, {"p": True}, Toy())
 
 
-def test_key_and_request_follow_problem_order(doc: dict[str, Any]) -> None:
+def test_the_key_follows_problem_order(doc: dict[str, Any]) -> None:
     s = make(doc, param("b", "integer", bounds=[0, 5]), param("a", "integer", bounds=[0, 5]))
     record = evaluate_one(s, {"a": 1, "b": 2}, Toy())
-    assert list(record.request.candidate) == ["b", "a"]
     assert [part[0] for part in record.candidate_key] == ["b", "a"]
 
 
@@ -335,7 +339,7 @@ def test_evaluation_package_stays_independent_of_problem() -> None:
 
 
 def test_float_and_int_with_different_values_have_different_keys(doc: dict[str, Any]) -> None:
-    s = make(doc, param("x", "continuous", bounds=[0, 10**30]))
+    s = make(doc, param("x", "continuous", bounds=[0, 10**30], targets=VALUE))
     ref = "x"
     exact = evaluate_one(s, {ref: 10**23}, Toy()).candidate_key
     rounded = evaluate_one(s, {ref: 1e23}, Toy()).candidate_key

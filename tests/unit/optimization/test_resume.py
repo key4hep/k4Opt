@@ -32,6 +32,7 @@ from tests.support.common import git, git_checkout, requires_git, tree_digest
 from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, trade_off, yields
 from tests.support.geometry import MINI_GEO
 from tests.support.imports import FromFile
+from tests.support.problems import add_targets
 from tests.unit.optimization.conftest import (
     RADIUS,
     TRADE,
@@ -94,7 +95,7 @@ def test_a_study_does_not_resume_with_its_parameters_in_another_order(tmp_path: 
     # candidates, the sampler and evaluators (test.trade_off reads the first value) follow it
     document = problem_document()
     document["parameters"]["world"] = {
-        "geometry": {"constant": "world_side"},
+        "targets": {"geometry": "world_side"},
         "type": "continuous",
         "bounds": [1.0, 2.0],
     }
@@ -135,9 +136,12 @@ def two_bindings(write_problem: Callable[..., Path]) -> Path:
 
 
 def _renamed(data: dict[str, Any]) -> None:
-    """The second binding, and the objective on it, under another name."""
+    """The second binding, the objective on it and the setting the parameter sets in it, under
+    another name."""
     data["evaluators"][1]["as"] = "lenient"
     data["objectives"][1]["evaluator"] = "lenient"
+    bindings = data["parameters"][RADIUS]["targets"]["evaluators"]
+    bindings["lenient"] = bindings.pop("strict")
 
 
 BINDING_CHANGES: dict[str, Callable[[dict[str, Any]], None]] = {
@@ -216,7 +220,7 @@ def test_a_file_only_candidates_name_reads_alike_in_every_trial_of_a_study(
     monkeypatch.setenv("CAD", str(model.parent))
     problem, output = write_problem(), tmp_path / "s"
     support = {
-        "geometry": {"target": "InnerTrackerSupportCAD.shape.ref"},  # cad/support.stl
+        "targets": {"geometry": "InnerTrackerSupportCAD.shape.ref"},  # cad/support.stl
         "type": "categorical",
         "choices": ["${CAD}/b.stl"],
     }
@@ -444,13 +448,14 @@ UNITS = """
 
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
 
         def __init__(self):  # the same code, configured to report in another unit
             unit = os.environ.get("K4OPT_TEST_UNIT", "mm")
             self.metrics = {("analysis", "a"): unit, ("analysis", "b"): "1/mm"}
 
         def evaluate(self, request):
-            x, *_ = request.candidate.values()
+            x = request.settings["x"]
             return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
 """
 
@@ -472,13 +477,14 @@ ARTIFACTS = """
 
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
         def __init__(self):  # the same code, configured to name its file otherwise
             self.artifacts = {os.environ.get("K4OPT_TEST_ARTIFACT", "plot"): "a and b"}
 
         def evaluate(self, request):
-            x, *_ = request.candidate.values()
+            x = request.settings["x"]
             (name,) = self.artifacts
             path = request.workdir / "plot.txt"
             path.write_text(f"{x} {1 / x}")
@@ -834,10 +840,11 @@ FILE_SIZE = """
     class Probe(Evaluator):
         name, version = "test.file_size", "1"
         stage = "generation"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {"generation.bytes": "B"}
 
         def evaluate(self, request):
-            (x,) = request.candidate.values()
+            x = request.settings["x"]
             return {"generation.bytes": request.inputs["generation"].stat().st_size + x / 1000}
 """
 
@@ -1000,3 +1007,26 @@ def test_a_study_does_not_resume_with_other_roles_declared(
     other = evaluator_from(tmp_path / "e", "roles", ROLES)  # the same bytes, other roles
     with pytest.raises(OptimizationError, match=r"'test\.toy_significance' declares other roles"):
         run(combined_problem, output, 1, resume=True, evaluators=[other, yields()])
+
+
+def test_a_study_whose_parameter_sets_the_geometry_and_a_stage_resumes_configured_alike(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the radius sets the geometry and a ddsim option of both samples: every trial, before and
+    # after the resume, simulates with the option its own value gives, and its record says so
+    simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    rangecut = {"option": "physics.rangecut", "samples": ["gamma", "pion"]}
+    _edit(sampled_problem, lambda d: add_targets(d["parameters"][RADIUS], simulation=rangecut))
+    output = tmp_path / "s"
+    run(sampled_problem, output, 2, seed=1, evaluators=[cell_count()])
+    resumed = run(sampled_problem, output, 1, resume=True, evaluators=[cell_count()])
+    assert [t.status for t in resumed.trials] == ["valid"] * 3
+    for trial in resumed.trials:
+        record = summary(output, trial.number)
+        radius = record["candidate"][RADIUS]
+        for sample in ("gamma", "pion"):
+            stage = record["samples"][sample]["stages"]["simulation"]
+            assert stage["definition"]["physics.rangecut"] == radius
+            assert f"--physics.rangecut={radius!r}" in stage["argv"]
+            assert stage["varies"] == [RADIUS]
+        assert record["geometry"]["changes"][0]["new_value"] == repr(radius)

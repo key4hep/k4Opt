@@ -290,7 +290,7 @@ def test_a_study_read_back_cannot_send_the_terminal_a_control_sequence() -> None
             objectives=[("analysis", f"a{esc}", "minimize")],
             constraints=[{"stage": "analysis", "metric": f"a{esc}", "max": 1, "unit": f"mm{esc}"}],
             parameter={
-                "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+                "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
                 "type": "categorical",
                 "choices": [f"x{esc}"],
             },

@@ -41,7 +41,7 @@ from k4opt.execution._stages import StageContext
 from k4opt.frozen import FrozenMap, Json
 from k4opt.geometry import Catalog, GeometrySource, Override
 from k4opt.problem.contract import MetricKey
-from k4opt.problem.models import EvaluatorSpec, ProblemSpec
+from k4opt.problem.models import EvaluatorSpec, ProblemSpec, Stage
 from k4opt.problem.plan import Task, TaskId
 from k4opt.record.results import PeakMemory
 
@@ -75,7 +75,8 @@ class Measuring:
 @dataclass(frozen=True, slots=True)
 class SessionContext:
     """What every task of a session needs: the problem ``spec``, the stage conditions of each
-    sample (``contexts``, the session's time limit included), what each evaluation must measure
+    sample (``contexts``, the session's time limit included, without stages: those of a task are
+    its candidate's, in its :class:`TaskSpec`), what each evaluation must measure
     (``evaluations``), what the external references of the session's geometry read
     (``externals``), which a candidate's own references are compared with, and the geometry
     candidates start from (``source``, discovered as ``catalog``; none where every candidate is
@@ -99,10 +100,12 @@ class SessionContext:
 @dataclass(frozen=True, slots=True)
 class GeometryWork:
     """How the geometry task makes the candidate's geometry: by applying ``overrides`` to the
-    session's geometry, or by taking the compact file ``given``, already prepared (named by its
-    absolute path: it is an input from outside the workspace)."""
+    session's geometry, each set by the parameter of the same place in ``parameters``, or by
+    taking the compact file ``given``, already prepared (named by its absolute path: it is an
+    input from outside the workspace)."""
 
     overrides: tuple[Override, ...] = ()
+    parameters: tuple[str, ...] = ()
     given: Path | None = None
 
 
@@ -113,7 +116,8 @@ class TaskSpec:
     ``workspace`` is the id of the candidate's :class:`Workspace`, ``task`` the planned task.
     ``inputs`` are the files the task is given, by name (``geometry``, a stage); ``watched`` the
     files its reads made, and ``tree`` the directory of the geometry it reads (``None`` if it
-    reads none made in the workspace): what it checks before and after it runs. ``geometry`` says
+    reads none made in the workspace): what it checks before and after it runs. ``stages`` are
+    the stages of its sample as its candidate configures them, for a stage. ``geometry`` says
     how the geometry task works (``None``: there is no geometry), ``supplied`` is a file the
     caller gives for a stage, and ``request`` and ``roles`` are what an evaluation is asked, its
     request without inputs or a directory. ``cpus`` is how many processors the task keeps busy.
@@ -124,6 +128,7 @@ class TaskSpec:
     inputs: Mapping[str, Path] = field(default_factory=lambda: FrozenMap({}))
     watched: tuple[Artifact, ...] = ()
     tree: Path | None = None
+    stages: Mapping[str, Stage] = field(default_factory=lambda: FrozenMap({}))
     geometry: GeometryWork | None = None
     supplied: Path | None = None
     request: EvaluationRequest | None = None

@@ -17,7 +17,7 @@ Typical use::
     from k4opt.execution import EvaluationSession
 
     session = EvaluationSession.open("problem.yaml", [MyEvaluator])  # the class
-    outcome = session.evaluate({"constants.ECal_cell_size": 7.0}, "runs/7mm")
+    outcome = session.evaluate({"ecal_cell_size": 7.0}, "runs/7mm")
     outcome.assessment.feasible  # True, False or None (not assessed)
 """
 

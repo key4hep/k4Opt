@@ -55,6 +55,7 @@ from tests.unit.execution.session.conftest import (
     change,
     combined,
     declare,
+    echo,
     errors,
     evaluate,
     particle,
@@ -337,7 +338,7 @@ def test_a_sample_whose_simulation_fails_blocks_only_its_own_evaluations(
         return 2 if particle(argv) == "pi-" else code
 
     monkeypatch.setattr(ddsim_run, "_execute", pions_crash)
-    doc = two_samples(problem_file)
+    doc = echo(two_samples(problem_file))
     doc["evaluators"].append({"name": "test.parameter_echo", "version": "1"})
     doc["objectives"].append(
         {"evaluator": "test.parameter_echo", "stage": ECHO[0], "metric": ECHO[1]}
@@ -448,6 +449,30 @@ def test_samples_with_identical_stages_are_a_warning(
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert len(fake.calls) == 2  # each all the same
     assert outcome.candidate.status == "valid"
+
+
+def test_samples_alike_but_for_the_parameter_that_sets_an_option_are_no_warning(
+    problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    # one parameter the range cut of gamma, another that of pion: simulated alike for no candidate
+    doc = yaml.safe_load(problem_file.read_text())
+    two_samples(problem_file, **doc["samples"]["gamma"])
+    doc = yaml.safe_load(problem_file.read_text())
+    cut = {"type": "continuous", "bounds": [0.1, 1.0], "unit": "mm"}
+    for name, sample in (("cut_a", "gamma"), ("cut_b", "pion")):
+        target = {"option": "physics.rangecut", "samples": [sample]}
+        doc["parameters"][name] = cut | {"targets": {"simulation": target}}
+    problem_file.write_text(yaml.safe_dump(doc))
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    assert not [w for w in session.warnings if "identical stages" in w]
+    # one parameter that sets the option of both: alike for every candidate
+    del doc["parameters"]["cut_b"]
+    doc["parameters"]["cut_a"]["targets"]["simulation"]["samples"] = ["gamma", "pion"]
+    problem_file.write_text(yaml.safe_dump(doc))
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    assert "samples gamma and pion have identical stages; each is simulated separately" in (
+        session.warnings
+    )
 
 
 # --- combined evaluators: the evaluations of several samples, read by role -------------------
@@ -573,7 +598,7 @@ def test_a_combined_evaluator_is_blocked_by_an_input_that_did_not_succeed(
         return 2 if particle(argv) == "pi+" else code
 
     monkeypatch.setattr(ddsim_run, "_execute", ww_crashes)
-    doc = combined(problem_file)
+    doc = echo(combined(problem_file), "readout")
     doc["evaluators"].append({"name": "test.parameter_echo", "as": "readout", "version": "1"})
     doc["constraints"] = [
         {"evaluator": "readout", "stage": ECHO[0], "metric": ECHO[1], "max": 1000}
@@ -934,3 +959,46 @@ def test_the_command_reports_what_each_role_of_a_combined_evaluator_read(
         "roles:       backgrounds zz/test.yields, ww/test.yields; signal sig/test.yields\n"
         "metric:      analysis/expected_significance = "
     ) in report
+
+
+def test_a_threshold_alone_is_evaluated_on_a_fixed_simulation_file(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # nothing a fixed file stands for depends on the candidate: the session opens, every
+    # candidate reads the file, gets its own threshold and represents the candidate
+    simulation.install_events(monkeypatch, events_with([1, 2], [3]))
+    events_file = tmp_path / "earlier.edm4hep.root"
+    events_file.write_bytes(b"fake")
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["samples"]["gamma"] = {"simulation": {"file": events_file.name}}
+    doc["parameters"] = {
+        "threshold": {
+            "type": "continuous",
+            "bounds": [20.0, 150.0],
+            "unit": "keV",
+            "targets": {"evaluators": {"test.cell_count": "threshold"}},
+        }
+    }
+    problem_file.write_text(yaml.safe_dump(doc))
+    seen: list[float] = []
+
+    class Thresholded(cell_count()):  # type: ignore[misc]
+        settings = {"threshold": Quantity("GeV")}
+
+        def evaluate(self, request: Any) -> Any:
+            seen.append(request.settings["threshold"])
+            return super().evaluate(request)
+
+    with EvaluationSession.open(problem_file, [Thresholded]) as session:
+        first = session.evaluate({"threshold": 70.0}, tmp_path / "a")
+        second = session.evaluate({"threshold": 120.0}, tmp_path / "b")
+    assert seen == [70e-6, 120e-6]
+    for outcome in (first, second):
+        assert outcome.candidate.status == "valid"
+        assert outcome.candidate.represents_candidate
+        assert outcome.summary["supplied"] == []
+        stage = outcome.summary["samples"]["gamma"]["stages"]["simulation"]  # type: ignore[index]
+        assert stage["file"] == str(events_file) and stage["varies"] == []
+        evaluation = outcome.summary["samples"]["gamma"]["evaluations"]["test.cell_count"]  # type: ignore[index]
+        assert evaluation["varies"] == ["threshold"]
+        assert Assessment.from_summary(session.spec, outcome.summary) == outcome.assessment

@@ -229,8 +229,8 @@ def test_stage_errors(
         ),
         (
             lambda d: d["samples"]["gamma"].update(simulation={"file": "events.edm4hep.root"}),
-            "samples.gamma.simulation.file: the parameters vary the geometry, but this file was "
-            "not made with a candidate's geometry",
+            "samples.gamma.simulation.file: parameters.ecal_cell_size reach this stage, but this "
+            "file was not made from a candidate's values",
         ),
         (
             lambda d: d["samples"]["gamma"].update(simulation={"file": "events.edm4hep.root"}),
@@ -733,7 +733,7 @@ def test_the_checked_in_examples_share_their_stages(
         ),
         (
             takes_shared_simulation_file,
-            "stages.simulation.file: the parameters vary the geometry",
+            "stages.simulation.file: parameters.ecal_cell_size reach this stage",
         ),
     ],
 )

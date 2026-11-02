@@ -5,7 +5,7 @@
 #
 #   k4opt evaluate examples/problem/cld-ecal-photon-energies.yaml \
 #       --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
-#       --param constants.ECal_cell_size=10.0 --output runs/cld-photons-10mm
+#       --param ecal_cell_size=10.0 --output runs/cld-photons-10mm
 #
 # Needs the Key4hep environment (ddsim, podio, $K4GEO); about 5 minutes per sample and candidate
 # on one core.
@@ -21,11 +21,12 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 
 parameters:
   ecal_cell_size:
-    geometry:
-      constant: ECal_cell_size
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
+    # what it varies: the constant ECal_cell_size of the geometry, written as <value>*mm
+    targets:
+      geometry: ECal_cell_size
 
 # what every sample starts from: photons into the middle of the barrel, simulated by ddsim
 stages:
@@ -72,10 +73,12 @@ objectives:
     stage: simulation
     metric: ecal_barrel.angular_residual
     direction: minimize
+
   - sample: gamma_50gev
     stage: simulation
     metric: ecal_barrel.angular_residual
     direction: minimize
+
   - sample: gamma_50gev
     stage: simulation
     metric: ecal_barrel.fired_cells

@@ -26,10 +26,54 @@ evaluator the problem's `evaluators` name, in any order, however many entries bi
 sample instead of running it, to try an evaluator on a simulation made earlier, say:
 `--input gamma_10gev/simulation=runs/cld-ecal-10mm/samples/gamma_10gev/simulation/events.edm4hep.root`.
 The sample is always named, also in a problem with one. The stages of the sample only it would
-need do not run either; the other samples run as the problem says. Its path, size and SHA-256 are recorded, and a supplied stage that the
-parameters change (the simulation, when they vary the geometry) was not made with this
-candidate's geometry: the command says so, and `summary.json` records
-`represents_candidate: false`, so such a run never counts as an evaluation of the candidate.
+need do not run either; the other samples run as the problem says. Its path, size and SHA-256
+are recorded. A supplied stage that a parameter reaches (the simulation, when the parameters set
+the geometry, the gun or a ddsim option) was not made from this candidate's values: the command
+says so, and `summary.json` records `represents_candidate: false`, so such a run never counts as
+an evaluation of the candidate. One that no parameter reaches (the simulation, when they set
+only evaluator settings) is the same for every candidate, and the run represents the candidate:
+that says only that nothing the candidate changes was replaced. k4opt identifies the file but
+cannot verify that it is the output of the stage the problem defines; the command warns of that,
+and the record lists it under `supplied`. Only a record with `supplied: []` is determined by the
+problem, the candidate and the identified files alone, which is why a study supplies none.
+
+`--dry-run`, instead of `--output`, checks the candidate as an evaluation checks it before it
+simulates (its values, the options of every stage it runs and its files, every evaluator's
+settings and `check()`) and shows what each parameter sets, below its value: each attribute of
+the geometry, from its value now to the candidate's, each stage option in each sample, each
+evaluator setting in each entry of its binding (by the samples the entry measures). No simulation
+runs and no output is written, so it is the quick way to see what a parameter changes before an
+expensive simulation. It does load the evaluators and calls their `check()`, and it does not show
+that the simulation or the evaluation will succeed. In particular, k4opt checks how a ddsim option
+is written, not that the installed ddsim knows it: a misspelt `physics.rangecuut` passes the dry
+run, and ddsim refuses it when it starts, which fails the simulation. For
+[`cld-ecal-bindings.yaml`](../examples/problem/cld-ecal-bindings.yaml), a target of each kind on
+two samples:
+
+```text
+$ k4opt evaluate examples/problem/cld-ecal-bindings.yaml \
+    --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
+    --param ecal_cell_size=8.0 --param range_cut=0.5 --param cell_threshold=70 --dry-run
+Candidate
+
+ecal_cell_size = 8.0 mm
+  geometry: constants.ECal_cell_size (CLD_o2_v09/...xml)
+    5.1*mm -> 8.0*mm
+range_cut = 0.5 mm
+  simulation: physics.rangecut
+    gamma_10gev: 0.5*mm
+    gamma_50gev: 0.5*mm
+cell_threshold = 70.0 keV
+  evaluator calo.photon: threshold
+    gamma_10gev, gamma_50gev: 70.0 keV
+
+Configuration validated: the candidate's values, the options of every stage it runs, and every evaluator's settings and check().
+No simulation executed; no evaluation output created.
+```
+
+A candidate it refuses is refused with the message an evaluation would give, and the exit status
+is 1. `--workers` and `--timeout` say how a candidate runs, so `--dry-run` refuses them rather
+than ignore them.
 
 `--timeout SECONDS` kills `ddsim` if it runs longer than that, for a geometry on which Geant4
 stalls: the simulation stage fails with the tail of ddsim's standard error, its logs stay in
@@ -137,7 +181,9 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      input role to its ordered producer labels (empty for cost models), otherwise recorded
      the same way;
    - `geometry`: its `status` (always `done`: a geometry that cannot be made stops the run), the
-     time spent making it, the geometry fingerprint and manifest, the path and SHA-256 of each file its external
+     time spent making it, the geometry fingerprint and manifest, its `changes` (each attribute
+     the candidate set: its `parameter`, `target`, `file`, `locator`, `attribute`, `old_value` and
+     `new_value`), the parameters that set it (`varies`), the path and SHA-256 of each file its external
      references read (`externals`) and of each file only this candidate's values name
      (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), the time of the
      whole evaluation, `run_dir`, where the run was made, and the environment (`declared`: the
@@ -147,7 +193,7 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      (those the session opened with, checked before each candidate) and the `ddsim` that was
      started; the pin and the stack are not compared).
 
-The command prints the candidate's status, each evaluation's status and metrics with their
+The command prints the candidate's values, its status, each evaluation's status and metrics with their
 uncertainty (a binding named with `as` beside its evaluator, and the sample it measures:
 `photon_200kev (calo.photon 1) on gamma_10gev`), each limit with its verdict and margin, whether
 the candidate is feasible, the events of each sample, the fingerprint and the paths. For the 10 mm candidate of the
@@ -155,6 +201,7 @@ the candidate is feasible, the events of each sample, the fingerprint and the pa
 [1 mrad constraint](problem.md#constraints) added to the problem (abridged, values rounded):
 
 ```text
+candidate:   ecal_cell_size = 10.0 mm
 status:      valid
 evaluator:   calo.photon 1 on gamma_10gev: valid
 metric:      simulation/ecal_barrel.angular_residual = 0.946 +- 0.034 [mrad]
@@ -411,10 +458,13 @@ Evaluating a candidate ([`EvaluationSession`](#evaluating-candidates-evaluations
 in order:
 
 1. validates the candidate (`CandidateError` otherwise): exactly one value per declared
-   parameter, keyed by `parameter.geometry.canonical_target`; continuous `int`/finite `float`
-   within inclusive bounds; integer a real `int` (no `bool`, no rounding) within bounds;
-   categorical one of the choices by kind (strings need a string, booleans a boolean, numbers
-   compare numerically). Units are never interpreted or converted;
+   parameter, keyed by its name; continuous `int`/finite `float` within inclusive bounds;
+   integer a real `int` (no `bool`, no rounding) within bounds; categorical one of the choices
+   by kind (strings need a string, booleans a boolean, numbers compare numerically). Then it
+   configures the candidate: each value written into every target of its parameter (the
+   geometry's attributes as overrides, each sample's stages, each entry's settings), as a new
+   configuration of this candidate alone, which nothing shared holds. A number a text
+   target would round is refused here;
 2. matches the evaluator classes to `evaluators` by the `name` of an instance of each, in any
    order: each evaluator the problem names must be given exactly once, however many entries
    bind it, with the declared `version` and reading the declared `stage`, and no other

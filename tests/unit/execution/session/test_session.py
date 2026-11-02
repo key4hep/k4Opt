@@ -29,7 +29,7 @@ from k4opt.evaluation import (
 from k4opt.execution import EvaluationSession, RunError
 from k4opt.geometry import GeometrySource, Override
 from k4opt.problem import CandidateError, ProblemConfigError, load_problem, parse_problem
-from k4opt.problem.candidate import _xml_value, parse_candidate
+from k4opt.problem.candidate import configure, parse_candidate
 from k4opt.record import SUMMARY_NAME, Assessment
 from k4opt.revision import code_fingerprint, code_identity
 from tests.support import simulation
@@ -49,9 +49,12 @@ from tests.unit.execution.session.conftest import (
     errors,
     evaluate,
     run_candidate,
+    spied,
 )
 
 EXAMPLES = Path(__file__).resolve().parents[4] / "examples" / "problem"
+# an evaluator setting, which takes any number; the geometry takes those a double holds
+SETTING = {"evaluators": {"calo.single_particle_shower": "n"}}
 
 
 def test_candidate_is_materialized_with_the_cached_catalog_and_simulated(
@@ -138,19 +141,23 @@ def test_summary_is_written_and_truthful(
     ]
     assert "events" not in on_disk  # each simulation says what it read
     assert outcome.events == {"gamma": (3, 3)}
-    assert on_disk["geometry"]["fingerprint"] == outcome.fingerprint
+    assert on_disk["geometry"]["fingerprint"] == outcome.geometry_fingerprint
     assert on_disk["geometry"]["status"] == "done"
     # each file in the run directory by its path relative to it, which it was made in
     assert on_disk["run_dir"] == str(tmp_path / "a")
     assert on_disk["geometry"]["manifest"] == "geometry/k4opt-manifest.json"
     assert (tmp_path / "a" / on_disk["geometry"]["compact"]).is_file()
+    resolved = {
+        "parameter": RADIUS,
+        "target": "constants.InnerTracker_Barrel_radius_1",
+        "file": "compact/det_v1/tracker.xml",
+        "locator": "/lccdd/define/constant[2]",
+        "attribute": "value",
+    }
     assert on_disk["geometry"]["changes"] == [
-        {
-            "target": "constants.InnerTracker_Barrel_radius_1",
-            "old_value": "400*mm",
-            "new_value": "450.0*mm",
-        }
+        resolved | {"old_value": "400*mm", "new_value": "450.0*mm"}
     ]
+    assert on_disk["geometry"]["varies"] == [RADIUS]
     # the stages, recorded once, apart from the evaluators that read them
     assert list(on_disk["samples"]["gamma"]["stages"]) == ["generation", "simulation"]
     simulated = on_disk["samples"]["gamma"]["stages"]["simulation"]
@@ -236,7 +243,7 @@ def test_two_candidates_give_distinct_geometries(
 ) -> None:
     first = run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
     second = run_candidate(problem_file, [f"{RADIUS}=500"], tmp_path / "b")
-    assert first.fingerprint != second.fingerprint
+    assert first.geometry_fingerprint != second.geometry_fingerprint
     tracker = "geometry/compact/det_v1/tracker.xml"
     assert (tmp_path / "a" / tracker).read_text() != (tmp_path / "b" / tracker).read_text()
 
@@ -355,11 +362,7 @@ def test_an_unusable_output_location_is_a_clean_error(
 def test_numeric_categories_keep_exact_integers(doc: dict[str, Any]) -> None:
     big = 2**53
     doc["parameters"] = {
-        "n": {
-            "geometry": {"constant": "n"},
-            "type": "categorical",
-            "choices": [big, big + 1, 0.5],
-        }
+        "n": {"targets": SETTING, "type": "categorical", "choices": [big, big + 1, 0.5]}
     }
     spec = parse_problem(doc)
     assert parse_candidate(spec, [f"n={big + 1}"]) == {"n": big + 1}
@@ -378,7 +381,7 @@ def test_a_structured_target_is_set_by_the_name_of_its_parameter(
     ref = "InnerTrackerBarrel.layer[id=1].rphi_layout.nphi"
     doc = yaml.safe_load(problem_file.read_text())
     doc["parameters"] = {
-        "nphi": {"geometry": {"target": ref}, "type": "integer", "bounds": [10, 100]}
+        "nphi": {"targets": {"geometry": ref}, "type": "integer", "bounds": [10, 100]}
     }
     problem_file.write_text(yaml.safe_dump(doc))
     assert parse_candidate(load_problem(problem_file), ["nphi=90"]) == {"nphi": 90}
@@ -390,7 +393,11 @@ def test_a_structured_target_is_set_by_the_name_of_its_parameter(
 
 def test_a_value_may_hold_an_equals_sign(doc: dict[str, Any]) -> None:
     doc["parameters"] = {
-        "mode": {"geometry": {"constant": "Mode"}, "type": "categorical", "choices": ["a=b", "c"]}
+        "mode": {
+            "targets": {"geometry": "Mode"},
+            "type": "categorical",
+            "choices": ["a=b", "c"],
+        }
     }
     assert parse_candidate(parse_problem(doc), ["mode=a=b"]) == {"mode": "a=b"}
 
@@ -404,11 +411,7 @@ def test_every_spelling_of_a_large_integer_category_stays_exact(
 ) -> None:
     big = 2**53
     doc["parameters"] = {
-        "n": {
-            "geometry": {"constant": "n"},
-            "type": "categorical",
-            "choices": [big, big + 1, 1e23, 0.5],
-        }
+        "n": {"targets": SETTING, "type": "categorical", "choices": [big, big + 1, 1e23, 0.5]}
     }
     spec = parse_problem(doc)
     assert parse_candidate(spec, [f"n={text}"]) == {"n": big + 1}
@@ -424,7 +427,7 @@ def test_an_undeclared_large_integer_is_not_rounded_into_a_choice(
     doc = yaml.safe_load(problem_file.read_text())
     doc["parameters"] = {
         RADIUS: {
-            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "categorical",
             "choices": [big, big + 2],
         }
@@ -440,7 +443,7 @@ def test_an_undeclared_large_integer_is_not_rounded_into_a_choice(
 def test_a_value_that_only_rounds_to_a_choice_is_rejected(doc: dict[str, Any]) -> None:
     doc["parameters"] = {
         "n": {
-            "geometry": {"constant": "n"},
+            "targets": {"geometry": "n"},
             "type": "categorical",
             "choices": [1, 2],
         }
@@ -455,7 +458,7 @@ def test_a_value_that_only_rounds_to_a_choice_is_rejected(doc: dict[str, Any]) -
 def test_a_decimal_that_rounds_to_a_float_choice_is_rejected(doc: dict[str, Any]) -> None:
     doc["parameters"] = {
         "n": {
-            "geometry": {"constant": "n"},
+            "targets": {"geometry": "n"},
             "type": "categorical",
             "choices": [2.0**53, 0.1],
         }
@@ -472,6 +475,8 @@ def test_integer_literals_of_a_continuous_parameter_stay_exact(
     doc: dict[str, Any], text: str
 ) -> None:
     doc["parameters"]["ecal_cell_size"]["bounds"] = [-(10**401), 10**401]
+    doc["parameters"]["ecal_cell_size"]["targets"] = SETTING
+    del doc["parameters"]["ecal_cell_size"]["unit"]
     spec = parse_problem(doc)
     (value,) = parse_candidate(spec, [f"ecal_cell_size={text}"]).values()
     assert value == int(text)
@@ -485,7 +490,7 @@ def test_integer_literals_of_a_continuous_parameter_stay_exact(
 def test_an_integer_with_more_digits_than_python_converts_is_a_candidate_error(
     doc: dict[str, Any], kind: str
 ) -> None:
-    doc["parameters"] = {"n": {"geometry": {"constant": "n"}, "type": kind, "bounds": [0, 10]}}
+    doc["parameters"] = {"n": {"targets": {"geometry": "n"}, "type": kind, "bounds": [0, 10]}}
     text = "1" * (sys.get_int_max_str_digits() + 1)
     with pytest.raises(CandidateError, match="too many digits"):
         parse_candidate(parse_problem(doc), [f"n={text}"])
@@ -561,17 +566,17 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
 def test_values_become_dd4hep_literals(
     doc: dict[str, Any], parameter: dict[str, Any], value: object, expected: str
 ) -> None:
-    doc["parameters"] = {"x": {"geometry": {"constant": "x"}, **parameter}}
+    doc["parameters"] = {"x": {"targets": {"geometry": "x"}, **parameter}}
     if "bounds" not in parameter and "choices" not in parameter:
         doc["parameters"]["x"]["bounds"] = [0, 100]
     spec = parse_problem(doc)
-    assert _xml_value(spec.parameters[0], value) == expected  # type: ignore[arg-type]
+    assert configure(spec, {"x": value}).geometry == (expected,)  # type: ignore[dict-item]
 
 
-def test_an_unsupported_unit_is_refused(doc: dict[str, Any]) -> None:
+def test_an_unsupported_unit_is_refused_when_the_problem_is_read(doc: dict[str, Any]) -> None:
     doc["parameters"]["ecal_cell_size"]["unit"] = "furlong"
-    with pytest.raises(CandidateError, match="furlong"):
-        _xml_value(parse_problem(doc).parameters[0], 6.0)
+    with pytest.raises(ProblemConfigError, match="unit 'furlong' cannot be written"):
+        parse_problem(doc)
 
 
 def test_text_values_are_read_by_the_parameter_kind(
@@ -581,7 +586,7 @@ def test_text_values_are_read_by_the_parameter_kind(
     assert parse_candidate(spec, [f"{RADIUS}=6"]) == {RADIUS: 6.0}
     assert parse_candidate(spec, [f"{RADIUS}=1e2"]) == {RADIUS: 100.0}
     assert parse_candidate(spec, [f"{RADIUS}=-.5"]) == {RADIUS: -0.5}
-    doc["parameters"] = {"n": {"geometry": {"constant": "n"}, "type": "integer", "bounds": [1, 9]}}
+    doc["parameters"] = {"n": {"targets": {"geometry": "n"}, "type": "integer", "bounds": [1, 9]}}
     integer = parse_problem(doc)
     assert parse_candidate(integer, ["n=4"]) == {"n": 4}
     with pytest.raises(CandidateError, match="integer"):
@@ -621,14 +626,14 @@ def test_the_example_problem_is_valid_and_matches_the_example_evaluator() -> Non
 
 def candidates(requests: list[Any]) -> list[object]:
     """The radius each request was made for."""
-    return [request.candidate[RADIUS] for request in requests]
+    return [request.settings[RADIUS] for request in requests]
 
 
 def test_a_session_checks_and_measures_each_candidate_with_a_request_of_its_own(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
 ) -> None:
     spy = Spy()
-    session = EvaluationSession.open(problem_file, implementations(spy))
+    session = EvaluationSession.open(spied(problem_file), implementations(spy))
     session.check({RADIUS: 300.0})  # checks, and creates and runs nothing
     first = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     second = session.evaluate({RADIUS: 500.0}, tmp_path / "b")
@@ -642,7 +647,7 @@ def test_a_session_checks_and_measures_each_candidate_with_a_request_of_its_own(
     ]
     assert first.summary["candidate"] == {RADIUS: 450.0}
     assert second.summary["candidate"] == {RADIUS: 500.0}
-    assert first.fingerprint != second.fingerprint
+    assert first.geometry_fingerprint != second.geometry_fingerprint
     assert first.summary["id"] != second.summary["id"]
 
 
@@ -652,10 +657,10 @@ def test_a_check_that_refuses_one_candidate_refuses_only_that_one(
     class Picky(Spy):
         def check(self, request: Any) -> None:
             super().check(request)
-            if request.candidate[RADIUS] == 500.0:
+            if request.settings[RADIUS] == 500.0:
                 raise EvaluationContractError("this evaluator cannot measure a radius of 500 mm")
 
-    session = EvaluationSession.open(problem_file, [Picky])
+    session = EvaluationSession.open(spied(problem_file), [Picky])
     with pytest.raises(EvaluationContractError, match="500 mm"):
         session.evaluate({RADIUS: 500.0}, tmp_path / "a")
     assert not (tmp_path / "a").exists() and fake.calls == [] and "materialize" not in guard
@@ -675,7 +680,7 @@ def test_every_candidate_gets_new_instances_of_its_evaluators(
             super().__init__()
             created.append(self)
 
-    session = EvaluationSession.open(problem_file, [Counted])
+    session = EvaluationSession.open(spied(problem_file), [Counted])
     session.check({RADIUS: 300.0})
     session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     session.evaluate({RADIUS: 500.0}, tmp_path / "b")
@@ -845,6 +850,17 @@ def test_the_identity_of_a_session_is_what_it_evaluates_with(
         "source_root": str(MINI_GEO.resolve()),
         "fingerprint": baseline,
         "externals": GeometrySource(MINI_COMPACT).external_files(),
+        # the attribute each geometry destination sets, as the session resolved it
+        "targets": [
+            {
+                "parameter": RADIUS,
+                "target": "constants.InnerTracker_Barrel_radius_1",
+                "file": "compact/det_v1/tracker.xml",
+                "locator": "/lccdd/define/constant[2]",
+                "attribute": "value",
+                "value": "400*mm",
+            }
+        ],
     }
     assert identity["environment"]["K4GEO"] == str(MINI_GEO)  # type: ignore[index]
     assert identity["k4opt"]["sha256"] == code_fingerprint()  # type: ignore[index]
@@ -1034,7 +1050,7 @@ def test_a_candidate_records_and_checks_the_external_files_its_values_name(
     data = yaml.safe_load(problem_file.read_text())
     choices = ["cad/support.stl", "${CAD}/b.stl"]
     data["parameters"]["support"] = {
-        "geometry": {"target": SUPPORT},
+        "targets": {"geometry": SUPPORT},
         "type": "categorical",
         "choices": choices,
     }

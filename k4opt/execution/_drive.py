@@ -38,7 +38,6 @@ from k4opt.evaluation import (
 )
 from k4opt.execution._backends import Backend, Handle
 from k4opt.execution._binding import (
-    _Binding,
     _Prepared,
     task_cpus,
 )
@@ -57,8 +56,8 @@ from k4opt.execution._tasks import GeometryWork, Observations, TaskOutcome, Task
 from k4opt.execution._work import asked
 from k4opt.frozen import FrozenMap
 from k4opt.problem.models import EvaluatorSpec, Reference
-from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, reference_task
-from k4opt.problem.stages import changed_by_geometry, stage_output
+from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, reference_task, represents_candidate
+from k4opt.problem.stages import stage_output
 from k4opt.record.results import CandidateRecord, TaskResult
 
 
@@ -73,22 +72,27 @@ def _inputs(reads: Mapping[TaskId, TaskResult], root: Path | None) -> dict[str, 
 
 
 def _role_inputs(
-    binding: _Binding, entry: EvaluatorSpec, reads: Mapping[TaskId, TaskResult], root: Path | None
+    prepared: _Prepared,
+    entry: EvaluatorSpec,
+    reads: Mapping[TaskId, TaskResult],
+    root: Path | None,
 ) -> dict[str, tuple[RoleInput, ...]]:
     """What each role of a combined evaluator reads, from the results of the tasks it reads, its
     files named in the candidate's workspace."""
     return {
-        role: tuple(_role_input(binding, item, reads[reference_task(item)], root) for item in items)
+        role: tuple(
+            _role_input(prepared, item, reads[reference_task(item)], root) for item in items
+        )
         for role, items in entry.roles.items()
     }
 
 
 def _role_input(
-    binding: _Binding, item: Reference, result: TaskResult, root: Path | None
+    prepared: _Prepared, item: Reference, result: TaskResult, root: Path | None
 ) -> RoleInput:
     """One item of a role, from the result of its task, which succeeded: an evaluation with what
     it measured and made, or a stage with its file."""
-    properties = binding.properties[item.sample]
+    properties = prepared.binding.properties[item.sample]
     if item.evaluator is not None:
         record = result.record
         assert record is not None  # every evaluation has one
@@ -119,7 +123,7 @@ def _role_input(
             size if isinstance(size, int) else result.output.stat().st_size,
             sha256 if isinstance(sha256, str) else None,
         )
-    events, seed = binding.contexts[item.sample].conditions(item.stage)
+    events, seed = prepared.contexts[item.sample].conditions(item.stage)
     return RoleInput(
         item.sample,
         stage=item.stage,
@@ -162,8 +166,9 @@ class _Run:
 def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> TaskSpec:
     """The description of ``task`` of ``run``, from the results of the tasks it reads and what
     is watched of the files they made."""
-    assert run.prepared is not None
-    binding, root = run.prepared.binding, run.workspace.root
+    prepared = run.prepared
+    assert prepared is not None
+    root = run.workspace.root
     reads = {need: results[need] for need in task.needs}
     observed = _observed(run, task)
     watched = tuple(
@@ -175,16 +180,18 @@ def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> T
     if task.id.kind is Kind.GEOMETRY:
         return TaskSpec(workspace, task, watched=watched, tree=tree, geometry=run.geometry)
     if task.id.kind is Kind.STAGE:
+        assert task.id.sample is not None
         given, supplied = _inputs(reads, root), run.supplied.get(task.id)
-        cpus = task_cpus(binding, task)
-        return TaskSpec(workspace, task, given, watched, tree, supplied=supplied, cpus=cpus)
-    entry = run.prepared.entries[task.id]
+        stages = prepared.contexts[task.id.sample].stages  # as the candidate configures them
+        cpus = task_cpus(prepared.contexts, task)
+        return TaskSpec(workspace, task, given, watched, tree, stages, supplied=supplied, cpus=cpus)
+    entry = prepared.entries[task.id]
     if task.id.sample is None:  # the geometry, and what its roles read: no stage of its own
         given = _inputs({need: result for need, result in reads.items() if need == GEOMETRY}, root)
-        roles = _role_inputs(binding, entry, reads, root)
+        roles = _role_inputs(prepared, entry, reads, root)
     else:
         given, roles = _inputs(reads, root), {}
-    request = run.prepared.requests[task.id]
+    request = prepared.requests[task.id]
     return TaskSpec(workspace, task, given, watched, tree, request=request, roles=roles)
 
 
@@ -322,9 +329,9 @@ def _drive(
                 else:
                     runs[pulled.workspace.id] = pulled
                     backend.open(pulled.workspace)
-                    binding = pulled.prepared.binding
-                    costs = {t.id: backend.cost(task_cpus(binding, t)) for t in binding.plan.tasks}
-                    scheduler.add(pulled.workspace.id, binding.plan, costs)
+                    plan, contexts = pulled.prepared.binding.plan, pulled.prepared.contexts
+                    costs = {t.id: backend.cost(task_cpus(contexts, t)) for t in plan.tasks}
+                    scheduler.add(pulled.workspace.id, plan, costs)
                 continue
             if not runs:  # and nothing more to pull: a free slot would have pulled
                 return
@@ -353,13 +360,13 @@ def _finish_plan(run: _Run) -> CandidateRecord:
             request = prepared.requests[task.id]
             record = EvaluationRecord(request, outcome, entry.name, entry.version, run.key, None)
             results[task.id] = replace(held, record=record)
-    represents = not any(
-        changed_by_geometry(task.id.name)
-        for task in plan.of(Kind.STAGE)
-        if task.given == "supplied" and task.required
-    )
     return CandidateRecord(
-        run.key, plan, results, _since(run.started), represents, prepared.binding.warnings
+        run.key,
+        plan,
+        results,
+        _since(run.started),
+        represents_candidate(plan),
+        prepared.binding.warnings,
     )
 
 

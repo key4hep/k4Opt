@@ -105,8 +105,7 @@ def test_channel_cost_scales_with_inverse_cell_area() -> None:
     values = []
     for cell in (5.0, 10.0):
         request = EvaluationRequest(
-            candidate={"ecal_cell_size": cell},
-            settings={"layers": 40, "radius": 2150, "length": 4420},
+            settings={"layers": 40, "radius": 2150, "length": 4420, "cell_size": cell}
         )
         evaluator.check(request)
         values.append(evaluator.evaluate(request)[("geometry", "ecal_barrel.channels")])

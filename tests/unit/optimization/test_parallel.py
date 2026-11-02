@@ -42,6 +42,7 @@ GATED = """
 
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
         def evaluate(self, request):
@@ -59,7 +60,7 @@ GATED = """
                 time.sleep(0.01)
             if run in told.get("raise", []):
                 raise ValueError(f"{run} is broken")
-            x, *_ = request.candidate.values()
+            x = request.settings["x"]
             return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
 """
 

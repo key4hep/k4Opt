@@ -16,7 +16,8 @@ from pathlib import Path
 from k4opt import __version__
 from k4opt.evaluation import Artifact, Scalar
 from k4opt.frozen import FrozenMap, Json, thaw
-from k4opt.problem.models import EvaluatorSpec, ProblemSpec
+from k4opt.problem.candidate import Configuration
+from k4opt.problem.models import EvaluatorSpec, ProblemSpec, Stage
 from k4opt.problem.plan import GEOMETRY, Kind, Task, evaluations
 from k4opt.record.assess import Assessment
 from k4opt.record.errors import RecordError
@@ -55,20 +56,23 @@ def _fragment(result: TaskResult) -> dict[str, object]:
 
 
 def _reads(task: Task, result: TaskResult) -> dict[str, object]:
-    """What every task's part of the summary says of the tasks before it: those it reads, and
-    those of them that kept it from running."""
+    """What every task's part of the summary says of the tasks before it: those it reads, those
+    of them that kept it from running, and the parameters whose values reach it."""
     return {
         "reads": [need.label for need in task.needs],
         "blocked_by": [cause.label for cause in result.blocked_by],
+        "varies": list(task.varies),
     }
 
 
-def _stage(task: Task, result: TaskResult, run_dir: Path) -> dict[str, object]:
-    """One stage's part of the summary: how it ended, how it ran, where, and what it made."""
+def _stage(task: Task, result: TaskResult, stage: Stage, run_dir: Path) -> dict[str, object]:
+    """One stage's part of the summary: how it ended, how the candidate configured it
+    (``definition``, with what its parameters set), how it ran, where, and what it made."""
     provenance = thaw(result.provenance)
     assert isinstance(provenance, dict)
     return (
         _fragment(result)
+        | {"definition": stage.to_dict()}
         | provenance
         | {
             "directory": task.directory,
@@ -95,8 +99,8 @@ def _evaluation(
     return {
         "implementation": entry.name,
         **_fragment(result),
-        # as the problem wrote them, and as the evaluator received them (defaults filled in,
-        # quantities in the declared unit)
+        # as the problem writes them for this candidate (with what its parameters set), and as
+        # the evaluator received them (defaults filled in, quantities in the declared unit)
         "settings": {"declared": thaw(entry.settings), "used": thaw(request.settings)},
         "collections": dict(request.collections),
         **({} if task.id.sample is not None else {"roles": roles}),
@@ -126,6 +130,7 @@ def assemble(
     taken: Mapping[str, Mapping[str, Json]],
     run: object,
     process: Mapping[str, Json],
+    configuration: Configuration,
     execution: Mapping[str, Json] = INLINE,
 ) -> dict[str, object]:
     """The summary of a candidate, made from its task results and nothing else that ran.
@@ -137,8 +142,9 @@ def assemble(
     :meth:`Assessment.from_summary` derives them again.
     ``record_id`` is the record's identity; the rest is what the session holds: the problem,
     what it recorded of each implementation (``taken``: its version, stage, source and metrics)
-    and of the process (``process``), and how it executed the tasks (``execution``: provenance,
-    which no identity or comparison of records reads).
+    and of the process (``process``), the candidate's ``configuration`` (each stage and each
+    evaluator's settings as its parameters set them) and how it executed the tasks
+    (``execution``: provenance, which no identity or comparison of records reads).
     """
     plan, results = candidate.plan, candidate.results
     environment = thaw(process["environment"])
@@ -148,7 +154,7 @@ def assemble(
         for task in plan.of(Kind.STAGE)
         if isinstance(argv := results[task.id].provenance.get("argv"), (list, tuple)) and argv
     ]
-    entries = dict(evaluations(spec.samples, spec.evaluators))
+    entries = dict(evaluations(configuration.samples, configuration.evaluators))
     geometry = results[GEOMETRY]
 
     def measured(sample: str | None) -> dict[str, object]:
@@ -199,7 +205,12 @@ def assemble(
         "samples": {
             sample: {
                 "stages": {
-                    task.id.name: _stage(task, results[task.id], run_dir)
+                    task.id.name: _stage(
+                        task,
+                        results[task.id],
+                        configuration.samples[sample].stages[task.id.name],
+                        run_dir,
+                    )
                     for task in plan.of(Kind.STAGE)
                     if task.id.sample == sample
                 },
@@ -212,7 +223,7 @@ def assemble(
         "elapsed_seconds": candidate.elapsed_seconds,
         "geometry": {"status": geometry.status}
         | made
-        | {"elapsed_seconds": geometry.elapsed_seconds}
+        | {"varies": list(plan[GEOMETRY].varies), "elapsed_seconds": geometry.elapsed_seconds}
         | _memory(geometry),
         "environment": {
             # declared by the problem: a pin, not a check of what ran

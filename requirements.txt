@@ -22,3 +22,7 @@ optuna==5.0.0
 SQLAlchemy==2.1.6
 alembic==1.20.1
 Mako==1.4.3
+# The tests run on every available core: python -m pytest -p xdist -n auto (plugins are named,
+# not autoloaded, see pyproject.toml), with execnet, which xdist starts its workers with.
+pytest-xdist==3.8.0
+execnet==2.1.2

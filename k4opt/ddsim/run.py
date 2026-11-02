@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO
 
-from k4opt.ddsim.command import ddsim_arguments, option_args, particle_gun_args
+from k4opt.ddsim.command import ddsim_arguments
 from k4opt.ddsim.errors import DdsimError
 from k4opt.frozen import Json
 from k4opt.jsonio import write_json
@@ -65,40 +65,6 @@ class SimulationRun:
             "edm4hep": self.output,
         }
         return {role: path for role, path in roles.items() if path.is_file()}
-
-
-def check_particle_gun(particle_gun: Json) -> None:
-    """Raise :class:`DdsimError` if ``particle_gun`` does not describe a gun ddsim can fire."""
-    particle_gun_args(particle_gun)
-
-
-def check_options(options: Mapping[str, Json]) -> None:
-    """Raise :class:`DdsimError` if ``options`` (ddsim option names mapped to values) cannot be
-    passed to ddsim faithfully, or set what k4opt manages."""
-    option_args(options)
-
-
-def check_arguments(
-    *,
-    events: int,
-    seed: int | None,
-    particle_gun: Json = None,
-    input_file: Path | None = None,
-    options: Mapping[str, Json],
-) -> None:
-    """Raise :class:`DdsimError` if these settings cannot be turned into a ``ddsim`` command.
-
-    Needs no files and starts nothing, so it can run before anything is prepared.
-    """
-    ddsim_arguments(
-        compact=Path("compact.xml"),
-        output=Path("events.edm4hep.root"),
-        events=events,
-        seed=seed,
-        particle_gun=particle_gun,
-        input_file=input_file,
-        options=options,
-    )
 
 
 def _tail(path: Path) -> str:

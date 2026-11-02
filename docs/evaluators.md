@@ -121,7 +121,9 @@ match. No uncertainty is assigned: finite statistics, binning, using the signal 
 the cut, and missing reconstruction/systematics limit this demonstration.
 
 `ecal.channels` is a separate candidate-level cost model: `2*pi*radius*length*layers/cell_size²`.
-Its dimensions are explicit settings in mm. It approximates a cylindrical barrel and omits
+Its dimensions and cell size are explicit settings in mm; the parameter `ecal_cell_size` sets
+both the geometry's constant and its `cell_size` (one value, two targets), so the cost is
+always that of the geometry simulated. It approximates a cylindrical barrel and omits
 gaps, endcaps and layer differences; it does not count the detector's actual channels.
 
 The two simulations each run once, both histogram artifacts are hashed, and the combined

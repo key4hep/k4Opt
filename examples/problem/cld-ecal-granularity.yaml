@@ -4,7 +4,7 @@
 #
 #   k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
 #       --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
-#       --param constants.ECal_cell_size=10.0 --output runs/cld-ecal-10mm
+#       --param ecal_cell_size=10.0 --output runs/cld-ecal-10mm
 #
 # or let the optimizer search the cell size (docs/optimization.md):
 #
@@ -26,11 +26,12 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 parameters:
   # CLD uses 5.1 mm; 20 mm is about the width of a photon shower
   ecal_cell_size:
-    geometry:
-      constant: ECal_cell_size
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
+    # what it varies: the constant ECal_cell_size of the geometry, written as <value>*mm
+    targets:
+      geometry: ECal_cell_size
 
 # the events each candidate is measured on: one sample of 10 GeV photons; the gun fires inside
 # ddsim, which simulates the photons
@@ -70,6 +71,7 @@ objectives:
   - stage: simulation
     metric: ecal_barrel.angular_residual
     direction: minimize
+
   - stage: simulation
     metric: ecal_barrel.fired_cells
     direction: minimize

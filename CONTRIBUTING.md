@@ -45,5 +45,5 @@ Rules of thumb:
 ```bash
 source setup.sh                     # Key4hep stack, venv, editable install, git hooks
 pre-commit run --all-files          # ruff, mypy (strict), codespell, shellcheck, actionlint, ...
-python -m pytest tests/unit         # add tests/integration if $K4GEO is available
+python -m pytest -p xdist -n auto tests/unit   # every core; add tests/integration with $K4GEO
 ```

@@ -48,6 +48,7 @@ from tests.support.common import scientific
 from tests.support.evaluators import CELL_COUNT, cell_count, implementations, worker_probe
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.imports import FromFile
+from tests.support.problems import add_targets
 from tests.support.stack import alive, eventually
 
 RADIUS = "radius"
@@ -84,7 +85,7 @@ def write_problem(
     doc["geometry"] = MINI_COMPACT
     doc["parameters"] = {
         RADIUS: {
-            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "continuous",
             "bounds": [100.0, 600.0],
             "unit": "mm",
@@ -1054,7 +1055,7 @@ def test_concurrent_candidates_that_read_one_reference_alike_are_both_recorded_e
     data = yaml.safe_load(problem.read_text())
     choices = ["cad/support.stl", "${CAD}/b.stl"]
     data["parameters"]["support"] = {
-        "geometry": {"target": SUPPORT},
+        "targets": {"geometry": SUPPORT},
         "type": "categorical",
         "choices": choices,
     }
@@ -1097,3 +1098,37 @@ def test_concurrent_candidates_that_read_one_reference_alike_are_both_recorded_e
     assert isinstance(refused, RunError)
     assert "does not read the files it read for an earlier candidate" in str(refused)
     assert not (tmp_path / second / SUMMARY_NAME).exists()
+
+
+def test_concurrent_candidates_each_run_with_their_own_stage_options(
+    tmp_path: Path, marks: Path, doc: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the radius sets the geometry and a ddsim option: each worker runs each simulation with the
+    # option of the candidate it belongs to, never another's, whatever ran in it before
+    stack.install(monkeypatch, marks, **{"*": {"await": 2}})
+    path = write_problem(tmp_path / "problem.yaml", doc)
+    bound = yaml.safe_load(path.read_text())
+    add_targets(
+        bound["parameters"][RADIUS],
+        simulation={"option": "physics.rangecut", "samples": ["gamma", "pion"]},
+    )
+    path.write_text(yaml.safe_dump(bound))
+    radii = {"a": 300.0, "b": 400.0, "c": 500.0, "d": 350.0}
+    requests = [RunRequest({RADIUS: r}, tmp_path / n, {"name": n}) for n, r in radii.items()]
+    with (
+        EvaluationSession.open(path, [cell_count()], workers=2) as session,
+        session.evaluate_each(requests) as evaluations,
+    ):
+        ended = list(evaluations)
+    assert stack.workers() == []
+    assert len(ended) == len(radii)
+    for request, outcome in ended:
+        assert isinstance(outcome, RunOutcome), outcome
+        radius = radii[request.run["name"]]  # type: ignore[index]
+        summary = verified(outcome)
+        for sample in ("gamma", "pion"):
+            stage = summary["samples"][sample]["stages"]["simulation"]
+            assert stage["definition"]["physics.rangecut"] == f"{radius!r}*mm"
+            assert [a for a in stage["argv"] if a.startswith("--physics.rangecut")] == [
+                f"--physics.rangecut={radius!r}*mm"
+            ]

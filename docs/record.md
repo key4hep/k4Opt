@@ -43,7 +43,7 @@ Each outcome carries an `Assessment` of the candidate, also written to the summa
 | `valid`, every limit satisfied | as above | each with `value`, `margin`, `satisfied` | `true` |
 | `valid`, a limit violated | as above | as above | `false` |
 | `invalid` or `failed` | `null`, never a partial vector | each listed, `value`, `margin` and `satisfied` `null` | `null`: not assessed |
-| a supplied stage not made from the candidate (`--input`) | as measured | as measured | `null` |
+| a required supplied stage (`--input`) that a parameter reaches | as measured | as measured | `null` |
 
 Each objective value (`ObjectiveValue`) and each limit names its metric: `evaluator`, `sample`
 (`None` for an evaluator of the candidate), `stage`, `metric` and their `label`,
@@ -64,7 +64,17 @@ the own measurements of the evaluation it names. The record's `implementations` 
 the problem binds, with its versions and stages; its `samples` the problem's, each with the
 evaluations of the bindings that measure it, and its `evaluations` those of the bindings that
 measure the candidate, each of the evaluator the problem binds it to, with the `settings` (as `declared`) and `collections` the
-problem gives it. It checks again what a live evaluation enforces: the candidate is in the
+problem gives it. What the candidate configures follows from the problem and the candidate
+alone, so the record is checked against it: each stage's `definition` (the stage as the
+candidate configures it, with the options its parameters set), each evaluation's
+`settings.declared` (the problem's settings with what the parameters set), and the geometry's
+`changes`, one per geometry target, in the problem's order, each naming its `parameter`,
+the canonical `target` it names and the `new_value` the candidate gives it, each of
+an attribute (`file`, `locator`, `attribute`) of its own. Where that attribute is and its
+`old_value` need the geometry, which a record is read without: a session checks them as each
+geometry is made, and a study against the attributes it resolved when it started. Each task
+holds `varies`, the parameters whose values reach it (those that set it, and those that reach
+what it reads), which must be those the problem gives. It checks again what a live evaluation enforces: the candidate is in the
 problem's domains and `candidate_key` is its key, an `invalid` or `failed` evaluator gives a
 message, each measurement of a metric its evaluator declares carries the declared unit, a
 binding whose evaluator declares metrics declares those named of it, and a constraint that
@@ -76,4 +86,6 @@ SHA-256, those its evaluator declares and, for a `valid` one, every one of them.
 problem (its definition differs, other than in `name`), or if its `status`, `message`,
 `required`, `diagnostics`, `represents_candidate`, `metrics` or `assessment` disagree with that
 recomputation, so any reader can check a record before
-trusting it.
+trusting it. `represents_candidate` says only that no required stage a parameter reaches was
+supplied; a supplied file is identified, not verified to be the stage the problem defines, so a
+record with `supplied` other than `[]` is never fully determined by its problem and candidate.

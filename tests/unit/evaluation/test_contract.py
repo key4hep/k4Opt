@@ -75,7 +75,6 @@ def test_artifacts_pass_between_stages_by_hand(tmp_path: Path) -> None:
     produced = run(
         FakeSimulation(),
         EvaluationRequest(
-            candidate={"cell": 5.5},
             inputs={"geometry": geometry},
             workdir=work,
             events=25,
@@ -349,7 +348,7 @@ def test_result_equality() -> None:
 
 def test_empty_request_needs_nothing() -> None:
     request = EvaluationRequest()
-    assert not request.candidate and not request.settings and not request.inputs
+    assert not request.settings and not request.inputs
     assert request.workdir is None and request.events is None and request.seed is None
 
 
@@ -369,19 +368,6 @@ def test_settings_are_copied_and_read_only() -> None:
         request.settings["x"] = 1  # type: ignore[index]
     with pytest.raises(EvaluationContractError, match=r"settings\.bad"):
         EvaluationRequest(settings={"bad": cast(Any, {1, 2})})
-
-
-def test_candidate_values_are_scalars() -> None:
-    candidate: dict[str, Any] = {"cell": 5.5, "layers": 3, "mode": "fast", "flag": True}
-    request = EvaluationRequest(candidate=candidate)
-    candidate["layers"] = 99
-    assert request.candidate["layers"] == 3
-    assert request.candidate["flag"] is True
-    for bad in (math.nan, math.inf, None, [1], (1, 2), {"a": 1}):
-        with pytest.raises(EvaluationContractError, match="candidate"):
-            EvaluationRequest(candidate={"p": cast(Any, bad)})
-    with pytest.raises(EvaluationContractError, match="candidate parameter"):
-        EvaluationRequest(candidate={"": 1})
 
 
 def test_collections_are_copied_and_must_name_collections() -> None:
@@ -443,7 +429,7 @@ def test_package_does_not_pull_in_problem_or_geometry() -> None:
     )
 
 
-@pytest.mark.parametrize("field", ["candidate", "settings", "collections", "inputs"])
+@pytest.mark.parametrize("field", ["settings", "collections", "inputs"])
 def test_request_mappings_must_be_mappings(field: str) -> None:
     with pytest.raises(EvaluationContractError, match=field):
         EvaluationRequest(**{field: [("a", 1)]})  # type: ignore[arg-type]

@@ -2,13 +2,14 @@
 prepared before anything runs.
 
 :func:`_bind_problem` checks what does not depend on a candidate, once per session: it binds the
-given evaluator implementations to the problem's ``evaluators`` and checks their identity, the
-stage each reads, their settings and collections, each sample's pipeline stages and that each
-objective and constraint names a metric its evaluator measures (:class:`_Binding`).
-:func:`_preflight` then prepares one candidate: a new instance of each evaluation's
-implementation, whose ``check()`` accepted the request it gets for this candidate
-(:class:`_Prepared`). :func:`_context` is what every task of the session needs wherever it
-runs, and :func:`_implementations` what a record says of each implementation.
+given evaluator implementations to the problem's ``evaluators`` and checks their identity, the stage
+each reads, their settings and collections, each sample's pipeline stages and that each objective
+and constraint names a metric its evaluator measures (:class:`_Binding`). :func:`_preflight` then
+prepares one candidate from its configuration (:func:`~k4opt.problem.candidate.configure`): its
+stages, checked complete, and a new instance of each evaluation's implementation, whose ``check()``
+accepted the request it gets for this candidate, with the settings its parameters set
+(:class:`_Prepared`). :func:`_context` is what every task of the session needs wherever it runs, and
+:func:`_implementations` what a record says of each implementation.
 
 An entry of ``evaluators`` is a binding of an implementation, an evaluator class, identified by
 its binding name (``as:``, the implementation's ``name`` when not given): tasks, records, run
@@ -35,7 +36,7 @@ from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRequest,
     EvaluatorProtocol,
-    Scalar,
+    check_bound,
     check_settings,
     collection_names,
     declared_collections,
@@ -54,8 +55,15 @@ from k4opt.execution._tasks import Measuring, SessionContext
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Catalog, GeometrySource
+from k4opt.problem.candidate import Configuration
 from k4opt.problem.contract import MetricKey, check_bindings, check_entries
-from k4opt.problem.models import EvaluatorSpec, ProblemSpec
+from k4opt.problem.models import (
+    EvaluatorSpec,
+    Parameter,
+    ProblemSpec,
+    SettingDestination,
+    StageDestination,
+)
 from k4opt.problem.plan import (
     Kind,
     Plan,
@@ -113,7 +121,10 @@ def _identical(
     keys = {  # by entry: one binding name may bind its samples with other settings
         id(entry): (
             entry.name,
-            _canonical(with_defaults(evaluator, entry.settings)),
+            # with the parameters that set its settings: each sets them anew for a candidate
+            _canonical(
+                {**with_defaults(evaluator, entry.settings), **_set_by(spec, entry.binding)}
+            ),
             _canonical(collection_names(evaluator, entry.collections)),
             _canonical(
                 {role: tuple(i.label for i in items) for role, items in entry.roles.items()}
@@ -137,7 +148,14 @@ def _identical(
         warnings[warning] = None
     first: dict[object, str] = {}
     for name, sample in spec.samples.items():
-        stages = tuple(sample.stages.items())
+        # with the parameter that sets each option: two samples alike but for which parameter
+        # sets an option are simulated alike for no candidate
+        set_by = sorted(
+            (destination.stage, destination.option, parameter.name)
+            for parameter, destination in spec.destinations
+            if isinstance(destination, StageDestination) and name in destination.samples
+        )
+        stages = (tuple(sample.stages.items()), tuple(set_by))
         if stages in first:
             warnings[
                 f"samples {first[stages]} and {name} have identical stages; each is simulated "
@@ -146,6 +164,39 @@ def _identical(
         else:
             first[stages] = name
     return tuple(warnings)
+
+
+def _set_by(spec: ProblemSpec, binding: str) -> dict[str, str]:
+    """The settings of ``binding`` that parameters set, each with its parameter, as a setting
+    of its own: ``{key: "parameters.<name>"}``."""
+    return {
+        destination.setting: f"parameters.{parameter.name}"
+        for parameter, destination in spec.destinations
+        if isinstance(destination, SettingDestination) and destination.evaluator == binding
+    }
+
+
+def _values(parameter: Parameter) -> type:
+    """The type of the values of ``parameter``: ``float`` or ``int`` for a number, ``str`` or
+    ``bool`` for choices of either."""
+    if parameter.kind != "categorical":
+        return int if parameter.kind == "integer" else float
+    choices = parameter.choices or ()
+    if all(isinstance(choice, bool) for choice in choices):
+        return bool
+    if all(isinstance(choice, str) for choice in choices):
+        return str
+    return int if all(isinstance(choice, int) for choice in choices) else float
+
+
+def pending_settings(spec: ProblemSpec, binding: str) -> dict[str, tuple[type, str | None]]:
+    """The settings of ``binding`` that parameters set, each with the type of its parameter's
+    values and its unit (:func:`~k4opt.evaluation.check_settings`)."""
+    return {
+        destination.setting: (_values(parameter), parameter.unit)
+        for parameter, destination in spec.destinations
+        if isinstance(destination, SettingDestination) and destination.evaluator == binding
+    }
 
 
 def _canonical(settings: Mapping[str, Json]) -> str:
@@ -216,10 +267,14 @@ class _Binding:
 
 @dataclass(frozen=True, slots=True)
 class _Prepared:
-    """What the preflight of one candidate established before anything runs: its own evaluator
-    instance for each evaluation and the requests made for it."""
+    """What the preflight of one candidate established before anything runs: its
+    ``configuration``, the stage conditions of each sample with the stages it configures
+    (``contexts``, checked complete), its own evaluator instance for each evaluation and the
+    requests made for it."""
 
     binding: _Binding
+    configuration: Configuration
+    contexts: Mapping[str, StageContext]  # by sample
     # by evaluation, in plan order: the entry that binds it, and the request normalized and
     # checked before execution
     entries: Mapping[TaskId, EvaluatorSpec]
@@ -247,14 +302,15 @@ def _bind_problem(
     ``catalog`` the problem's geometry, from which the collections ddsim writes are predicted.
 
     Binds ``implementations`` to the problem through a probe instance of each, which is then
-    dropped: checks the stages of each sample they read (those in ``provided``, the files the
-    caller supplies by stage task, are not run), each binding's settings and collections against
-    what its implementation declares, and each binding, objective and constraint against what
-    the implementations declare (:mod:`k4opt.problem.contract`). An evaluator that declares
-    collections of a stage without an EDM4hep file (the gun's, or a HepMC file) is refused. Raises
-    :class:`EvaluationContractError`. Collections the simulation is not expected to write, and
-    what is measured or simulated twice, are only warnings.
-    """
+    dropped: checks the stages of each sample they read (those in ``provided``, the files the caller
+    supplies by stage task, are not run), each binding's settings and collections against what its
+    implementation declares, and each binding, objective and constraint against what the
+    implementations declare (:mod:`k4opt.problem.contract`). What the parameters set is pending in
+    both: a stage option, as its executor will check it once a candidate gives it, and a setting,
+    which the implementation must declare, of a kind the parameter's values fit. An evaluator that
+    declares collections of a stage without an EDM4hep file (the gun's, or a HepMC file) is refused.
+    Raises :class:`EvaluationContractError`. Collections the simulation is not expected to write,
+    and what is measured or simulated twice, are only warnings."""
     provided = provided or {}
     contexts = {name: StageContext.of(spec, name, directory) for name in spec.samples}
     targets = {sample: read_stages(sample, spec.evaluators) for sample in spec.samples}
@@ -281,8 +337,28 @@ def _bind_problem(
                     f"evaluator {entry.binding!r} reads collections from the {stage!r} stage of "
                     f"{sample}, but {reason}"
                 )
-        # what needs no candidate is checked before any: a check() may depend on the candidate
-        check_settings(evaluator, with_defaults(evaluator, entry.settings))
+        # what needs no candidate is checked before any: a check() may depend on the candidate;
+        # a setting a parameter sets, first, so that a refusal names that parameter
+        for parameter, destination in spec.destinations:
+            if (
+                isinstance(destination, SettingDestination)
+                and destination.evaluator == entry.binding
+            ):
+                try:
+                    check_bound(evaluator, destination.setting, _values(parameter), parameter.unit)
+                except EvaluationContractError as exc:
+                    raise EvaluationContractError(
+                        f"parameters.{parameter.name}.targets.evaluators.{entry.binding}: setting "
+                        f"{destination.setting!r} {exc}"
+                    ) from None
+        try:
+            check_settings(
+                evaluator,
+                with_defaults(evaluator, entry.settings),
+                pending_settings(spec, entry.binding),
+            )
+        except EvaluationContractError as exc:
+            raise EvaluationContractError(f"evaluator {entry.binding!r}: {exc}") from None
         collection_names(evaluator, entry.collections)
     demands = check_bindings(spec, declarations, EvaluationContractError)
     warnings = _unexpected_collections(spec, catalog, bound, provided) + _identical(spec, bound)
@@ -293,7 +369,13 @@ def _bind_problem(
     planned = tuple(
         (task, of[id(entry)]) for task, entry in evaluations(spec.samples, spec.evaluators)
     )
-    plan = plan_tasks(spec.samples, spec.evaluators, provided, references=spec.references)
+    plan = plan_tasks(
+        spec.samples,
+        spec.evaluators,
+        provided,
+        references=spec.references,
+        parameters=spec.parameters,
+    )
     return _Binding(
         contexts,
         evaluators,
@@ -306,41 +388,60 @@ def _bind_problem(
     )
 
 
-def _preflight(binding: _Binding, values: Mapping[str, Scalar]) -> _Prepared:
-    """Prepare the evaluations of one candidate before a file is created or a stage runs.
+def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared:
+    """Prepare one candidate, configured as ``configuration`` says, before a file is created or a
+    stage runs.
 
-    Creates a new instance of the implementation of each evaluation, which must declare what its
-    probe declared, checks its settings and collections, then calls each one's ``check()`` with the
-    request it would get for this candidate (its settings and collections resolved, the events,
-    seed and properties of its sample; no roles, since nothing exists yet for them to read).
-    Raises :class:`EvaluationContractError` (or what a ``check()``
-    raises). What it returns holds these instances and requests made for these ``values``, so it
-    serves one candidate only.
+    Checks the stages of each sample with what the candidate sets in them, complete; creates a
+    new instance of the implementation of each evaluation, which must declare what its probe
+    declared, checks its settings, with what the candidate sets in them, and collections, then
+    calls each one's ``check()`` with the request it would get for this candidate (its settings
+    and collections resolved, the events, seed and properties of its sample; no roles, since
+    nothing exists yet for them to read). Raises :class:`EvaluationContractError` (or what a
+    ``check()`` or a stage's check raises). What it returns holds these instances and requests
+    made for this candidate, so it serves it only.
     """
-    evaluators = {task: (bound.entry, _instance(bound)) for task, bound in binding.evaluations}
+    contexts = {
+        sample: context.configured(configuration.samples[sample].stages)
+        for sample, context in binding.contexts.items()
+    }
+    for sample, configured in contexts.items():
+        check_stages(configured, *binding.targets[sample], provided=_supplied(binding, sample))
+    entries = dict(evaluations(configuration.samples, configuration.evaluators))
+    evaluators = {task: (entries[task], _instance(bound)) for task, bound in binding.evaluations}
     for entry, evaluator in evaluators.values():  # before any check(), which may use the candidate
         check_settings(evaluator, with_defaults(evaluator, entry.settings))
         collection_names(evaluator, entry.collections)
     requests = {}
     for task, (entry, evaluator) in evaluators.items():
-        context = None if task.sample is None else binding.contexts[task.sample]
+        context = None if task.sample is None else contexts[task.sample]
         properties = {} if task.sample is None else binding.properties[task.sample]
-        request = _request(context, values, entry, evaluator, properties)
+        request = _request(context, entry, evaluator, properties)
         requests[task] = request
         check = getattr(evaluator, "check", None)
         if check is not None:
             check(request)
     return _Prepared(
         binding,
+        configuration,
+        FrozenMap(contexts),
         FrozenMap({task: entry for task, (entry, _) in evaluators.items()}),
         FrozenMap(requests),
         FrozenMap({task: instance for task, (_, instance) in evaluators.items()}),
     )
 
 
+def _supplied(binding: _Binding, sample: str) -> set[str]:
+    """The stages of ``sample`` the caller supplies, by name."""
+    return {
+        task.id.name
+        for task in binding.plan.of(Kind.STAGE)
+        if task.id.sample == sample and task.given == "supplied"
+    }
+
+
 def _request(
     context: StageContext | None,
-    values: Mapping[str, Scalar],
     entry: EvaluatorSpec,
     evaluator: EvaluatorProtocol | None = None,
     properties: Mapping[str, Json] | None = None,
@@ -355,7 +456,6 @@ def _request(
     """
     events, seed = (None, None) if context is None else context.conditions(entry.stage)
     return EvaluationRequest(
-        candidate=values,
         settings=with_defaults(evaluator, entry.settings),
         collections=collection_names(evaluator, entry.collections),
         events=events,
@@ -374,10 +474,16 @@ def _context(
 ) -> SessionContext:
     """What every task of the candidates of ``binding`` needs (:class:`SessionContext`), with
     ``timeout`` for every stage that runs a program, the session geometry's ``externals`` and
-    the geometry candidates start from (``source``, discovered as ``catalog``)."""
+    the geometry candidates start from (``source``, discovered as ``catalog``). Its stage
+    conditions hold no stages: each stage task brings those of its candidate."""
     return SessionContext(
         spec,
-        FrozenMap({name: replace(c, timeout=timeout) for name, c in binding.contexts.items()}),
+        FrozenMap(
+            {
+                name: replace(c.configured(FrozenMap({})), timeout=timeout)
+                for name, c in binding.contexts.items()
+            }
+        ),
         FrozenMap(
             {
                 task: Measuring(bound.entry, bound.probe.declaration, binding.demands.get(task, ()))
@@ -390,13 +496,14 @@ def _context(
     )
 
 
-def task_cpus(binding: _Binding, task: Task) -> int:
-    """How many processors ``task`` keeps busy: a stage that runs as many as its runner says
-    (:func:`~k4opt.execution._stages.stage_cpus`), one for every other task."""
+def task_cpus(contexts: Mapping[str, StageContext], task: Task) -> int:
+    """How many processors ``task`` keeps busy, with the stages of ``contexts`` (by sample): a
+    stage that runs as many as its runner says (:func:`~k4opt.execution._stages.stage_cpus`),
+    one for every other task."""
     if task.id.kind is not Kind.STAGE or task.given is not None:
         return 1
     assert task.id.sample is not None
-    return stage_cpus(task.id.name, binding.contexts[task.id.sample].stages[task.id.name])
+    return stage_cpus(task.id.name, contexts[task.id.sample].stages[task.id.name])
 
 
 def _implementations(binding: _Binding) -> dict[str, Mapping[str, Json]]:

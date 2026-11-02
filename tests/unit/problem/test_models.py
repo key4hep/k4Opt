@@ -13,6 +13,7 @@ import pytest
 from k4opt import frozen as frozen_module
 from k4opt.problem import (
     EvaluatorSpec,
+    GeometryDestination,
     MetricRef,
     ProblemConfigError,
     ProblemSpec,
@@ -171,13 +172,15 @@ def test_a_stage_without_seed_omits_it(doc: dict[str, Any]) -> None:
 
 def test_canonical_target(doc: dict[str, Any]) -> None:
     doc["parameters"]["field"] = {
-        "geometry": {"target": "GlobalSolenoid.inner_field"},
+        "targets": {"geometry": "GlobalSolenoid.inner_field"},
         "type": "integer",
         "bounds": [1, 2],
     }
     first, second = parse_problem(doc).parameters
-    assert first.geometry.canonical_target == "constants.ECal_cell_size"
-    assert second.geometry.canonical_target == "GlobalSolenoid.inner_field"
+    assert first.targets == (GeometryDestination("ECal_cell_size"),)
+    assert second.targets == (GeometryDestination("GlobalSolenoid.inner_field"),)
+    assert first.targets[0].canonical_target == "constants.ECal_cell_size"  # a constant, by name
+    assert second.targets[0].canonical_target == "GlobalSolenoid.inner_field"
 
 
 @pytest.mark.parametrize(

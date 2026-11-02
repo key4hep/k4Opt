@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 import yaml
 
-from k4opt.geometry import GeometryError, GeometrySource, IncludeError, SourceError
+from k4opt.geometry import Catalog, GeometryError, GeometrySource, IncludeError, SourceError
 from k4opt.problem import ProblemConfigError, load_problem, parse_problem
 from k4opt.problem.config import resolve_problem
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
@@ -28,7 +28,7 @@ def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
 def problem_doc(doc: dict[str, Any]) -> dict[str, Any]:
     doc["geometry"] = MINI_COMPACT
     cell = doc["parameters"].pop("ecal_cell_size")
-    doc["parameters"]["radius"] = cell | {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}}
+    doc["parameters"]["radius"] = cell | {"targets": {"geometry": "InnerTracker_Barrel_radius_1"}}
     return doc
 
 
@@ -53,7 +53,7 @@ def test_load_resolves_a_constant(tmp_path: Path, problem_doc: dict[str, Any]) -
 def test_load_resolves_a_structured_target(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
     ref = "InnerTrackerBarrel.layer[id=1].rphi_layout.nphi"
     problem_doc["parameters"]["radius"] = {
-        "geometry": {"target": ref},
+        "targets": {"geometry": ref},
         "type": "integer",
         "bounds": [10, 100],
     }
@@ -65,7 +65,7 @@ def test_parameters_resolve_in_order_with_one_discovery(
     tmp_path: Path, problem_doc: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     problem_doc["parameters"]["world_side"] = {
-        "geometry": {"constant": "world_side"},
+        "targets": {"geometry": "world_side"},
         "type": "continuous",
         "bounds": [1.0, 2.0],
     }
@@ -86,32 +86,75 @@ def test_parameters_resolve_in_order_with_one_discovery(
     assert problem.catalog.root == problem.source.root
 
 
+def test_one_parameter_sets_several_attributes(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
+    problem_doc["parameters"]["radius"]["targets"] = {
+        "geometry": ["InnerTracker_Barrel_radius_1", "world_side"]
+    }
+    problem = resolve_problem(write_problem(tmp_path, problem_doc))
+    assert [t.target for t in problem.targets] == [
+        "constants.InnerTracker_Barrel_radius_1",
+        "constants.world_side",
+    ]
+    assert [p.name for p, _ in problem.spec.geometry_destinations] == ["radius", "radius"]
+
+
+def test_two_destinations_of_one_attribute_are_refused(
+    tmp_path: Path, problem_doc: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # two references that a geometry resolves to one attribute: refused when it is loaded,
+    # not when the first candidate's geometry is made
+    problem_doc["parameters"]["side"] = {
+        "type": "continuous",
+        "bounds": [1.0, 2.0],
+        "targets": {"geometry": "world_side"},
+    }
+    lookup = Catalog.lookup
+
+    def same(self: Catalog, target: str, file: str | None = None) -> Any:
+        return lookup(self, "constants.InnerTracker_Barrel_radius_1", file)
+
+    monkeypatch.setattr(Catalog, "lookup", same)
+    with pytest.raises(ProblemConfigError, match=r"which parameters\.radius sets already"):
+        load_problem(write_problem(tmp_path, problem_doc))
+
+
 @pytest.mark.parametrize(
     ("selector", "message"),
     [
-        ({"constant": "InnerTracker_Barrel_radius_9"}, "unknown target"),
-        ({"target": "constants.InnerTracker_Barrel_radius_9"}, "unknown target"),
-        ({"target": "not a [reference"}, "not a [reference"),
+        ("InnerTracker_Barrel_radius_9", "unknown target"),
+        ("constants.InnerTracker_Barrel_radius_9", "unknown target"),
+        ("not a [reference", "not a [reference"),
     ],
 )
 def test_missing_or_malformed_target(
-    tmp_path: Path, problem_doc: dict[str, Any], selector: dict[str, str], message: str
+    tmp_path: Path, problem_doc: dict[str, Any], selector: str, message: str
 ) -> None:
     problem_doc["parameters"]["other"] = problem_doc["parameters"]["radius"] | {
-        "geometry": selector
+        "targets": {"geometry": selector}
     }
-    with pytest.raises(ProblemConfigError, match=r"parameters\.other\.geometry") as info:
+    with pytest.raises(ProblemConfigError, match=r"parameters\.other\.targets") as info:
         load_problem(write_problem(tmp_path, problem_doc))
     assert message in str(info.value)
-    assert isinstance(info.value.__cause__, GeometryError)
+    causes = []
+    cause: BaseException | None = info.value
+    while cause is not None:
+        causes.append(cause)
+        cause = cause.__cause__
+    assert any(isinstance(cause, GeometryError) for cause in causes)
+
+
+def test_a_malformed_target_needs_no_geometry(problem_doc: dict[str, Any]) -> None:
+    problem_doc["parameters"]["radius"]["targets"] = {"geometry": "not a [reference"}
+    with pytest.raises(ProblemConfigError, match=r"parameters\.radius\.targets\.geometry: invalid"):
+        parse_problem(problem_doc)
 
 
 def test_ambiguous_target_is_not_guessed(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
-    problem_doc["parameters"]["radius"]["geometry"] = {"constant": "Tracker_cooling_gap"}
+    problem_doc["parameters"]["radius"]["targets"] = {"geometry": "Tracker_cooling_gap"}
     with pytest.raises(ProblemConfigError) as info:
         load_problem(write_problem(tmp_path, problem_doc))
     message = str(info.value)
-    assert "parameters.radius.geometry" in message
+    assert "parameters.radius.targets.geometry" in message
     assert "'constants.Tracker_cooling_gap'" in message
     assert "cannot currently be selected unambiguously" in message
     assert "compact/det_v1/tracker.xml" in message
