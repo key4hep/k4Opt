@@ -484,9 +484,13 @@ reference names, relative to the directory the package is in; a top-level `modul
 counts the modules beside it, as a file does, unless it is installed (in `site-packages` or the
 standard library). They are found in the source, so an import inside a method counts as one at
 the top; a module imported by name at run time (`importlib.import_module`) and a data file the
-evaluator reads are not. A helper Python imported before is identified by what this process
-first read of it, which is the code that runs: loading is refused if its file changed since,
-or if something imported it before `load_evaluator` read it. A session checks before and
+evaluator reads are not. The helpers of `FILE.py:Class` are imported from the bytes of their
+source, as the file itself is, never from a cached `.pyc`, so their hashes are those of the code
+that runs; for `package.module:Class` Python imports them itself, and they are read right after
+the import, like the class's own file (`executed: false`). Loading is refused for a helper that
+Python imported before and whose file changed since (it keeps running the old module), for one
+that something imported before `load_evaluator` read it, and for one that an evaluator file
+loaded before imports by the same name from elsewhere, also only inside a method. A session checks before and
 after each candidate that every helper still holds what it did when the evaluator was loaded,
 so that one imported inside a method cannot run other code than the record says. To label those, `revision` holds the commit and dirty flag of the git checkout
 that tracks the file, taken at the same time: an edited file of that checkout shows as

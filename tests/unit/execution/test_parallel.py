@@ -984,7 +984,7 @@ def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
 ) -> None:
     source = REPO / "tests" / "support" / "cell_count.py"
     edited = tmp_path / "edited_count.py"
-    helper = tmp_path / "count_helper_of_worker_test.py"
+    helper = tmp_path / f"count_helper_{differs.replace(' ', '_')}.py"  # one name per helper file
     helper.write_text("value = 1\n")
     edited.write_text(f"import {helper.stem}\n" + source.read_text())
     request.addfinalizer(lambda: sys.modules.pop(helper.stem, None))

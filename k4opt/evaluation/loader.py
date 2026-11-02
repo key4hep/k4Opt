@@ -6,11 +6,13 @@ import ast
 import contextlib
 import hashlib
 import importlib
+import importlib.abc
+import importlib.machinery
 import importlib.util
 import inspect
 import sys
 import sysconfig
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from weakref import WeakKeyDictionary
@@ -27,9 +29,8 @@ _SOURCES: WeakKeyDictionary[type, FrozenMap[str, Json]] = WeakKeyDictionary()
 _REFERENCES: WeakKeyDictionary[type, str] = WeakKeyDictionary()
 # the identity of each FILE.py this process executed, by the module name it was imported as
 _EXECUTED: dict[str, FrozenMap[str, Json]] = {}
-# the SHA-256 of each local module as this process first read it, by its resolved path: for a
-# module Python has imported since, the code that runs, whatever its file holds now
-_FIRST_READ: dict[Path, str] = {}
+# the local modules of the evaluator files loaded, by module name: imported from their source
+_LOCAL: dict[str, Path] = {}
 # the files of the local modules each class's identity names, by the name it gives them
 _HELPER_FILES: WeakKeyDictionary[type, FrozenMap[str, Path]] = WeakKeyDictionary()
 
@@ -47,14 +48,17 @@ def evaluator_source(cls: type) -> dict[str, Json]:
     package (and of the reference's), relative to the directory that package is in, and include
     the packages Python executed to reach the class and the module the reference names; a
     top-level module's are those beside it, unless it is installed (in ``site-packages`` or the
-    standard library), where they are other distributions. A module Python imported before is
-    identified by what this process first read of it (:func:`changed_helpers` sees later
-    edits). ``revision`` is the commit and dirty flag of the git checkout that tracks
-    the file, taken at the same time, ``None`` if no checkout tracks it; it labels what the
-    hashes do not cover, such as data files. For a class whose module was imported before, or
-    reloaded since, only the path is known: the current file cannot establish which bytes
-    Python executed. ``reference`` is what loads the class again (``/abs/path/file.py:Class``
-    or ``package.module:Class``), ``None`` for a class :func:`load_evaluator` did not load.
+    standard library), where they are other distributions. The local modules of ``FILE.py`` are
+    imported from the bytes of their source, never a cached ``.pyc``, and identified by those
+    bytes; for a module, Python imports them itself and they are read right after the import, as
+    its own file is. One imported later (inside a function) is identified by its file when the
+    class is loaded (:func:`changed_helpers` sees later edits). ``revision`` is the commit and
+    dirty flag of the git checkout that tracks the file, taken at the same time, ``None`` if no
+    checkout tracks it; it labels what the hashes do not cover, such as data files. For a class
+    whose module was imported before, or reloaded since, only the path is known: the current
+    file cannot establish which bytes Python executed. ``reference`` is what loads the class
+    again (``/abs/path/file.py:Class`` or ``package.module:Class``), ``None`` for a class
+    :func:`load_evaluator` did not load.
     """
     identity = _SOURCES.get(cls)
     source: dict[str, Json]
@@ -184,31 +188,77 @@ def _hashed(root: Path, modules: Mapping[str, Path]) -> dict[str, str]:
     )
 
 
+class _SourceLoader(importlib.abc.Loader):
+    """Executes a local module from the bytes of its source file, as :func:`_load_file` does an
+    evaluator file: Python's own import may run a cached ``.pyc`` that a same-sized edit keeping
+    the timestamp left stale. The SHA-256 of the bytes compiled is the spec's
+    ``loader_state``."""
+
+    def exec_module(self, module: ModuleType) -> None:
+        spec = module.__spec__
+        assert spec is not None
+        assert spec.origin is not None
+        data = Path(spec.origin).read_bytes()
+        spec.loader_state = hashlib.sha256(data).hexdigest()
+        exec(compile(data, spec.origin, "exec", dont_inherit=True), module.__dict__)
+
+
+class _SourceFinder(importlib.abc.MetaPathFinder):
+    """Finds the local modules of the evaluator files loaded (``_LOCAL``), for
+    :class:`_SourceLoader`; no other module."""
+
+    def find_spec(
+        self, fullname: str, path: Sequence[str] | None, target: ModuleType | None = None
+    ) -> importlib.machinery.ModuleSpec | None:
+        file = _LOCAL.get(fullname)
+        if file is None:
+            return None
+        package = [str(file.parent)] if file.name == "__init__.py" else None
+        return importlib.util.spec_from_file_location(
+            fullname, file, loader=_LOADER, submodule_search_locations=package
+        )
+
+
+_LOADER = _SourceLoader()
+_FINDER = _SourceFinder()
+
+
+def _executed(module: ModuleType) -> str | None:
+    """The SHA-256 of the source :class:`_SourceLoader` executed ``module`` from; ``None`` for a
+    module Python imported otherwise."""
+    spec = getattr(module, "__spec__", None)
+    if spec is None or spec.loader is not _LOADER:
+        return None
+    state = spec.loader_state
+    assert isinstance(state, str)
+    return state
+
+
 def _read(root: Path, modules: Mapping[str, Path], before: Collection[str]) -> dict[str, str]:
     """The identity of ``modules`` (``helpers``), by path relative to ``root``, sorted.
 
-    A module Python imported before this load (``before``) runs the code this process first
-    read of it: refused if its file changed since, or if this process never read it (another
-    import came first, so which code runs is not known). Any other module is identified by its
-    file as it is now, which is remembered as first read."""
+    A module imported from its source (:class:`_SourceLoader`) runs those bytes: refused if its
+    file changed since. One Python imported itself during this load, as it does the modules of
+    a ``package.module:Class``, is identified by its file read now, right after the import; one
+    it imported before this load (``before``) is refused: which of its code runs is not known.
+    One not imported yet is identified by its file now, which :func:`changed_helpers` watches."""
     hashes = {}
     for module, path in modules.items():
-        key, now = path.resolve(), _sha256(path)
-        first = _FIRST_READ.get(key)
-        if module not in before:
-            _FIRST_READ[key] = first = now
-        elif first is None:
+        now = _sha256(path)
+        loaded = sys.modules.get(module)
+        executed = None if loaded is None else _executed(loaded)
+        if executed is not None and executed != now:
+            raise EvaluatorLoadError(
+                f"{path} changed since this process imported it, and Python keeps running the "
+                f"module {module!r} it imported then; load the evaluator in a new process"
+            )
+        if loaded is not None and executed is None and module in before:
             raise EvaluatorLoadError(
                 f"{module!r} ({path}) was imported before load_evaluator read it, so which of its "
                 "code runs is not known; load the evaluator in a new process, or before importing "
                 "the modules it imports"
             )
-        elif first != now:
-            raise EvaluatorLoadError(
-                f"{path} changed since this process imported it, and Python keeps running the "
-                f"module {module!r} it imported then; load the evaluator in a new process"
-            )
-        hashes[path.relative_to(root).as_posix()] = first
+        hashes[path.relative_to(root).as_posix()] = now
     return dict(sorted(hashes.items()))
 
 
@@ -290,18 +340,23 @@ def _identify_import(cls: type, where: str, before: Collection[str]) -> None:
 
 def _check_local(path: Path, modules: Mapping[str, Path]) -> None:
     """Refuse a module that ``path`` imports from beside it if Python already imported another
-    module by that name: the import would give ``path`` that one."""
+    module by that name, or an evaluator file loaded before imports another one by that name
+    (perhaps only when it evaluates): the import would give ``path`` that one."""
     for name, local in modules.items():
         loaded = sys.modules.get(name)
-        if loaded is None:
+        if loaded is not None:
+            where = getattr(loaded, "__file__", None)
+            other = f"this process imported {name!r} from {where or 'Python itself'} before"
+        elif name in _LOCAL:
+            where = str(_LOCAL[name])
+            other = f"an evaluator file loaded before imports {name!r} from {where}"
+        else:
             continue
-        where = getattr(loaded, "__file__", None)
         if where is None or Path(where).resolve() != local.resolve():
             raise EvaluatorLoadError(
-                f"{path} imports {name!r}, which is {local} beside it, but this process imported "
-                f"{name!r} from {where or 'Python itself'} before, which Python would give it; "
-                "rename one of them, or put the evaluators in packages of their own "
-                "(package.module:Class)"
+                f"{path} imports {name!r}, which is {local} beside it, but {other}, which Python "
+                "would give it; rename one of them, or put the evaluators in packages of their "
+                "own (package.module:Class)"
             )
 
 
@@ -343,6 +398,10 @@ def _load_file(path: Path, before: Collection[str]) -> ModuleType:
         raise EvaluatorLoadError(f"{path} cannot be imported as a Python module")
     local = _local_modules(path, path.parent)
     _check_local(path, local)
+    if _FINDER not in sys.meta_path:
+        sys.meta_path.insert(0, _FINDER)
+    registered = [name for name in local if name not in _LOCAL]
+    _LOCAL.update(local)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module  # before executing: dataclasses and pickling look it up
     # like ``python file.py``, modules next to the file are importable, also later (an import
@@ -364,6 +423,8 @@ def _load_file(path: Path, before: Collection[str]) -> ModuleType:
                 _identified(value, identity, path.parent, local)
     except BaseException as exc:
         del sys.modules[name]
+        for local_name in registered:
+            del _LOCAL[local_name]
         if added:
             sys.path.remove(directory)
         if isinstance(exc, EvaluatorLoadError):

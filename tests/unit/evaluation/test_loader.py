@@ -382,6 +382,47 @@ def test_a_stale_bytecode_cache_cannot_disagree_with_the_source_hash(evaluator_f
     assert evaluator_source(cls)["sha256"] == hashlib.sha256(data).hexdigest()
 
 
+def test_a_stale_bytecode_cache_of_a_helper_cannot_disagree_with_its_hash(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    helper = "cached_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    path = tmp_path / f"{helper}.py"
+    path.write_text("value = 11\n")
+    py_compile.compile(str(path), doraise=True)
+    original = path.stat()
+    path.write_text("value = 22\n")  # Python's own import would run the .pyc of value = 11
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert path.stat().st_size == original.st_size
+    evaluator = tmp_path / "uses_cached.py"
+    evaluator.write_text(
+        f"import {helper}\n" + GOOD.replace('"answer", 42', f'"answer", {helper}.value')
+    )
+    cls = load_evaluator(f"{evaluator}:Good")
+    assert cls().evaluate(None).measurements[0].value == 22  # type: ignore[arg-type]
+    assert evaluator_source(cls)["helpers"] == {
+        f"{helper}.py": hashlib.sha256(b"value = 22\n").hexdigest()
+    }
+
+
+def test_a_helper_another_file_imports_only_when_it_evaluates_is_not_shared(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    helper = "lazy_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    for directory in ("a", "b"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / f"{helper}.py").write_text(f"where = {directory!r}\n")
+    lazy = GOOD.replace(
+        "def evaluate(self, request):", f"def evaluate(self, request):\n        import {helper}"
+    )
+    (tmp_path / "a" / "evaluator.py").write_text(lazy)
+    (tmp_path / "b" / "evaluator.py").write_text(f"import {helper}\n" + GOOD)
+    load_evaluator(f"{tmp_path / 'a' / 'evaluator.py'}:Good")  # imports nothing yet
+    with pytest.raises(EvaluatorLoadError, match=rf"imports '{helper}', which is .*/b/{helper}"):
+        load_evaluator(f"{tmp_path / 'b' / 'evaluator.py'}:Good")
+
+
 @requires_git
 def test_the_revision_of_the_checkout_is_taken_when_the_file_is_loaded(tmp_path: Path) -> None:
     files = {"tracked_good.py": GOOD, "later_good.py": GOOD, "helper.py": ""}
