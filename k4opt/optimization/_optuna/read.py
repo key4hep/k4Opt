@@ -32,7 +32,7 @@ from k4opt.optimization._results import (
 from k4opt.optimization._study import STUDY_NAME, read_study, trial_directories, trial_directory
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import ProblemSpec
-from k4opt.problem.plan import evaluations
+from k4opt.problem.plan import Kind, plan_tasks
 
 
 def _existing_study(document: Mapping[str, Any], storage: BaseStorage) -> optuna.Study:
@@ -149,8 +149,9 @@ def _rejected(
     """Trial ``frozen``, which k4opt told was rejected, read strictly: a rejection has no record,
     so all there is of it is what the optimizer holds, which must be exactly what
     :func:`~k4opt.optimization._optuna.tell._reject` tells: FAIL, no values and no constraint
-    values, the evaluation of the problem that rejected it and its message, and no trial
-    directory, since nothing of its candidate was created."""
+    values, the required evaluation of the problem that rejected it (a diagnostic rejects no
+    candidate) and its message, and no trial directory, since nothing of its candidate was
+    created."""
     number, attrs = frozen.number, frozen.user_attrs
     where = f"trial {number} is rejected, but"
     if frozen.state != TrialState.FAIL or frozen.values is not None or frozen.constraints:
@@ -161,9 +162,12 @@ def _rejected(
             f"{where} it carries {', '.join(sorted(k4opt))}, not what k4opt tells a rejected trial"
         )
     by, message = attrs["k4opt.rejected_by"], attrs["k4opt.message"]
-    labels = [task.label for task, _ in evaluations(spec.samples, spec.evaluators)]
-    if by not in labels:
-        raise OptimizationError(f"{where} by {by!r}, which is no evaluation of the problem")
+    plan = plan_tasks(spec.samples, spec.evaluators, references=spec.references)
+    if by not in [task.id.label for task in plan.of(Kind.EVALUATOR) if task.required]:
+        raise OptimizationError(
+            f"{where} by {by!r}, which is no required evaluation of the problem, the only kind "
+            "that rejects a candidate"
+        )
     if not isinstance(message, str):
         raise OptimizationError(f"{where} its message is {message!r}")
     if own.exists() or own.is_symlink():

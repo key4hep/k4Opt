@@ -1036,16 +1036,19 @@ def test_a_study_whose_parameter_sets_the_geometry_and_a_stage_resumes_configure
 # --- what a resume keeps of trials without a record ------------------------------------------
 
 
-def rejecting(write_problem: Callable[..., Path]) -> Path:
-    """A problem whose radius is 150 or 250, and whose evaluator rejects 250."""
+def rejecting(write_problem: Callable[..., Path], diagnostic: str | None = None) -> Path:
+    """A problem whose radius is 150 or 250, and whose evaluator rejects 250; with a
+    ``diagnostic``, also a ``test.candidate_check`` of that name, which no objective reads."""
+    check = {"name": "test.candidate_check", "version": "1"}
     return write_problem(
         parameter={
             "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "categorical",
             "choices": [150, 250],
         },
-        evaluators=[{"name": "test.candidate_check", "version": "1", "settings": {"reject": 250}}],
-        objectives=[("analysis", "seen", "minimize")],
+        evaluators=[check | {"settings": {"reject": 250}}]
+        + ([check | {"as": diagnostic}] if diagnostic else []),
+        objectives=[("test.candidate_check", "analysis", "seen", "minimize")],
     )
 
 
@@ -1070,7 +1073,9 @@ def test_a_resumed_study_keeps_its_rejected_trials_rejected(
 @pytest.mark.parametrize(
     ("forge", "message"),
     [
-        ({"k4opt.rejected_by": "nothing"}, "which is no evaluation of the problem"),
+        ({"k4opt.rejected_by": "nothing"}, "which is no required evaluation of the problem"),
+        # a diagnostic's check() rejecting the candidate only keeps that diagnostic from running
+        ({"k4opt.rejected_by": "spare"}, "'spare', which is no required evaluation"),
         ({"k4opt.feasible": True}, "not what k4opt tells a rejected trial"),
         ({"k4opt.record": {"id": "x"}}, "not what k4opt tells a rejected trial"),
         ({"k4opt.message": 3}, "its message is 3"),
@@ -1084,7 +1089,7 @@ def test_a_rejected_trial_is_read_strictly(
     from k4opt.optimization._results import recorded_problem
     from k4opt.optimization._study import read_study
 
-    problem, output = rejecting(write_problem), tmp_path / "s"
+    problem, output = rejecting(write_problem, diagnostic="spare"), tmp_path / "s"
     run(problem, output, 1, seed=1, evaluators=[_checking()])
     document = read_study(output)
     attrs = {
