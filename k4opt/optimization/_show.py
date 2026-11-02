@@ -139,7 +139,7 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
     directory = f"{printable(results.directory)} (trials in {printable(where)})"
     _print(out, style, "directory", [directory])
     parameters = [
-        f"{printable(p.name)}  {_domain(p)}  ({printable(', '.join(d.label for d in p.sets))})"
+        f"{printable(p.name)}  {_domain(p)}  ({printable(', '.join(d.label for d in p.targets))})"
         for p in spec.parameters
     ]
     _print(out, style, "parameters", parameters)

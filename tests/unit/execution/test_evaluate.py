@@ -71,10 +71,10 @@ def make(doc: dict[str, Any], *parameters: tuple[str, dict[str, Any]]) -> Proble
 
 def param(name: str, kind: str, **extra: Any) -> tuple[str, dict[str, Any]]:
     """The parameter ``name``, setting the constant of that name."""
-    return name, {"sets": {"geometry": {"constant": name}}, "type": kind, **extra}
+    return name, {"targets": {"geometry": name}, "type": kind, **extra}
 
 
-VALUE = {"evaluator": Toy.name, "setting": "value"}
+VALUE = {"evaluators": {Toy.name: "value"}}
 """A setting of the toy, which takes any number; a geometry takes those a double holds."""
 
 
@@ -146,7 +146,7 @@ def test_negative_zero_and_zero(doc: dict[str, Any]) -> None:
 
 
 def test_integer_parameter(doc: dict[str, Any]) -> None:
-    s = make(doc, param("n", "integer", bounds=[1, 10**400], sets=VALUE))
+    s = make(doc, param("n", "integer", bounds=[1, 10**400], targets=VALUE))
     ref = "n"
     for good in (1, 10, 10**400):
         record = evaluate_one(s, {ref: good}, Toy())
@@ -158,7 +158,7 @@ def test_integer_parameter(doc: dict[str, Any]) -> None:
 
 
 def test_huge_continuous_int_stays_exact(doc: dict[str, Any]) -> None:
-    s = make(doc, param("x", "continuous", bounds=[0, 10**400], sets=VALUE))
+    s = make(doc, param("x", "continuous", bounds=[0, 10**400], targets=VALUE))
     a = evaluate_one(s, {"x": 10**399 + 1}, Toy()).candidate_key
     b = evaluate_one(s, {"x": 10**399}, Toy()).candidate_key
     assert a != b
@@ -339,7 +339,7 @@ def test_evaluation_package_stays_independent_of_problem() -> None:
 
 
 def test_float_and_int_with_different_values_have_different_keys(doc: dict[str, Any]) -> None:
-    s = make(doc, param("x", "continuous", bounds=[0, 10**30], sets=VALUE))
+    s = make(doc, param("x", "continuous", bounds=[0, 10**30], targets=VALUE))
     ref = "x"
     exact = evaluate_one(s, {ref: 10**23}, Toy()).candidate_key
     rounded = evaluate_one(s, {ref: 1e23}, Toy()).candidate_key

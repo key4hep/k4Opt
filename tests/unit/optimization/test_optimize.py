@@ -121,7 +121,7 @@ def test_invalid_and_failed_candidates_are_fail_trials_and_the_study_goes_on(
     settings = {"invalid_below": 350, "failed_below": 200}
     problem = write_problem(
         parameter={
-            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "categorical",
             "choices": [450, 300, 150],  # valid, invalid, failed; the probe takes 450
         },
@@ -215,7 +215,7 @@ def test_a_check_that_refuses_a_candidate_stops_the_study_at_it(
 ) -> None:
     problem = write_problem(
         parameter={
-            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "categorical",
             "choices": [150, 250],
         },

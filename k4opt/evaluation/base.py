@@ -297,13 +297,12 @@ def check_bound(evaluator: object, key: str, kind: type, unit: str | None) -> No
     declared = getattr(evaluator, "settings", None)
     if declared is None:
         raise EvaluationContractError(
-            "the evaluator declares no settings, so no parameter can set one; a parameter sets "
-            "only a setting the evaluator declares"
+            "cannot be set: the evaluator declares no settings, and a parameter sets only a "
+            "setting the evaluator declares"
         )
     if key not in declared:
         raise EvaluationContractError(
-            f"the evaluator declares no setting {key!r}, so no parameter can set it; it "
-            f"declares {sorted(declared)}"
+            f"is not a setting the evaluator declares; it declares {', '.join(sorted(declared))}"
         )
     entry, given = declared[key], _values(kind, unit)
     number = kind in (int, float)
@@ -313,23 +312,26 @@ def check_bound(evaluator: object, key: str, kind: type, unit: str | None) -> No
         if number and unit is not None and units.dimension(unit) == dimension:
             return
         raise EvaluationContractError(
-            f"it is a quantity in {entry.unit}, so it takes numbers with a unit of {dimension} "
-            f"({', '.join(units.units(dimension))}); the parameter's values are {given}"
+            f"expects a quantity in {entry.unit}, a unit of {dimension} "
+            f"({', '.join(units.units(dimension))}), but the parameter's values are {given}"
         )
     expected = _kind(entry)
     if expected in (list, dict):
-        raise EvaluationContractError(f"it is a {expected.__name__}, which no parameter can set")
+        raise EvaluationContractError(f"is a {expected.__name__}, which no parameter can set")
     fits = number if expected is float else kind is expected
     if fits and unit is None:
         return
     if fits:
         raise EvaluationContractError(
-            f"it is a {expected.__name__} without a unit, so the parameter's unit {unit} would be "
-            "lost; declare it a Quantity of that dimension, or give the parameter no unit"
+            f"expects a number without a unit, but the parameter has unit {unit}, which it would "
+            "lose; declare the setting a Quantity, or give the parameter no unit"
         )
     raise EvaluationContractError(
-        f"it is a {expected.__name__}; the parameter's values are {given}"
+        f"expects {_KIND_NAMES[expected]}, but the parameter's values are {given}"
     )
+
+
+_KIND_NAMES = {float: "a number", int: "an integer", str: "a string", bool: "a boolean"}
 
 
 def check_settings(

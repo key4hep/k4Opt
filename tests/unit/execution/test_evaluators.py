@@ -37,6 +37,7 @@ from tests.support.evaluators import (
     toy_significance,
     yields,
 )
+from tests.support.problems import add_targets
 from tests.support.simulation import COLLECTION, Event, Hits, Particle, Particles, events_with
 
 CELL = "ecal_cell_size"
@@ -139,7 +140,7 @@ def problem(
     ]
     if "test.parameter_echo" in names:  # it echoes the value of the cell size
         cell = doc["parameters"]["ecal_cell_size"]
-        cell["sets"] = [cell["sets"], {"evaluator": "test.parameter_echo", "setting": "x"}]
+        add_targets(cell, evaluators={"test.parameter_echo": "x"})
     return parse_problem(doc)
 
 

@@ -29,10 +29,9 @@ parameters:
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
-    # where the value goes: the constant of the geometry, written as <value>*mm
-    sets:
-      geometry:
-        constant: ECal_cell_size
+    # what it varies: the constant ECal_cell_size of the geometry, written as <value>*mm
+    targets:
+      geometry: ECal_cell_size
 
 # the events each candidate is measured on: one sample of 10 GeV photons; the gun fires inside
 # ddsim, which simulates the photons

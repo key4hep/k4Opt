@@ -1,14 +1,17 @@
-"""Where a parameter's value goes: its destinations, parsed in two phases, and a candidate
-configured from them."""
+"""Where a parameter's value goes: its ``targets``, parsed in two phases into one destination
+each, and a candidate configured from them."""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
+from k4opt.evaluation import check_bound
 from k4opt.problem import (
     CandidateError,
     GeometryDestination,
@@ -26,9 +29,11 @@ from k4opt.problem.plan import (
     stage_task,
     varied,
 )
+from tests.support.evaluators import calo_photon
 from tests.support.problems import two_samples
 
 EVALUATOR = "calo.single_particle_shower"
+EXAMPLES = Path(__file__).parents[3] / "examples" / "problem"
 
 
 def reject(data: object, message: str) -> None:
@@ -37,159 +42,232 @@ def reject(data: object, message: str) -> None:
         parse_problem(data)
 
 
-def add(doc: dict[str, Any], name: str, sets: object, **domain: object) -> dict[str, Any]:
+def add(doc: dict[str, Any], name: str, targets: object, **domain: object) -> dict[str, Any]:
     """``doc`` with the parameter ``name``, continuous in [1, 2] unless ``domain`` says
-    otherwise, that sets ``sets``."""
+    otherwise, whose targets are ``targets``."""
     numeric = domain.get("type", "continuous") != "categorical"
     parameter = ({"type": "continuous", "bounds": [1.0, 2.0]} if numeric else {}) | domain
-    doc["parameters"][name] = parameter | {"sets": sets}
+    doc["parameters"][name] = parameter | {"targets": targets}
     return doc
 
 
 def energy(doc: dict[str, Any]) -> dict[str, Any]:
-    """``doc`` whose gun energy is set by the parameter ``energy``, in GeV."""
+    """``doc`` whose gun energy is the target of the parameter ``energy``, in GeV."""
     del doc["samples"]["gamma"]["generation"]["energy"]
-    return add(doc, "energy", {"stage": "generation", "option": "energy"}, unit="GeV")
+    return add(doc, "energy", {"generation": "energy"}, unit="GeV")
 
 
-# --- destinations ----------------------------------------------------------------------------
+def with_cost(doc: dict[str, Any]) -> dict[str, Any]:
+    """``doc`` with a second evaluator, ``cost``, of the candidate, and the shower evaluator's
+    settings left to the parameters."""
+    doc["evaluators"].append({"name": "cost", "version": "1"})
+    del doc["evaluators"][0]["settings"]
+    for item in (*doc["objectives"], *doc["constraints"]):
+        item["evaluator"] = EVALUATOR
+    return doc
 
 
-def test_each_kind_of_destination(doc: dict[str, Any]) -> None:
+def targets_of(doc: dict[str, Any], name: str) -> tuple[object, ...]:
+    return next(p for p in parse_problem(doc).parameters if p.name == name).targets
+
+
+# --- each kind of target -------------------------------------------------------------------
+
+
+def test_each_kind_of_target_reads_into_one_destination(doc: dict[str, Any]) -> None:
     doc = energy(doc)
     del doc["evaluators"][0]["settings"]
-    doc = add(doc, "range_cut", {"stage": "simulation", "option": "physics.rangecut"}, unit="mm")
-    sets = {"evaluator": EVALUATOR, "setting": "collection"}
-    doc = add(doc, "collection", sets, type="categorical", choices=["Barrel", "Endcap"])
+    doc = add(doc, "range_cut", {"simulation": "physics.rangecut"}, unit="mm")
+    add(doc, "collection", {"evaluators": {EVALUATOR: "collection"}}, type="categorical")
+    doc["parameters"]["collection"]["choices"] = ["Barrel", "Endcap"]
     problem = parse_problem(doc)
     cell, gun, cut, collection = problem.parameters
-    assert cell.sets == (GeometryDestination(constant="ECal_cell_size"),)
-    assert gun.sets == (StageDestination("generation", "energy", ("gamma",)),)
-    assert cut.sets == (StageDestination("simulation", "physics.rangecut", ("gamma",)),)
-    assert collection.sets == (SettingDestination(EVALUATOR, "collection"),)
+    assert cell.targets == (GeometryDestination("ECal_cell_size"),)
+    assert gun.targets == (StageDestination("generation", "energy", ("gamma",)),)
+    assert cut.targets == (StageDestination("simulation", "physics.rangecut", ("gamma",)),)
+    assert collection.targets == (SettingDestination(EVALUATOR, "collection"),)
     assert [d.label for _, d in problem.destinations] == [
         "geometry constants.ECal_cell_size",
-        "generation.energy of gamma",
-        "simulation.physics.rangecut of gamma",
-        f"{EVALUATOR}.collection",
+        "generation energy of gamma",
+        "simulation physics.rangecut of gamma",
+        f"evaluator {EVALUATOR}: collection",
     ]
 
 
-def test_one_parameter_sets_several_destinations(doc: dict[str, Any]) -> None:
+def test_geometry_targets_are_constants_by_name_or_canonical_references(
+    doc: dict[str, Any],
+) -> None:
+    references = ["ECal_cell_size", "InnerTrackerBarrel.layer[id=1].rphi_layout.nphi"]
+    doc["parameters"]["ecal_cell_size"]["targets"] = {"geometry": references}
+    (cell, nphi) = targets_of(doc, "ecal_cell_size")
+    assert isinstance(cell, GeometryDestination)
+    assert isinstance(nphi, GeometryDestination)
+    assert cell.canonical_target == "constants.ECal_cell_size"  # a name alone is a constant
+    assert nphi.canonical_target == references[1]
+
+
+def test_one_parameter_reaches_the_geometry_and_an_evaluator(doc: dict[str, Any]) -> None:
     del doc["evaluators"][0]["settings"]
-    doc["parameters"]["ecal_cell_size"]["sets"] = [
-        {"geometry": {"constant": "ECal_cell_size"}},
-        {"evaluator": EVALUATOR, "setting": "collection"},
-    ]
-    (parameter,) = parse_problem(doc).parameters
-    assert [type(d).__name__ for d in parameter.sets] == [
-        "GeometryDestination",
-        "SettingDestination",
-    ]
+    doc["parameters"]["ecal_cell_size"]["targets"] = {
+        "geometry": "ECal_cell_size",
+        "evaluators": {EVALUATOR: "collection"},
+    }
+    assert targets_of(doc, "ecal_cell_size") == (
+        GeometryDestination("ECal_cell_size"),
+        SettingDestination(EVALUATOR, "collection"),
+    )
+
+
+def test_one_parameter_sets_several_options_of_a_stage(doc: dict[str, Any]) -> None:
+    doc = add(doc, "cut", {"simulation": ["physics.rangecut", "part.minimalKineticEnergy"]})
+    assert targets_of(doc, "cut") == (
+        StageDestination("simulation", "physics.rangecut", ("gamma",)),
+        StageDestination("simulation", "part.minimalKineticEnergy", ("gamma",)),
+    )
+
+
+def test_stage_options_of_named_samples(doc: dict[str, Any]) -> None:
+    doc = two_samples(doc)
+    doc = add(doc, "cut", {"simulation": "physics.rangecut"})
+    reject(
+        doc,
+        "parameters.cut.targets.simulation: the problem has the samples gamma, pion; say which "
+        "this parameter sets: {option: physics.rangecut, samples: [...]}",
+    )
+    doc["parameters"]["cut"]["targets"] = {
+        "simulation": [
+            {"option": "physics.rangecut", "samples": ["gamma", "pion"]},
+            {"option": "part.minimalKineticEnergy", "samples": ["pion"]},
+        ]
+    }
+    assert targets_of(doc, "cut") == (
+        StageDestination("simulation", "physics.rangecut", ("gamma", "pion")),
+        StageDestination("simulation", "part.minimalKineticEnergy", ("pion",)),
+    )
+
+
+def test_settings_of_several_evaluators_and_several_settings_of_one(doc: dict[str, Any]) -> None:
+    doc = with_cost(doc)
+    targets = {"evaluators": {EVALUATOR: ["collection", "threshold"], "cost": "cell"}}
+    doc = add(doc, "x", targets)
+    assert targets_of(doc, "x") == (
+        SettingDestination(EVALUATOR, "collection"),
+        SettingDestination(EVALUATOR, "threshold"),
+        SettingDestination("cost", "cell"),
+    )
 
 
 def test_the_problem_keeps_what_it_declares(doc: dict[str, Any]) -> None:
-    # no value of a parameter, no edge of its domain: the gun simply lacks its energy
+    # no value of a parameter, no end of its domain: the gun simply lacks its energy
     problem = parse_problem(energy(doc))
     assert "energy" not in problem.samples["gamma"].stages["generation"].options
     assert problem.pending("gamma") == {"generation": frozenset({"energy"})}
     assert parse_problem(problem.to_dict()) == problem
 
 
-def test_the_normalized_form_lists_samples_and_destinations(doc: dict[str, Any]) -> None:
-    data = parse_problem(energy(doc)).to_dict()
-    assert data["parameters"]["energy"] == {  # type: ignore[index]
-        "type": "continuous",
-        "bounds": [1.0, 2.0],
-        "unit": "GeV",
-        "sets": [{"stage": "generation", "option": "energy", "samples": ["gamma"]}],
+def test_the_normalized_form_writes_one_form_of_each_target(doc: dict[str, Any]) -> None:
+    doc = with_cost(doc)
+    targets = {
+        "geometry": ["A", "B.c"],
+        "simulation": "physics.rangecut",
+        "evaluators": {EVALUATOR: ["collection", "threshold"], "cost": "cell"},
     }
+    problem = parse_problem(add(energy(doc), "x", targets))
+    data = problem.to_dict()["parameters"]
+    assert isinstance(data, dict)
+    assert data["energy"]["targets"] == {"generation": {"option": "energy", "samples": ["gamma"]}}
+    assert data["x"]["targets"] == {
+        "geometry": ["A", "B.c"],
+        "simulation": {"option": "physics.rangecut", "samples": ["gamma"]},
+        "evaluators": {EVALUATOR: ["collection", "threshold"], "cost": "cell"},
+    }
+    assert parse_problem(problem.to_dict()) == problem
 
 
 @pytest.mark.parametrize(
-    ("sets", "message"),
+    ("targets", "message"),
     [
-        ([], "parameters.x.sets: must name at least one destination"),
-        ({}, "parameters.x.sets: needs exactly one of 'geometry'"),
-        ({"geometry": {"constant": "X"}, "setting": "y"}, "a geometry destination takes no"),
-        ({"stage": "generation"}, "needs 'option'"),
-        ({"stage": "reconstruction", "option": "x"}, "parameters.x.sets.stage: must be one of"),
-        ({"evaluator": EVALUATOR}, "needs 'setting'"),
-        ({"evaluator": "other", "setting": "y"}, "the problem has no evaluator 'other'"),
+        ({}, "parameters.x.targets: must name at least one target: geometry, generation"),
+        ({"stage": "simulation"}, "parameters.x.targets: unknown key(s) ['stage']"),
+        ({"reconstruction": "x"}, "unknown key(s) ['reconstruction']"),
+        ({"geometry": []}, "parameters.x.targets.geometry: must name at least one target"),
+        ({"geometry": {"constant": "X"}}, "parameters.x.targets.geometry: must be a non-empty"),
+        ({"simulation": {"samples": ["gamma"]}}, "targets.simulation: missing required key(s)"),
+        ({"simulation": {"option": "a", "sample": "g"}}, "unknown key(s) ['sample']"),
+        ({"evaluators": {}}, "targets.evaluators: must name an evaluator binding and the setting"),
+        ({"evaluators": "calo.photon.threshold"}, "targets.evaluators: must be a mapping"),
         (
-            {"stage": "simulation", "option": "physics.rangecut", "samples": ["zz"]},
-            "parameters.x.sets.samples[0]: the problem has no sample 'zz'",
+            {"evaluators": {"other": "y"}},
+            "parameters.x.targets.evaluators.other: the problem has no evaluator 'other'",
         ),
         (
-            {"stage": "simulation", "option": "x", "samples": ["gamma", "gamma"]},
+            {"simulation": {"option": "physics.rangecut", "samples": ["zz"]}},
+            "parameters.x.targets.simulation.samples[0]: the problem has no sample 'zz'",
+        ),
+        (
+            {"simulation": {"option": "x", "samples": ["gamma", "gamma"]}},
             "'gamma' is listed twice",
         ),
-        ([{"geometry": {"constant": "X"}}, 5], "parameters.x.sets[1]: must be a mapping"),
+        ({"geometry": ["X", 5]}, "parameters.x.targets.geometry[1]: must be a non-empty string"),
     ],
 )
-def test_destination_errors(doc: dict[str, Any], sets: object, message: str) -> None:
-    reject(add(doc, "x", sets), message)
-
-
-def test_a_stage_destination_names_its_samples_when_there_are_several(
-    doc: dict[str, Any],
-) -> None:
-    doc = add(two_samples(doc), "cut", {"stage": "simulation", "option": "physics.rangecut"})
-    reject(doc, "the problem has the samples gamma, pion; add samples: with those whose")
-    doc["parameters"]["cut"]["sets"]["samples"] = ["gamma", "pion"]
-    (_, cut) = parse_problem(doc).parameters
-    assert cut.sets == (StageDestination("simulation", "physics.rangecut", ("gamma", "pion")),)
+def test_target_errors(doc: dict[str, Any], targets: object, message: str) -> None:
+    reject(add(doc, "x", targets), message)
 
 
 def test_a_stage_given_as_a_file_has_no_options_to_set(doc: dict[str, Any]) -> None:
     doc["samples"]["gamma"]["generation"] = {"file": "events.hepmc"}
     reject(
-        add(doc, "e", {"stage": "generation", "option": "energy"}, unit="GeV"),
-        "samples.gamma.generation is given as a file, which is not run",
+        add(doc, "e", {"generation": "energy"}, unit="GeV"),
+        "parameters.e.targets.generation: samples.gamma.generation is given as a file, which is "
+        "not run",
     )
 
 
-# --- collisions ------------------------------------------------------------------------------
+# --- a destination is set once ---------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
         (
-            lambda d: add(d, "again", {"geometry": {"target": "constants.ECal_cell_size"}}),
-            "parameters.again.sets: the geometry's constants.ECal_cell_size is set by "
+            lambda d: add(d, "again", {"geometry": "constants.ECal_cell_size"}),
+            "parameters.again.targets.geometry: the geometry's constants.ECal_cell_size is set by "
             "parameters.ecal_cell_size already",
         ),
         (
             lambda d: d["parameters"]["ecal_cell_size"].update(
-                sets=[{"geometry": {"constant": "ECal_cell_size"}}] * 2
+                targets={"geometry": ["ECal_cell_size", "constants.ECal_cell_size"]}
             ),
-            "parameters.ecal_cell_size.sets[1]: the geometry's constants.ECal_cell_size is set "
+            "parameters.ecal_cell_size.targets.geometry[1]: the geometry's "
+            "constants.ECal_cell_size is set by this parameter already",
+        ),
+        (
+            lambda d: add(
+                add(d, "a", {"simulation": "physics.rangecut"}),
+                "b",
+                {"simulation": {"option": "physics.rangecut", "samples": ["gamma"]}},
+            ),
+            "parameters.b.targets.simulation: samples.gamma.simulation.physics.rangecut is set by "
+            "parameters.a already",
+        ),
+        (
+            lambda d: add(d, "a", {"simulation": ["physics.rangecut", "physics.rangecut"]}),
+            "parameters.a.targets.simulation[1]: samples.gamma.simulation.physics.rangecut is set "
             "by this parameter already",
         ),
         (
             lambda d: add(
-                add(d, "a", {"stage": "simulation", "option": "physics.rangecut"}),
-                "b",
-                {"stage": "simulation", "option": "physics.rangecut"},
-            ),
-            "parameters.b.sets: samples.gamma.simulation.physics.rangecut is set by "
-            "parameters.a already",
-        ),
-        (
-            lambda d: add(
-                add(d, "a", {"evaluator": EVALUATOR, "setting": "y"}),
-                "b",
-                {"evaluator": EVALUATOR, "setting": "y"},
+                add(d, "a", {"evaluators": {EVALUATOR: "y"}}), "b", {"evaluators": {EVALUATOR: "y"}}
             ),
             f"the setting y of evaluator {EVALUATOR!r} is set by parameters.a already",
         ),
         (
-            lambda d: add(d, "pl", {"stage": "simulation", "option": "physics.list"}),
+            lambda d: add(d, "pl", {"simulation": "physics.list"}),
             "samples.gamma.simulation.physics.list: is set by parameters.pl; leave it out here",
         ),
         (
-            lambda d: add(d, "c", {"evaluator": EVALUATOR, "setting": "collection"}),
+            lambda d: add(d, "c", {"evaluators": {EVALUATOR: "collection"}}),
             "evaluators[0].settings.collection: is set by parameters.c; leave it out here",
         ),
     ],
@@ -206,57 +284,58 @@ def test_an_option_written_in_the_shared_stages_points_there(doc: dict[str, Any]
     doc["stages"] = {"simulation": doc["samples"]["gamma"].pop("simulation")}
     del doc["samples"]["pion"]["simulation"]
     del doc["stages"]["simulation"]["seed"]
-    sets = {"stage": "simulation", "option": "physics.list", "samples": ["gamma"]}
+    targets = {"simulation": {"option": "physics.list", "samples": ["gamma"]}}
     reject(
-        add(doc, "pl", sets, type="categorical", choices=["FTFP_BERT", "QGSP_BERT"]),
+        add(doc, "pl", targets, type="categorical", choices=["FTFP_BERT", "QGSP_BERT"]),
         "stages.simulation.physics.list: is set by parameters.pl; leave it out here",
     )
 
 
-# --- what each destination takes -----------------------------------------------------------
+# --- what each target takes ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("sets", "domain", "message"),
+    ("targets", "domain", "message"),
     [
         (
-            {"stage": "generation", "option": "energy"},
+            {"generation": "energy"},
             {"unit": "keV"},
-            "sets a quantity in MeV, GeV, TeV: the parameter must be continuous or integer, with "
-            "one of these units, got continuous in keV",
+            "parameters.x.targets.generation: option 'energy' takes a quantity in MeV, GeV, TeV: "
+            "the parameter must be continuous or integer, with one of these units, not continuous "
+            "in keV",
         ),
-        ({"stage": "generation", "option": "energy"}, {}, "got continuous"),
+        ({"generation": "energy"}, {}, "not continuous"),
         (
-            {"stage": "generation", "option": "particle"},
+            {"generation": "particle"},
             {},
-            "sets a text: the parameter must be categorical, with string choices",
+            "option 'particle' takes a name: the parameter must be categorical, with string",
         ),
         (
-            {"stage": "generation", "option": "direction"},
+            {"generation": "direction"},
             {},
-            "parameters.x.sets.option: gun: generation.direction: a parameter can set only the "
+            "parameters.x.targets.generation: gun option 'direction': a parameter can set only the "
             "particle and energy of the particle gun",
         ),
         (
-            {"stage": "simulation", "option": "numberOfThreads"},
+            {"simulation": "numberOfThreads"},
             {"type": "integer", "bounds": [1, 4]},
             "it says how many processors the simulation keeps busy",
         ),
-        ({"stage": "simulation", "option": "physics.pdgfile"}, {}, "it names a file"),
-        ({"stage": "simulation", "option": "enableDetailedShowerMode"}, {}, "it is a flag"),
-        ({"stage": "simulation", "option": "action.run"}, {}, "it takes a list of values"),
-        ({"stage": "simulation", "option": "numberOfEvents"}, {}, "an option that k4opt sets"),
-        ({"stage": "simulation", "option": "steeringFile"}, {}, "--steeringFile is not supported"),
-        ({"stage": "simulation", "option": "physics.rangecut"}, {"unit": "s"}, "unit 's' cannot"),
-        ({"geometry": {"constant": "X"}}, {"unit": "inch"}, "unit 'inch' cannot be written"),
+        ({"simulation": "physics.pdgfile"}, {}, "it names a file"),
+        ({"simulation": "enableDetailedShowerMode"}, {}, "it is a flag"),
+        ({"simulation": "action.run"}, {}, "it takes a list of values"),
+        ({"simulation": "numberOfEvents"}, {}, "an option that k4opt sets"),
+        ({"simulation": "steeringFile"}, {}, "--steeringFile is not supported"),
+        ({"simulation": "physics.rangecut"}, {"unit": "s"}, "unit 's' cannot"),
+        ({"geometry": "X"}, {"unit": "inch"}, "unit 'inch' cannot be written"),
     ],
 )
-def test_a_value_must_fit_its_destination(
-    doc: dict[str, Any], sets: dict[str, str], domain: dict[str, object], message: str
+def test_a_value_must_fit_its_target(
+    doc: dict[str, Any], targets: dict[str, str], domain: dict[str, object], message: str
 ) -> None:
-    if sets.get("stage") == "generation":  # the gun gives it no more: the parameter does
-        doc["samples"]["gamma"]["generation"].pop(sets["option"], None)
-    reject(add(doc, "x", sets, **domain), message)
+    if "generation" in targets:  # the gun gives it no more: the parameter does
+        doc["samples"]["gamma"]["generation"].pop(targets["generation"], None)
+    reject(add(doc, "x", targets, **domain), message)
 
 
 @pytest.mark.parametrize(
@@ -283,9 +362,8 @@ def test_a_stage_option_is_checked_at_each_end_of_the_domain(
 
 def test_each_choice_is_checked_where_it_goes(doc: dict[str, Any]) -> None:
     del doc["samples"]["gamma"]["generation"]["particle"]
-    sets = {"stage": "generation", "option": "particle"}
     reject(
-        add(doc, "p", sets, type="categorical", choices=["gamma", "-e"]),
+        add(doc, "p", {"generation": "particle"}, type="categorical", choices=["gamma", "-e"]),
         "parameters.p: at its choice '-e', samples.gamma.generation.particle: must be a particle",
     )
 
@@ -325,9 +403,9 @@ def test_a_number_read_as_a_double_must_be_one(
 def mixed(doc: dict[str, Any]) -> dict[str, Any]:
     """``doc`` with a geometry, a gun, a ddsim and a setting parameter."""
     doc = energy(doc)
-    doc = add(doc, "range_cut", {"stage": "simulation", "option": "physics.rangecut"}, unit="mm")
-    sets = {"evaluator": EVALUATOR, "setting": "threshold"}
-    return add(doc, "threshold", sets, bounds=[30.0, 150.0], unit="keV")
+    doc = add(doc, "range_cut", {"simulation": "physics.rangecut"}, unit="mm")
+    targets = {"evaluators": {EVALUATOR: "threshold"}}
+    return add(doc, "threshold", targets, bounds=[30.0, 150.0], unit="keV")
 
 
 def test_configure_writes_each_value_where_it_goes(doc: dict[str, Any]) -> None:
@@ -351,22 +429,21 @@ def test_configure_writes_each_value_where_it_goes(doc: dict[str, Any]) -> None:
     assert configure(problem, values) == configuration
 
 
-def test_configure_sets_every_sample_and_entry_a_destination_names(doc: dict[str, Any]) -> None:
+def test_configure_sets_every_sample_and_entry_a_target_names(doc: dict[str, Any]) -> None:
     doc = two_samples(doc)
     doc["evaluators"].append(doc["evaluators"][0] | {"samples": ["pion"]})
     doc["evaluators"][0]["samples"] = ["gamma"]
     for item in (*doc["objectives"], *doc["constraints"]):
         item["evaluator"] = EVALUATOR
-    sets = {"stage": "simulation", "option": "physics.rangecut", "samples": ["gamma", "pion"]}
-    doc = add(doc, "cut", sets, unit="mm")
-    doc = add(doc, "t", {"evaluator": EVALUATOR, "setting": "threshold"})
+    rangecut = {"option": "physics.rangecut", "samples": ["gamma", "pion"]}
+    doc = add(doc, "cut", {"simulation": rangecut}, unit="mm")
+    doc = add(doc, "t", {"evaluators": {EVALUATOR: "threshold"}})
     problem = parse_problem(doc)
     values, _ = validate_candidate(problem, {"ecal_cell_size": 5.0, "cut": 1.0, "t": 2.0})
     configuration = configure(problem, values)
     for sample in ("gamma", "pion"):
-        assert configuration.samples[sample].stages["simulation"].options["physics.rangecut"] == (
-            "1.0*mm"
-        )
+        options = configuration.samples[sample].stages["simulation"].options
+        assert options["physics.rangecut"] == "1.0*mm"
     assert [e.settings["threshold"] for e in configuration.evaluators] == [2.0, 2.0]
 
 
@@ -398,7 +475,7 @@ def test_varied_follows_what_each_task_reads(doc: dict[str, Any]) -> None:
 def test_a_threshold_alone_leaves_a_simulation_file_usable(doc: dict[str, Any]) -> None:
     doc["samples"]["gamma"] = {"simulation": {"file": "events.edm4hep.root"}}
     doc["parameters"] = {}
-    doc = add(doc, "threshold", {"evaluator": EVALUATOR, "setting": "threshold"}, unit="keV")
+    doc = add(doc, "threshold", {"evaluators": {EVALUATOR: "threshold"}}, unit="keV")
     problem = parse_problem(doc)  # nothing the file stands for depends on the candidate
     reach = varied(problem.samples, problem.evaluators, problem.parameters)
     assert reach[stage_task("simulation", "gamma")] == ()
@@ -416,14 +493,12 @@ def test_a_supplied_stage_represents_the_candidate_unless_a_parameter_reaches_it
     doc: dict[str, Any],
 ) -> None:
     supplied = {stage_task("simulation", "gamma")}
-    for parameters, represents in (
-        ({"threshold": {"evaluator": EVALUATOR, "setting": "threshold"}}, True),
-        ({"cell": {"geometry": {"constant": "ECal_cell_size"}}}, False),
+    for targets, represents in (
+        ({"evaluators": {EVALUATOR: "threshold"}}, True),
+        ({"geometry": "ECal_cell_size"}, False),
     ):
         doc["parameters"] = {}
-        for name, sets in parameters.items():
-            add(doc, name, sets)
-        problem = parse_problem(doc)
+        problem = parse_problem(add(doc, "x", targets))
         plan = plan_tasks(
             problem.samples,
             problem.evaluators,
@@ -434,27 +509,33 @@ def test_a_supplied_stage_represents_the_candidate_unless_a_parameter_reaches_it
         assert represents_candidate(plan) is represents
 
 
-def test_the_example_of_every_destination_parses_and_fits_its_evaluator() -> None:
-    from pathlib import Path
+# --- the examples ----------------------------------------------------------------------------
 
-    import yaml
 
-    from k4opt.evaluation import check_bound
-    from tests.support.evaluators import calo_photon
-
-    path = Path(__file__).parents[3] / "examples" / "problem" / "cld-ecal-bindings.yaml"
+def test_the_example_of_every_kind_of_target_parses_and_fits_its_evaluator() -> None:
+    path = EXAMPLES / "cld-ecal-bindings.yaml"
     problem = parse_problem(yaml.safe_load(path.read_text()), source=path)
     assert [(p.name, d.label) for p, d in problem.destinations] == [
         ("ecal_cell_size", "geometry constants.ECal_cell_size"),
-        ("range_cut", "simulation.physics.rangecut of gamma_10gev"),
-        ("cell_threshold", "calo.photon.threshold"),
+        ("range_cut", "simulation physics.rangecut of gamma_10gev, gamma_50gev"),
+        ("cell_threshold", "evaluator calo.photon: threshold"),
     ]
     threshold = problem.parameters[2]
     check_bound(calo_photon()(), "threshold", float, threshold.unit)  # keV into its GeV
-    values, _ = validate_candidate(
-        problem, {"ecal_cell_size": 8.0, "range_cut": 0.5, "cell_threshold": 70.0}
-    )
+    candidate = {"ecal_cell_size": 8.0, "range_cut": 0.5, "cell_threshold": 70.0}
+    values, _ = validate_candidate(problem, candidate)
     configuration = configure(problem, values)
-    simulation = configuration.samples["gamma_10gev"].stages["simulation"].options
-    assert simulation["physics.rangecut"] == "0.5*mm"
+    for sample in ("gamma_10gev", "gamma_50gev"):
+        options = configuration.samples[sample].stages["simulation"].options
+        assert options["physics.rangecut"] == "0.5*mm"
     assert configuration.evaluators[0].settings["threshold"] == {"value": 70.0, "unit": "keV"}
+
+
+def test_the_cell_size_of_the_pi0_example_reaches_the_geometry_and_the_readout() -> None:
+    path = EXAMPLES / "cld-ecal-pi0-rejection.yaml"
+    problem = parse_problem(yaml.safe_load(path.read_text()), source=path)
+    (cell,) = problem.parameters
+    assert cell.targets == (
+        GeometryDestination("ECal_cell_size"),
+        SettingDestination("readout", "cell_size"),
+    )

@@ -1,9 +1,13 @@
 """Internal: the ``parameters`` of a problem document, parsed in two phases.
 
 The first phase reads each parameter on its own: its name, its domain (``type`` with
-``bounds`` or ``choices``, ``unit``) and the shape of each destination in ``sets``. The second
+``bounds`` or ``choices``, ``unit``) and its ``targets``, a mapping from each kind of target to
+what the value goes to there: ``geometry`` to attributes of the geometry, a stage type
+(``simulation``) to options of that stage, ``evaluators`` to settings of evaluator bindings, each
+one target or a list of them. Each is read into one destination
+(:data:`~k4opt.problem.models.Destination`), whichever form the document writes it in. The second
 phase, once the samples and evaluators are known, resolves each destination against them (the
-samples a stage destination leaves to the problem, the stage and evaluator binding each names),
+samples a stage target leaves to the problem, the stage and evaluator binding each names),
 refuses a destination set twice or also written by the problem, and checks that the parameter's
 values can be written where it sends them. What the executors of the stages say of the values
 (a positive energy, a known option) is checked with the samples
@@ -48,13 +52,9 @@ from k4opt.problem.stages import STAGE_TYPES, executors
 
 _KINDS = ("continuous", "integer", "categorical")
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
-_KEYS = ("type", "bounds", "choices", "unit", "sets")
-# each kind of destination, by the key that says it is one, with the keys it takes
-_FORMS = {
-    "geometry": ("geometry",),
-    "stage": ("stage", "option", "samples"),
-    "evaluator": ("evaluator", "setting"),
-}
+_KEYS = ("type", "bounds", "choices", "unit", "targets")
+# the kinds of target, each the key of ``targets`` that names it: the stage types in between
+_TARGETS = ("geometry", *STAGE_TYPES, "evaluators")
 
 # the largest integer below which a double holds every integer
 _EXACT_INTEGERS = 2**53
@@ -84,7 +84,7 @@ class _Declared:
     bounds: tuple[Number, Number] | None
     choices: tuple[str | bool | Number, ...] | None
     unit: str | None
-    sets: tuple[tuple[str, _Draft], ...]
+    targets: tuple[tuple[str, _Draft], ...]
 
 
 def _parameters(raw: object) -> list[_Declared]:
@@ -105,10 +105,10 @@ def _parameters(raw: object) -> list[_Declared]:
 
 
 def _parameter(name: str, raw: object, path: str) -> _Declared:
-    m = _mapping(raw, path, _KEYS, ("type", "sets"))
+    m = _mapping(raw, path, _KEYS, ("type", "targets"))
     kind = cast(ParameterKind, _choice(m["type"], f"{path}.type", _KINDS))
     unit = _optional_text(m, "unit", path)
-    sets = _sets(m["sets"], f"{path}.sets")
+    targets = _targets(m["targets"], f"{path}.targets")
     if kind == "categorical":
         for key in ("bounds", "unit"):
             if key in m:
@@ -116,12 +116,12 @@ def _parameter(name: str, raw: object, path: str) -> _Declared:
         if "choices" not in m:
             raise _fail(path, "categorical parameter needs 'choices'")
         choices = _choices(m["choices"], f"{path}.choices")
-        return _Declared(name, kind, None, choices, None, sets)
+        return _Declared(name, kind, None, choices, None, targets)
     if "choices" in m:
         raise _fail(path, f"'choices' is only allowed for a categorical parameter, not {kind}")
     if "bounds" not in m:
         raise _fail(path, f"{kind} parameter needs 'bounds'")
-    return _Declared(name, kind, _bounds(m["bounds"], f"{path}.bounds", kind), None, unit, sets)
+    return _Declared(name, kind, _bounds(m["bounds"], f"{path}.bounds", kind), None, unit, targets)
 
 
 def _bounds(raw: object, path: str, kind: str) -> tuple[Number, Number]:
@@ -164,48 +164,47 @@ def _choices(raw: object, path: str) -> tuple[str | bool | Number, ...]:
     return tuple(items)
 
 
-def _sets(raw: object, path: str) -> tuple[tuple[str, _Draft], ...]:
-    """The destinations of ``sets``: one, or a list of them, each with where it is written."""
-    if not isinstance(raw, (list, tuple)):
-        return ((path, _destination(raw, path)),)
-    if not raw:
-        raise _fail(path, "must name at least one destination of the parameter's value")
-    return tuple((f"{path}[{i}]", _destination(item, f"{path}[{i}]")) for i, item in enumerate(raw))
+def _targets(raw: object, path: str) -> tuple[tuple[str, _Draft], ...]:
+    """The destinations of ``targets``, each with where it is written: by kind, in the order of
+    the kinds (the geometry, the stages in pipeline order, the evaluators), whatever the order of
+    the document's keys, then in the order each kind lists them."""
+    m = _mapping(raw, path, _TARGETS)
+    if not m:
+        raise _fail(path, f"must name at least one target: {', '.join(_TARGETS)}")
+    drafts: list[tuple[str, _Draft]] = []
+    for key in (kind for kind in _TARGETS if kind in m):
+        value, where = m[key], f"{path}.{key}"
+        if key == "geometry":
+            drafts += [
+                (at, GeometryDestination(_text(item, at))) for at, item in _each(value, where)
+            ]
+        elif key == "evaluators":
+            bindings = _mapping(value, where, tuple(value) if isinstance(value, Mapping) else ())
+            if not bindings:
+                raise _fail(where, "must name an evaluator binding and the setting it receives")
+            for binding, settings in bindings.items():
+                for at, setting in _each(settings, f"{where}.{binding}"):
+                    drafts.append((at, SettingDestination(binding, _text(setting, at))))
+        else:
+            drafts += [(at, _option(key, item, at)) for at, item in _each(value, where)]
+    return tuple(drafts)
 
 
-def _destination(raw: object, path: str) -> _Draft:
-    """One destination, by the key that says what it is: ``geometry``, ``stage`` or
-    ``evaluator``."""
-    allowed = tuple(dict.fromkeys(key for keys in _FORMS.values() for key in keys))
-    m = _mapping(raw, path, allowed)
-    forms = [form for form in _FORMS if form in m]
-    if len(forms) != 1:
-        raise _fail(
-            path,
-            "needs exactly one of 'geometry' (an attribute of the geometry), 'stage' (an option "
-            "of a stage of samples) and 'evaluator' (a setting of an evaluator)",
-        )
-    form = forms[0]
-    others = [key for key in m if key not in _FORMS[form]]
-    if others:
-        raise _fail(path, f"a {form} destination takes no {others}")
-    if form == "geometry":
-        where = f"{path}.geometry"
-        selector = _mapping(m["geometry"], where, ("constant", "target"))
-        if len(selector) != 1:
-            raise _fail(where, "needs exactly one of 'constant' or 'target'")
-        if "constant" in selector:
-            return GeometryDestination(constant=_text(selector["constant"], f"{where}.constant"))
-        return GeometryDestination(target=_text(selector["target"], f"{where}.target"))
-    if form == "evaluator":
-        if "setting" not in m:
-            raise _fail(path, "an evaluator destination needs 'setting': the setting it sets")
-        return SettingDestination(
-            _text(m["evaluator"], f"{path}.evaluator"), _text(m["setting"], f"{path}.setting")
-        )
-    if "option" not in m:
-        raise _fail(path, "a stage destination needs 'option': the option of the stage it sets")
-    stage = _choice(m["stage"], f"{path}.stage", STAGE_TYPES)
+def _each(value: object, path: str) -> list[tuple[str, object]]:
+    """The targets of one kind as ``(where, target)``: one, or each item of a list of them."""
+    if not isinstance(value, (list, tuple)):
+        return [(path, value)]
+    if not value:
+        raise _fail(path, "must name at least one target")
+    return [(f"{path}[{index}]", item) for index, item in enumerate(value)]
+
+
+def _option(stage: str, raw: object, path: str) -> _Stage:
+    """A stage target: the option alone (``physics.rangecut``), of the problem's only sample, or
+    ``{option, samples}``."""
+    if not isinstance(raw, Mapping):
+        return _Stage(stage, _text(raw, path), None)
+    m = _mapping(raw, path, ("option", "samples"), ("option",))
     samples = None
     if "samples" in m:
         listed = _sequence(m["samples"], f"{path}.samples")
@@ -234,8 +233,8 @@ def _destinations(
     first: dict[tuple[str, ...], str] = {}  # each destination, by what it sets: who set it first
     parameters = []
     for item in declared:
-        sets: list[Destination] = []
-        for path, draft in item.sets:
+        targets: list[Destination] = []
+        for path, draft in item.targets:
             keys: list[tuple[str, ...]]
             if isinstance(draft, GeometryDestination):
                 destination: Destination = draft
@@ -257,9 +256,9 @@ def _destinations(
                     whom = "this parameter" if by == item.name else f"parameters.{by}"
                     raise _fail(path, f"{_label(key)} is set by {whom} already")
                 first[key] = item.name
-            sets.append(destination)
+            targets.append(destination)
         parameters.append(
-            Parameter(item.name, item.kind, tuple(sets), item.bounds, item.choices, item.unit)
+            Parameter(item.name, item.kind, tuple(targets), item.bounds, item.choices, item.unit)
         )
     return tuple(parameters)
 
@@ -277,11 +276,10 @@ def _label(key: tuple[str, ...]) -> str:
 def _canonical(destination: GeometryDestination, path: str) -> str:
     """The canonical form of the reference ``destination`` names, which a geometry looks it up
     by; two spellings of one reference are one destination."""
-    where = f"{path}.geometry"
     try:
         return parse_reference(destination.canonical_target).text
     except InvalidTargetError as exc:
-        raise _fail(where, str(exc)) from exc
+        raise _fail(path, str(exc)) from exc
 
 
 def _stage(
@@ -305,12 +303,12 @@ def _stage(
     elif len(samples) == 1:
         named = tuple(samples)
     elif not samples:
-        raise _fail(path, f"sets the {draft.stage} of a sample, but the problem has no samples")
+        raise _fail(path, f"the problem has no samples whose {draft.stage} it could set")
     else:
         raise _fail(
             path,
-            f"the problem has the samples {', '.join(samples)}; add samples: with those whose "
-            f"{draft.stage} this parameter sets",
+            f"the problem has the samples {', '.join(samples)}; say which this parameter sets: "
+            f"{{option: {draft.option}, samples: [...]}}",
         )
     for sample in named:
         stage = samples[sample].stages.get(draft.stage)
@@ -321,18 +319,19 @@ def _stage(
             raise _fail(
                 path,
                 f"{where} is given as a file, which is not run, so no parameter can set its "
-                f"{draft.option}",
+                f"option {draft.option!r}",
             )
         try:
             settable = executors(draft.stage)[stage.executor].settable(draft.option)
-        except DdsimError as exc:
-            raise _fail(f"{path}.option", f"{stage.executor}: {exc}") from None
+        except DdsimError as exc:  # its message names the option: simulation.physics.pdgfile: ...
+            reason = str(exc).partition(": ")[2] or str(exc)
+            raise _fail(path, f"{stage.executor} option {draft.option!r}: {reason}") from None
         if draft.option in stage.options:
             raise _fail(
                 places[sample, draft.stage].key(draft.option),
                 f"is set by parameters.{item.name}; leave it out here",
             )
-        _check_form(item, settable, path)
+        _check_form(item, settable, draft.option, path)
     return StageDestination(draft.stage, draft.option, named)
 
 
@@ -348,9 +347,9 @@ def _check_setting(
     bindings = list(dict.fromkeys(entry.binding for entry in evaluators))
     if destination.evaluator not in bindings:
         raise _fail(
-            f"{path}.evaluator",
-            f"the problem has no evaluator {destination.evaluator!r}; its evaluators are "
-            f"{', '.join(bindings)}",
+            path,
+            f"the problem has no evaluator {destination.evaluator!r} (a binding: its as:, or its "
+            f"name); its evaluators are {', '.join(bindings)}",
         )
     for index, entry in enumerate(evaluators):
         if entry.binding == destination.evaluator and destination.setting in entry.settings:
@@ -360,19 +359,23 @@ def _check_setting(
             )
 
 
-def _check_form(item: _Declared, settable: Settable, path: str) -> None:
-    """The parameter's values can be written in the form ``settable`` says."""
+def _check_form(item: _Declared, settable: Settable, option: str, path: str) -> None:
+    """The parameter's values can be written into ``option`` in the form ``settable`` says."""
     if settable.form == "text":
         if item.kind != "categorical" or not all(isinstance(c, str) for c in item.choices or ()):
-            raise _fail(path, "sets a text: the parameter must be categorical, with string choices")
+            raise _fail(
+                path,
+                f"option {option!r} takes a name: the parameter must be categorical, with string "
+                f"choices, not {item.kind}",
+            )
         return
     if settable.form == "quantity":
         if item.kind == "categorical" or item.unit not in settable.units:
+            given = item.kind if item.unit is None else f"{item.kind} in {item.unit}"
             raise _fail(
                 path,
-                f"sets a quantity in {', '.join(settable.units)}: the parameter must be "
-                f"continuous or integer, with one of these units, got "
-                f"{item.kind}{'' if item.unit is None else f' in {item.unit}'}",
+                f"option {option!r} takes a quantity in {', '.join(settable.units)}: the "
+                f"parameter must be continuous or integer, with one of these units, not {given}",
             )
         _check_exact(item, path)
         return

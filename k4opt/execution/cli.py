@@ -16,7 +16,7 @@ import argparse
 from collections.abc import Mapping
 from typing import TextIO
 
-from k4opt.evaluation import Scalar, Status, load_evaluator
+from k4opt.evaluation import Status, load_evaluator
 from k4opt.execution._publish import RunOutcome
 from k4opt.execution._session import Preview, preview_candidate, run_candidate
 from k4opt.frozen import Json
@@ -81,7 +81,6 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     evaluate.add_argument(
         "--workers",
         type=workers,
-        default="inline",
         metavar="N|auto|inline",
         help=(
             "run the tasks (simulations of different samples, evaluators, the geometry) in N "
@@ -96,9 +95,11 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "--dry-run",
         action="store_true",
         help=(
-            "check the candidate as an evaluation would and show what it sets: each parameter's "
-            "value in the geometry, the stages and the evaluator settings it goes to; nothing is "
-            "created or run, and no --output is needed"
+            "check the candidate as an evaluation would before it simulates (its values, the "
+            "options of its stages, every evaluator's settings and check()) and show what each "
+            "parameter sets: in the geometry, the stages and the evaluators. Nothing is "
+            "simulated and no output is written, so no --output is needed; it does not show that "
+            "the simulation or the evaluation will succeed"
         ),
     )
     evaluate.set_defaults(func=cmd_evaluate)
@@ -148,44 +149,38 @@ def _candidate(values: Mapping[str, object], units: Mapping[str, object], out: T
 
 def _preview(preview: Preview, out: TextIO) -> None:
     """What each parameter of the candidate sets, below its value: each attribute of the geometry
-    from its value now to the candidate's, each stage option and each evaluator setting as the
-    candidate writes it."""
+    from its value now to the candidate's, each stage option in each sample, each evaluator
+    setting in each entry of its binding (the samples the entry measures, or the candidate)."""
     spec, configuration = preview.spec, preview.configuration
     geometry = iter(zip(preview.targets, configuration.geometry, strict=True))
-    values: Mapping[str, Scalar] = preview.values
-    for index, parameter in enumerate(spec.parameters):
-        label = "candidate:" if index == 0 else ""
-        print(
-            f"{label:12} {parameter.name} = {_value(values[parameter.name], parameter.unit)}",
-            file=out,
-        )
-        for destination in parameter.sets:
+    lines = ["Candidate", ""]
+    for parameter in spec.parameters:
+        lines.append(f"{parameter.name} = {_value(preview.values[parameter.name], parameter.unit)}")
+        for destination in parameter.targets:
             if isinstance(destination, GeometryDestination):
                 target, text = next(geometry)
-                set_to = f"{target.target} ({target.file}): {target.value} -> {text}"
-                lines = [f"geometry {set_to}"]
+                lines.append(f"  geometry: {target.target} ({target.file})")
+                lines.append(f"    {target.value} -> {text}")
             elif isinstance(destination, StageDestination):
-                lines = [
-                    f"samples.{sample}.{destination.stage}.{destination.option} = "
-                    + _written(
-                        configuration.samples[sample]
-                        .stages[destination.stage]
-                        .options[destination.option]
-                    )
-                    for sample in destination.samples
-                ]
+                lines.append(f"  {destination.stage}: {destination.option}")
+                for sample in destination.samples:
+                    stage = configuration.samples[sample].stages[destination.stage]
+                    lines.append(f"    {sample}: {_written(stage.options[destination.option])}")
             else:
-                entry = next(
-                    e for e in configuration.evaluators if e.binding == destination.evaluator
-                )
-                lines = [f"{destination.label} = {_written(entry.settings[destination.setting])}"]
-            for line in lines:
-                print(f"{'':12}   sets {line}", file=out)
-    print(
-        "checked:     every evaluator accepts the candidate and its stages; nothing was created "
-        "or run (--dry-run)",
-        file=out,
-    )
+                lines.append(f"  evaluator {destination.evaluator}: {destination.setting}")
+                for entry in configuration.evaluators:
+                    if entry.binding == destination.evaluator:
+                        where = ", ".join(entry.samples) or "the candidate"
+                        lines.append(
+                            f"    {where}: {_written(entry.settings[destination.setting])}"
+                        )
+    lines += [
+        "",
+        "Configuration validated: the candidate's values, the options of every stage it runs, and "
+        "every evaluator's settings and check().",
+        "No simulation executed; no evaluation output created.",
+    ]
+    print("\n".join(lines), file=out)
 
 
 def _report(outcome: RunOutcome, out: TextIO) -> None:
@@ -256,6 +251,16 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     if (args.output is None) != args.dry_run:
         print("k4opt evaluate: give exactly one of --output DIR and --dry-run", file=err)
         return 2
+    if args.dry_run and (
+        ignored := [o for o in ("workers", "timeout") if getattr(args, o) is not None]
+    ):
+        options = " and ".join(f"--{option}" for option in ignored)
+        print(
+            f"k4opt evaluate: {options} say how a candidate runs, and --dry-run runs none; "
+            "leave them out",
+            file=err,
+        )
+        return 2
     implementations = [load_evaluator(reference) for reference in args.evaluator]
     if args.dry_run:
         preview = preview_candidate(
@@ -274,7 +279,7 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         implementations=implementations,
         inputs=args.input,
         timeout=args.timeout,
-        workers=args.workers,
+        workers="inline" if args.workers is None else args.workers,
         warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
     )
     _report(outcome, out)

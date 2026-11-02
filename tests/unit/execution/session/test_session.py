@@ -54,7 +54,7 @@ from tests.unit.execution.session.conftest import (
 
 EXAMPLES = Path(__file__).resolve().parents[4] / "examples" / "problem"
 # an evaluator setting, which takes any number; the geometry takes those a double holds
-SETTING = {"evaluator": "calo.single_particle_shower", "setting": "n"}
+SETTING = {"evaluators": {"calo.single_particle_shower": "n"}}
 
 
 def test_candidate_is_materialized_with_the_cached_catalog_and_simulated(
@@ -362,7 +362,7 @@ def test_an_unusable_output_location_is_a_clean_error(
 def test_numeric_categories_keep_exact_integers(doc: dict[str, Any]) -> None:
     big = 2**53
     doc["parameters"] = {
-        "n": {"sets": SETTING, "type": "categorical", "choices": [big, big + 1, 0.5]}
+        "n": {"targets": SETTING, "type": "categorical", "choices": [big, big + 1, 0.5]}
     }
     spec = parse_problem(doc)
     assert parse_candidate(spec, [f"n={big + 1}"]) == {"n": big + 1}
@@ -381,7 +381,7 @@ def test_a_structured_target_is_set_by_the_name_of_its_parameter(
     ref = "InnerTrackerBarrel.layer[id=1].rphi_layout.nphi"
     doc = yaml.safe_load(problem_file.read_text())
     doc["parameters"] = {
-        "nphi": {"sets": {"geometry": {"target": ref}}, "type": "integer", "bounds": [10, 100]}
+        "nphi": {"targets": {"geometry": ref}, "type": "integer", "bounds": [10, 100]}
     }
     problem_file.write_text(yaml.safe_dump(doc))
     assert parse_candidate(load_problem(problem_file), ["nphi=90"]) == {"nphi": 90}
@@ -394,7 +394,7 @@ def test_a_structured_target_is_set_by_the_name_of_its_parameter(
 def test_a_value_may_hold_an_equals_sign(doc: dict[str, Any]) -> None:
     doc["parameters"] = {
         "mode": {
-            "sets": {"geometry": {"constant": "Mode"}},
+            "targets": {"geometry": "Mode"},
             "type": "categorical",
             "choices": ["a=b", "c"],
         }
@@ -411,7 +411,7 @@ def test_every_spelling_of_a_large_integer_category_stays_exact(
 ) -> None:
     big = 2**53
     doc["parameters"] = {
-        "n": {"sets": SETTING, "type": "categorical", "choices": [big, big + 1, 1e23, 0.5]}
+        "n": {"targets": SETTING, "type": "categorical", "choices": [big, big + 1, 1e23, 0.5]}
     }
     spec = parse_problem(doc)
     assert parse_candidate(spec, [f"n={text}"]) == {"n": big + 1}
@@ -427,7 +427,7 @@ def test_an_undeclared_large_integer_is_not_rounded_into_a_choice(
     doc = yaml.safe_load(problem_file.read_text())
     doc["parameters"] = {
         RADIUS: {
-            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "categorical",
             "choices": [big, big + 2],
         }
@@ -443,7 +443,7 @@ def test_an_undeclared_large_integer_is_not_rounded_into_a_choice(
 def test_a_value_that_only_rounds_to_a_choice_is_rejected(doc: dict[str, Any]) -> None:
     doc["parameters"] = {
         "n": {
-            "sets": {"geometry": {"constant": "n"}},
+            "targets": {"geometry": "n"},
             "type": "categorical",
             "choices": [1, 2],
         }
@@ -458,7 +458,7 @@ def test_a_value_that_only_rounds_to_a_choice_is_rejected(doc: dict[str, Any]) -
 def test_a_decimal_that_rounds_to_a_float_choice_is_rejected(doc: dict[str, Any]) -> None:
     doc["parameters"] = {
         "n": {
-            "sets": {"geometry": {"constant": "n"}},
+            "targets": {"geometry": "n"},
             "type": "categorical",
             "choices": [2.0**53, 0.1],
         }
@@ -475,7 +475,7 @@ def test_integer_literals_of_a_continuous_parameter_stay_exact(
     doc: dict[str, Any], text: str
 ) -> None:
     doc["parameters"]["ecal_cell_size"]["bounds"] = [-(10**401), 10**401]
-    doc["parameters"]["ecal_cell_size"]["sets"] = SETTING
+    doc["parameters"]["ecal_cell_size"]["targets"] = SETTING
     del doc["parameters"]["ecal_cell_size"]["unit"]
     spec = parse_problem(doc)
     (value,) = parse_candidate(spec, [f"ecal_cell_size={text}"]).values()
@@ -490,9 +490,7 @@ def test_integer_literals_of_a_continuous_parameter_stay_exact(
 def test_an_integer_with_more_digits_than_python_converts_is_a_candidate_error(
     doc: dict[str, Any], kind: str
 ) -> None:
-    doc["parameters"] = {
-        "n": {"sets": {"geometry": {"constant": "n"}}, "type": kind, "bounds": [0, 10]}
-    }
+    doc["parameters"] = {"n": {"targets": {"geometry": "n"}, "type": kind, "bounds": [0, 10]}}
     text = "1" * (sys.get_int_max_str_digits() + 1)
     with pytest.raises(CandidateError, match="too many digits"):
         parse_candidate(parse_problem(doc), [f"n={text}"])
@@ -568,7 +566,7 @@ def test_a_failed_simulation_is_summarized_with_its_logs(
 def test_values_become_dd4hep_literals(
     doc: dict[str, Any], parameter: dict[str, Any], value: object, expected: str
 ) -> None:
-    doc["parameters"] = {"x": {"sets": {"geometry": {"constant": "x"}}, **parameter}}
+    doc["parameters"] = {"x": {"targets": {"geometry": "x"}, **parameter}}
     if "bounds" not in parameter and "choices" not in parameter:
         doc["parameters"]["x"]["bounds"] = [0, 100]
     spec = parse_problem(doc)
@@ -588,9 +586,7 @@ def test_text_values_are_read_by_the_parameter_kind(
     assert parse_candidate(spec, [f"{RADIUS}=6"]) == {RADIUS: 6.0}
     assert parse_candidate(spec, [f"{RADIUS}=1e2"]) == {RADIUS: 100.0}
     assert parse_candidate(spec, [f"{RADIUS}=-.5"]) == {RADIUS: -0.5}
-    doc["parameters"] = {
-        "n": {"sets": {"geometry": {"constant": "n"}}, "type": "integer", "bounds": [1, 9]}
-    }
+    doc["parameters"] = {"n": {"targets": {"geometry": "n"}, "type": "integer", "bounds": [1, 9]}}
     integer = parse_problem(doc)
     assert parse_candidate(integer, ["n=4"]) == {"n": 4}
     with pytest.raises(CandidateError, match="integer"):
@@ -1054,7 +1050,7 @@ def test_a_candidate_records_and_checks_the_external_files_its_values_name(
     data = yaml.safe_load(problem_file.read_text())
     choices = ["cad/support.stl", "${CAD}/b.stl"]
     data["parameters"]["support"] = {
-        "sets": {"geometry": {"target": SUPPORT}},
+        "targets": {"geometry": SUPPORT},
         "type": "categorical",
         "choices": choices,
     }

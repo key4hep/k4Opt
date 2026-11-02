@@ -20,7 +20,7 @@ _BASE: dict[str, object] = {
             "type": "continuous",
             "bounds": [4.0, 8.0],
             "unit": "mm",
-            "sets": {"geometry": {"constant": "ECal_cell_size"}},
+            "targets": {"geometry": "ECal_cell_size"},
         }
     },
     "samples": {
@@ -93,3 +93,24 @@ def two_samples(doc: dict[str, Any]) -> dict[str, Any]:
     for item in (*doc["objectives"], *doc["constraints"]):
         item["sample"] = "gamma"
     return doc
+
+
+def add_targets(parameter: dict[str, Any], **kinds: Any) -> dict[str, Any]:
+    """``parameter`` (a document's) whose ``targets`` also have ``kinds``: ``evaluators`` merged by
+    binding, a geometry or stage target added to those of its kind (a list, then)."""
+    targets = parameter.setdefault("targets", {})
+    for kind, value in kinds.items():
+        if kind == "evaluators":
+            bindings = targets.setdefault("evaluators", {})
+            for binding, setting in value.items():
+                given = bindings.get(binding)
+                if given is None:
+                    bindings[binding] = setting
+                else:
+                    bindings[binding] = [*(given if isinstance(given, list) else [given]), setting]
+        elif kind in targets:
+            given = targets[kind]
+            targets[kind] = [*(given if isinstance(given, list) else [given]), value]
+        else:
+            targets[kind] = value
+    return parameter

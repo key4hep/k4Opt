@@ -952,7 +952,7 @@ def test_a_threshold_alone_is_evaluated_on_a_fixed_simulation_file(
             "type": "continuous",
             "bounds": [20.0, 150.0],
             "unit": "keV",
-            "sets": {"evaluator": "test.cell_count", "setting": "threshold"},
+            "targets": {"evaluators": {"test.cell_count": "threshold"}},
         }
     }
     problem_file.write_text(yaml.safe_dump(doc))

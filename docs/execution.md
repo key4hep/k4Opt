@@ -38,28 +38,40 @@ and the record lists it under `supplied`. Only a record with `supplied: []` is d
 problem, the candidate and the identified files alone, which is why a study supplies none.
 
 `--dry-run`, instead of `--output`, checks the candidate as an evaluation checks it before it
-creates anything (its values, every evaluator's settings and `check()`, every stage's options and
-files) and shows what it sets, below each parameter's value: each attribute of the geometry, from
-its value now to the candidate's, each stage option and each evaluator setting as the candidate
-writes it. Nothing is created or run, so it is the quick way to see what a parameter changes
-before an expensive simulation. For the example of every kind of destination,
-[`cld-ecal-bindings.yaml`](../examples/problem/cld-ecal-bindings.yaml):
+simulates (its values, the options of every stage it runs and its files, every evaluator's
+settings and `check()`) and shows what each parameter sets, below its value: each attribute of
+the geometry, from its value now to the candidate's, each stage option in each sample, each
+evaluator setting in each entry of its binding (by the samples the entry measures). No simulation
+runs and no output is written, so it is the quick way to see what a parameter changes before an
+expensive simulation. It does load the evaluators and calls their `check()`, and it does not show
+that the simulation or the evaluation will succeed. For
+[`cld-ecal-bindings.yaml`](../examples/problem/cld-ecal-bindings.yaml), a target of each kind on
+two samples:
 
 ```text
 $ k4opt evaluate examples/problem/cld-ecal-bindings.yaml \
     --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
     --param ecal_cell_size=8.0 --param range_cut=0.5 --param cell_threshold=70 --dry-run
-candidate:   ecal_cell_size = 8.0 mm
-               sets geometry constants.ECal_cell_size (CLD_o2_v09/...xml): 5.1*mm -> 8.0*mm
-             range_cut = 0.5 mm
-               sets samples.gamma_10gev.simulation.physics.rangecut = 0.5*mm
-             cell_threshold = 70.0 keV
-               sets calo.photon.threshold = 70.0 keV
-checked:     every evaluator accepts the candidate and its stages; nothing was created or run (--dry-run)
+Candidate
+
+ecal_cell_size = 8.0 mm
+  geometry: constants.ECal_cell_size (CLD_o2_v09/...xml)
+    5.1*mm -> 8.0*mm
+range_cut = 0.5 mm
+  simulation: physics.rangecut
+    gamma_10gev: 0.5*mm
+    gamma_50gev: 0.5*mm
+cell_threshold = 70.0 keV
+  evaluator calo.photon: threshold
+    gamma_10gev, gamma_50gev: 70.0 keV
+
+Configuration validated: the candidate's values, the options of every stage it runs, and every evaluator's settings and check().
+No simulation executed; no evaluation output created.
 ```
 
 A candidate it refuses is refused with the message an evaluation would give, and the exit status
-is 1.
+is 1. `--workers` and `--timeout` say how a candidate runs, so `--dry-run` refuses them rather
+than ignore them.
 
 `--timeout SECONDS` kills `ddsim` if it runs longer than that, for a geometry on which Geant4
 stalls: the simulation stage fails with the tail of ddsim's standard error, its logs stay in
@@ -447,10 +459,10 @@ in order:
    parameter, keyed by its name; continuous `int`/finite `float` within inclusive bounds;
    integer a real `int` (no `bool`, no rounding) within bounds; categorical one of the choices
    by kind (strings need a string, booleans a boolean, numbers compare numerically). Then it
-   configures the candidate: each value written into every destination of its parameter (the
+   configures the candidate: each value written into every target of its parameter (the
    geometry's attributes as overrides, each sample's stages, each entry's settings), as a new
    configuration of this candidate alone, which nothing shared holds. A number a text
-   destination would round is refused here;
+   target would round is refused here;
 2. matches the evaluator classes to `evaluators` by the `name` of an instance of each, in any
    order: each evaluator the problem names must be given exactly once, however many entries
    bind it, with the declared `version` and reading the declared `stage`, and no other

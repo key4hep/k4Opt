@@ -259,7 +259,7 @@ def _check_options(
             set_by = {
                 destination.option: parameter
                 for parameter in parameters
-                for destination in parameter.sets
+                for destination in parameter.targets
                 if isinstance(destination, StageDestination)
                 and destination.stage == stage_name
                 and name in destination.samples

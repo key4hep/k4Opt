@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
+from tests.support.problems import add_targets
 
 RADIUS = "radius"
 # each reads the candidate from its setting x
@@ -41,17 +42,14 @@ def problem_document(
     of several evaluators."""
     evaluators = evaluators or [{"name": "test.trade_off", "version": "1"}]
     parameter = copy.deepcopy(parameter) or {
-        "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+        "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
         "type": "continuous",
         "bounds": [100.0, 600.0],
     }
-    sets = parameter["sets"] if isinstance(parameter["sets"], list) else [parameter["sets"]]
     # the evaluators that read the candidate read it from their setting x, which it sets
-    for entry in evaluators:
-        if entry["name"] in READERS:
-            read = {"evaluator": entry.get("as", entry["name"]), "setting": "x"}
-            sets += [] if read in sets else [read]
-    parameter["sets"] = sets
+    readers = dict.fromkeys(e.get("as", e["name"]) for e in evaluators if e["name"] in READERS)
+    if readers:
+        add_targets(parameter, evaluators=dict.fromkeys(readers, "x"))
     document: dict[str, Any] = {
         "schema_version": "k4opt.problem/v1alpha1",
         "name": "trade",
@@ -165,7 +163,7 @@ def mixed_problem(write_problem: Callable[..., Path]) -> Path:
     """A problem whose trials end every way a record can, some of them with equal values."""
     return write_problem(
         parameter={
-            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "categorical",
             "choices": list(OUTCOME),
         },

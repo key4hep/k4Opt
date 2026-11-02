@@ -32,6 +32,7 @@ from tests.support.common import git, git_checkout, requires_git, tree_digest
 from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, trade_off, yields
 from tests.support.geometry import MINI_GEO
 from tests.support.imports import FromFile
+from tests.support.problems import add_targets
 from tests.unit.optimization.conftest import (
     RADIUS,
     TRADE,
@@ -94,7 +95,7 @@ def test_a_study_does_not_resume_with_its_parameters_in_another_order(tmp_path: 
     # candidates, the sampler and evaluators (test.trade_off reads the first value) follow it
     document = problem_document()
     document["parameters"]["world"] = {
-        "sets": {"geometry": {"constant": "world_side"}},
+        "targets": {"geometry": "world_side"},
         "type": "continuous",
         "bounds": [1.0, 2.0],
     }
@@ -139,9 +140,8 @@ def _renamed(data: dict[str, Any]) -> None:
     another name."""
     data["evaluators"][1]["as"] = "lenient"
     data["objectives"][1]["evaluator"] = "lenient"
-    for destination in data["parameters"][RADIUS]["sets"]:
-        if destination.get("evaluator") == "strict":
-            destination["evaluator"] = "lenient"
+    bindings = data["parameters"][RADIUS]["targets"]["evaluators"]
+    bindings["lenient"] = bindings.pop("strict")
 
 
 BINDING_CHANGES: dict[str, Callable[[dict[str, Any]], None]] = {
@@ -220,7 +220,7 @@ def test_a_file_only_candidates_name_reads_alike_in_every_trial_of_a_study(
     monkeypatch.setenv("CAD", str(model.parent))
     problem, output = write_problem(), tmp_path / "s"
     support = {
-        "sets": {"geometry": {"target": "InnerTrackerSupportCAD.shape.ref"}},  # cad/support.stl
+        "targets": {"geometry": "InnerTrackerSupportCAD.shape.ref"},  # cad/support.stl
         "type": "categorical",
         "choices": ["${CAD}/b.stl"],
     }
@@ -1015,8 +1015,8 @@ def test_a_study_whose_parameter_sets_the_geometry_and_a_stage_resumes_configure
     # the radius sets the geometry and a ddsim option of both samples: every trial, before and
     # after the resume, simulates with the option its own value gives, and its record says so
     simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
-    rangecut = {"stage": "simulation", "option": "physics.rangecut", "samples": ["gamma", "pion"]}
-    _edit(sampled_problem, lambda d: d["parameters"][RADIUS]["sets"].append(rangecut))
+    rangecut = {"option": "physics.rangecut", "samples": ["gamma", "pion"]}
+    _edit(sampled_problem, lambda d: add_targets(d["parameters"][RADIUS], simulation=rangecut))
     output = tmp_path / "s"
     run(sampled_problem, output, 2, seed=1, evaluators=[cell_count()])
     resumed = run(sampled_problem, output, 1, resume=True, evaluators=[cell_count()])

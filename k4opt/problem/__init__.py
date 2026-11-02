@@ -17,7 +17,7 @@ Typical use::
     from k4opt.problem import load_problem
 
     problem = load_problem("problem.yaml")
-    print(problem.parameters[0].bounds, problem.parameters[0].sets, problem.evaluators[0].name)
+    print(problem.parameters[0].bounds, problem.parameters[0].targets, problem.evaluators[0].name)
     data = problem.to_dict()  # plain JSON-compatible data
 
 Candidates of a problem are evaluated by :class:`k4opt.execution.EvaluationSession`, and what

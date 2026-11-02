@@ -68,8 +68,8 @@ problem gives it. What the candidate configures follows from the problem and the
 alone, so the record is checked against it: each stage's `definition` (the stage as the
 candidate configures it, with the options its parameters set), each evaluation's
 `settings.declared` (the problem's settings with what the parameters set), and the geometry's
-`changes`, one per geometry destination, in the problem's order, each naming its `parameter`,
-the canonical `target` the destination names and the `new_value` the candidate gives it, each of
+`changes`, one per geometry target, in the problem's order, each naming its `parameter`,
+the canonical `target` it names and the `new_value` the candidate gives it, each of
 an attribute (`file`, `locator`, `attribute`) of its own. Where that attribute is and its
 `old_value` need the geometry, which a record is read without: a session checks them as each
 geometry is made, and a study against the attributes it resolved when it started. Each task

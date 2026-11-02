@@ -395,13 +395,13 @@ def test_parameters_set_a_ddsim_option_and_the_gun_energy_that_ddsim_accepts(
             "type": "continuous",
             "bounds": [0.1, 1.0],
             "unit": "mm",
-            "sets": {"stage": "simulation", "option": "physics.rangecut"},
+            "targets": {"simulation": "physics.rangecut"},
         },
         "photon_energy": {
             "type": "continuous",
             "bounds": [5.0, 50.0],
             "unit": "GeV",
-            "sets": {"stage": "generation", "option": "energy"},
+            "targets": {"generation": "energy"},
         },
     }
     base = tmp_path_factory.mktemp("bound")
@@ -436,8 +436,18 @@ def test_the_example_of_every_destination_previews_on_the_installed_geometry(
     code = main([*argv, *(arg for p in params for arg in ("--param", p))], stdout=out, stderr=err)
     assert code == 0, out.getvalue() + err.getvalue()
     lines = out.getvalue().splitlines()
-    assert lines[0] == "candidate:   ecal_cell_size = 8.0 mm"
-    assert lines[1].startswith("               sets geometry constants.ECal_cell_size (")
-    assert lines[1].endswith("): 5.1*mm -> 8.0*mm")
-    assert "               sets samples.gamma_10gev.simulation.physics.rangecut = 0.5*mm" in lines
-    assert "               sets calo.photon.threshold = 70.0 keV" in lines
+    at = lines.index("ecal_cell_size = 8.0 mm")
+    assert lines[at + 1].startswith("  geometry: constants.ECal_cell_size (")
+    assert lines[at + 2] == "    5.1*mm -> 8.0*mm"
+    at = lines.index("range_cut = 0.5 mm")
+    assert lines[at + 1 : at + 4] == [
+        "  simulation: physics.rangecut",
+        "    gamma_10gev: 0.5*mm",
+        "    gamma_50gev: 0.5*mm",
+    ]
+    at = lines.index("cell_threshold = 70.0 keV")
+    assert lines[at + 1 : at + 3] == [
+        "  evaluator calo.photon: threshold",
+        "    gamma_10gev, gamma_50gev: 70.0 keV",
+    ]
+    assert lines[-1] == "No simulation executed; no evaluation output created."

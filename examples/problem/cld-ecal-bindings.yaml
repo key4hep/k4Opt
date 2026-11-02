@@ -1,25 +1,28 @@
-# Where a parameter's value can go: the same question as cld-ecal-granularity.yaml, how fine the
-# CLD ECAL barrel cells should be, asked together with two other choices. Each parameter has a
-# domain (type, bounds, unit) and the destinations its value is written into (sets):
+# What a parameter can vary: the cell size of the CLD ECAL barrel (the detector), the range cut of
+# the simulation (its conditions) and the threshold above which a cell fires (how the observable
+# is computed), measured on photons of 10 and 50 GeV. Each parameter is a scientific quantity
+# with its domain (type, bounds, unit) and its targets: the software settings that receive its
+# value, named as each piece of software names them, never matched by name:
 #
-#   ecal_cell_size  a constant of the geometry
-#   range_cut       an option of the ddsim simulation (Geant4's production cut)
-#   cell_threshold  a setting of the evaluator: the energy above which a cell fires
+#   ecal_cell_size  targets the geometry constant ECal_cell_size
+#   range_cut       targets the ddsim option physics.rangecut of both samples
+#   cell_threshold  targets the setting threshold of the evaluator calo.photon
 #
-# Preview what a candidate sets, without simulating anything:
+# See what a candidate sets, and check it, without simulating anything:
 #
 #   k4opt evaluate examples/problem/cld-ecal-bindings.yaml \
 #       --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
 #       --param ecal_cell_size=8.0 --param range_cut=0.5 --param cell_threshold=70 --dry-run
 #
-# then replace --dry-run with --output runs/cld-ecal-bindings to evaluate it, or let the optimizer
-# search all three (docs/optimization.md):
+# then replace --dry-run with --output runs/cld-ecal-bindings to evaluate it, or search all three
+# (docs/optimization.md):
 #
 #   k4opt optimize examples/problem/cld-ecal-bindings.yaml \
 #       --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
 #       --trials 30 --seed 42 --output runs/cld-ecal-bindings-study
 #
-# Needs the Key4hep environment (ddsim, podio, $K4GEO); about 5 minutes per candidate on one core.
+# Needs the Key4hep environment (ddsim, podio, $K4GEO); about 5 minutes per sample and candidate
+# on one core.
 schema_version: k4opt.problem/v1alpha1
 name: cld-ecal-bindings
 
@@ -36,58 +39,72 @@ parameters:
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
-    sets:
-      geometry:
-        constant: ECal_cell_size
-  # ddsim's default is 0.7 mm; written as --physics.rangecut=<value>*mm
+    targets:
+      geometry: ECal_cell_size
+  # ddsim's default is 0.7 mm; written as --physics.rangecut=<value>*mm in both simulations
   range_cut:
     type: continuous
     bounds: [0.1, 1.0]
     unit: mm
-    sets:
-      stage: simulation
-      option: physics.rangecut
+    targets:
+      simulation:
+        option: physics.rangecut
+        samples: [gamma_10gev, gamma_50gev]
   # half the most probable energy a MIP leaves in 0.5 mm of silicon is about 70 keV; the
-  # evaluator receives it in GeV, as it declares the setting. No simulation depends on it
+  # evaluator receives it in GeV, the unit it declares. No simulation depends on it
   cell_threshold:
     type: continuous
     bounds: [30.0, 150.0]
     unit: keV
-    sets:
-      evaluator: calo.photon
-      setting: threshold
+    targets:
+      evaluators:
+        calo.photon: threshold
+
+# what both samples start from: photons into the middle of the barrel, simulated by ddsim
+stages:
+  generation:
+    executor: gun
+    particle: gamma
+    direction:
+      distribution: uniform
+      theta: [80, 100]
+      phi: [0, 360]
+      unit: deg
+  simulation:
+    executor: ddsim
+    events: 1000
+    physics.list: FTFP_BERT
 
 samples:
   gamma_10gev:
     generation:
-      executor: gun
-      particle: gamma
-      energy:
-        value: 10
-        unit: GeV
-      direction:
-        distribution: uniform
-        theta: [80, 100]
-        phi: [0, 360]
-        unit: deg
+      energy: {value: 10, unit: GeV}
     simulation:
-      executor: ddsim
-      events: 1000
       seed: 42
-      physics.list: FTFP_BERT
+  gamma_50gev:
+    generation:
+      energy: {value: 50, unit: GeV}
+    simulation:
+      seed: 43
 
 evaluators:
   - name: calo.photon
     version: "1"
     stage: simulation
+    samples: [gamma_10gev, gamma_50gev]
     collections:
       hits: ECalBarrelCollection
     # no threshold here: cell_threshold sets it for every candidate
 
+# The angular residual of each sample. The number of fired cells is not an objective here: with
+# the threshold varied, raising the threshold alone would lower it, and the optimizer would
+# find that rather than a better detector (docs/problem.md, "What a target changes").
 objectives:
-  - stage: simulation
+  - sample: gamma_10gev
+    stage: simulation
     metric: ecal_barrel.angular_residual
     direction: minimize
-  - stage: simulation
-    metric: ecal_barrel.fired_cells
+  - sample: gamma_50gev
+    stage: simulation
+    metric: ecal_barrel.angular_residual
     direction: minimize

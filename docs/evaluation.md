@@ -92,11 +92,11 @@ What the optional parts do:
   an `int` is a `float`). The request an evaluator gets carries the defaults and the converted
   quantities, so `request.settings` (and the record) show the settings that were used, next to
   those the problem wrote; a `dict` arrives as a read-only mapping and a `list` as a tuple.
-  A parameter of the problem can set a declared setting (`{evaluator: calo.photon, setting:
-  threshold}`), and only a declared one, of a kind its values fit: a `Quantity` takes numbers
-  with a unit of its dimension, a `float` numbers without a unit, an `int` integers, a `str` or
-  a `bool` its own; a `list` or a `dict`, none ([problem](problem.md#parameters)). That is how an
-  evaluator receives a candidate's values: under its own names, in its own units.
+  A parameter of the problem can target a declared setting (`targets: {evaluators:
+  {calo.photon: threshold}}`), and only a declared one, of a kind its values fit: a `Quantity`
+  takes numbers with a unit of its dimension, a `float` numbers without a unit, an `int`
+  integers, a `str` or a `bool` its own; a `list` or a `dict`, none ([problem](problem.md#parameters)).
+  That is how an evaluator receives a candidate's values: under its own names, in its own units.
   Override `check(request)` for rules beyond that and call `super().check(request)`; plain
   evaluators can define `check` alone. Settings and collection resolution always run, even
   without `check`, and so does the check of the settings against what the evaluator declares

@@ -83,9 +83,8 @@ parameters:
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
-    sets:                    # where its value goes: here, a constant of the geometry
-      geometry:
-        constant: ECal_cell_size
+    targets:                 # what it varies: here, a constant of the geometry
+      geometry: ECal_cell_size
 ```
 
 say what each candidate is measured on, and who measures it:
@@ -123,8 +122,8 @@ k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
     --param ecal_cell_size=10.0 --output runs/cld-ecal-10mm
 ```
 
-(`--dry-run` instead of `--output` shows what the candidate sets, and runs nothing). A parameter
-can also set a stage option or an evaluator setting, or several of these:
+(`--dry-run` instead of `--output` shows what the candidate sets, and simulates nothing). A
+parameter can also target a stage option or an evaluator setting, or several of these:
 [cld-ecal-bindings.yaml](examples/problem/cld-ecal-bindings.yaml) varies the cell size, a ddsim
 option and the evaluator's threshold together.
 

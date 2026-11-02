@@ -19,6 +19,8 @@ from k4opt.evaluation import (
     result_from,
 )
 from k4opt.execution import RunError
+from k4opt.execution._session import preview_candidate
+from k4opt.execution.cli import _preview
 from k4opt.geometry import GeometrySource
 from k4opt.problem import load_problem
 from k4opt.record import SUMMARY_NAME
@@ -26,6 +28,7 @@ from tests.support import simulation
 from tests.support.evaluators import (
     cell_count,
 )
+from tests.support.problems import add_targets
 from tests.support.simulation import events_with
 from tests.unit.execution.session.conftest import (
     RADIUS,
@@ -33,6 +36,7 @@ from tests.unit.execution.session.conftest import (
     Spy,
     evaluate,
     run_candidate,
+    two_samples,
 )
 
 # --- the command ---------------------------------------------------------------------------
@@ -60,25 +64,77 @@ def test_a_dry_run_shows_what_the_candidate_sets_and_runs_nothing(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     doc = yaml.safe_load(problem_file.read_text())
-    doc["parameters"][RADIUS]["sets"] = [
-        doc["parameters"][RADIUS]["sets"],
-        {"stage": "simulation", "option": "physics.rangecut"},
-    ]
+    add_targets(doc["parameters"][RADIUS], simulation="physics.rangecut")
     problem_file.write_text(yaml.safe_dump(doc))
     code, out, err = evaluate(str(problem_file), "--param", f"{RADIUS}=450", "--dry-run")
     assert code == 0, err
     assert out.splitlines() == [
-        f"candidate:   {RADIUS} = 450.0 mm",
-        "               sets geometry constants.InnerTracker_Barrel_radius_1 "
-        "(compact/det_v1/tracker.xml): 400*mm -> 450.0*mm",
-        "               sets samples.gamma.simulation.physics.rangecut = 450.0*mm",
-        "checked:     every evaluator accepts the candidate and its stages; nothing was created "
-        "or run (--dry-run)",
+        "Candidate",
+        "",
+        f"{RADIUS} = 450.0 mm",
+        "  geometry: constants.InnerTracker_Barrel_radius_1 (compact/det_v1/tracker.xml)",
+        "    400*mm -> 450.0*mm",
+        "  simulation: physics.rangecut",
+        "    gamma: 450.0*mm",
+        "",
+        "Configuration validated: the candidate's values, the options of every stage it runs, and "
+        "every evaluator's settings and check().",
+        "No simulation executed; no evaluation output created.",
     ]
     assert fake.calls == [] and sorted(p.name for p in tmp_path.iterdir()) == ["problem.yaml"]
     # a candidate outside its domain is refused as an evaluation refuses it
     code, _, err = evaluate(str(problem_file), "--param", f"{RADIUS}=50", "--dry-run")
     assert code == 1 and "outside the bounds" in err
+
+
+@pytest.mark.parametrize(
+    ("flags", "named"),
+    [
+        (["--workers", "2"], "--workers"),
+        (["--timeout", "60"], "--timeout"),
+        (["--workers", "inline", "--timeout", "60"], "--workers and --timeout"),
+    ],
+)
+def test_a_dry_run_refuses_the_options_of_a_run(
+    problem_file: Path, flags: list[str], named: str
+) -> None:
+    code, out, err = evaluate(str(problem_file), "--param", f"{RADIUS}=450", "--dry-run", *flags)
+    assert (code, out) == (2, "")
+    assert f"k4opt evaluate: {named} say how a candidate runs, and --dry-run runs none" in err
+
+
+def test_a_dry_run_shows_a_setting_in_every_entry_of_its_binding(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    # one binding, two entries on disjoint samples: the threshold reaches both
+    doc = two_samples(problem_file)
+    entry = doc["evaluators"][0]
+    doc["evaluators"] = [entry | {"samples": ["gamma"]}, entry | {"samples": ["pion"]}]
+    for objective in doc["objectives"]:
+        objective["evaluator"] = "test.cell_count"
+    doc["parameters"]["threshold"] = {
+        "type": "continuous",
+        "bounds": [30.0, 150.0],
+        "unit": "keV",
+        "targets": {"evaluators": {"test.cell_count": "threshold"}},
+    }
+    problem_file.write_text(yaml.safe_dump(doc, sort_keys=False))
+
+    class Thresholded(cell_count()):  # type: ignore[misc]
+        settings = {"threshold": Quantity("GeV")}
+
+    preview = preview_candidate(
+        problem_file, [f"{RADIUS}=450", "threshold=70"], implementations=[Thresholded]
+    )
+    out = io.StringIO()
+    _preview(preview, out)
+    lines = out.getvalue().splitlines()
+    at = lines.index("threshold = 70.0 keV")
+    assert lines[at + 1 : at + 4] == [
+        "  evaluator test.cell_count: threshold",
+        "    gamma: 70.0 keV",
+        "    pion: 70.0 keV",
+    ]
 
 
 @pytest.mark.parametrize("flags", [[], ["--dry-run", "--output", "x"]])
@@ -91,10 +147,7 @@ def test_a_setting_a_parameter_cannot_set_names_that_parameter(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     doc = yaml.safe_load(problem_file.read_text())
-    doc["parameters"][RADIUS]["sets"] = [
-        doc["parameters"][RADIUS]["sets"],
-        {"evaluator": "test.cell_count", "setting": "threshold"},
-    ]
+    add_targets(doc["parameters"][RADIUS], evaluators={"test.cell_count": "threshold"})
     problem_file.write_text(yaml.safe_dump(doc))
 
     class Thresholded(cell_count()):  # type: ignore[misc]
@@ -103,9 +156,9 @@ def test_a_setting_a_parameter_cannot_set_names_that_parameter(
     with pytest.raises(EvaluationContractError) as info:
         run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[Thresholded])
     assert str(info.value) == (
-        f"parameters.{RADIUS}.sets: evaluator 'test.cell_count', setting 'threshold': it is a "
-        "quantity in GeV, so it takes numbers with a unit of energy (eV, keV, MeV, GeV, TeV); the "
-        "parameter's values are numbers in mm"
+        f"parameters.{RADIUS}.targets.evaluators.test.cell_count: setting 'threshold' expects a "
+        "quantity in GeV, a unit of energy (eV, keV, MeV, GeV, TeV), but the parameter's values "
+        "are numbers in mm"
     )
     assert not (tmp_path / "a").exists()
 

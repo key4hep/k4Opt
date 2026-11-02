@@ -208,7 +208,7 @@ def varied(
     options: dict[tuple[str, str], set[str]] = {}  # by (sample, stage)
     settings: dict[str, set[str]] = {}  # by binding
     for parameter in parameters:
-        for destination in parameter.sets:
+        for destination in parameter.targets:
             if isinstance(destination, GeometryDestination):
                 geometry.add(parameter.name)
             elif isinstance(destination, StageDestination):

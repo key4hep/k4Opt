@@ -48,6 +48,7 @@ from tests.support.common import scientific
 from tests.support.evaluators import CELL_COUNT, cell_count, implementations, worker_probe
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.imports import FromFile
+from tests.support.problems import add_targets
 from tests.support.stack import alive, eventually
 
 RADIUS = "radius"
@@ -84,7 +85,7 @@ def write_problem(
     doc["geometry"] = MINI_COMPACT
     doc["parameters"] = {
         RADIUS: {
-            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "continuous",
             "bounds": [100.0, 600.0],
             "unit": "mm",
@@ -1054,7 +1055,7 @@ def test_concurrent_candidates_that_read_one_reference_alike_are_both_recorded_e
     data = yaml.safe_load(problem.read_text())
     choices = ["cad/support.stl", "${CAD}/b.stl"]
     data["parameters"]["support"] = {
-        "sets": {"geometry": {"target": SUPPORT}},
+        "targets": {"geometry": SUPPORT},
         "type": "categorical",
         "choices": choices,
     }
@@ -1107,10 +1108,10 @@ def test_concurrent_candidates_each_run_with_their_own_stage_options(
     stack.install(monkeypatch, marks, **{"*": {"await": 2}})
     path = write_problem(tmp_path / "problem.yaml", doc)
     bound = yaml.safe_load(path.read_text())
-    bound["parameters"][RADIUS]["sets"] = [
-        bound["parameters"][RADIUS]["sets"],
-        {"stage": "simulation", "option": "physics.rangecut", "samples": ["gamma", "pion"]},
-    ]
+    add_targets(
+        bound["parameters"][RADIUS],
+        simulation={"option": "physics.rangecut", "samples": ["gamma", "pion"]},
+    )
     path.write_text(yaml.safe_dump(bound))
     radii = {"a": 300.0, "b": 400.0, "c": 500.0, "d": 350.0}
     requests = [RunRequest({RADIUS: r}, tmp_path / n, {"name": n}) for n, r in radii.items()]

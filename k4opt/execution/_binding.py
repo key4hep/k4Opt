@@ -335,8 +335,8 @@ def _bind_problem(
                     check_bound(evaluator, destination.setting, _values(parameter), parameter.unit)
                 except EvaluationContractError as exc:
                     raise EvaluationContractError(
-                        f"parameters.{parameter.name}.sets: evaluator {entry.binding!r}, setting "
-                        f"{destination.setting!r}: {exc}"
+                        f"parameters.{parameter.name}.targets.evaluators.{entry.binding}: setting "
+                        f"{destination.setting!r} {exc}"
                     ) from None
         try:
             check_settings(

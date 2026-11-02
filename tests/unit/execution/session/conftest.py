@@ -23,6 +23,7 @@ from tests.support.evaluators import (
     implementations,
 )
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
+from tests.support.problems import add_targets
 from tests.support.simulation import COLLECTION, events_with
 
 RADIUS = "radius"
@@ -55,7 +56,7 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["geometry"] = MINI_COMPACT
     doc["parameters"] = {
         RADIUS: {
-            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
             "type": "continuous",
             "bounds": [100.0, 600.0],
             "unit": "mm",
@@ -141,8 +142,7 @@ def spied(problem_file: Path) -> Path:
     """``problem_file`` whose radius also sets the setting of that name of ``test.cell_count``,
     which a :class:`Spy` declares."""
     doc = yaml.safe_load(problem_file.read_text())
-    echo(doc, "test.cell_count")
-    doc["parameters"][RADIUS]["sets"][-1]["setting"] = RADIUS
+    add_targets(doc["parameters"][RADIUS], evaluators={"test.cell_count": RADIUS})
     problem_file.write_text(yaml.safe_dump(doc))
     return problem_file
 
@@ -179,9 +179,7 @@ def declare(problem_file: Path, names: list[str], objectives: list[tuple[str, st
 
 def echo(doc: dict[str, Any], binding: str = "test.parameter_echo") -> dict[str, Any]:
     """``doc`` whose parameter also sets the setting ``x`` of ``binding``, which echoes it."""
-    parameter = doc["parameters"][RADIUS]
-    sets = parameter["sets"] if isinstance(parameter["sets"], list) else [parameter["sets"]]
-    parameter["sets"] = [*sets, {"evaluator": binding, "setting": "x"}]
+    add_targets(doc["parameters"][RADIUS], evaluators={binding: "x"})
     return doc
 
 

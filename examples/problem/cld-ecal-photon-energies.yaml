@@ -24,10 +24,9 @@ parameters:
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
-    # where the value goes: the constant of the geometry, written as <value>*mm
-    sets:
-      geometry:
-        constant: ECal_cell_size
+    # what it varies: the constant ECal_cell_size of the geometry, written as <value>*mm
+    targets:
+      geometry: ECal_cell_size
 
 # what every sample starts from: photons into the middle of the barrel, simulated by ddsim
 stages:

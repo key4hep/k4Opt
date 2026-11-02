@@ -34,7 +34,7 @@ SEEN = [("analysis", "seen", "minimize")]
 def parameter(kind: str, **declared: Any) -> dict[str, Any]:
     # only the setting of the evaluator, which problem_document adds: it takes any number, the
     # geometry only those a double holds
-    return {"sets": [], "type": kind, **declared}
+    return {"targets": {}, "type": kind, **declared}
 
 
 @pytest.mark.parametrize(

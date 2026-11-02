@@ -695,23 +695,23 @@ def test_a_parameter_sets_a_declared_setting_its_values_fit(
 @pytest.mark.parametrize(
     ("key", "values", "unit", "message"),
     [
-        ("other", float, None, r"settings\.other: the evaluator declares no setting 'other'"),
+        ("other", float, None, r"settings\.other: is not a setting the evaluator declares"),
         (
             "threshold",
             float,
             None,
-            "it is a quantity in GeV, so it takes numbers with a unit of energy .*; the "
+            r"expects a quantity in GeV, a unit of energy \(eV, keV, MeV, GeV, TeV\), but the "
             "parameter's values are numbers without a unit",
         ),
-        ("threshold", float, "mm", "the parameter's values are numbers in mm"),
-        ("threshold", str, None, "the parameter's values are strings"),
-        ("scale", float, "mm", "it is a float without a unit, so the parameter's unit mm would"),
-        ("scale", bool, None, "it is a float; the parameter's values are booleans"),
-        ("scale", str, None, "it is a float; the parameter's values are strings"),
-        ("layers", float, None, "it is a int; the parameter's values are numbers without a unit"),
-        ("layers", bool, None, "the parameter's values are booleans"),
-        ("mode", int, None, "is a str"),
-        ("flag", int, None, "is a bool"),
+        ("threshold", float, "mm", "but the parameter's values are numbers in mm"),
+        ("threshold", str, None, "but the parameter's values are strings"),
+        ("scale", float, "mm", "expects a number without a unit, but the parameter has unit mm"),
+        ("scale", bool, None, "expects a number, but the parameter's values are booleans"),
+        ("scale", str, None, "expects a number, but the parameter's values are strings"),
+        ("layers", float, None, "expects an integer, but the parameter's values are numbers"),
+        ("layers", bool, None, "but the parameter's values are booleans"),
+        ("mode", int, None, "expects a string"),
+        ("flag", int, None, "expects a boolean"),
         ("bins", float, None, "is a dict, which no parameter can set"),
         ("names", str, None, "is a list, which no parameter can set"),
     ],
@@ -733,5 +733,7 @@ def test_an_evaluator_that_declares_no_settings_takes_none_from_a_parameter() ->
             return {}
 
     check_settings(Free(), {"anything": 1})  # its settings are its own business
-    with pytest.raises(EvaluationContractError, match="declares no settings, so no parameter"):
+    with pytest.raises(
+        EvaluationContractError, match="cannot be set: the evaluator declares no settings"
+    ):
         check_settings(Free(), {}, {"anything": (float, None)})

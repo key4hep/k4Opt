@@ -41,7 +41,7 @@ def document(
         "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
         "parameters": {
             CELL: {
-                "sets": {"geometry": {"constant": "ECal_cell_size"}},
+                "targets": {"geometry": "ECal_cell_size"},
                 "type": "continuous",
                 "bounds": [1.0, 10.0],
                 "unit": "mm",
@@ -337,10 +337,10 @@ def open_problem(tmp_path: Path, data: dict[str, Any], *evaluators: Any) -> Eval
     data["parameters"] = {}
     echoes = [e.get("as", e["name"]) for e in data["evaluators"] if e["name"] == Echo.name]
     data["parameters"][RADIUS] = {
-        "sets": [
-            {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
-            *({"evaluator": binding, "setting": RADIUS} for binding in dict.fromkeys(echoes)),
-        ],
+        "targets": {
+            "geometry": "InnerTracker_Barrel_radius_1",
+            "evaluators": dict.fromkeys(echoes, RADIUS),
+        },
         "type": "continuous",
         "bounds": [100.0, 600.0],
         "unit": "mm",

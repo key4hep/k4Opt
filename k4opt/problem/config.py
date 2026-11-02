@@ -131,7 +131,7 @@ def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ResolvedProblem:
     first: dict[tuple[str, str, str], str] = {}  # each attribute: the parameter that set it first
     for parameter, destination in spec.geometry_destinations:
         reference = destination.canonical_target
-        where = f"{problem_path}: parameters.{parameter.name}.sets: target {reference!r}"
+        where = f"{problem_path}: parameters.{parameter.name}.targets.geometry: {reference!r}"
         try:
             target = catalog.lookup(reference)
         except AmbiguousTargetError as exc:

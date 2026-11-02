@@ -77,10 +77,10 @@ def problem_file(tmp_path: Path) -> Path:
         "geometry": MINI_COMPACT,
         "parameters": {
             RADIUS: {
-                "sets": [
-                    {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
-                    {"evaluator": "test.echo", "setting": "x"},
-                ],
+                "targets": {
+                    "geometry": "InnerTracker_Barrel_radius_1",
+                    "evaluators": {"test.echo": "x"},
+                },
                 "type": "continuous",
                 "bounds": [100.0, 600.0],
                 "unit": "mm",

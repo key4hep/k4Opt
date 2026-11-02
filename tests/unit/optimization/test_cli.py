@@ -250,7 +250,7 @@ def test_study_show_trial_and_export_read_a_study_and_change_nothing(
     assert lines[2] == f"directory:  {output} (trials in study.journal)"
     assert lines[3] == (
         f"parameters: {RADIUS}  continuous [100.0, 600.0]  "
-        "(geometry constants.InnerTracker_Barrel_radius_1, test.trade_off.x)"
+        "(geometry constants.InnerTracker_Barrel_radius_1, evaluator test.trade_off: x)"
     )
     assert lines[4:6] == [
         "objectives: test.trade_off/analysis/a  minimize  (mm)",

@@ -67,33 +67,22 @@ class Environment:
 
 @dataclass(frozen=True, slots=True)
 class GeometryDestination:
-    """The attribute of the geometry a parameter sets.
+    """The attribute of the geometry a parameter sets, by ``reference``: a constant by its name
+    (``ECal_cell_size``), any other attribute by its canonical target reference of
+    :mod:`k4opt.geometry` (``InnerTrackerBarrel.layer[id=1].rphi_layout.nphi``). The reference is
+    not looked up in a geometry here."""
 
-    Exactly one of ``constant`` (shorthand for the target ``constants.<name>``) and
-    ``target`` (any canonical target reference of :mod:`k4opt.geometry`) is set. The
-    reference is not looked up in a geometry here.
-    """
-
-    constant: str | None = None
-    target: str | None = None
+    reference: str
 
     @property
     def canonical_target(self) -> str:
-        """The target reference both spellings stand for."""
-        if self.constant is not None:
-            return f"constants.{self.constant}"
-        assert self.target is not None
-        return self.target
+        """The target reference it stands for: ``constants.<name>`` for a constant's name."""
+        return self.reference if "." in self.reference else f"constants.{self.reference}"
 
     @property
     def label(self) -> str:
         """``geometry constants.ECal_cell_size``: the destination, for a person."""
         return f"geometry {self.canonical_target}"
-
-    def to_dict(self) -> dict[str, object]:
-        if self.constant is not None:
-            return {"geometry": {"constant": self.constant}}
-        return {"geometry": {"target": self.target}}
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,11 +100,8 @@ class StageDestination:
 
     @property
     def label(self) -> str:
-        """``simulation.physics.rangecut of gamma, pion``: the destination, for a person."""
-        return f"{self.stage}.{self.option} of {', '.join(self.samples)}"
-
-    def to_dict(self) -> dict[str, object]:
-        return {"stage": self.stage, "option": self.option, "samples": list(self.samples)}
+        """``simulation physics.rangecut of gamma, pion``: the destination, for a person."""
+        return f"{self.stage} {self.option} of {', '.join(self.samples)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,11 +114,8 @@ class SettingDestination:
 
     @property
     def label(self) -> str:
-        """``readout.cell_size``: the destination, for a person."""
-        return f"{self.evaluator}.{self.setting}"
-
-    def to_dict(self) -> dict[str, object]:
-        return {"evaluator": self.evaluator, "setting": self.setting}
+        """``evaluator readout: cell_size``: the destination, for a person."""
+        return f"evaluator {self.evaluator}: {self.setting}"
 
 
 type Destination = GeometryDestination | StageDestination | SettingDestination
@@ -146,25 +129,28 @@ class Parameter:
 
     ``name`` identifies it in the problem: candidates, records and optimizers key its value by
     it. ``continuous`` and ``integer`` parameters have inclusive ``bounds``; ``categorical``
-    ones have ``choices``. ``unit`` is the unit of the numbers in ``bounds``. ``sets`` holds
-    every destination its value is written into, at least one, in the order the problem gives
-    them: an attribute of the geometry (``<value>*<unit>``), an option of a stage or a setting
-    of an evaluator (``{value, unit}`` with a unit). The domain says nothing about a
+    ones have ``choices``. ``unit`` is the unit of the numbers in ``bounds``. ``targets`` holds
+    every destination its value is written into, at least one, grouped by kind in the order the
+    problem gives them: attributes of the geometry (``<value>*<unit>``), options of a stage,
+    settings of evaluators (``{value, unit}`` with a unit). The domain says nothing about a
     destination, and the destinations nothing about the domain.
     """
 
     name: str
     kind: ParameterKind
-    sets: tuple[Destination, ...]
+    targets: tuple[Destination, ...]
     bounds: tuple[Number, Number] | None = None
     choices: tuple[str | bool | Number, ...] | None = None
     unit: str | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "sets", tuple(self.sets))
+        object.__setattr__(self, "targets", tuple(self.targets))
 
     def to_dict(self) -> dict[str, object]:
-        """Everything but the name, which keys it in the problem's ``parameters``."""
+        """Everything but the name, which keys it in the problem's ``parameters``; ``targets`` in
+        one form of each target: a geometry reference, ``{option, samples}`` for a stage option
+        (its samples listed), the setting of an evaluator binding; a list where a kind has
+        several."""
         data: dict[str, object] = {"type": self.kind}
         if self.bounds is not None:
             data["bounds"] = list(self.bounds)
@@ -172,8 +158,29 @@ class Parameter:
             data["choices"] = list(self.choices)
         if self.unit is not None:
             data["unit"] = self.unit
-        data["sets"] = [destination.to_dict() for destination in self.sets]
+        grouped: dict[str, list[object]] = {}
+        settings: dict[str, list[object]] = {}
+        for destination in self.targets:
+            if isinstance(destination, GeometryDestination):
+                grouped.setdefault("geometry", []).append(destination.reference)
+            elif isinstance(destination, StageDestination):
+                option = {"option": destination.option, "samples": list(destination.samples)}
+                grouped.setdefault(destination.stage, []).append(option)
+            else:
+                grouped.setdefault("evaluators", [])
+                settings.setdefault(destination.evaluator, []).append(destination.setting)
+        data["targets"] = {
+            kind: {binding: _one(items) for binding, items in settings.items()}
+            if kind == "evaluators"
+            else _one(items)
+            for kind, items in grouped.items()
+        }
         return data
+
+
+def _one(items: list[object]) -> object:
+    """A list of targets of one kind as a problem writes it: the target alone if it is one."""
+    return items[0] if len(items) == 1 else items
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,7 +487,7 @@ class ProblemSpec:
     @property
     def destinations(self) -> tuple[tuple[Parameter, Destination], ...]:
         """Every destination of every parameter, with its parameter, in problem order."""
-        return tuple((p, d) for p in self.parameters for d in p.sets)
+        return tuple((p, d) for p in self.parameters for d in p.targets)
 
     @property
     def geometry_destinations(self) -> tuple[tuple[Parameter, GeometryDestination], ...]:
@@ -538,7 +545,7 @@ def pending(parameters: tuple[Parameter, ...], sample: str) -> dict[str, frozens
     """The options of each stage of ``sample`` that ``parameters`` set, by stage."""
     found: dict[str, set[str]] = {}
     for parameter in parameters:
-        for destination in parameter.sets:
+        for destination in parameter.targets:
             if isinstance(destination, StageDestination) and sample in destination.samples:
                 found.setdefault(destination.stage, set()).add(destination.option)
     return {stage: frozenset(options) for stage, options in found.items()}
