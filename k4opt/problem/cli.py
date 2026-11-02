@@ -16,7 +16,8 @@ from typing import TextIO
 
 from k4opt.evaluation import Status, load_evaluator
 from k4opt.problem._assess import Limit
-from k4opt.problem._run import RunOutcome, peak_memory, run_candidate
+from k4opt.problem._run import RunOutcome, run_candidate
+from k4opt.problem._summary import peak_memory
 from k4opt.problem._tasks import Kind
 from k4opt.terminal import size
 

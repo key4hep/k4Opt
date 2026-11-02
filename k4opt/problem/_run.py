@@ -1,31 +1,27 @@
 """Candidates of a problem file, evaluated end to end (behind ``k4opt evaluate``).
 
 :class:`EvaluationSession` loads the problem once, binds and checks the evaluator
-implementations and records the identity of every file the problem names. For each candidate it
-then validates the candidate, creates a new instance of each evaluator and checks its request
-for the candidate, checks that no such file changed (nothing is created before this succeeds),
-and runs the candidate's tasks in a new run directory through
-:func:`k4opt.problem._evaluate._execute_plan`: the geometry task materializes the candidate's
-geometry into it, each pipeline stage of each sample runs once and each evaluation measures its
-sample, or the candidate, with its new instance. It then assesses the candidate against the
-objectives and constraints (:mod:`k4opt.problem._assess`) and writes ``summary.json``, which
-:func:`assemble` makes from the task results alone. Every path the record holds of a file in the
-run directory is relative to it, so a record stays true wherever the directory is moved; the
-run directory itself is recorded once, as ``run_dir``. :func:`run_candidate` evaluates one candidate
-given as ``REFERENCE=VALUE`` strings.
+implementations (:mod:`k4opt.problem._binding`) and records the identity of every file the
+problem names. For each candidate it then validates the candidate, creates a new instance of each
+evaluator and checks its request for the candidate, checks that no such file changed (nothing is
+created before this succeeds), and runs the candidate's tasks in a new run directory
+(:mod:`k4opt.problem._evaluate`): the geometry task materializes the candidate's geometry into
+it, each pipeline stage of each sample runs once and each evaluation measures its sample, or the
+candidate, with its new instance. It then assesses the candidate against the objectives and
+constraints (:mod:`k4opt.problem._assess`) and writes its ``summary.json``
+(:mod:`k4opt.problem._summary`). :func:`run_candidate` evaluates one candidate given as
+``REFERENCE=VALUE`` strings.
 """
 
 from __future__ import annotations
 
 import math
 import os
-import re
 import time
 import uuid
 import weakref
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
 from types import TracebackType
 from typing import Literal
@@ -34,48 +30,44 @@ from k4opt import __version__
 from k4opt.evaluation import (
     CandidateKey,
     EvaluatorProtocol,
-    Measurement,
-    Role,
     Scalar,
-    evaluator_source,
 )
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.jsonio import write_json
-from k4opt.problem._assess import SUMMARY_SCHEMA, Assessment, assess
+from k4opt.problem._assess import Assessment, assess
 from k4opt.problem._backends import Backend, InlineBackend, ProcessBackend
-from k4opt.problem._cpus import AUTO, usable_cpus
-from k4opt.problem._evaluate import (
-    Activity,
-    CandidateRecord,
+from k4opt.problem._binding import (
     _bind_problem,
     _Binding,
     _context,
-    _drive,
-    _finish_plan,
+    _implementations,
     _preflight,
     _Prepared,
-    _Run,
-    _validate_candidate,
     task_cpus,
 )
+from k4opt.problem._candidate import (
+    CandidateRecord,
+    _overrides,
+    _parse_candidate,
+    _validate_candidate,
+)
+from k4opt.problem._cpus import AUTO, usable_cpus
+from k4opt.problem._evaluate import Activity, _drive, _finish_plan, _Run
+from k4opt.problem._files import readable_identity
 from k4opt.problem._schedule import Scheduler
-from k4opt.problem._stages import STAGE_TYPES, file_identity, input_files, plan_stages
+from k4opt.problem._stages import STAGE_TYPES, input_files, plan_stages
+from k4opt.problem._summary import assemble
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
-    Made,
-    PeakMemory,
-    Task,
     TaskId,
     TaskResult,
-    evaluations,
     stage_task,
 )
 from k4opt.problem._work import (
     SUMMARY_NAME,
     GeometryWork,
-    MetricKey,
     TaskOutcome,
     Workspace,
     candidate_externals,
@@ -83,19 +75,9 @@ from k4opt.problem._work import (
 )
 from k4opt.problem._worker import session_spec
 from k4opt.problem.config import load_problem
-from k4opt.problem.errors import CandidateError, RecordError, RunError
-from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec
+from k4opt.problem.errors import RunError
+from k4opt.problem.models import ProblemSpec
 from k4opt.revision import code_identity, code_unchanged
-
-LOCAL: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": 1})
-"""How a session executes its tasks by default: one after another, in its own process."""
-
-# Units that are written into a DD4hep expression (``6.0*mm``); anything else is refused
-# rather than passed on unchecked.
-_UNITS = ("um", "mm", "cm", "m", "mrad", "rad", "deg", "MeV", "GeV", "TeV")
-
-_INTEGER = re.compile(r"[+-]?[0-9]+")
-_DECIMAL = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,121 +110,6 @@ class RunOutcome:
                 requested = samples[task.id.sample]["simulation"].get("events")
                 events[task.id.sample] = (found, requested)
         return events
-
-
-def _int(reference: str, text: str) -> int:
-    """``int(text)`` for a text that matches ``_INTEGER``."""
-    try:
-        return int(text)
-    except ValueError:  # more digits than Python converts (sys.get_int_max_str_digits())
-        raise CandidateError(f"{reference}: {text[:20]}... has too many digits") from None
-
-
-def _parse_value(parameter: Parameter, text: str) -> Scalar:
-    """The value ``text`` stands for, read according to the kind of ``parameter``."""
-    reference = parameter.geometry.canonical_target
-    choices = parameter.choices or ()
-    if parameter.kind == "categorical" and all(isinstance(c, str) for c in choices):
-        return text
-    if parameter.kind == "categorical" and all(isinstance(c, bool) for c in choices):
-        if text not in ("true", "false"):
-            raise CandidateError(f"{reference}: expected true or false, got {text!r}")
-        return text == "true"
-    if parameter.kind == "integer":
-        if not _INTEGER.fullmatch(text):
-            raise CandidateError(f"{reference}: expected an integer, got {text!r}")
-        return _int(reference, text)
-    if not _DECIMAL.fullmatch(text):
-        raise CandidateError(f"{reference}: expected a number, got {text!r}")
-    if parameter.kind == "categorical":
-        # Compare with the declared choices exactly (Decimal vs int or float is exact), and
-        # return the choice itself: float(text) would merge 2**53 and 2**53+1.
-        exact = Decimal(text)
-        numeric = [c for c in choices if not isinstance(c, bool)]
-        for choice in numeric:
-            if exact == choice:
-                return choice
-        for choice in numeric:  # a float choice such as 1e23 is not the decimal 10**23 ...
-            # ... so also accept its shortest decimal spelling, never a rounded neighbor
-            if (
-                isinstance(choice, float)
-                and math.isfinite(choice)
-                and exact == Decimal(repr(choice))
-            ):
-                return choice
-        # never round an unmatched value into a neighboring choice
-        raise CandidateError(f"{reference}: {text!r} is not one of {list(choices)!r}")
-    if _INTEGER.fullmatch(text):
-        # an integer literal stays exact where float would change it (above 2**53) or overflow
-        number = _int(reference, text)
-        try:
-            return float(number) if float(number) == number else number
-        except OverflowError:
-            return number
-    return float(text)
-
-
-def _split_assignment(assignment: str) -> tuple[str, str]:
-    """Split ``REFERENCE=VALUE`` at the first ``=`` outside ``[...]`` (``layer[id=1].x=90``)."""
-    depth = 0
-    for index, char in enumerate(assignment):
-        if char == "[":
-            depth += 1
-        elif char == "]":
-            depth = max(depth - 1, 0)
-        elif char == "=" and depth == 0:
-            return assignment[:index], assignment[index + 1 :]
-    raise CandidateError(f"--param {assignment!r}: expected REFERENCE=VALUE")
-
-
-def _parse_candidate(spec: ProblemSpec, assignments: Sequence[str]) -> dict[str, Scalar]:
-    by_reference = {p.geometry.canonical_target: p for p in spec.parameters}
-    candidate: dict[str, Scalar] = {}
-    for assignment in assignments:
-        reference, text = _split_assignment(assignment)
-        if reference in candidate:
-            raise CandidateError(f"--param {reference} is given more than once")
-        parameter = by_reference.get(reference)
-        # an unknown reference is reported by the candidate validation, with the known ones
-        candidate[reference] = text if parameter is None else _parse_value(parameter, text)
-    return candidate
-
-
-def _xml_value(parameter: Parameter, value: Scalar) -> str:
-    """The literal written into the geometry XML for a validated ``value``."""
-    reference = parameter.geometry.canonical_target
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return value
-    if parameter.unit is None:
-        return repr(value)
-    if parameter.unit not in _UNITS:
-        raise CandidateError(
-            f"{reference}: unit {parameter.unit!r} cannot be written into the geometry; "
-            f"supported: {', '.join(_UNITS)}"
-        )
-    return f"{value!r}*{parameter.unit}"
-
-
-def _overrides(spec: ProblemSpec, values: Mapping[str, Scalar]) -> list[Override]:
-    assert spec._source is not None
-    assert len(spec._targets) == len(spec.parameters)
-    overrides = []
-    for parameter, target in zip(spec.parameters, spec._targets, strict=True):
-        value = values[parameter.geometry.canonical_target]
-        overrides.append(
-            Override(target=target.target, value=_xml_value(parameter, value), file=target.file)
-        )
-    return overrides
-
-
-def _measurement(m: Measurement | None) -> dict[str, object]:
-    return {
-        "value": None if m is None else m.value,
-        "unit": None if m is None else m.unit,
-        "uncertainty": None if m is None else m.uncertainty,
-    }
 
 
 def _parse_inputs(assignments: Sequence[str]) -> dict[str, str]:
@@ -284,14 +151,6 @@ def _supplied(
     return supplied
 
 
-def _readable_identity(path: Path) -> dict[str, Json] | None:
-    """``bytes`` and ``sha256`` of a file, ``None`` if it cannot be read (its stage's to report)."""
-    try:
-        return file_identity(path)
-    except OSError:
-        return None
-
-
 def _timeout(value: float | None) -> float | None:
     """``value`` as a time limit in seconds; :class:`RunError` unless it is positive and finite."""
     if value is None:
@@ -317,266 +176,6 @@ def _run_reference(run: Mapping[str, Json] | None) -> object:
     if not isinstance(run, Mapping):
         raise RunError(f"run must be a mapping, got {type(run).__name__}")
     return thaw(freeze(run, "run", RunError))
-
-
-def _declared(units: Mapping[MetricKey, str] | None) -> list[dict[str, str]] | None:
-    """The metrics an evaluator declares (``units``), each with its unit; ``None`` if it declares
-    none."""
-    if units is None:
-        return None
-    return [{"stage": s, "metric": m, "unit": unit} for (s, m), unit in units.items()]
-
-
-def _roles(roles: Mapping[str, Role] | None) -> dict[str, dict[str, Json]] | None:
-    """The roles a combined evaluator declares, each with what it reads; ``None`` if it declares
-    none."""
-    if roles is None:
-        return None
-    return {
-        name: {
-            "many": role.many,
-            "stage": role.stage,
-            "metrics": tuple(role.metrics),
-            "artifacts": tuple(role.artifacts),
-        }
-        for name, role in roles.items()
-    }
-
-
-def _relative(path: Path, run_dir: Path) -> str:
-    """How the record names ``path``, a file in the run directory ``run_dir``: relative to it."""
-    return path.resolve().relative_to(run_dir.resolve()).as_posix()
-
-
-def _artifact(made: Made, run_dir: Path) -> dict[str, object]:
-    """A file a task made, as the record names it; ``sha256`` is ``null`` unless it was hashed."""
-    artifact = made.artifact
-    return {
-        "ref": artifact.ref,
-        "path": _relative(artifact.path, run_dir),
-        "bytes": artifact.bytes,
-        "sha256": artifact.sha256,
-    }
-
-
-def _memory(result: TaskResult) -> dict[str, object]:
-    """A task's peak memory as its record says it, in bytes: of the k4opt process that did its
-    work (``process``) and of the program a stage ran (``program``); ``null`` for one that did
-    not run. How it ran, never what was evaluated."""
-    return {"peak_memory_bytes": None if result.memory is None else result.memory.to_dict()}
-
-
-def _fragment(result: TaskResult) -> dict[str, object]:
-    """What every task's part of the summary says first: how it ended, and why."""
-    return {"status": result.status, "message": result.message}
-
-
-def _reads(task: Task, result: TaskResult) -> dict[str, object]:
-    """What every task's part of the summary says of the tasks before it: those it reads, and
-    those of them that kept it from running."""
-    return {
-        "reads": [need.label for need in task.needs],
-        "blocked_by": [cause.label for cause in result.blocked_by],
-    }
-
-
-def _stage(task: Task, result: TaskResult, run_dir: Path) -> dict[str, object]:
-    """One stage's part of the summary: how it ended, how it ran, where, and what it made."""
-    provenance = thaw(result.provenance)
-    assert isinstance(provenance, dict)
-    return (
-        _fragment(result)
-        | provenance
-        | {
-            "directory": task.directory,
-            "outputs": {name: _artifact(made, run_dir) for name, made in result.made.items()},
-            "logs": {role: _relative(path, run_dir) for role, path in result.artifacts.items()},
-        }
-        | _reads(task, result)
-        | {"elapsed_seconds": result.elapsed_seconds}
-        | _memory(result)
-    )
-
-
-def _evaluation(
-    task: Task, result: TaskResult, entry: EvaluatorSpec, run_dir: Path
-) -> dict[str, object]:
-    """One evaluation's own part of the summary: nothing of the stages it shares, nor of its
-    implementation, which ``implementations`` records once, nor of what its roles read, which is
-    recorded by the tasks that made it."""
-    record = result.record
-    assert record is not None  # every binding has one, a blocked one too
-    outcome, request = record.result, record.request
-    # what each role of an evaluation of the candidate reads, by the task that made it
-    roles = {role: [item.label for item in items] for role, items in entry.roles.items()}
-    return {
-        "implementation": entry.name,
-        **_fragment(result),
-        # as the problem wrote them, and as the evaluator received them (defaults filled in,
-        # quantities in the declared unit)
-        "settings": {"declared": thaw(entry.settings), "used": thaw(request.settings)},
-        "collections": dict(request.collections),
-        **({} if task.id.sample is not None else {"roles": roles}),
-        **_reads(task, result),
-        "measurements": [
-            {"stage": m.stage, "metric": m.metric} | _measurement(m) for m in outcome.measurements
-        ],
-        "artifacts": {name: _artifact(made, run_dir) for name, made in result.made.items()},
-        "provenance": thaw(outcome.provenance),
-        # its own directory, made just before it was called; none if it was not
-        "workdir": None if request.workdir is None else task.directory,
-        # what it printed while it was called in a worker process; none in the caller's process
-        "log": _relative(log, run_dir) if (log := result.artifacts.get("log")) else None,
-        "elapsed_seconds": record.elapsed_seconds,
-        **_memory(result),
-    }
-
-
-def assemble(
-    record_id: str,
-    problem_path: Path,
-    spec: ProblemSpec,
-    values: Mapping[str, Scalar],
-    candidate: CandidateRecord,
-    assessment: Assessment,
-    run_dir: Path,
-    taken: Mapping[str, Mapping[str, Json]],
-    run: object,
-    process: Mapping[str, Json],
-    execution: Mapping[str, Json] = LOCAL,
-) -> dict[str, object]:
-    """The summary of a candidate, made from its task results and nothing else that ran.
-
-    Each task's part (``geometry``; each sample's ``stages`` and ``evaluations``; the
-    ``evaluations`` of the candidate) is made from that task's result alone; the candidate's
-    ``status``, ``message``, ``required``, ``diagnostics``, ``metrics`` and ``assessment`` derive
-    from them and the plan, as
-    :meth:`Assessment.from_summary` derives them again.
-    ``record_id`` is the record's identity; the rest is what the session holds: the problem,
-    what it recorded of each implementation (``taken``: its version, stage, source and metrics)
-    and of the process (``process``), and how it executed the tasks (``execution``: provenance,
-    which no identity or comparison of records reads).
-    """
-    plan, results = candidate.plan, candidate.results
-    environment = thaw(process["environment"])
-    assert isinstance(environment, dict)
-    started = [
-        argv
-        for task in plan.of(Kind.STAGE)
-        if isinstance(argv := results[task.id].provenance.get("argv"), (list, tuple)) and argv
-    ]
-    entries = dict(evaluations(spec.samples, spec.evaluators))
-    geometry = results[GEOMETRY]
-
-    def measured(sample: str | None) -> dict[str, object]:
-        """The evaluations of ``sample``, or of the candidate, by binding."""
-        return {
-            task.id.name: _evaluation(task, results[task.id], entries[task.id], run_dir)
-            for task in plan.of(Kind.EVALUATOR)
-            if task.id.sample == sample
-        }
-
-    made = thaw(geometry.provenance)
-    assert isinstance(made, dict)
-    return {
-        "schema": SUMMARY_SCHEMA,
-        "id": record_id,  # the record's identity, wherever it is copied to
-        "run": run,  # what the caller evaluates it for (a study and trial, say), null if nothing
-        # where it was made, which the paths of its files are relative to; it may move since
-        "run_dir": str(run_dir),
-        "problem": {"path": str(problem_path), "name": spec.name, "definition": spec.to_dict()},
-        "candidate": dict(values),
-        "candidate_key": [list(part) for part in candidate.candidate_key],
-        "status": candidate.status,
-        "message": candidate.message,
-        # the tasks the status is decided by: what the objectives, constraints and the evaluators
-        # marked required read; the others are diagnostics
-        "required": [task.id.label for task in plan.tasks if task.required],
-        # each diagnostic that did not succeed, which the status leaves out
-        "diagnostics": [
-            {"task": result.id.label, "status": result.status, "message": result.message}
-            for result in candidate.diagnostics
-        ],
-        # False if a required stage file was supplied that was not made from this candidate
-        "represents_candidate": candidate.represents_candidate,
-        "supplied": sorted(candidate.supplied),
-        "warnings": list(candidate.warnings),
-        # the objective and constraint metrics, each from the binding it names
-        "metrics": [
-            {"evaluator": ref.evaluator, "sample": ref.sample, "stage": ref.stage}
-            | {"metric": ref.metric, "label": ref.label}
-            | _measurement(candidate.value(ref))
-            for ref in spec.references
-        ],
-        # the objectives and the constraints judged, from those metrics
-        "assessment": assessment.to_dict(),
-        # each implementation once, however many bindings it has
-        "implementations": {name: thaw(entry) for name, entry in taken.items()},
-        # each sample's stages, each recorded once, and the evaluations of the sample
-        "samples": {
-            sample: {
-                "stages": {
-                    task.id.name: _stage(task, results[task.id], run_dir)
-                    for task in plan.of(Kind.STAGE)
-                    if task.id.sample == sample
-                },
-                "evaluations": measured(sample),
-            }
-            for sample in spec.samples
-        },
-        # the evaluations of the candidate, of no sample
-        "evaluations": measured(None),
-        "elapsed_seconds": candidate.elapsed_seconds,
-        "geometry": {"status": geometry.status}
-        | made
-        | {"elapsed_seconds": geometry.elapsed_seconds}
-        | _memory(geometry),
-        "environment": {
-            # declared by the problem: a pin, not a check of what ran
-            "declared": spec.environment.to_dict()["key4hep"],
-            # observed in this process; ddsim is the executable that was started
-            "observed": {
-                "k4opt": __version__,
-                # what the version only labels: the content of its code, and its checkout
-                "k4opt_source": thaw(process["k4opt"]),
-                # the session's, which the process still had when this candidate started
-                **environment,
-                "ddsim": started[0][0] if started else None,
-                # where and how the tasks ran: provenance, never part of what was evaluated
-                "execution": thaw(execution),
-            },
-        },
-    }
-
-
-def peak_memory(summary: Mapping[str, object]) -> dict[str, PeakMemory]:
-    """The peak memory of each task a ``summary.json`` records, by the task's label
-    (``geometry``, ``gamma/simulation``, ``gamma/calo.photon``, ``pi0_rejection``), for the tasks
-    that ran; read as the record holds it, in bytes. Raises
-    :class:`~k4opt.problem.RecordError` for one that is not a peak memory."""
-    entries: dict[str, object] = {"geometry": summary.get("geometry")}
-    samples = summary.get("samples")
-    for sample, part in (samples if isinstance(samples, Mapping) else {}).items():
-        for kind in ("stages", "evaluations"):
-            tasks = part.get(kind) if isinstance(part, Mapping) else None
-            for name, entry in (tasks if isinstance(tasks, Mapping) else {}).items():
-                entries[f"{sample}/{name}"] = entry
-    evaluations = summary.get("evaluations")
-    entries |= dict(evaluations) if isinstance(evaluations, Mapping) else {}
-    found: dict[str, PeakMemory] = {}
-    for label, entry in entries.items():
-        value = entry.get("peak_memory_bytes") if isinstance(entry, Mapping) else None
-        if value is None:
-            continue
-        if not isinstance(value, Mapping) or set(value) != {"process", "program"}:
-            raise RecordError(f"{label}: peak_memory_bytes is no process and program: {value!r}")
-        for key, count in value.items():
-            if count is not None and (
-                isinstance(count, bool) or not isinstance(count, int) or count < 0
-            ):
-                raise RecordError(f"{label}: peak_memory_bytes.{key} is no number of bytes")
-        found[label] = PeakMemory(value["process"], value["program"])
-    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -777,29 +376,11 @@ class EvaluationSession:
             named |= input_files(context, *targets, provided=given)
         named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
         # an unreadable file has no identity: its stage reports it, and a record still names it
-        files = {label: (file, _readable_identity(file)) for label, file in named.items()}
+        files = {label: (file, readable_identity(file)) for label, file in named.items()}
         assert spec._source is not None
         externals = freeze(spec._source.external_files(spec._catalog), "geometry", RunError)
         assert isinstance(externals, Mapping)
-        taken = {}
-        for bound in binding.evaluators:  # what the first instance of each declared
-            declaration = bound.declaration
-            if declaration.name in taken:
-                continue
-            data = {
-                "version": declaration.version,
-                "stage": declaration.stage,
-                "source": evaluator_source(declaration.cls),
-                # each with the unit every measurement of it carries, whatever the status
-                "metrics": _declared(declaration.metrics),
-                # the names of the files a valid result of it returns; null if it declares none
-                "artifacts": None if declaration.artifacts is None else list(declaration.artifacts),
-                # what each role of a combined evaluator reads; null for an evaluator of no roles
-                "roles": _roles(declaration.roles),
-            }
-            frozen = freeze(data, f"evaluator {declaration.name}", RunError)
-            assert isinstance(frozen, Mapping)
-            taken[declaration.name] = frozen
+        taken = _implementations(binding)
         # before anything runs, so that an edit to the checkout during a long run is not
         # recorded as the code that ran, nor a later change of the environment as the session's
         environment = {name: os.environ.get(name) for name in ("KEY4HEP_STACK", "K4GEO")}
@@ -808,12 +389,18 @@ class EvaluationSession:
         )
         _check_code()
         assert isinstance(process, Mapping)
-        crowded = [
-            f"{task.id.label} simulates with {cpus} threads, more than the {jobs} job(s) of the "
-            f"session: it runs alone, on {cpus} processors"
-            for task in binding.plan.tasks
-            if (cpus := task_cpus(binding, task)) > jobs
-        ]
+        crowded = []
+        for task in binding.plan.tasks:
+            cpus = task_cpus(binding, task)
+            beyond = f"more than the {usable} processors this process may use"
+            if cpus > jobs:
+                crowded.append(
+                    f"{task.id.label} simulates with {cpus} threads, more than the {jobs} "
+                    f"job(s) of the session: it runs alone, on {cpus} processors"
+                    + ("" if cpus <= usable else f", {beyond}")
+                )
+            elif cpus > usable:  # within the jobs, which are then too many themselves
+                crowded.append(f"{task.id.label} simulates with {cpus} threads, {beyond}")
         if jobs > usable:
             crowded.append(
                 f"{jobs} jobs, more than the {usable} processors this process may use: tasks "
@@ -918,7 +505,7 @@ class EvaluationSession:
         A file is hashed again only when its size, times or inode changed.
         """
         for label, (file, opened) in self._files.items():
-            now = _readable_identity(file)
+            now = readable_identity(file)
             if now != opened:
                 raise RunError(
                     f"{label}: {file} changed after the session opened ({_described(opened)} "
@@ -1074,7 +661,7 @@ class EvaluationSession:
             if not isinstance(request, RunRequest):  # the caller's mistake, not a candidate's
                 raise RunError(f"expected a RunRequest, got {type(request).__name__}")
             try:
-                return self._start(request)
+                return self._start(request, {run.workspace.root for run in runs.values()})
             except Exception as exc:  # before anything was created
                 return _Run(Workspace("", None), None, error=exc, request=request)
 
@@ -1097,16 +684,19 @@ class EvaluationSession:
             if backend is not self._backend:  # the session's workers serve its next evaluation
                 backend.close()
 
-    def _start(self, request: RunRequest) -> _Run:
+    def _start(self, request: RunRequest, under_way: Collection[Path | None] = ()) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory
-        (not yet created) as its workspace."""
+        (not yet created) as its workspace; the directories of the candidates ``under_way``,
+        which their geometry may not have made yet, count as existing, also when named through
+        a symlink."""
         reference = _run_reference(request.run)
         started = time.perf_counter()
         values, key, prepared, overrides = self._prepare(request.candidate)
         if self._backend is not None:  # its workers check and evaluate instances of their own
             prepared = prepared.released()
         run_dir = Path(os.path.abspath(request.output))
-        if run_dir.exists() or run_dir.is_symlink():
+        taken = {root.resolve() for root in under_way if root is not None}
+        if run_dir.exists() or run_dir.is_symlink() or run_dir.resolve() in taken:
             raise RunError(f"output {run_dir} already exists; choose a new directory")
         return _Run(
             Workspace(str(uuid.uuid4()), run_dir),

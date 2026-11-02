@@ -12,15 +12,14 @@ import pytest
 
 from k4opt.evaluation import EvaluationContractError, Status
 from k4opt.problem import EvaluatorSpec, MetricRef, Reference, Sample, Stage
+from k4opt.problem._files import Made, Tree
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
-    Made,
     Plan,
     Task,
     TaskId,
     TaskResult,
-    Tree,
     blocked,
     candidate_message,
     candidate_status,
@@ -28,9 +27,9 @@ from k4opt.problem._tasks import (
     diagnostics,
     evaluator_task,
     plan_tasks,
-    run_tasks,
     stage_task,
 )
+from tests.unit.problem.conftest import run_in_order
 
 GUN = Stage("generation", executor="gun", options={"particle": "gamma"})
 DDSIM = Stage("simulation", executor="ddsim", events=3, seed=1)
@@ -235,7 +234,7 @@ def test_the_executor_runs_each_task_once_in_plan_order_with_only_what_it_reads(
         seen.append((task.id.label, [need.label for need in reads]))
         return done(task.id, "valid" if task.id.kind is Kind.EVALUATOR else "done")
 
-    results = run_tasks(plan, run)
+    results = run_in_order(plan, run)
     assert seen == [
         ("geometry", []),
         ("gamma/generation", []),
@@ -256,7 +255,7 @@ def test_the_executor_does_not_run_a_blocked_task() -> None:
             return done(task.id, "failed", "ddsim crashed")
         return done(task.id, "valid" if task.id.kind is Kind.EVALUATOR else "done")
 
-    results = run_tasks(plan, run)
+    results = run_in_order(plan, run)
     assert ran == ["geometry", "gamma/generation", "gamma/simulation", "b"]
     assert results[evaluator_task("a", "gamma")].blocked_by == (SIMULATION,)
     assert results[evaluator_task("b")].status == "valid"
@@ -404,17 +403,17 @@ def test_a_made_file_is_named_by_its_task_and_hashed_only_if_asked(tmp_path: Pat
 def test_a_file_replaced_while_it_is_hashed_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from k4opt.problem import _tasks
+    from k4opt.problem import _files
 
     path = tmp_path / "histogram.json"
     path.write_bytes(b"old")
-    identity = _tasks.file_identity
+    identity = _files.file_identity
 
     def replaced(file: Path) -> dict[str, object]:
         file.write_bytes(b"new, and longer")  # between the stat and the hash
         return identity(file)
 
-    monkeypatch.setattr(_tasks, "file_identity", replaced)
+    monkeypatch.setattr(_files, "file_identity", replaced)
     # the size of one version with the hash of another, which changed() would then trust
     with pytest.raises(OSError, match="changed while it was hashed"):
         Made.file(evaluator_task("plot", "gamma"), "histogram", path, hashed=True)

@@ -44,9 +44,16 @@ from k4opt.optimization._optuna.optimizer import (
 )
 from k4opt.optimization._optuna.read import trial_result
 from k4opt.optimization._optuna.space import constraint_values, objective_values, search_space
-from k4opt.optimization._optuna.storage import close, leaving, open_storage
+from k4opt.optimization._optuna.storage import (
+    close,
+    leaving,
+    open_storage,
+    redacted,
+    sqlite_file,
+)
 from k4opt.optimization._results import limit_names
 from k4opt.optimization._study import (
+    JOURNAL_NAME,
     LOCK_NAME,
     Lock,
     StudyReport,
@@ -461,9 +468,12 @@ def _run_study(
     database: BaseStorage | None = None  # made in the directory, or reached once below
     try:
         if not resume:
-            # a database is reached, and set up once, before a file is made: a wrong URL makes none
-            database = None if storage is None else open_storage(directory, storage)
+            # the directory is checked before a database is reached, so one in use leaves the
+            # database untouched; a database is reached, and set up once, before a file is made,
+            # so a wrong URL makes none
             _refuse_used(directory)
+            _refuse_inside(directory, storage)
+            database = None if storage is None else open_storage(directory, storage)
             try:
                 directory.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
@@ -499,12 +509,28 @@ def _run_study(
 
 
 def _refuse_used(directory: Path, *ours: str) -> None:
-    """A new study starts in a directory that does not exist or holds nothing (but ``ours``)."""
+    """A new study starts in a directory that does not exist or holds nothing (but ``ours``),
+    also through a symlink; a symlink to nothing, or to no directory, is in use."""
     held = sorted(p.name for p in directory.iterdir()) if directory.is_dir() else []
     if [name for name in held if name not in ours] or (
-        directory.exists() and not directory.is_dir()
+        (directory.exists() or directory.is_symlink()) and not directory.is_dir()
     ):
         raise OptimizationError(
             f"{directory} is in use; resume the study in it with --resume, or choose a new "
             "directory"
         )
+
+
+def _refuse_inside(directory: Path, storage: str | None) -> None:
+    """A new study's SQLite database lies outside its directory, which a new study finds new or
+    empty and fills with nothing but its own files (also not through a symlink)."""
+    file = None if storage is None else sqlite_file(storage)
+    if storage is None or file is None:
+        return
+    for database, study in ((file, directory), (file.resolve(), directory.resolve())):
+        if database.is_relative_to(study):
+            raise OptimizationError(
+                f"--storage {redacted(storage)}: the database {file} would be in the study "
+                f"directory {directory}; keep it elsewhere, or leave out --storage to keep the "
+                f"trials in {JOURNAL_NAME} there"
+            )

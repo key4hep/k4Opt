@@ -42,7 +42,7 @@ from k4opt.problem import (
     _worker,
     load_problem,
 )
-from k4opt.problem._tasks import Task, stage_task
+from k4opt.problem._tasks import GEOMETRY, Task, stage_task
 from k4opt.problem._work import TaskOutcome, TaskSpec
 from tests.support import stack
 from tests.support.common import scientific
@@ -71,11 +71,15 @@ def marks(tmp_path: Path) -> Path:
 
 
 def write_problem(
-    path: Path, doc: dict[str, Any], probes: tuple[str, ...] = (), required: bool = True
+    path: Path,
+    doc: dict[str, Any],
+    probes: tuple[str, ...] = (),
+    required: bool = True,
+    probed: tuple[str, ...] = ("gamma",),
 ) -> Path:
     """The problem ``doc`` on the mini geometry with the samples ``gamma`` and ``pion``, each
-    measured by ``test.cell_count``, and ``gamma`` by a ``test.worker_probe`` bound as each of
-    ``probes`` (``required`` or a diagnostic); an objective on ``gamma``."""
+    measured by ``test.cell_count``, and the samples ``probed`` by a ``test.worker_probe`` bound
+    as each of ``probes`` (``required`` or a diagnostic); an objective on ``gamma``."""
     doc = copy.deepcopy(doc)
     doc["geometry"] = MINI_COMPACT
     doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
@@ -100,7 +104,7 @@ def write_problem(
                 "as": name,
                 "version": "1",
                 "stage": "simulation",
-                "samples": ["gamma"],
+                "samples": list(probed),
                 "settings": {"binding": name},
             }
             | ({"required": True} if required else {})
@@ -277,6 +281,55 @@ def test_concurrent_candidates_each_write_and_record_only_their_own_files(
             assert (outcome.run_dir / name).is_file() and not Path(name).is_absolute()
         ids.add(summary["id"])
     assert len(ids) == 3
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_an_output_a_candidate_under_way_writes_to_is_refused_as_existing(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, alias: bool
+) -> None:
+    # the first candidate's geometry reaches its worker only once the session took the second
+    # request, as when making a geometry takes longer than preparing the next candidate: the
+    # second request, for the same directory (or for it through a symlink), is refused as with
+    # one job, not left to race the first one for it
+    stack.install(monkeypatch)
+    taken: list[object] = []
+    held: list[tuple[TaskSpec, Any]] = []
+    start, submit = _run.EvaluationSession._start, _backends.ProcessBackend.submit
+    wait = _backends.ProcessBackend.wait
+
+    def starting(self: Any, request: RunRequest, *rest: Any) -> Any:
+        taken.append(request.run["name"])  # type: ignore[index]
+        return start(self, request, *rest)
+
+    def submitting(self: Any, spec: TaskSpec, seen: Any) -> Any:
+        if spec.task.id == GEOMETRY and len(taken) < 2:
+            held.append((spec, seen))
+            return _backends.Handle(spec.workspace, spec.task.id)
+        return submit(self, spec, seen)
+
+    def waiting(self: Any, timeout: float) -> Any:
+        while held and len(taken) >= 2:
+            submit(self, *held.pop(0))
+        return wait(self, timeout)
+
+    monkeypatch.setattr(_run.EvaluationSession, "_start", starting)
+    monkeypatch.setattr(_backends.ProcessBackend, "submit", submitting)
+    monkeypatch.setattr(_backends.ProcessBackend, "wait", waiting)
+    (tmp_path / "real").mkdir()
+    (tmp_path / "alias").symlink_to(tmp_path / "real")
+    second = tmp_path / ("alias" if alias else "real") / "a"
+    requests = [
+        RunRequest({RADIUS: 300.0}, tmp_path / "real" / "a", {"name": "first"}),
+        RunRequest({RADIUS: 400.0}, second, {"name": "second"}),
+    ]
+    with session_of(2).evaluate_each(requests) as evaluations:
+        ended = {request.run["name"]: outcome for request, outcome in evaluations}  # type: ignore[index]
+    assert taken == ["first", "second"] and not held
+    refused, outcome = ended["second"], ended["first"]
+    assert isinstance(refused, RunError), refused
+    assert f"output {second} already exists; choose a new directory" in str(refused)
+    assert isinstance(outcome, RunOutcome) and outcome.candidate.status == "valid"
+    assert verified(outcome)["candidate"] == {RADIUS: 300.0}
 
 
 def threaded(path: Path, threads: int) -> Path:
@@ -527,6 +580,42 @@ def test_workers_that_keep_dying_on_one_task_stop_its_candidates(
     assert len(failed) == 2 and all(o.candidate.status == "failed" for o in failed)
     (error,) = stopped
     assert "3 times in a row for p; lower --jobs?" in str(error)
+
+
+def test_the_deaths_of_one_binding_count_together_on_every_sample(
+    tmp_path: Path, doc: dict[str, Any], session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # one implementation's code, and memory pressure, do not stop at a sample: deaths of p on
+    # gamma and on pion are one series, which stops a candidate after jobs + 1 of them
+    problem = write_problem(tmp_path / "probe.yaml", doc, ("p",), probed=("gamma", "pion"))
+    stack.install(monkeypatch)
+    probe(monkeypatch, p={"kill": True})
+    requests = [RunRequest({RADIUS: 450.0}, tmp_path / name) for name in "ab"]
+    with session_of(2, problem).evaluate_each(requests) as evaluations:
+        ended = [outcome for _, outcome in evaluations]
+    stopped = [o for o in ended if isinstance(o, RunError)]
+    assert stopped and all("times in a row for p; lower --jobs?" in str(o) for o in stopped)
+    assert all(o.candidate.status == "failed" for o in ended if isinstance(o, RunOutcome))
+
+
+def test_a_binding_that_succeeds_on_one_sample_never_stops_candidates_dying_on_another(
+    tmp_path: Path, doc: dict[str, Any], session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # every success of p ends a series of deaths, so p on gamma, which always dies, fails its
+    # task in each candidate (a diagnostic here) and never stops the session's candidates
+    problem = write_problem(
+        tmp_path / "probe.yaml", doc, ("p",), required=False, probed=("gamma", "pion")
+    )
+    stack.install(monkeypatch)
+    probe(monkeypatch, **{"gamma/p": {"kill": True}})
+    session = session_of(2, problem)
+    for name in "abcd":  # one after another: never three deaths of p without a success between
+        outcome = session.evaluate({RADIUS: 450.0}, tmp_path / name)
+        assert outcome.candidate.status == "valid", outcome.candidate.message
+        (diagnostic,) = verified(outcome)["diagnostics"]
+        assert (
+            diagnostic["task"] == "gamma/p" and "died (killed by SIGKILL)" in diagnostic["message"]
+        )
 
 
 # --- stopping ---------------------------------------------------------------------------------

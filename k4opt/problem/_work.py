@@ -28,7 +28,6 @@ What a task returns is portable in the same way; the coordinator turns it into t
 from __future__ import annotations
 
 import contextlib
-import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -52,19 +51,19 @@ from k4opt.evaluation import (
 )
 from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.geometry import GeometryError, GeometrySource, Override
-from k4opt.problem._stages import StageContext, make_stage, stage_output
-from k4opt.problem._tasks import (
-    DONE,
-    GEOMETRY,
-    Kind,
+from k4opt.problem._files import (
     Made,
-    PeakMemory,
     Stat,
-    Task,
-    TaskId,
-    TaskResult,
     Tree,
+    artifacts,
+    local,
+    local_artifact,
+    portable,
+    portable_artifact,
+    stat_of,
 )
+from k4opt.problem._stages import StageContext, make_stage, stage_output
+from k4opt.problem._tasks import DONE, GEOMETRY, Kind, PeakMemory, Task, TaskId, TaskResult
 from k4opt.problem.errors import RunError
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
 
@@ -194,33 +193,6 @@ class TaskOutcome:
     call_seconds: float | None = None
     own_refs: bool = False
     memory: PeakMemory | None = None
-
-
-def portable(path: Path, root: Path | None) -> Path:
-    """``path`` relative to the workspace ``root`` if it lies in it (lexically), else absolute."""
-    absolute = Path(os.path.abspath(path))
-    if root is None:
-        return absolute
-    try:
-        return absolute.relative_to(Path(os.path.abspath(root)))
-    except ValueError:
-        return absolute
-
-
-def local(path: Path, root: Path | None) -> Path:
-    """The file ``path`` names in the workspace whose directory is ``root`` here."""
-    if path.is_absolute():
-        return path
-    assert root is not None  # only a workspace's files are named relative to it
-    return root / path
-
-
-def portable_artifact(artifact: Artifact, root: Path | None) -> Artifact:
-    return replace(artifact, path=portable(artifact.path, root))
-
-
-def local_artifact(artifact: Artifact, root: Path | None) -> Artifact:
-    return replace(artifact, path=local(artifact.path, root))
 
 
 def candidate_externals(
@@ -633,7 +605,7 @@ def collection_error(
     if not declared or stage is None or stage not in request.inputs:
         return None
     path = request.inputs[stage]
-    key = (path, _stat_of(path))
+    key = (path, stat_of(path))
     if key not in listed:
         if len(listed) >= _LISTED:  # those of earlier candidates' files, named nowhere any more
             del listed[next(iter(listed))]
@@ -664,62 +636,6 @@ def collection_error(
 
 
 _LISTED = 64  # stage files whose collections are kept listed: those of a few candidates
-
-
-def _stat_of(path: Path) -> Stat | None:
-    try:
-        status = path.stat()
-    except OSError:
-        return None
-    return (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
-
-
-def artifacts(
-    task: TaskId,
-    declared: Mapping[str, str] | None,
-    result: EvaluationResult,
-    workdir: Path | None,
-) -> dict[str, Made]:
-    """The artifacts of the result of the evaluation ``task``, each hashed once, now.
-
-    Each must be a file in the evaluation's own directory ``workdir``, its links resolved. An
-    evaluator that ``declared`` artifacts returns no other, and a ``valid`` result of it every
-    one. Raises :class:`EvaluationContractError`.
-    """
-    where = f"evaluator {task.label!r}"
-    if declared is not None:
-        unknown = [name for name in result.artifacts if name not in declared]
-        if unknown:
-            raise EvaluationContractError(
-                f"{where} returned the artifact(s) {', '.join(unknown)}, which it does not "
-                f"declare; it declares {', '.join(declared) or 'none'}"
-            )
-        missing = [name for name in declared if name not in result.artifacts]
-        if missing and result.status is Status.VALID:
-            raise EvaluationContractError(
-                f"{where} returned a valid result without its declared artifact(s) "
-                f"{', '.join(missing)}"
-            )
-    made: dict[str, Made] = {}
-    for name, path in result.artifacts.items():
-        if workdir is None:
-            raise EvaluationContractError(
-                f"{where}: artifact {name!r}: the evaluation has no directory of its own to "
-                "write it in"
-            )
-        own, resolved = workdir.resolve(), path.resolve()
-        if resolved == own or not resolved.is_relative_to(own):
-            raise EvaluationContractError(
-                f"{where}: artifact {name!r} ({path}) is not in its own directory {workdir}; "
-                "write it in request.workdir"
-            )
-        try:
-            made[name] = Made.file(task, name, resolved, hashed=True)
-        except OSError as exc:
-            raise EvaluationContractError(
-                f"{where}: artifact {name!r} ({path}) is no file it can read: {exc}"
-            ) from None
-    return made
 
 
 def to_result(

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable, Mapping
 
 import pytest
+
+from k4opt.problem._schedule import Scheduler
+from k4opt.problem._tasks import Plan, Task, TaskId, TaskResult
 
 _BASE: dict[str, object] = {
     "schema_version": "k4opt.problem/v1alpha1",
@@ -57,3 +61,20 @@ _BASE: dict[str, object] = {
 def doc() -> dict[str, object]:
     """A fresh, valid problem document (plain dict) that a test may mutate."""
     return copy.deepcopy(_BASE)
+
+
+def run_in_order(
+    plan: Plan, run: Callable[[Task, Mapping[TaskId, TaskResult]], TaskResult]
+) -> dict[TaskId, TaskResult]:
+    """The result of each task of ``plan``, in plan order, from ``run`` called by the scheduler
+    with one slot, as a session with one job runs them: each task once, after what it reads,
+    given the results of those tasks only; a task whose needs did not all succeed is blocked and
+    not run."""
+    scheduler = Scheduler(1)
+    scheduler.add("candidate", plan)
+    while (item := scheduler.next()) is not None:
+        _, task = item
+        done = scheduler.results("candidate")
+        scheduler.finished("candidate", run(task, {need: done[need] for need in task.needs}))
+    results = scheduler.remove("candidate")
+    return {task.id: results[task.id] for task in plan.tasks}

@@ -3,14 +3,14 @@ which no monkeypatch reaches. Reads the simulation stage (none of its collection
 ``analysis/checked``: 1 if ``check()`` ran on this very instance before ``evaluate()``.
 
 What else it does is said by the environment variable ``WORKER_PROBE``, a JSON object keyed by
-the binding, and by ``<run>.<binding>`` for one run directory alone (a worker keeps the
-environment it started with): ``mark`` writes a file first, ``await`` waits until each file of
-a list exists, ``allocate`` holds that many MiB for a moment (``check_allocate`` in ``check()``,
-by binding alone, as ``check_sleep`` sleeps that many seconds there), ``print`` prints that text to
-stdout and stderr, ``raise`` raises a
-``ValueError`` with that text, ``contract`` an ``EvaluationContractError``, ``kill`` sends
-its own process SIGKILL, and ``stall`` writes the start of an answer to the coordinator and
-never the rest."""
+the binding, by ``<sample>/<binding>`` for one sample alone, and by ``<run>.<binding>`` for one
+run directory alone (a worker keeps the environment it started with): ``mark`` writes a file
+first, ``await`` waits until each file of a list exists, ``allocate`` holds that many MiB for a
+moment (``check_allocate`` in ``check()``, by binding alone, as ``check_sleep`` sleeps that many
+seconds there), ``print`` prints that text to stdout and stderr, ``raise`` raises a
+``ValueError`` with that text, ``contract`` an ``EvaluationContractError``, ``kill`` sends its
+own process SIGKILL, and ``stall`` writes the start of an answer to the coordinator and never
+the rest."""
 
 import json
 import os
@@ -45,9 +45,14 @@ class WorkerProbe(Evaluator):
 
     def evaluate(self, request):
         binding = request.settings["binding"]
-        run = request.workdir.parents[3].name  # <run>/samples/<sample>/evaluators/<binding>
+        # <run>/samples/<sample>/evaluators/<binding>
+        run, sample = request.workdir.parents[3].name, request.workdir.parents[1].name
         given = json.loads(os.environ.get("WORKER_PROBE", "{}"))
-        told = {**given.get(binding, {}), **given.get(f"{run}.{binding}", {})}
+        told = {
+            **given.get(binding, {}),
+            **given.get(f"{sample}/{binding}", {}),
+            **given.get(f"{run}.{binding}", {}),
+        }
         if "mark" in told:
             Path(told["mark"]).write_text(str(os.getpid()))
         deadline = time.monotonic() + 60

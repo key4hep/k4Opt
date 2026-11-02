@@ -106,11 +106,12 @@ _OPTUNA_TABLES = ("studies", "trials", "version_info", "alembic_version")
 def _read_only(url: str) -> dict[str, Any]:
     """The engine options that open the database ``url`` names so that it refuses every write.
 
-    SQLite is opened in its read-only mode, which also refuses a file that does not exist instead
-    of creating it; a database in WAL mode is refused, since a reader writes files beside it
-    there. PostgreSQL over libpq (``psycopg2``, ``psycopg``) with
-    ``default_transaction_read_only``, added to the URL's own ``options``. Any other database is
-    refused: nothing would keep it from being written.
+    SQLite, named by its path or by a URI filename (:func:`sqlite_file`), is opened in its
+    read-only mode, which also refuses a file that does not exist instead of creating it; a
+    database in WAL mode is refused, since a reader writes files beside it there. PostgreSQL
+    over libpq (``psycopg2``, ``psycopg``) with ``default_transaction_read_only``, added to the
+    URL's own ``options``. Any other database is refused: nothing would keep it from being
+    written.
     """
     try:
         from sqlalchemy.engine import make_url
@@ -125,10 +126,9 @@ def _read_only(url: str) -> dict[str, Any]:
         raise OptimizationError(f"--storage {redacted(url)} is not a database URL") from None
     backend, driver = parsed.get_backend_name(), parsed.get_driver_name()
     if backend == "sqlite":
-        database = parsed.database or ""
-        if database in ("", ":memory:") or database.startswith("file:"):
+        path = _database_file(parsed.database, parsed.query)
+        if path is None:
             raise OptimizationError(f"--storage {redacted(url)} names no database file to read")
-        path = Path(os.path.abspath(database))
         if not path.is_file():
             raise OptimizationError(
                 f"--storage {redacted(url)}: {path} does not exist, so it holds no study"
@@ -150,6 +150,66 @@ def _read_only(url: str) -> dict[str, Any]:
         f"(psycopg2, psycopg) database, which can be opened so that it refuses every write; "
         f"this is {backend}+{driver}"
     )
+
+
+def sqlite_file(url: str) -> Path | None:
+    """The file SQLite opens for the database ``url`` names, as an absolute path (a relative
+    one is relative to the working directory), also when it is named by a URI filename
+    (``sqlite:///file:/path/studies.db?uri=true``); ``None`` for any other database, one in
+    memory or a temporary one, and a URL that cannot be parsed (opening it says why)."""
+    try:
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.exc import ArgumentError
+    except ImportError:
+        return None
+    try:
+        parsed = make_url(url)
+    except (ArgumentError, ValueError):
+        return None
+    if parsed.get_backend_name() != "sqlite":
+        return None
+    return _database_file(parsed.database, parsed.query)
+
+
+# the query parameters SQLAlchemy's pysqlite driver takes itself; with uri=true, it appends
+# every other one to the name it hands to SQLite
+_DRIVER = (
+    "uri",
+    "timeout",
+    "isolation_level",
+    "detect_types",
+    "check_same_thread",
+    "cached_statements",
+)
+
+
+def _database_file(database: str | None, query: Mapping[str, object]) -> Path | None:
+    """The file SQLite opens for the ``database`` and ``query`` of a SQLite URL, as SQLAlchemy's
+    pysqlite driver hands them to it, absolute; ``None`` for one in memory or a temporary one.
+
+    Without ``uri`` true, the name is a name, whatever it holds (``file:``, ``:memory:`` alone
+    is in memory), and the query is ignored. With it, the other query parameters are appended
+    to the name, and a URI filename (``file:``) names the file of its path, percent-decoded, or
+    none for ``mode=memory``; another name is still a name."""
+    from sqlalchemy.util import asbool
+
+    try:
+        uri = asbool(query.get("uri", False))
+    except ValueError:  # opening it says why
+        return None
+    name = database or ""
+    if uri:
+        rest = {key: value for key, value in query.items() if key not in _DRIVER}
+        if rest:
+            name += "?" + "&".join(f"{key}={rest[key]}" for key in sorted(rest))
+        if name.startswith("file:"):
+            parts = urllib.parse.urlsplit(name)
+            if dict(urllib.parse.parse_qsl(parts.query)).get("mode") == "memory":
+                return None
+            name = urllib.parse.unquote(parts.path)
+    if name in ("", ":memory:"):
+        return None
+    return Path(os.path.abspath(name))
 
 
 def _write_ahead(path: Path) -> bool:

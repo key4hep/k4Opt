@@ -57,7 +57,7 @@ color off.
 | `--seed S` | the sampler's seed, in [0, 2**32); one is drawn and recorded without it. It is not the simulation's seed, which stays each sample's `simulation.seed` |
 | `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)) |
 | `--storage URL` | an Optuna database URL (SQLite on a local disk, PostgreSQL) in place of the journal file in `DIR`; it needs SQLAlchemy, and the same URL on every resume |
-| `--timeout SECONDS` | kill `ddsim` if a trial's simulation runs longer than that: the candidate is `failed`, the trial FAIL, and the study goes on. No limit without it. It is recorded in each trial's record and is not part of the study, so a resume may give another one |
+| `--timeout SECONDS` | kill `ddsim` if a trial's simulation runs longer than that: the candidate is `failed`, the trial FAIL, and the study goes on. No limit without it, and none for evaluators. It is recorded in each trial's record and is not part of the study, so a resume may give another one |
 | `--jobs N`, `-j N` | run up to N tasks at once, of one trial and of several, each in a worker process; a simulation on several threads holds as many; `auto`: as many as the processors this process may use ([Trials at once](#trials-at-once---jobs)). Default 1: one trial after another, each task in turn. Not part of the study: a resume may give another one |
 
 The exit status is 0 once every trial asked for has ended, even if candidates were `invalid` or
@@ -156,7 +156,8 @@ The Optuna study carries `k4opt.study` (the id of `study.json`), `k4opt.identity
 **The study goes on** after an `invalid` or `failed` candidate, also after many in a row: a
 failure can be a legitimate finding (ddsim refusing an overlapping geometry, say). So does a
 simulation killed at `--timeout`; without one, a candidate on which Geant4 stalls holds up an
-unattended study until it is stopped. Each trial
+unattended study until it is stopped, and so does an evaluator that never returns, which no
+`--timeout` limits. Each trial
 is printed as it ends, so a broken environment shows at once.
 
 **The trial is FAIL with `k4opt.error`, and the study stops,** when:
@@ -373,9 +374,11 @@ The default storage is `study.journal` in the study directory: Optuna's journal 
 JSON line per operation, appended and synced, with Optuna's own file lock. It needs no database
 and no SQLAlchemy, and it is replayed when it is read, which is fine for thousands of trials.
 `--storage URL` keeps the Optuna study in a database instead (SQLite on a local disk,
-PostgreSQL), while the trial directories stay in the study directory. The database is reached,
-and set up once, before the study directory is made, so a wrong URL creates nothing; a relative
-SQLite path is relative to the working directory. Its password and the
+PostgreSQL), while the trial directories stay in the study directory. A new study checks its
+directory first, so a directory in use leaves the database untouched; then the database is
+reached, and set up once, before the study directory is made, so a wrong URL creates nothing. A
+relative SQLite path is relative to the working directory, and the SQLite file of a new study
+must lie outside its directory, which holds only what k4opt makes. Its password and the
 values of its query parameters are never recorded or shown, also not in an error from the
 database, and every resume needs the same URL.
 
@@ -446,7 +449,10 @@ What the optimizer holds must agree: a COMPLETE trial has a valid record with th
 values, feasibility and constraint values, a FAIL trial an invalid or failed one. A record that
 is missing or does not hold up, a trial without any mark of k4opt, or a study that was never set
 up makes the read fail, with the trial and file named: nothing is skipped, repaired or
-recomputed with other code. A `trial-*` directory that no trial names is a warning. Warnings go
+recomputed with other code. A read checks the records, not the files they name: it never
+opens a trial's events, artifacts or geometry, so it says that each record is what the
+optimizer was told and holds up, not that those files still exist or still hold what the record
+says they held. A `trial-*` directory that no trial names is a warning. Warnings go
 to stderr.
 
 **The Pareto front** holds the feasible valid trials that no other one dominates: at least as

@@ -30,14 +30,15 @@ from k4opt.evaluation import (
 from k4opt.frozen import thaw
 from k4opt.problem import EvaluatorSpec, ProblemSpec, Sample, Stage, parse_problem
 from k4opt.problem import _stages as stages_module
-from k4opt.problem._evaluate import CandidateRecord, _evaluate_candidate, _request
+from k4opt.problem._binding import _request
+from k4opt.problem._candidate import CandidateRecord
+from k4opt.problem._evaluate import _evaluate_candidate
+from k4opt.problem._files import _sha256, file_identity
 from k4opt.problem._stages import (
     StageContext,
     StageOutcome,
-    _sha256,
     changed_by_geometry,
     check_stages,
-    file_identity,
     input_files,
     make_stage,
     plan_stages,
@@ -50,12 +51,12 @@ from k4opt.problem._tasks import (
     TaskId,
     TaskResult,
     plan_tasks,
-    run_tasks,
     stage_task,
 )
 from tests.support import simulation
 from tests.support.evaluators import implementations
 from tests.support.simulation import events_with
+from tests.unit.problem.conftest import run_in_order
 
 CELL = "constants.ECal_cell_size"
 
@@ -404,7 +405,7 @@ def test_a_failed_stage_blocks_only_the_tasks_that_read_it(
         EvaluatorSpec("on_right", "1", stage="after_right", samples=("s",)),
     ]
     plan = plan_tasks({"s": Sample("s")}, readers, references=())
-    results = run_tasks(plan, run)
+    results = run_in_order(plan, run)
     assert ran == ["left", "right", "after_right"]
     status = {task.label: (r.status, r.message) for task, r in results.items()}
     assert status == {

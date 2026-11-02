@@ -4,6 +4,7 @@ Optuna would set up or repair as it opens it. The SQLite cases need SQLAlchemy a
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -11,7 +12,8 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("optuna")
-pytest.importorskip("sqlalchemy")
+if not os.environ.get("CI"):  # CI installs it (requirements.txt): these tests run there
+    pytest.importorskip("sqlalchemy")
 
 from k4opt.optimization import OptimizationError, load_study, optimize
 from k4opt.optimization._optuna import storage
@@ -47,7 +49,8 @@ def test_a_database_that_cannot_be_opened_read_only_is_refused(url: str) -> None
 def database_study(tmp_path: Path, write_problem: Callable[..., Path]) -> tuple[Path, str]:
     """A study of 3 trials kept in the SQLite database ``tmp_path/studies.db``: its directory and
     the database's URL."""
-    pytest.importorskip("alembic")
+    if not os.environ.get("CI"):  # CI installs it: the tests that need it run there
+        pytest.importorskip("alembic")
     url = f"sqlite:///{tmp_path / 'studies.db'}"
     optimize(write_problem(), [trade_off()], tmp_path / "s", trials=3, seed=1, storage=url)
     return tmp_path / "s", url
