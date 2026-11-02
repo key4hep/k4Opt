@@ -213,12 +213,12 @@ def _altered_record(monkeypatch: pytest.MonkeyPatch) -> None:
 def _settlement_failure(monkeypatch: pytest.MonkeyPatch, how: str) -> None:
     import optuna
 
-    from k4opt.optimization._optuna import run
+    from k4opt.optimization._optuna import tell
 
     if how == "check_record":
-        _failing_once(monkeypatch, run, how, OptimizationError("trial 0: not the study's"))
+        _failing_once(monkeypatch, tell, how, OptimizationError("trial 0: not the study's"))
     elif how == "check_candidate_files":
-        _failing_once(monkeypatch, run, how, OptimizationError("trial 0: other files"))
+        _failing_once(monkeypatch, tell, how, OptimizationError("trial 0: other files"))
     elif how == "from_summary":
         _altered_record(monkeypatch)
     elif how == "tell":
