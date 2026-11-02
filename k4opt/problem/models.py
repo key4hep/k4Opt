@@ -3,7 +3,7 @@
 The models describe the draft ``k4opt.problem/v1alpha1`` format of ``docs/problem.md``.
 :class:`ProblemSpec` and its parts hold declarative data only: nothing here looks up an
 evaluator or metric or touches the Key4hep stack. A problem loaded from its file, with its
-geometry discovered and every parameter target resolved, is a :class:`ResolvedProblem`
+geometry discovered and every geometry destination resolved, is a :class:`ResolvedProblem`
 (:func:`k4opt.problem.config.resolve_problem`). Executor- and evaluator-owned content
 (each stage's options, each evaluator's ``settings``) is stored as an immutable copy, so
 neither the caller's YAML data nor the object handed out by :meth:`ProblemSpec.to_dict`
@@ -66,12 +66,12 @@ class Environment:
 
 
 @dataclass(frozen=True, slots=True)
-class GeometrySelector:
-    """Which geometry quantity a parameter varies.
+class GeometryDestination:
+    """The attribute of the geometry a parameter sets.
 
     Exactly one of ``constant`` (shorthand for the target ``constants.<name>``) and
     ``target`` (any canonical target reference of :mod:`k4opt.geometry`) is set. The
-    reference is not checked against a geometry here.
+    reference is not looked up in a geometry here.
     """
 
     constant: str | None = None
@@ -85,39 +85,94 @@ class GeometrySelector:
         assert self.target is not None
         return self.target
 
+    @property
+    def label(self) -> str:
+        """``geometry constants.ECal_cell_size``: the destination, for a person."""
+        return f"geometry {self.canonical_target}"
+
     def to_dict(self) -> dict[str, object]:
         if self.constant is not None:
-            return {"constant": self.constant}
-        return {"target": self.target}
+            return {"geometry": {"constant": self.constant}}
+        return {"geometry": {"target": self.target}}
+
+
+@dataclass(frozen=True, slots=True)
+class StageDestination:
+    """The option ``option`` of the stage ``stage`` of each of ``samples`` that a parameter sets:
+    a key of the particle gun (``energy``) or a ddsim option (``physics.rangecut``), run by an
+    executor that lets a parameter set it (:attr:`~k4opt.problem.stages.Executor.settable`)."""
+
+    stage: str
+    option: str
+    samples: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "samples", tuple(self.samples))
+
+    @property
+    def label(self) -> str:
+        """``simulation.physics.rangecut of gamma, pion``: the destination, for a person."""
+        return f"{self.stage}.{self.option} of {', '.join(self.samples)}"
+
+    def to_dict(self) -> dict[str, object]:
+        return {"stage": self.stage, "option": self.option, "samples": list(self.samples)}
+
+
+@dataclass(frozen=True, slots=True)
+class SettingDestination:
+    """The setting ``setting`` that a parameter sets in every entry of ``evaluators`` bound as
+    ``evaluator`` (:attr:`EvaluatorSpec.binding`); the implementation must declare it."""
+
+    evaluator: str
+    setting: str
+
+    @property
+    def label(self) -> str:
+        """``readout.cell_size``: the destination, for a person."""
+        return f"{self.evaluator}.{self.setting}"
+
+    def to_dict(self) -> dict[str, object]:
+        return {"evaluator": self.evaluator, "setting": self.setting}
+
+
+type Destination = GeometryDestination | StageDestination | SettingDestination
+"""Where a parameter's value goes: an attribute of the geometry, an option of a stage of some
+samples or a setting of an evaluator binding."""
 
 
 @dataclass(frozen=True, slots=True)
 class Parameter:
-    """A quantity that varies between candidates, with its search domain and where it is set.
+    """A quantity that varies between candidates: its search domain, and where its value goes.
 
     ``name`` identifies it in the problem: candidates, records and optimizers key its value by
-    it. ``geometry`` is the attribute of the geometry the value is written into.
-    ``continuous`` and ``integer`` parameters have inclusive ``bounds``; ``categorical``
-    ones have ``choices``. ``unit`` is the unit of the numbers in ``bounds``; it is never
-    converted (``k4opt evaluate`` writes a value into the geometry as ``<value>*<unit>``).
+    it. ``continuous`` and ``integer`` parameters have inclusive ``bounds``; ``categorical``
+    ones have ``choices``. ``unit`` is the unit of the numbers in ``bounds``. ``sets`` holds
+    every destination its value is written into, at least one, in the order the problem gives
+    them: an attribute of the geometry (``<value>*<unit>``), an option of a stage or a setting
+    of an evaluator (``{value, unit}`` with a unit). The domain says nothing about a
+    destination, and the destinations nothing about the domain.
     """
 
     name: str
-    geometry: GeometrySelector
     kind: ParameterKind
+    sets: tuple[Destination, ...]
     bounds: tuple[Number, Number] | None = None
     choices: tuple[str | bool | Number, ...] | None = None
     unit: str | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sets", tuple(self.sets))
+
     def to_dict(self) -> dict[str, object]:
         """Everything but the name, which keys it in the problem's ``parameters``."""
-        data: dict[str, object] = {"geometry": self.geometry.to_dict(), "type": self.kind}
+        data: dict[str, object] = {"type": self.kind}
         if self.bounds is not None:
             data["bounds"] = list(self.bounds)
         if self.choices is not None:
             data["choices"] = list(self.choices)
         if self.unit is not None:
             data["unit"] = self.unit
+        data["sets"] = [destination.to_dict() for destination in self.sets]
         return data
 
 
@@ -422,6 +477,22 @@ class ProblemSpec:
         refs = [o.ref for o in self.objectives] + [c.ref for c in self.constraints]
         return tuple(dict.fromkeys(refs))
 
+    @property
+    def destinations(self) -> tuple[tuple[Parameter, Destination], ...]:
+        """Every destination of every parameter, with its parameter, in problem order."""
+        return tuple((p, d) for p in self.parameters for d in p.sets)
+
+    @property
+    def geometry_destinations(self) -> tuple[tuple[Parameter, GeometryDestination], ...]:
+        """The destinations in the geometry, with their parameters, in problem order: one
+        attribute each, and one override each per candidate."""
+        return tuple((p, d) for p, d in self.destinations if isinstance(d, GeometryDestination))
+
+    def pending(self, sample: str) -> dict[str, frozenset[str]]:
+        """The options of each stage of ``sample`` that parameters set, by stage: the stage does
+        not give them, and every candidate does."""
+        return pending(self.parameters, sample)
+
     def to_dict(self) -> dict[str, object]:
         """Plain JSON-compatible data in schema order; a fresh copy on every call.
 
@@ -463,11 +534,22 @@ def ordered(definition: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def pending(parameters: tuple[Parameter, ...], sample: str) -> dict[str, frozenset[str]]:
+    """The options of each stage of ``sample`` that ``parameters`` set, by stage."""
+    found: dict[str, set[str]] = {}
+    for parameter in parameters:
+        for destination in parameter.sets:
+            if isinstance(destination, StageDestination) and sample in destination.samples:
+                found.setdefault(destination.stage, set()).add(destination.option)
+    return {stage: frozenset(options) for stage, options in found.items()}
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedProblem:
     """A problem as loaded from its file: its definition (``spec``), the file (``path``,
     absolute), the geometry it starts from, discovered once (``source``, ``catalog``), and the
-    attribute each parameter sets, in the order of ``spec.parameters`` (``targets``)."""
+    attribute each geometry destination sets, in the order of
+    :attr:`ProblemSpec.geometry_destinations` (``targets``)."""
 
     spec: ProblemSpec
     path: Path

@@ -80,11 +80,12 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml   # relative to $K4GEO
 
 parameters:
   ecal_cell_size:            # the name candidates and records use
-    geometry:
-      constant: ECal_cell_size
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
+    sets:                    # where its value goes: here, a constant of the geometry
+      geometry:
+        constant: ECal_cell_size
 ```
 
 say what each candidate is measured on, and who measures it:

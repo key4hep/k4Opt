@@ -82,14 +82,21 @@ What the optional parts do:
   `int`), or to a `Quantity(unit)` for a number with a unit. The problem writes a quantity as
   `value` and `unit`, in any unit of the same dimension (energy: `eV`, `keV`, `MeV`, `GeV`, `TeV`;
   length: `um`, `mm`, `cm`, `m`), and the evaluator receives a float in the declared unit,
-  converted exactly by a power of ten (`70` `keV` is the float `70e-6` in `GeV`). A bare number
-  is refused, so the unit is always written; `Quantity("GeV", default=70e-6)` is optional, its
+  converted exactly by a power of ten, then rounded once to the nearest float (`70` `keV` is the
+  float `70e-6` in `GeV`); a value whose float would be infinite, or zero or subnormal although
+  it is not zero, is refused rather than handed on changed. A bare number is refused, so the
+  unit is always written; `Quantity("GeV", default=70e-6)` is optional, its
   default in the declared unit. Unknown keys, missing required keys, wrong types, a blank
   required `str` and a quantity without a unit of its dimension are an
   `EvaluationContractError`, raised before anything is created or run (a `bool` is not an `int`,
   an `int` is a `float`). The request an evaluator gets carries the defaults and the converted
   quantities, so `request.settings` (and the record) show the settings that were used, next to
   those the problem wrote; a `dict` arrives as a read-only mapping and a `list` as a tuple.
+  A parameter of the problem can set a declared setting (`{evaluator: calo.photon, setting:
+  threshold}`), and only a declared one, of a kind its values fit: a `Quantity` takes numbers
+  with a unit of its dimension, a `float` numbers without a unit, an `int` integers, a `str` or
+  a `bool` its own; a `list` or a `dict`, none ([problem](problem.md#parameters)). That is how an
+  evaluator receives a candidate's values: under its own names, in its own units.
   Override `check(request)` for rules beyond that and call `super().check(request)`; plain
   evaluators can define `check` alone. Settings and collection resolution always run, even
   without `check`, and so does the check of the settings against what the evaluator declares
@@ -129,9 +136,9 @@ class CellCount:
     version = "1"
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
-        size = request.candidate["ecal_cell_size"]
+        size = request.settings["cell_size"]  # the problem sets it, from a parameter say
         if not isinstance(size, float):
-            return EvaluationResult.failed("ECal_cell_size must be a float")
+            return EvaluationResult.failed("cell_size must be a float")
         return EvaluationResult.valid(
             [Measurement("analysis", "ecal.cells", 1000.0 / size**2, unit="1", uncertainty=0.5)]
         )
@@ -215,8 +222,7 @@ model; the toy is a data-flow test.
 
 | Field | Meaning |
 | --- | --- |
-| `candidate` | parameter values for this evaluation, keyed by the names the problem gives its parameters (`ecal_cell_size`); booleans, integers, finite floats or strings. Not checked against bounds |
-| `settings` | the evaluator-defined `settings` of its entry in `evaluators`, with the declared defaults and each quantity as a float in its declared unit; nested data, copied and read-only |
+| `settings` | the evaluator-defined `settings` of its entry in `evaluators`, with what the candidate's parameters set in them (a parameter sets only a setting the evaluator declares, [problem](problem.md#parameters)), the declared defaults and each quantity as a float in its declared unit; nested data, copied and read-only |
 | `collections` | role to the name of the collection it reads: the one the problem's entry names, or the declared default |
 | `inputs` | role name to local `Path` of an already prepared artifact: the main output of each stage it reads, by stage (`inputs["simulation"]`, an EDM4hep file), and the compact XML snapshot as `inputs["geometry"]`. The evaluator documents the roles it accepts |
 | `workdir` | where the evaluator may write, and where its artifacts must be. `k4opt evaluate` gives each evaluation its own, `<output>/samples/<sample>/evaluators/<binding>` (`<output>/evaluators/<binding>` for one of the candidate), created for the call; the request never creates or checks it |
@@ -225,7 +231,9 @@ model; the toy is a data-flow test.
 | `events`, `seed` | those of the stage the evaluator reads, where that stage has them (a ddsim simulation); `None` otherwise. `events` is positive |
 
 The request holds no `ProblemSpec`, geometry or stage object; the framework builds it from
-those.
+those. Nor does it hold the candidate's parameter values: an evaluator reads what the problem
+binds to its declared settings, so what it measures depends on no parameter's name, every value
+it reads is checked against what it declares, and the record says which parameters reach it.
 
 ## Result
 
@@ -385,7 +393,7 @@ twice, once with each sample's files.
 | Stage | Reads | Executor | Given as `file:` | Provides |
 | --- | --- | --- | --- | --- |
 | `generation` | | `gun`: a particle gun, fired by `ddsim`, so no file of its own | an event file (HepMC, ...), checked and hashed | `inputs["generation"]` for a file; nothing for a gun |
-| `simulation` | `generation`, the candidate geometry | `ddsim`, with the stage's `events`, `seed` and ddsim options | not with geometry parameters: that file was not simulated with the candidate's geometry | `inputs["simulation"]`, an EDM4hep file |
+| `simulation` | `generation`, the candidate geometry | `ddsim`, with the stage's `events`, `seed` and ddsim options (those parameters set included) | not when a parameter reaches it: that file was not simulated from the candidate's values | `inputs["simulation"]`, an EDM4hep file |
 
 An evaluator names only the last stage it reads; the stages that stage reads are made available
 first, and it gets the files of all of them (an evaluator that reads a later reconstruction stage
@@ -423,11 +431,13 @@ needs, and it is authoritative: a supplied `generation`
 file is simulated even if the problem describes a particle gun. The record identifies it (the
 path, size and SHA-256 under `provided`; a file that could not be hashed carries only its path,
 so a verified input is distinguishable from one identified by its name) and lists it as
-`supplied`. A supplied stage that the parameters change (a simulation, when they vary the
-geometry) was not made from the candidate: if a required evaluation reads it, the candidate
-record says so, `represents_candidate = False`, and must never count as an evaluation of that
-candidate, whatever its status. One that only diagnostics read leaves the record
-representative. A file the problem gives (`file:`) or the caller supplies is hashed once
+`supplied`. A supplied stage that a parameter reaches (a simulation, when the parameters set
+the geometry, the gun or a ddsim option) was not made from the candidate: if a required
+evaluation reads it, the candidate record says so, `represents_candidate = False`, and must
+never count as an evaluation of that candidate, whatever its status. One that only diagnostics
+read leaves the record representative, and so does one no parameter reaches; that claims only
+that nothing the candidate changes was replaced, not that the file is the output of the stage
+the problem defines, which k4opt cannot verify (the record lists it under `supplied`). A file the problem gives (`file:`) or the caller supplies is hashed once
 per file version, not once per candidate: a file is told apart by size, mtime, ctime and inode,
 so one rewritten within a few milliseconds of being hashed is not, and files are assumed stable
 while a campaign runs.

@@ -211,9 +211,18 @@ def _geometry(
         "compact": portable(snapshot.compact_path, root).as_posix(),
         "manifest": portable(snapshot.manifest_path, root).as_posix(),
         "source_root": str(snapshot.source_root),
+        # each attribute the candidate sets, with the parameter that sets it
         "changes": tuple(
-            {"target": c.target, "old_value": c.old_value, "new_value": c.new_value}
-            for c in snapshot.changes
+            {
+                "parameter": parameter,
+                "target": c.target,
+                "file": c.file,
+                "locator": c.locator,
+                "attribute": c.attribute,
+                "old_value": c.old_value,
+                "new_value": c.new_value,
+            }
+            for parameter, c in zip(work.parameters, snapshot.changes, strict=True)
         ),
         "externals": context.externals,
         "candidate_externals": externals,
@@ -265,7 +274,7 @@ def _stage(
     if changed:
         return TaskOutcome(task, Status.FAILED, _changed_before(changed)), Observations()
     outcome, main = make_stage(
-        context.contexts[task.sample],
+        context.contexts[task.sample].configured(spec.stages),  # as its candidate configures them
         task.name,
         inputs=_inputs(spec, root),
         workdir=own,

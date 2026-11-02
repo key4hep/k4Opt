@@ -94,7 +94,7 @@ def test_a_study_does_not_resume_with_its_parameters_in_another_order(tmp_path: 
     # candidates, the sampler and evaluators (test.trade_off reads the first value) follow it
     document = problem_document()
     document["parameters"]["world"] = {
-        "geometry": {"constant": "world_side"},
+        "sets": {"geometry": {"constant": "world_side"}},
         "type": "continuous",
         "bounds": [1.0, 2.0],
     }
@@ -216,7 +216,7 @@ def test_a_file_only_candidates_name_reads_alike_in_every_trial_of_a_study(
     monkeypatch.setenv("CAD", str(model.parent))
     problem, output = write_problem(), tmp_path / "s"
     support = {
-        "geometry": {"target": "InnerTrackerSupportCAD.shape.ref"},  # cad/support.stl
+        "sets": {"geometry": {"target": "InnerTrackerSupportCAD.shape.ref"}},  # cad/support.stl
         "type": "categorical",
         "choices": ["${CAD}/b.stl"],
     }

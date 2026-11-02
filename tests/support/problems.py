@@ -17,10 +17,10 @@ _BASE: dict[str, object] = {
     "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
     "parameters": {
         "ecal_cell_size": {
-            "geometry": {"constant": "ECal_cell_size"},
             "type": "continuous",
             "bounds": [4.0, 8.0],
             "unit": "mm",
+            "sets": {"geometry": {"constant": "ECal_cell_size"}},
         }
     },
     "samples": {

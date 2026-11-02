@@ -84,7 +84,7 @@ def write_problem(
     doc["geometry"] = MINI_COMPACT
     doc["parameters"] = {
         RADIUS: {
-            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
             "type": "continuous",
             "bounds": [100.0, 600.0],
             "unit": "mm",
@@ -1054,7 +1054,7 @@ def test_concurrent_candidates_that_read_one_reference_alike_are_both_recorded_e
     data = yaml.safe_load(problem.read_text())
     choices = ["cad/support.stl", "${CAD}/b.stl"]
     data["parameters"]["support"] = {
-        "geometry": {"target": SUPPORT},
+        "sets": {"geometry": {"target": SUPPORT}},
         "type": "categorical",
         "choices": choices,
     }

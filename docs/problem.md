@@ -44,11 +44,13 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 parameters:
   # CLD uses 5.1 mm; 20 mm is about the width of a photon shower
   ecal_cell_size:
-    geometry:
-      constant: ECal_cell_size
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
+    # where the value goes: the constant of the geometry, written as <value>*mm
+    sets:
+      geometry:
+        constant: ECal_cell_size
 
 # the events each candidate is measured on: one sample of 10 GeV photons; the gun fires inside
 # ddsim, which simulates the photons
@@ -152,26 +154,14 @@ the job of `k4opt.geometry`, not of this component.
 
 `parameters` maps a name to a parameter, in the order the problem lists them. The name is
 what identifies the parameter everywhere else: a candidate maps each name to a value
-(`k4opt evaluate --param ecal_cell_size=6.0`, `request.candidate["ecal_cell_size"]`), and
-records, study reports, exports and the optimizer key the values by it. It starts with a
-lowercase letter and holds only lowercase letters, digits and `_`, at most 64 characters.
-Each parameter has a **source** (where its value is set) and a **kind** (how it varies).
+(`k4opt evaluate --param ecal_cell_size=6.0`), and records, study reports, exports and the
+optimizer key the values by it. It starts with a lowercase letter and holds only lowercase
+letters, digits and `_`, at most 64 characters. A parameter is two separate things: its
+**domain**, how it varies (`type`, `bounds` or `choices`, `unit`), and its **destinations**,
+where its value goes (`sets`). The domain says nothing about a destination, so the optimizer
+searches the domain alone and never sees where a value goes.
 
-Source. The only source defined so far is `geometry`: the attribute of the geometry the
-value is written into, named by its canonical target in `k4opt.geometry`:
-
-| Draft key | Canonical target |
-| --- | --- |
-| `geometry: {constant: ECal_cell_size}` | `constants.ECal_cell_size` |
-
-`constant: NAME` is shorthand for the general form `target: constants.NAME`. Any other
-canonical target reference from `inspect` (for example
-`InnerTrackerBarrel.layer[id=1].rphi_layout.nphi`) is written `geometry: {target: <reference>}`.
-The general form is proposed on the same terms as the rest of this draft. Parameter sources
-other than geometry (a generator or reconstruction setting) would set the same kind of named
-parameter elsewhere; no syntax is proposed for them yet.
-
-Kind. `type` is one of:
+Domain. `type` is one of:
 
 | `type` | Required keys | Meaning |
 | --- | --- | --- |
@@ -183,17 +173,99 @@ Kind. `type` is one of:
 boolean or a string is never a number). `choices` must be a non-empty list of unique strings,
 or of unique booleans, or of unique finite numbers, not a mixture. `bounds`, `choices` and
 `unit` are not interchangeable: `choices` goes with `categorical` only, and a categorical
-parameter has no `unit`. A problem names at least one parameter, and two parameters must not
-set the same target (`constant: X` and `target: constants.X` are the same target).
+parameter has no `unit`. `unit` names the unit of the numbers in `bounds`; k4Opt never infers a
+unit from a textual XML expression such as `5.1*mm`, and never evaluates DD4hep expressions.
+Bounds belong to the *search space*: they are distinct from measurement constraints.
 
-Units are explicit: `unit` names the unit of the numbers in `bounds`. k4Opt never infers
-a scientific unit from a textual XML expression such as `5.1*mm`, and it never evaluates
-DD4hep expressions. `k4opt evaluate` writes a candidate value followed by its declared unit
-into the XML attribute (`6.0` with `unit: mm` becomes `6.0*mm`, a value without `unit` the bare
-number); the units it can write are listed in [evaluators](execution.md#k4opt-evaluate).
-Unit-less parameters (counts, choices) omit `unit`.
+Destinations. `sets` is one destination or a list of them, at least one. One parameter may set
+several (the cell size of the geometry *and* the cell size a cost evaluator computes with), and
+each is one of:
 
-Bounds belong to the *search space*. They are distinct from measurement constraints.
+| Destination | Sets | Its value is written as |
+| --- | --- | --- |
+| `geometry: {constant: NAME}` or `geometry: {target: REF}` | the attribute of the geometry a canonical target of `k4opt.geometry` names (`constant: NAME` is `target: constants.NAME`; any reference `inspect` prints, such as `InnerTrackerBarrel.layer[id=1].rphi_layout.nphi`) | a DD4hep expression: `6.0*mm` with a `unit`, the bare number without, `true`/`false`, a string as it is |
+| `{stage: STAGE, option: OPTION, samples: [...]}` | an option of a stage of each of `samples` (left out when the problem has one sample) | as the executor reads the option (below) |
+| `{evaluator: BINDING, setting: KEY}` | the top-level setting `KEY` of every entry bound as `BINDING` (its `as`, or its `name`) | `{value: v, unit: u}` with a `unit`, as a problem writes a quantity; the value alone without one |
+
+The options a parameter can set, and how each is written:
+
+| Executor | Options | Written as |
+| --- | --- | --- |
+| `gun` | `particle` (a categorical of strings); `energy` (continuous or integer, with a unit of `MeV`, `GeV`, `TeV`) | the string; `{value: v, unit: u}` |
+| `ddsim` | any option that takes one value, named as in `ddsim --help` (`physics.rangecut`, `part.minimalKineticEnergy`) | as ddsim's command line reads it: `0.5*mm` for a number with a unit (DD4hep evaluates it, so `--physics.rangecut=0.5*mm` means what it says), the number, a string or a boolean |
+
+Not settable, each refused with its reason: `executor`, `file`, `events` and `seed` (k4opt's own
+keys of a stage), the gun's `direction` and `vertex`, the options k4opt sets or refuses, a ddsim
+option that names a file (`physics.pdgfile`, identified once per session, not per candidate),
+`numberOfThreads` (how many processors the simulation keeps busy, not what is simulated), a
+flag (ddsim cannot switch one off) and an option that takes a list. A stage given as a `file:`
+is not run, so no parameter can set an option of it.
+
+A setting destination sets only a setting the evaluator's implementation **declares** in its
+`settings`, of a kind the parameter's values fit; an evaluator that declares no settings takes
+none. That is checked when the session binds the implementations:
+
+| Declared | Takes a parameter whose values are |
+| --- | --- |
+| `Quantity(unit)` | numbers with a unit of the same dimension (they arrive converted to its unit) |
+| `float` | numbers without a unit |
+| `int` | integers without a unit |
+| `str`, `bool` | strings, booleans |
+| `list`, `dict` | never |
+
+An evaluator reads a candidate only through its settings: the request has no parameter values
+of its own, so what an evaluator measures depends on no parameter's name.
+
+```yaml
+parameters:
+  ecal_cell_size:              # one value, two destinations
+    type: continuous
+    bounds: [2.5, 20.0]
+    unit: mm
+    sets:
+      - geometry: {constant: ECal_cell_size}
+      - {evaluator: readout, setting: cell_size}   # ecal.channels declares cell_size: Quantity("mm")
+  cell_threshold:              # an electronics threshold: no simulation depends on it
+    type: continuous
+    bounds: [30, 150]
+    unit: keV
+    sets: {evaluator: calo.shower_shape, setting: threshold}
+  range_cut:                   # a simulation setting of both samples
+    type: continuous
+    bounds: [0.1, 1.0]
+    unit: mm
+    sets: {stage: simulation, option: physics.rangecut, samples: [gamma_20gev, pi0_20gev]}
+  photon_energy:               # a generator setting of one sample
+    type: continuous
+    bounds: [5, 50]
+    unit: GeV
+    sets: {stage: generation, option: energy, samples: [gamma_20gev]}
+```
+
+How a problem with destinations is read. A destination is set once: two parameters, or one
+twice, that set the same attribute, option or setting are refused (`constant: X` and
+`target: constants.X` are one attribute; two references a geometry resolves to one attribute are
+refused when it is loaded). A destination the problem also writes is refused too: the gun of a
+sample whose `energy` a parameter sets has no `energy` of its own, nor may the shared `stages`
+give it one, and a setting a parameter sets is not in the entry's `settings`. A value written
+there would read as used, yet no candidate would use it. So the problem holds what it declares
+and nothing else: no value of a parameter, no placeholder. Its stages are checked in two phases.
+Each stage is first read on its own; once the parameters are known, its executor checks it with
+the options parameters set *pending*: a required one (the gun's `energy`) may be missing, and
+every option the stage gives is checked in full. Then each such option is checked at each end of
+its parameter's domain (both bounds, or every choice), written in as a candidate would write it:
+`bounds: [0, 50]` on an `energy` is refused at `0`, since the gun takes a positive energy. Every
+settable option's check decides a value by an interval or a set, so the ends decide every value
+between them. Each candidate's stages, complete, are checked again before anything is created.
+
+Precision. A candidate's values are exact: its key holds the exact decimal of each number. A
+destination that reads its value as text (the geometry, a stage option) has it evaluated as a
+double, so its parameter's domain must hold only numbers a double holds exactly (integer bounds
+within 2⁵³, numeric choices and continuous bounds that are doubles), and a candidate value that
+is not one is refused: no record says a value the tool rounded. An evaluator `Quantity` setting
+receives a float, the exact value scaled and then rounded once (the record keeps both, as
+written and as received); one that would be infinite, or zero or subnormal although it is not
+zero, is refused. A `float` or `int` setting receives the value unchanged.
 
 For the example: the checked k4geo description has `ECal_cell_size = 5.1*mm`. The constant
 is used for the `CartesianGridXY` cell size of both `ECalBarrel_o2_v01_03.xml` and
@@ -214,7 +286,7 @@ keys may be in any order:
 | Stage | Reads | Run by `executor:` | Or given as `file:` |
 | --- | --- | --- | --- |
 | `generation` | nothing | `gun`: a particle gun, fired inside ddsim | an event file (HepMC, ...) that ddsim reads |
-| `simulation` | `generation`, the candidate geometry | `ddsim` | not while the parameters vary the geometry (see below) |
+| `simulation` | `generation`, the candidate geometry | `ddsim` | an EDM4hep file, unless a parameter reaches the stage (see below) |
 
 Each stage has exactly one of `executor` (k4opt runs it for each candidate) and `file` (its output
 exists; a relative path is read from the directory of the problem file, and the path, size and
@@ -242,12 +314,13 @@ checks:
 - every sample is measured by an evaluator, and every stage of a sample is used, by an evaluator
   that measures the sample or by a stage that runs (a generation next to a simulation given as a
   file, which needs none, is an error);
-- a file cannot stand in for a stage that the parameters change. Every parameter varies the
-  geometry, which the simulation reads, so a simulation file was not made with the candidate's
-  geometry and every candidate would measure the same events. Only `generation` may be a file
-  today. To try an evaluator on an existing simulation, use
-  `k4opt evaluate --input gamma/simulation=FILE`, which records that the run does not represent
-  the candidate ([evaluators](execution.md#k4opt-evaluate)).
+- a file cannot stand in for a stage that a parameter reaches: one that sets an option of the
+  stage, or of a stage it reads, or sets the geometry when the stage reads it (the simulation
+  does). Such a file was not made from a candidate's values, and every candidate would measure
+  the same events. A study whose parameters set only evaluator settings (a threshold) may read a
+  fixed simulation file: nothing it stands for depends on the candidate. To try an evaluator on
+  an existing simulation, use `k4opt evaluate --input gamma/simulation=FILE`, which records
+  whether the run represents the candidate ([evaluators](execution.md#k4opt-evaluate)).
 
 `events` and `seed` belong to a sample's stages, not to an evaluator, so all evaluators of a
 sample measure the same events. They are part of the evaluation context, since a different seed
@@ -601,8 +674,7 @@ adjudicate the user's scientific choices.
 
 Three identities are kept separate, even though the draft YAML shows them in one file:
 
-1. **Problem identity**: parameters (sources, kinds, bounds, units), objectives,
-   constraints.
+1. **Problem identity**: parameters (domains and destinations), objectives, constraints.
 2. **Evaluation context identity**: everything that can change what a measurement means
    for the same candidate: the pinned and resolved Key4hep stack, geometry, the
    evaluators' names, versions, `collections` and `settings`, and each sample's stages: their
@@ -620,12 +692,20 @@ are recorded in provenance:
 | `evaluators[*].version` | the definition and implementation of an evaluation procedure and its metrics |
 | geometry fingerprint | the exact materialized detector input |
 
+A candidate is identified by the problem's definition and its key (each parameter's name, kind
+and exact value); what it configures, the attribute of the geometry, the stage option and the
+setting each value goes to, follows from the two alone, so a record holds it and is checked
+against it ([record](record.md)). The geometry fingerprint identifies the geometry only: two
+candidates that differ only in a ddsim option or an evaluator setting share it, and differ in
+their key and in what they configure.
+
 A bare evaluator `version: "1"` is fine for this proposal, but it must eventually resolve to
 a precise implementation revision (for example a release of the package that ships the
 evaluator), and that revision is what the record stores.
 
-Provenance recorded per evaluation: `k4opt evaluate` writes the geometry snapshot fingerprint
-and what its external references read (see [Fingerprint](geometry.md#fingerprint)), each
+Provenance recorded per evaluation: `k4opt evaluate` writes the geometry snapshot fingerprint,
+each attribute the candidate changed (with its parameter, file, locator and values), what the
+geometry's external references read (see [Fingerprint](geometry.md#fingerprint)), each
 evaluator's identity, version, stage,
 settings and the import-time SHA-256 of the file defining its class, the executed `ddsim`
 command (which holds the options in
@@ -646,7 +726,7 @@ A candidate is checked against the parameter domains above before it is evaluate
 complete loading operation: it validates the YAML **and** resolves its geometry. It locates
 `geometry` in the active k4geo tree (`$K4GEO` for a relative path), discovers the
 geometry catalog once, including reachable XML includes, and resolves every
-`parameters.<name>.geometry` selector against it. It fails with a clear error if the geometry
+`geometry` destination of a parameter against it, each to an attribute of its own. It fails with a clear error if the geometry
 cannot be located or read, or if a target is missing, malformed or ambiguous. The result is
 the declarative problem alone; an evaluation session keeps the discovered geometry and the
 resolved targets, whose current XML values stay raw text (`5.1*mm`).
@@ -721,12 +801,14 @@ evaluate` takes one; an `EvaluationSession` takes many from Python); the evaluat
 evaluator is named on the command line) and metric metadata beyond units; reconstruction and
 analysis stages and running `k4run`; steering and configuration files (refused for ddsim until
 they can be captured); a problem fingerprint; a multi-objective strategy beyond the Pareto
-front; non-geometry parameter sources (stage options are named keys so that a parameter can
-target one later); samples entering at any stage,
-and chained combined evaluators; branches of the stages; a parameter that drives
-several geometry targets at once; a named baseline
+front; samples entering at any stage, and chained combined evaluators; branches of the stages;
+parameters that set a reconstruction option (a `reconstruction` stage would add its options as
+the gun and ddsim do, with nothing new to `sets`), a nested setting, a file option, `events`,
+`seed` or `numberOfThreads`; derived parameters and transforms (a log scale); a named baseline
 candidate (an evaluation of the unmodified geometry is the natural baseline for validating
-bounds and constraint limits).
+bounds and constraint limits: it would be a candidate like any other, configured as every
+candidate is, which is why a destination holds no value of its own); a problem without a
+geometry.
 
 ## Unresolved choices
 

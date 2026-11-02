@@ -25,6 +25,7 @@ from k4opt.execution._files import readable_identity
 from k4opt.execution._work import content
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
+from k4opt.problem.candidate import Configuration
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.record.results import TaskResult
 from k4opt.revision import code_identity, code_unchanged
@@ -114,10 +115,44 @@ class Baseline:
                 "source_root": str(source.root),
                 "fingerprint": source.fingerprint([], catalog=catalog),
                 "externals": thaw(self.externals),
+                "targets": self.targets(),
             },
             "environment": process["environment"],
             "k4opt": {"version": __version__, **process["k4opt"]},
         }
+
+    def targets(self) -> list[dict[str, object]]:
+        """The attribute each geometry destination of the problem sets, as the session resolved
+        it, with its parameter and its unmodified value, in the problem's order: what a
+        candidate's geometry changes, wherever the geometry is."""
+        destinations = self.spec.geometry_destinations
+        return [
+            {
+                "parameter": parameter.name,
+                "target": target.target,
+                "file": target.file,
+                "locator": target.locator,
+                "attribute": target.attribute,
+                "value": target.value,
+            }
+            for (parameter, _), target in zip(destinations, self.problem.targets, strict=True)
+        ]
+
+    def check_changes(self, geometry: TaskResult, configuration: Configuration) -> None:
+        """Raise :class:`RunError` unless the geometry task's ``changes`` are those of the
+        attributes the session resolved, each by its parameter, from its unmodified value to the
+        text ``configuration`` gives it, in the problem's order."""
+        expected = [
+            {**{k: v for k, v in target.items() if k != "value"}, "old_value": target["value"]}
+            | {"new_value": text}
+            for target, text in zip(self.targets(), configuration.geometry, strict=True)
+        ]
+        recorded = thaw(geometry.provenance.get("changes"))
+        if recorded != expected:
+            raise RunError(
+                f"geometry: it changed {recorded!r}, but the session resolved the candidate's "
+                f"changes as {expected!r}"
+            )
 
     def verify_inputs(self) -> None:
         """Raise :class:`RunError` if a file the stages read is not the file it was when the

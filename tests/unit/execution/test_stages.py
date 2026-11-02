@@ -42,7 +42,7 @@ from k4opt.frozen import thaw
 from k4opt.problem import EvaluatorSpec, ProblemSpec, Sample, Stage, parse_problem
 from k4opt.problem import stages as catalog
 from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, plan_tasks, stage_task
-from k4opt.problem.stages import changed_by_geometry, plan_stages
+from k4opt.problem.stages import plan_stages
 from k4opt.record.results import CandidateRecord, TaskResult
 from tests.support import simulation
 from tests.support.evaluate import evaluate_candidate
@@ -611,11 +611,6 @@ def test_the_files_a_problem_names_are_those_its_stages_read(
     assert input_files(ctx, "simulation", provided={"generation"}) == {
         "samples.gamma.simulation.physics.pdgfile": tmp_path / "particles.tbl"
     }
-
-
-def test_only_the_stages_made_from_the_geometry_depend_on_it() -> None:
-    assert not changed_by_geometry("generation")
-    assert changed_by_geometry("simulation")
 
 
 # --- the bridge runs the required stage once and hands the file to the evaluator ---
@@ -1188,10 +1183,10 @@ def test_check_and_evaluate_receive_the_same_request_fields(
     checking = Checking()
     evaluate_one(spec, {CELL: 6}, checking, inputs={"geometry": geometry}, workdir=tmp_path / "run")
     # what the preflight builds (no inputs yet) against what evaluate() was given
-    preflight = _request(context(spec), {CELL: 6}, spec.evaluators[0])
+    preflight = _request(context(spec), spec.evaluators[0])
     (evaluated,) = checking.calls
     assert (preflight.events, preflight.seed) == (1000, 42)
-    for field in ("settings", "events", "seed", "candidate"):
+    for field in ("settings", "events", "seed"):
         assert getattr(preflight, field) == getattr(evaluated, field)
 
 

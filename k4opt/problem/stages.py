@@ -9,12 +9,12 @@ measures, and the stages it depends on, available.
   its own (``ddsim`` fires it); a generation given as a file is an event file such as HepMC.
 * ``simulation``: ``ddsim`` on the prepared geometry; reads ``generation``.
 
-This module says what each stage type is: the stages it reads, its executors and the options
-each takes, whether it reads the candidate's geometry or writes files, the name of its main
-output and of its logs. :mod:`k4opt.problem.config` checks a problem against it, the plan of a
-candidate's tasks (:mod:`k4opt.problem.plan`) follows it, and a record is read back against
-it. How a stage runs is the execution's (:mod:`k4opt.execution._stages`): a new stage type is one
-entry here and one runner there.
+This module says what each stage type is: the stages it reads, its executors, the options each takes
+and which of them a parameter can set, whether it reads the candidate's geometry or writes files,
+the name of its main output and of its logs. :mod:`k4opt.problem.config` checks a problem against
+it, the plan of a candidate's tasks (:mod:`k4opt.problem.plan`) follows it, and a record is read
+back against it. How a stage runs is the execution's (:mod:`k4opt.execution._stages`): a new stage
+type is one entry here and one runner there.
 
 Pipeline stages are steps that run. The ``stage`` of a measurement, objective or constraint
 only classifies a metric: an evaluator may report ``analysis`` metrics without an ``analysis``
@@ -26,7 +26,14 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 
-from k4opt.ddsim import LOG_FILES, check_options, check_particle_gun
+from k4opt.ddsim import (
+    LOG_FILES,
+    Settable,
+    check_options,
+    check_particle_gun,
+    settable_gun,
+    settable_option,
+)
 from k4opt.evaluation import EvaluationContractError
 from k4opt.frozen import Json
 
@@ -34,11 +41,14 @@ from k4opt.frozen import Json
 @dataclass(frozen=True, slots=True)
 class Executor:
     """What runs a stage: whether it takes ``events`` (required) and ``seed``, what checks its
-    own options (raising :class:`~k4opt.ddsim.DdsimError`) and the stage whose process runs it,
-    if another one does (``inside``: the gun, fired by ddsim, which sets its events and seed)."""
+    own options (raising :class:`~k4opt.ddsim.DdsimError`) given those that parameters set,
+    which it then does not have (the pending ones), how a parameter sets one of its options
+    (``settable``, raising for one it cannot set) and the stage whose process runs it, if another
+    one does (``inside``: the gun, fired by ddsim, which sets its events and seed)."""
 
     events: bool
-    options: Callable[[Mapping[str, Json]], None]
+    options: Callable[[Mapping[str, Json], Collection[str]], None]
+    settable: Callable[[str], Settable]
     inside: str | None = None
 
 
@@ -60,13 +70,20 @@ class StageType:
 _STAGES: Mapping[str, StageType] = {
     "generation": StageType(
         (),
-        {"gun": Executor(events=False, options=check_particle_gun, inside="simulation")},
+        {
+            "gun": Executor(
+                events=False,
+                options=check_particle_gun,
+                settable=settable_gun,
+                inside="simulation",
+            )
+        },
         geometry=False,
         writes=False,
     ),
     "simulation": StageType(
         ("generation",),
-        {"ddsim": Executor(events=True, options=check_options)},
+        {"ddsim": Executor(events=True, options=check_options, settable=settable_option)},
         geometry=True,
         writes=True,
         logs=LOG_FILES,
@@ -105,12 +122,6 @@ def stage_output(stage: str) -> str:
 def executors(stage: str) -> Mapping[str, Executor]:
     """The executors that can run ``stage``, by name."""
     return _STAGES[stage].executors
-
-
-def changed_by_geometry(stage: str) -> bool:
-    """Whether ``stage`` depends on the candidate geometry: it reads it, or reads a stage that
-    does. A file given for such a stage was not made from the candidate."""
-    return _STAGES[stage].geometry or any(changed_by_geometry(need) for need in stage_reads(stage))
 
 
 def graph(targets: Collection[str], given: Collection[str]) -> list[tuple[str, tuple[str, ...]]]:

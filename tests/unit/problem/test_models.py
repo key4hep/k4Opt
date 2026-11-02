@@ -13,6 +13,7 @@ import pytest
 from k4opt import frozen as frozen_module
 from k4opt.problem import (
     EvaluatorSpec,
+    GeometryDestination,
     MetricRef,
     ProblemConfigError,
     ProblemSpec,
@@ -27,6 +28,8 @@ def test_to_dict_is_plain_json_data(doc: dict[str, Any]) -> None:
     data = parse_problem(doc).to_dict()
     # left out where the problem has one sample and one evaluator, always in the normalized form
     doc["evaluators"][0]["samples"] = ["gamma"]
+    for parameter in doc["parameters"].values():
+        parameter["sets"] = [parameter["sets"]]  # one destination, or a list: always a list
     for index, item in enumerate(doc["objectives"]):
         doc["objectives"][index] = {"sample": "gamma", "evaluator": "calo.single_particle_shower"}
         doc["objectives"][index] |= item
@@ -171,13 +174,15 @@ def test_a_stage_without_seed_omits_it(doc: dict[str, Any]) -> None:
 
 def test_canonical_target(doc: dict[str, Any]) -> None:
     doc["parameters"]["field"] = {
-        "geometry": {"target": "GlobalSolenoid.inner_field"},
+        "sets": {"geometry": {"target": "GlobalSolenoid.inner_field"}},
         "type": "integer",
         "bounds": [1, 2],
     }
     first, second = parse_problem(doc).parameters
-    assert first.geometry.canonical_target == "constants.ECal_cell_size"
-    assert second.geometry.canonical_target == "GlobalSolenoid.inner_field"
+    assert isinstance(first.sets[0], GeometryDestination)
+    assert isinstance(second.sets[0], GeometryDestination)
+    assert first.sets[0].canonical_target == "constants.ECal_cell_size"
+    assert second.sets[0].canonical_target == "GlobalSolenoid.inner_field"
 
 
 @pytest.mark.parametrize(

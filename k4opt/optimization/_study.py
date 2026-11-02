@@ -8,9 +8,10 @@ lays out its output.
 Whether a study may be resumed, and whether the record of a trial belongs to its study, are decided
 by one comparison (:func:`compared`) of what must be equal: the problem's definition (but not its
 name), the content of every file it names, each evaluator implementation's name, version, source
-hash, declared metrics and declared artifacts, the unmodified geometry's fingerprint and the
-content of the files its external references read, ``KEY4HEP_STACK`` and the hash of k4opt's
-code. Locations are recorded and
+hash, declared metrics and declared artifacts, the unmodified geometry's fingerprint, the
+attribute each geometry destination of the parameters resolves to and the content of the files
+its external references read, ``KEY4HEP_STACK`` and the hash of k4opt's code. Locations are
+recorded and
 never compared, so a study whose files moved resumes. A file that only candidates name (a ``ref``
 parameter) is not known before they do: each record must read it as every earlier record of the
 study did (:func:`check_candidate_files`).
@@ -212,6 +213,8 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
             },
             "geometry": {
                 "fingerprint": identity["geometry"]["fingerprint"],
+                # paths relative to the geometry's root: content, not where it is
+                "targets": identity["geometry"]["targets"],
                 "externals": _contents(identity["geometry"]["externals"]),
             },
             "stack": identity["environment"]["KEY4HEP_STACK"],
@@ -307,6 +310,8 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
                 )
     if then["geometry"]["fingerprint"] != now_["geometry"]["fingerprint"]:
         found.append("the geometry the candidates start from changed (another fingerprint)")
+    if then["geometry"]["targets"] != now_["geometry"]["targets"]:
+        found.append("the parameters set other attributes of the geometry")
     old, new = then["geometry"]["externals"], now_["geometry"]["externals"]
     for ref in dict.fromkeys([*old, *new]):
         if old.get(ref) != new.get(ref):
@@ -384,6 +389,10 @@ def _recorded_input(summary: Mapping[str, Any], label: str) -> Mapping[str, Any]
     return entry
 
 
+# what says which attribute of the geometry a change is of, and by which parameter
+_RESOLVED = ("parameter", "target", "file", "locator", "attribute")
+
+
 def check_record(
     study: Mapping[str, Any], summary: object, number: int, params: Mapping[str, Any]
 ) -> list[str]:
@@ -433,6 +442,21 @@ def check_record(
         raise OptimizationError(f"{where} ran in another KEY4HEP_STACK than the study")
     if _get(observed, "k4opt_source", "sha256") != study["k4opt"]["sha256"]:
         raise OptimizationError(f"{where} was made by other k4opt code than the study")
+    changes = _get(summary, "geometry", "changes")
+    resolved = [
+        {key: change.get(key) for key in (*_RESOLVED, "old_value")}
+        if isinstance(change, Mapping)
+        else None
+        for change in (changes if isinstance(changes, list) else [None])
+    ]
+    targets = [
+        {**{key: target[key] for key in _RESOLVED}, "old_value": target["value"]}
+        for target in study["geometry"]["targets"]
+    ]
+    if resolved != targets:
+        raise OptimizationError(
+            f"{where} changed other attributes of the geometry than the study's parameters set"
+        )
     externals = _get(summary, "geometry", "externals")
     if externals is None or _contents(externals) != _contents(study["geometry"]["externals"]):
         raise OptimizationError(

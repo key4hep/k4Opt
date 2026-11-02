@@ -151,11 +151,11 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
             print(f"supplied:    {task.id.label} from {given}", file=out)
     if not candidate.represents_candidate:
         print(
-            "note:        a supplied stage was not made with this candidate's geometry; "
-            "this is no evaluation of the candidate",
+            "note:        a supplied stage that the candidate's values reach was not made "
+            "from them; this is no evaluation of the candidate",
             file=out,
         )
-    print(f"fingerprint: {outcome.fingerprint}", file=out)
+    print(f"geometry:    {outcome.geometry_fingerprint}", file=out)
     measured = [(m.per_task, label, m) for label, m in peak_memory(outcome.summary).items()]
     if needed := [entry for entry in measured if entry[0] is not None]:
         most, label, memory = max(needed, key=lambda entry: entry[0] or 0)

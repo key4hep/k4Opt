@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from k4opt.cli import main
+from k4opt.evaluation import Quantity
 from k4opt.execution import RunOutcome
 from k4opt.execution._session import run_candidate as _run_candidate
 from k4opt.geometry import GeometrySource
@@ -54,7 +55,7 @@ def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["geometry"] = MINI_COMPACT
     doc["parameters"] = {
         RADIUS: {
-            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
             "type": "continuous",
             "bounds": [100.0, 600.0],
             "unit": "mm",
@@ -116,6 +117,9 @@ def evaluate(*argv: str) -> tuple[int, str, str]:
 class Spy:
     """The test evaluator, recording the requests of check() and evaluate()."""
 
+    # the candidate's radius, where the problem sets it (spied())
+    settings: dict[str, Any] = {RADIUS: Quantity("mm", default=0.0)}
+
     def __init__(self) -> None:
         self.inner: Any = cell_count()()
         self.name, self.version = self.inner.name, self.inner.version
@@ -131,6 +135,16 @@ class Spy:
     def evaluate(self, request: Any) -> Any:
         self.evaluated.append(request)
         return self.inner.evaluate(request)
+
+
+def spied(problem_file: Path) -> Path:
+    """``problem_file`` whose radius also sets the setting of that name of ``test.cell_count``,
+    which a :class:`Spy` declares."""
+    doc = yaml.safe_load(problem_file.read_text())
+    echo(doc, "test.cell_count")
+    doc["parameters"][RADIUS]["sets"][-1]["setting"] = RADIUS
+    problem_file.write_text(yaml.safe_dump(doc))
+    return problem_file
 
 
 CELLS = ("simulation", "ecal_barrel.mean_hit_cells")
@@ -158,7 +172,17 @@ def declare(problem_file: Path, names: list[str], objectives: list[tuple[str, st
         {"evaluator": OWNERS[(s, m)], "stage": s, "metric": m, "direction": "minimize"}
         for s, m in objectives
     ]
+    if "test.parameter_echo" in names:
+        echo(doc)
     problem_file.write_text(yaml.safe_dump(doc))
+
+
+def echo(doc: dict[str, Any], binding: str = "test.parameter_echo") -> dict[str, Any]:
+    """``doc`` whose parameter also sets the setting ``x`` of ``binding``, which echoes it."""
+    parameter = doc["parameters"][RADIUS]
+    sets = parameter["sets"] if isinstance(parameter["sets"], list) else [parameter["sets"]]
+    parameter["sets"] = [*sets, {"evaluator": binding, "setting": "x"}]
+    return doc
 
 
 def change(data: dict[str, Any], path: str, value: Any) -> None:

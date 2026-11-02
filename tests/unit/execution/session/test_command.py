@@ -50,7 +50,7 @@ def test_command_prints_the_result_and_exits_zero(
     assert "simulation/ecal_barrel.mean_hit_cells = 3 +- 0.57735 [1]" in out
     assert "feasible:    yes" in out and "limit:" not in out  # the problem has no constraints
     assert "events:      gamma: 3 of 3" in out
-    assert "fingerprint: " in out
+    assert "geometry:    " in out
     assert f"summary:     {tmp_path / 'a' / SUMMARY_NAME}" in out
     assert "ddsim.stderr.log" in out
     assert err.startswith(f"k4opt: warning: {UNEXPECTED}")  # printed before anything ran
@@ -163,6 +163,13 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
         "simulation": {
             "status": "done",
             "message": None,
+            # what it stands for, as the problem defines it for the candidate
+            "definition": {
+                "executor": "ddsim",
+                "events": 3,
+                "seed": 5,
+                "physics.list": "FTFP_BERT",
+            },
             "provided": str(events_file),
             "bytes": 4,
             "sha256": hashlib.sha256(b"fake").hexdigest(),
@@ -173,6 +180,7 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
             "logs": {},
             "reads": [],  # it is given, so it reads nothing
             "blocked_by": [],
+            "varies": [RADIUS],  # what the stage it stands for depends on
             "elapsed_seconds": summary["samples"]["gamma"]["stages"]["simulation"][
                 "elapsed_seconds"
             ],
@@ -299,7 +307,7 @@ def test_the_preflight_request_has_the_conditions_the_evaluation_gets(
     assert len(spy.checked) == 1
     for checked in spy.checked:
         assert (checked.events, checked.seed) == (3, 5)  # those of the simulation it reads
-        for field in ("settings", "events", "seed", "candidate"):
+        for field in ("settings", "events", "seed"):
             assert getattr(checked, field) == getattr(evaluated, field)
 
 

@@ -4,7 +4,9 @@ A candidate maps the name of each parameter to a value. :func:`validate_candidat
 against the parameters' domains and keys it (:data:`~k4opt.evaluation.CandidateKey`),
 problem-aware, so that ``True``, ``1`` and ``1.0`` are told apart where the parameter does;
 :func:`parse_candidate` reads it from ``NAME=VALUE`` strings (``k4opt evaluate --param``)
-exactly, and :func:`geometry_overrides` writes it into the geometry.
+exactly. :func:`configure` writes each value wherever its parameter sends it, into a
+:class:`Configuration`: the geometry's attributes (as overrides, :func:`geometry_overrides`),
+the options of stages and the settings of evaluators.
 """
 
 from __future__ import annotations
@@ -12,15 +14,27 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
+from k4opt.ddsim import Settable
 from k4opt.evaluation import (
     CandidateKey,
     Scalar,
 )
+from k4opt.frozen import FrozenMap, Json
 from k4opt.geometry import Override
 from k4opt.problem.errors import CandidateError
-from k4opt.problem.models import Parameter, ProblemSpec, ResolvedProblem
+from k4opt.problem.models import (
+    EvaluatorSpec,
+    GeometryDestination,
+    Parameter,
+    ProblemSpec,
+    ResolvedProblem,
+    Sample,
+    StageDestination,
+)
+from k4opt.problem.stages import executors
 
 
 def _is_number(value: object) -> bool:
@@ -180,33 +194,134 @@ def parse_candidate(spec: ProblemSpec, assignments: Sequence[str]) -> dict[str, 
     return candidate
 
 
-# Units that are written into a DD4hep expression (``6.0*mm``); anything else is refused
-# rather than passed on unchecked.
-_UNITS = ("um", "mm", "cm", "m", "mrad", "rad", "deg", "MeV", "GeV", "TeV")
+EXPRESSION_UNITS = ("um", "mm", "cm", "m", "mrad", "rad", "deg", "MeV", "GeV", "TeV")
+"""The units a value is written with into a DD4hep expression (``6.0*mm``), in the geometry and
+in a ddsim option; a parameter with another unit is refused when the problem is read."""
 
 
-def _xml_value(parameter: Parameter, value: Scalar) -> str:
-    """The literal written into the geometry XML for a validated ``value``."""
-    name = parameter.name
+def expression(value: Scalar, unit: str | None) -> str:
+    """``value`` as a DD4hep expression: ``6.0*mm`` with a unit, the number alone without one,
+    ``true`` or ``false`` for a boolean, a string as it is."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
         return value
-    if parameter.unit is None:
-        return repr(value)
-    if parameter.unit not in _UNITS:
+    return repr(value) if unit is None else f"{value!r}*{unit}"
+
+
+def edges(parameter: Parameter) -> tuple[Scalar, ...]:
+    """The ends of the domain of ``parameter``: its two bounds, or each of its choices."""
+    if parameter.bounds is not None:
+        return parameter.bounds
+    assert parameter.choices is not None
+    return parameter.choices
+
+
+def stage_value(settable: Settable, parameter: Parameter, value: Scalar) -> Json:
+    """``value`` of ``parameter`` as the option of a stage it sets holds it: ``{value, unit}``
+    for a quantity, a DD4hep expression for a number with a unit that ddsim reads as text, the
+    value itself otherwise."""
+    if settable.form == "quantity":
+        return {"value": value, "unit": parameter.unit}
+    if settable.form == "expression" and parameter.unit is not None:
+        return expression(value, parameter.unit)
+    return value
+
+
+def setting_value(parameter: Parameter, value: Scalar) -> Json:
+    """``value`` of ``parameter`` as a setting it sets holds it: ``{value, unit}`` with a unit,
+    as a problem writes a quantity, the value itself without one."""
+    return value if parameter.unit is None else {"value": value, "unit": parameter.unit}
+
+
+def _exact(parameter: Parameter, value: Scalar, where: str) -> None:
+    """Refuse a number that a destination which reads it as a double would round."""
+    if not _is_number(value):
+        return
+    try:
+        exact = float(value) == value
+    except OverflowError:
+        exact = False
+    if not exact:
         raise CandidateError(
-            f"{name}: unit {parameter.unit!r} cannot be written into the geometry; "
-            f"supported: {', '.join(_UNITS)}"
+            f"{parameter.name}: {value!r} is written into {where} as text that is read as a "
+            "double, which cannot hold it exactly"
         )
-    return f"{value!r}*{parameter.unit}"
 
 
-def geometry_overrides(problem: ResolvedProblem, values: Mapping[str, Scalar]) -> list[Override]:
-    overrides = []
-    for parameter, target in zip(problem.spec.parameters, problem.targets, strict=True):
+@dataclass(frozen=True, slots=True)
+class Configuration:
+    """What one candidate sets wherever its parameters go: the text of each attribute of the
+    geometry they set (``geometry``, in the order of
+    :attr:`~k4opt.problem.ProblemSpec.geometry_destinations`), every sample with each of its
+    stages complete (``samples``) and every evaluator entry with its settings complete
+    (``evaluators``, in problem order). Made from the problem and the candidate alone
+    (:func:`configure`), so a record is checked against it without anything that ran."""
+
+    geometry: tuple[str, ...]
+    samples: Mapping[str, Sample]
+    evaluators: tuple[EvaluatorSpec, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "geometry", tuple(self.geometry))
+        object.__setattr__(self, "samples", FrozenMap(self.samples))
+        object.__setattr__(self, "evaluators", tuple(self.evaluators))
+
+
+def configure(spec: ProblemSpec, values: Mapping[str, Scalar]) -> Configuration:
+    """The configuration of the candidate ``values`` (valid: :func:`validate_candidate`): each
+    value written into every destination of its parameter, in the form the destination reads.
+
+    Nothing of ``spec`` changes; the stages and entries the candidate completes are new.
+    Raises :class:`CandidateError` for a number no double holds exactly where a destination
+    reads it as text that is evaluated as a double (the geometry, a stage option), so that no
+    record says a value the tool never used.
+    """
+    geometry: list[str] = []
+    options: dict[tuple[str, str], dict[str, Json]] = {}
+    settings: dict[str, dict[str, Json]] = {}
+    for parameter, destination in spec.destinations:
         value = values[parameter.name]
-        overrides.append(
-            Override(target=target.target, value=_xml_value(parameter, value), file=target.file)
+        if isinstance(destination, GeometryDestination):
+            _exact(parameter, value, destination.label)
+            geometry.append(expression(value, parameter.unit))
+        elif isinstance(destination, StageDestination):
+            for sample in destination.samples:
+                stage = spec.samples[sample].stages[destination.stage]
+                assert stage.executor is not None  # parse_problem: a stage that runs
+                settable = executors(destination.stage)[stage.executor].settable(destination.option)
+                if settable.form != "text":
+                    _exact(parameter, value, f"samples.{sample}.{destination.label}")
+                written = stage_value(settable, parameter, value)
+                options.setdefault((sample, destination.stage), {})[destination.option] = written
+        else:
+            written = setting_value(parameter, value)
+            settings.setdefault(destination.evaluator, {})[destination.setting] = written
+    samples = {
+        name: replace(
+            sample,
+            stages={
+                stage_name: replace(stage, options={**stage.options, **set_by})
+                if (set_by := options.get((name, stage_name)))
+                else stage
+                for stage_name, stage in sample.stages.items()
+            },
         )
-    return overrides
+        for name, sample in spec.samples.items()
+    }
+    evaluators = tuple(
+        replace(entry, settings={**entry.settings, **settings[entry.binding]})
+        if entry.binding in settings
+        else entry
+        for entry in spec.evaluators
+    )
+    return Configuration(tuple(geometry), samples, evaluators)
+
+
+def geometry_overrides(problem: ResolvedProblem, configuration: Configuration) -> list[Override]:
+    """The override of each attribute of the geometry the candidate of ``configuration`` sets,
+    in the order of the problem's geometry destinations."""
+    return [
+        Override(target=target.target, value=text, file=target.file)
+        for target, text in zip(problem.targets, configuration.geometry, strict=True)
+    ]

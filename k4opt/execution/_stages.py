@@ -17,7 +17,8 @@ Each stage of a candidate is one task (:mod:`k4opt.problem.plan`), whose work
 :func:`make_stage` does in the task's own directory: a stage that fails blocks only the tasks
 that read it. Each stage has named outputs (``events``); ``request.inputs[stage]`` is the main
 one. The stages of a sample take their conditions from its :class:`StageContext`, never from the
-problem itself.
+problem itself: the stages as one candidate configures them (an option a parameter sets is in
+them), or, before any candidate, as the problem writes them, with what parameters set pending.
 
 A file the caller supplies as ``inputs[stage]`` (``k4opt evaluate --input``) is authoritative:
 that stage is not run, the stages that only it needs are not run either, and the file replaces
@@ -61,6 +62,10 @@ from k4opt.problem.stages import (
 class StageContext:
     """The conditions the pipeline stages of one sample run under: its ``stages``.
 
+    ``pending`` holds, by stage, the options that parameters set, which ``stages`` then lack:
+    those of a problem before any candidate. A candidate's context has its stages complete
+    (:func:`~k4opt.problem.candidate.configure`) and nothing pending; only such a context runs.
+
     ``directory`` is where a relative stage ``file`` (or a file named in an option, such as
     ``physics.pdgfile``) is read from: the directory of the problem file, the current one if it
     is ``None``. ``timeout`` is how many seconds a stage that runs a program (ddsim) may take
@@ -74,6 +79,7 @@ class StageContext:
     """
 
     stages: Mapping[str, Stage] = field(default_factory=dict)
+    pending: Mapping[str, frozenset[str]] = field(default_factory=dict)
     directory: Path | None = None
     timeout: float | None = None
     sample: str | None = None
@@ -82,8 +88,13 @@ class StageContext:
 
     @classmethod
     def of(cls, spec: ProblemSpec, sample: str, directory: Path | None = None) -> StageContext:
-        """The stages of the sample ``sample`` of ``spec``, whose file is in ``directory``."""
-        return cls(spec.samples[sample].stages, directory, sample=sample)
+        """The stages of the sample ``sample`` of ``spec``, as it writes them, whose file is in
+        ``directory``."""
+        return cls(spec.samples[sample].stages, spec.pending(sample), directory, sample=sample)
+
+    def configured(self, stages: Mapping[str, Stage]) -> StageContext:
+        """The same conditions with the ``stages`` of one candidate, complete."""
+        return replace(self, stages=stages, pending={})
 
     def where(self, stage: str) -> str:
         """Where the problem defines ``stage``: ``samples.<sample>.<stage>``."""
@@ -153,7 +164,7 @@ def _check_generation(context: StageContext, provided: Collection[str]) -> None:
             "particles come from"
         )
     if stage.executor is not None:
-        check_particle_gun(stage.options)
+        check_particle_gun(stage.options, context.pending.get("generation", ()))
 
 
 def _run_generation(
@@ -190,6 +201,8 @@ def _check_simulation(context: StageContext, provided: Collection[str]) -> None:
         particle_gun=particle_gun,
         input_file=input_file,
         options=stage.options,
+        pending_gun=context.pending.get("generation", ()),
+        pending_options=context.pending.get("simulation", ()),
     )
     for key, path in _option_files(context, stage.options).items():
         if not path.is_file():
@@ -352,7 +365,9 @@ def check_stages(context: StageContext, *targets: str, provided: Collection[str]
     ``context``; return the plan.
 
     ``provided`` names the stages the caller supplies. A stage the problem gives as a file must
-    exist. Needs no geometry and starts nothing, so it can run before any file is prepared.
+    exist. An option in ``context.pending`` is not missing: before any candidate, the stages are
+    checked as they will be once a candidate gives it. Needs no geometry and starts nothing, so
+    it can run before any file is prepared.
     """
     files = {name: path for name, path in context.files().items() if name not in provided}
     given = {*provided, *files}

@@ -1,5 +1,11 @@
 """Internal: the ``samples`` of a problem document and the ``stages`` they share, parsed and
-checked against each other and against the evaluators that measure them."""
+checked against each other and against the evaluators that measure them.
+
+A stage is read in two phases. :func:`_samples` reads each one on its own, as the document
+writes it; :func:`_check_options` checks its options as its executor would run them, once the
+parameters are known: an option a parameter sets is not written in the stage but given by
+every candidate, so it is pending, and the executor checks what the stage writes around it and
+the value at each end of the parameter's domain written in (never stored)."""
 
 from __future__ import annotations
 
@@ -18,15 +24,18 @@ from k4opt.problem._fields import (
     _show,
     _text,
 )
+from k4opt.problem.candidate import edges, stage_value
 from k4opt.problem.errors import ProblemConfigError
 from k4opt.problem.models import (
     EvaluatorSpec,
     Parameter,
     Sample,
     Stage,
+    StageDestination,
     freeze,
 )
-from k4opt.problem.stages import STAGE_TYPES, changed_by_geometry, executors, stage_reads
+from k4opt.problem.plan import TaskId, stage_task, varied
+from k4opt.problem.stages import STAGE_TYPES, executors, stage_reads
 
 _STAGE_KEYS = ("executor", "file", "events", "seed")  # the rest of a stage are executor options
 
@@ -206,10 +215,6 @@ def _stage(where: str, place: _Place, m: Mapping[str, Any]) -> Stage:
     except ProblemConfigError as exc:  # its message starts with the stage: samples.g.simulation...
         raise ProblemConfigError(_relocated(str(exc), place, raw)) from exc
     assert isinstance(options, Mapping)
-    try:
-        spec.options(options)
-    except DdsimError as exc:  # its message starts with the stage: generation.particle: ...
-        raise ProblemConfigError(_located(str(exc), place, options)) from exc
     return Stage(name, executor=executor, events=events, seed=seed, options=options)
 
 
@@ -237,6 +242,47 @@ def _located(message: str, place: _Place, options: Mapping[str, Json]) -> str:
     return f"samples.{place.sample}.{message}"
 
 
+def _check_options(
+    samples: Mapping[str, Sample],
+    places: Mapping[tuple[str, str], _Place],
+    parameters: tuple[Parameter, ...],
+) -> None:
+    """The options of each stage that runs, as its executor checks them: as the problem writes
+    them, with the options parameters set pending, then with each end of the domain of each such
+    parameter written in. Every settable option's check decides a value by an interval or a set
+    (:class:`~k4opt.ddsim.Settable`), so the ends decide every value between them."""
+    for name, sample in samples.items():
+        for stage_name, stage in sample.stages.items():
+            if stage.executor is None:
+                continue
+            place, executor = places[name, stage_name], executors(stage_name)[stage.executor]
+            set_by = {
+                destination.option: parameter
+                for parameter in parameters
+                for destination in parameter.sets
+                if isinstance(destination, StageDestination)
+                and destination.stage == stage_name
+                and name in destination.samples
+            }
+            pending = frozenset(set_by)
+            try:
+                executor.options(stage.options, pending)
+            except DdsimError as exc:  # its message starts with the stage: generation.particle
+                raise ProblemConfigError(_located(str(exc), place, stage.options)) from exc
+            for option, parameter in set_by.items():
+                settable = executor.settable(option)
+                for edge in edges(parameter):
+                    written = {**stage.options, option: stage_value(settable, parameter, edge)}
+                    try:
+                        executor.options(written, pending - {option})
+                    except DdsimError as exc:
+                        end = "bound" if parameter.bounds is not None else "choice"
+                        raise ProblemConfigError(
+                            f"parameters.{parameter.name}: at its {end} {edge!r}, "
+                            f"{_located(str(exc), place, written)}"
+                        ) from exc
+
+
 def _check_pipeline(
     samples: Mapping[str, Sample],
     places: Mapping[tuple[str, str], _Place],
@@ -246,9 +292,10 @@ def _check_pipeline(
     """Each sample's stages fit together and fit the evaluators that measure it.
 
     Every stage an evaluator reads is defined in each sample it measures; a stage that runs has
-    the stages it reads; no file stands in for a stage the parameters change (it was not made
-    from the candidate); every sample is measured by an evaluator, and every stage of a sample
-    is used, by an evaluator that measures it or by a stage that runs.
+    the stages it reads; no file stands in for a stage a parameter reaches (it was not made
+    from the candidate, :func:`~k4opt.problem.plan.varied`); every sample is measured by an
+    evaluator, and every stage of a sample is used, by an evaluator that measures it or by a
+    stage that runs.
     """
     for index, evaluator in enumerate(evaluators):
         if evaluator.collections and evaluator.stage is None:
@@ -287,10 +334,11 @@ def _check_pipeline(
                         f"no file of its own; read samples.{item.sample}.{inside} instead",
                     )
                 read[item.sample].append(item.stage)
+    reach = varied(samples, evaluators, parameters)
     for spec in samples.values():
         measuring = [e for e in evaluators if spec.name in e.samples]
         places_of = {stage: places[spec.name, stage] for stage in spec.stages}
-        _check_sample(spec, places_of, measuring, read[spec.name], parameters)
+        _check_sample(spec, places_of, measuring, read[spec.name], reach)
 
 
 def _check_sample(
@@ -298,10 +346,11 @@ def _check_sample(
     places: Mapping[str, _Place],
     evaluators: list[EvaluatorSpec],
     read: list[str],
-    parameters: tuple[Parameter, ...],
+    reach: Mapping[TaskId, tuple[str, ...]],
 ) -> None:
     """The stages of one sample fit together and fit the ``evaluators`` that measure it and the
-    stages of it that roles ``read``; ``places`` says where each stage was written."""
+    stages of it that roles ``read``; ``places`` says where each stage was written, ``reach``
+    which parameters reach each task."""
     where, stages = f"samples.{sample.name}", sample.stages
     for name, stage in stages.items():
         if stage.executor is None:
@@ -314,16 +363,16 @@ def _check_sample(
                     f"{name} reads {need}: add {where}.{need} with executor: {choices}, or give "
                     "its output as file:",
                 )
-    if parameters:  # every parameter varies the geometry
-        for name, stage in stages.items():
-            if stage.file is not None and changed_by_geometry(name):
-                raise _fail(
-                    places[name].key("file"),
-                    "the parameters vary the geometry, but this file was not made with a "
-                    "candidate's geometry, so every candidate would measure the same events; let "
-                    f"an executor run the stage (to try an evaluator on an existing file, use "
-                    f"k4opt evaluate --input {sample.name}/{name}=FILE)",
-                )
+    for name, stage in stages.items():
+        varies = reach.get(stage_task(name, sample.name), ())
+        if stage.file is not None and varies:
+            raise _fail(
+                places[name].key("file"),
+                f"{', '.join(f'parameters.{p}' for p in varies)} reach this stage, but this file "
+                "was not made from a candidate's values, so every candidate would measure the same "
+                f"events; let an executor run the stage (to try an evaluator on an existing file, "
+                f"use k4opt evaluate --input {sample.name}/{name}=FILE)",
+            )
     if not evaluators and not read:
         raise _fail(
             where,

@@ -3,9 +3,12 @@
 :func:`check_summary` checks a record against its problem as
 :meth:`~k4opt.record.Assessment.from_summary` documents: its form, that it was made for this
 problem and candidate, its implementations and roles, each task's part against the plan the
-problem gives (what it reads, whether and by what it is blocked, the files it made, named
-relative to the run directory in its own directory), and the candidate's status, message,
-required tasks, diagnostics and metrics recomputed from them. It returns what the candidate's
+problem gives (what it reads, whether and by what it is blocked, the parameters that reach it,
+the files it made, named relative to the run directory in its own directory), what the
+candidate configures (each stage's definition, each evaluator's settings, the attributes of the
+geometry it changes, as :func:`~k4opt.problem.candidate.configure` makes them from the problem
+and the candidate), and the candidate's status, message, required tasks, diagnostics and metrics
+recomputed from them. It returns what the candidate's
 assessment is made from, which the caller judges as a live evaluation is judged. It reads the
 record alone: no file the record names is opened, so an old record stays readable without them.
 """
@@ -28,7 +31,8 @@ from k4opt.evaluation import (
     Status,
 )
 from k4opt.frozen import thaw
-from k4opt.problem.candidate import validate_candidate
+from k4opt.geometry import parse_reference
+from k4opt.problem.candidate import Configuration, configure, validate_candidate
 from k4opt.problem.contract import Demands, MetricKey, check_bindings, check_entries, check_result
 from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import MetricRef, ProblemSpec, ordered
@@ -40,9 +44,10 @@ from k4opt.problem.plan import (
     evaluations,
     evaluator_task,
     plan_tasks,
+    represents_candidate,
     stage_task,
 )
-from k4opt.problem.stages import STAGE_TYPES, changed_by_geometry, stage_output
+from k4opt.problem.stages import STAGE_TYPES, stage_output
 from k4opt.record.errors import RecordError
 from k4opt.record.results import (
     DONE,
@@ -104,12 +109,13 @@ def _check_problem(spec: ProblemSpec, record: Mapping[str, object]) -> None:
 
 
 class _Fragment(NamedTuple):
-    """A task's part of a record, as far as its status reads it."""
+    """A task's part of a record, as far as its status and dependencies read it."""
 
     status: str
     message: str | None
     reads: list[object]
     blocked_by: list[object]
+    varies: list[object]
 
 
 def _fragment(entry: Mapping[str, object], where: str, statuses: Collection[str]) -> _Fragment:
@@ -123,7 +129,7 @@ def _fragment(entry: Mapping[str, object], where: str, statuses: Collection[str]
         raise RecordError(f"{where}: a task that is {status} needs a message saying why")
     reads = _list(entry.get("reads"), f"{where}: reads")
     causes = _list(entry.get("blocked_by"), f"{where}: blocked_by")
-    return _Fragment(status, message, reads, causes)
+    return _Fragment(status, message, reads, causes, _list(entry.get("varies"), f"{where}: varies"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,12 +142,14 @@ class _Evaluator:
     fragment: _Fragment  # its status, and the tasks it reads
 
 
-def _check_candidate(spec: ProblemSpec, record: Mapping[str, object]) -> None:
+def _check_candidate(spec: ProblemSpec, record: Mapping[str, object]) -> Configuration:
     """The record's candidate is one of the problem's, and its ``candidate_key`` is that
-    candidate's, as a live evaluation validates and keys it."""
+    candidate's, as a live evaluation validates and keys it; its configuration, as a live
+    evaluation makes it."""
     candidate = _mapping(record.get("candidate"), "candidate")
     try:  # the values are checked for their types and domains here
-        _, key = validate_candidate(spec, cast(Mapping[str, Scalar], candidate))
+        values, key = validate_candidate(spec, cast(Mapping[str, Scalar], candidate))
+        configuration = configure(spec, values)
     except CandidateError as exc:
         raise RecordError(f"its candidate is not one of the problem's: {exc}") from None
     expected = [list(part) for part in key]
@@ -149,6 +157,7 @@ def _check_candidate(spec: ProblemSpec, record: Mapping[str, object]) -> None:
         raise RecordError(
             f"candidate_key is {record.get('candidate_key')!r}, but its candidate is {expected!r}"
         )
+    return configuration
 
 
 def _implementations(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, Declaration]:
@@ -222,6 +231,7 @@ def _samples(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, Mappi
 
 def _evaluations(
     spec: ProblemSpec,
+    configuration: Configuration,
     record: Mapping[str, object],
     samples: Mapping[str, Mapping[str, object]],
     declared: Mapping[str, Declaration],
@@ -229,17 +239,18 @@ def _evaluations(
     plan: Plan,
 ) -> dict[TaskId, _Evaluator]:
     """Each evaluation of the record, in plan order, checked as a live result is: of the
-    implementation the problem binds it to, with the settings and collections the problem gives
-    it, its artifacts in the directory ``plan`` gives it, and what it returned against what the
-    problem asks of it (:func:`~k4opt.problem.contract.check_result`, the metrics the roles that
-    read it ``demand`` included). Those of each sample are in its part of the record, those of
-    the candidate in ``evaluations``, each by binding in problem order."""
+    implementation the problem binds it to, with the settings the problem and its candidate give it
+    (``configuration``) and the collections the problem gives it, its artifacts in the directory
+    ``plan`` gives it, and what it returned against what the problem asks of it
+    (:func:`~k4opt.problem.contract.check_result`, the metrics the roles that read it ``demand``
+    included). Those of each sample are in its part of the record, those of the candidate in
+    ``evaluations``, each by binding in problem order."""
     held: dict[str | None, Mapping[str, object]] = {
         name: _mapping(part.get("evaluations"), f"samples.{name}.evaluations")
         for name, part in samples.items()
     }
     held[None] = _mapping(record.get("evaluations"), "evaluations")
-    planned = evaluations(spec.samples, spec.evaluators)
+    planned = evaluations(configuration.samples, configuration.evaluators)
     for sample, found in held.items():
         expected = [entry.binding for task, entry in planned if task.sample == sample]
         if list(found) != expected:
@@ -260,7 +271,8 @@ def _evaluations(
         recorded = _mapping(entry.get("settings"), f"{where}: settings").get("declared")
         if recorded != given:
             raise RecordError(
-                f"{where}: settings.declared {recorded!r}, but the problem gives {given!r}"
+                f"{where}: settings.declared {recorded!r}, but the problem and its candidate give "
+                f"{given!r}"
             )
         collections = _mapping(entry.get("collections"), f"{where}: collections")
         named = {role: collections.get(role) for role in spec_entry.collections}
@@ -339,6 +351,8 @@ _STAGE_STATUSES = (DONE, Status.FAILED, Status.BLOCKED)
 
 
 def _results(
+    spec: ProblemSpec,
+    configuration: Configuration,
     record: Mapping[str, object],
     samples: Mapping[str, Mapping[str, object]],
     supplied: Collection[TaskId],
@@ -346,8 +360,9 @@ def _results(
     plan: Plan,
 ) -> dict[TaskId, TaskResult]:
     """The status of each task of the record, in plan order, checked against the plan of the
-    problem: what each task reads, which are blocked and by what, and the files each stage made
-    in its directory."""
+    problem: what each task reads, which are blocked and by what, which parameters reach it, the
+    definition of each stage as the candidate configures it, the files each stage made in its
+    directory, and the attributes the geometry changed (:func:`_check_changes`)."""
     planned = [task.id for task in plan.of(Kind.STAGE)]
     unread = [task.label for task in supplied if task not in planned]
     if unread:
@@ -365,6 +380,12 @@ def _results(
             part = _mapping(entry, f"{where}.{name}")
             fragment = _fragment(part, at, _STAGE_STATUSES)
             fragments[made_by] = fragment
+            definition = _plain(configuration.samples[sample].stages[name].to_dict())
+            if part.get("definition") != definition:
+                raise RecordError(
+                    f"{at}: definition {part.get('definition')!r}, but the problem and its "
+                    f"candidate make it {definition!r}"
+                )
             directory = plan[made_by].directory  # None unless it runs and writes files
             if part.get("directory") != directory:
                 raise RecordError(
@@ -386,6 +407,12 @@ def _results(
         raise RecordError(f"geometry: status {geometry.get('status')!r}, but it is always done")
     for key in ("compact", "manifest"):
         _in_run(geometry.get(key), GEOMETRY.name, f"geometry: {key}")
+    if geometry.get("varies") != list(plan[GEOMETRY].varies):
+        raise RecordError(
+            f"geometry: varies {geometry.get('varies')!r}, but the parameters that set it are "
+            f"{list(plan[GEOMETRY].varies)!r}"
+        )
+    _check_changes(spec, configuration, geometry.get("changes"))
     fragments |= {task: e.fragment for task, e in evaluators.items()}
     results: dict[TaskId, TaskResult] = {GEOMETRY: TaskResult(GEOMETRY, DONE)}
     for task in plan.tasks:
@@ -397,6 +424,11 @@ def _results(
         if fragment.reads != needs:
             raise RecordError(
                 f"{where} reads {fragment.reads}, but the problem has it read {needs}"
+            )
+        if fragment.varies != list(task.varies):
+            raise RecordError(
+                f"{where} varies with {fragment.varies}, but the parameters that reach it are "
+                f"{list(task.varies)}"
             )
         expected = blocked(task, results)
         if expected is None:
@@ -417,6 +449,47 @@ def _results(
             )
         results[task.id] = expected
     return results
+
+
+def _check_changes(spec: ProblemSpec, configuration: Configuration, value: object) -> None:
+    """The ``changes`` of a record's geometry: one for each geometry destination of the problem,
+    in its order, by the parameter that sets it, of the target the destination names (in the
+    canonical form a geometry looks it up by), to the text the candidate gives it, each of an
+    attribute of its own. Where the attribute is and its unmodified value need the geometry,
+    which a record is read without: they are checked against the session that made it, and
+    across the records of a study."""
+    changes = [
+        _mapping(change, f"geometry: changes[{index}]")
+        for index, change in enumerate(_list(value, "geometry: changes"))
+    ]
+    destinations = spec.geometry_destinations
+    if len(changes) != len(destinations):
+        raise RecordError(
+            f"geometry: it changed {len(changes)} attribute(s), but the problem's parameters set "
+            f"{len(destinations)}"
+        )
+    seen: dict[tuple[object, ...], int] = {}
+    for index, (change, (parameter, destination), text) in enumerate(
+        zip(changes, destinations, configuration.geometry, strict=True)
+    ):
+        where = f"geometry: changes[{index}]"
+        target = parse_reference(destination.canonical_target).text
+        expected = {"parameter": parameter.name, "target": target, "new_value": text}
+        found = {key: change.get(key) for key in expected}
+        if found != expected:
+            raise RecordError(
+                f"{where} is {found!r}, but the problem and its candidate give {expected!r}"
+            )
+        for key in ("file", "locator", "attribute"):
+            _text(change.get(key), f"{where}.{key}")
+        if not isinstance(change.get("old_value"), str):  # an attribute's text may be blank
+            raise RecordError(
+                f"{where}.old_value must be a string, got {change.get('old_value')!r}"
+            )
+        attribute = tuple(change.get(key) for key in ("file", "locator", "attribute"))
+        if attribute in seen:
+            raise RecordError(f"{where} changes the attribute changes[{seen[attribute]}] does")
+        seen[attribute] = index
 
 
 def _text(value: object, where: str) -> str:
@@ -480,15 +553,21 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
     if record.get("schema") != SUMMARY_SCHEMA:
         raise RecordError(f"schema is {record.get('schema')!r}, not {SUMMARY_SCHEMA!r}")
     _check_problem(spec, record)
-    _check_candidate(spec, record)
+    configuration = _check_candidate(spec, record)
     _text(record.get("run_dir"), "run_dir")  # where it was made: provenance only
     declared = _implementations(spec, record)
     demands = check_bindings(spec, declared, RecordError)
     samples = _samples(spec, record)
     supplied = _supplied(spec, record)
-    plan = plan_tasks(spec.samples, spec.evaluators, supplied, references=spec.references)
-    evaluators = _evaluations(spec, record, samples, declared, demands, plan)
-    results = _results(record, samples, supplied, evaluators, plan)
+    plan = plan_tasks(
+        spec.samples,
+        spec.evaluators,
+        supplied,
+        references=spec.references,
+        parameters=spec.parameters,
+    )
+    evaluators = _evaluations(spec, configuration, record, samples, declared, demands, plan)
+    results = _results(spec, configuration, record, samples, supplied, evaluators, plan)
     required = [task.id.label for task in plan.tasks if task.required]
     if record.get("required") != required:
         raise RecordError(
@@ -513,7 +592,7 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
         raise RecordError(
             f"diagnostics are {record.get('diagnostics')!r}, but its tasks make them {listed!r}"
         )
-    represents = not any(changed_by_geometry(task.name) for task in supplied if plan[task].required)
+    represents = represents_candidate(plan)
     if record.get("represents_candidate") is not represents:
         raise RecordError(
             f"represents_candidate is {record.get('represents_candidate')!r}, but its "

@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 import yaml
 
-from k4opt.evaluation import EvaluationRequest, EvaluationResult, Measurement
+from k4opt.evaluation import EvaluationRequest, EvaluationResult, Measurement, Quantity
 from k4opt.execution import EvaluationSession
 from k4opt.problem import ProblemSpec, parse_problem
 from k4opt.record import Assessment, ObjectiveValue, RecordError
@@ -41,7 +41,7 @@ def document(
         "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
         "parameters": {
             CELL: {
-                "geometry": {"constant": "ECal_cell_size"},
+                "sets": {"geometry": {"constant": "ECal_cell_size"}},
                 "type": "continuous",
                 "bounds": [1.0, 10.0],
                 "unit": "mm",
@@ -295,14 +295,16 @@ COST = ("analysis", "readout.cost")
 
 
 class Echo:
-    """The candidate's radius as a metric; ``invalid`` from 590 mm on."""
+    """The candidate's radius, which the problem sets in its setting ``radius``, as a metric;
+    ``invalid`` from 590 mm on."""
 
     name = "test.echo"
     version = "1"
+    settings = {RADIUS: Quantity("mm")}
     metrics = {ECHO: "1"}
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
-        (value,) = request.candidate.values()
+        value = request.settings[RADIUS]
         measured = [Measurement(*ECHO, value, "1")]
         if value >= 590:
             return EvaluationResult.invalid("too far out", measured)
@@ -333,8 +335,12 @@ def open_problem(tmp_path: Path, data: dict[str, Any], *evaluators: Any) -> Eval
     """A session of the problem ``data`` on the mini geometry."""
     data["geometry"] = MINI_COMPACT
     data["parameters"] = {}
+    echoes = [e.get("as", e["name"]) for e in data["evaluators"] if e["name"] == Echo.name]
     data["parameters"][RADIUS] = {
-        "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+        "sets": [
+            {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+            *({"evaluator": binding, "setting": RADIUS} for binding in dict.fromkeys(echoes)),
+        ],
         "type": "continuous",
         "bounds": [100.0, 600.0],
         "unit": "mm",

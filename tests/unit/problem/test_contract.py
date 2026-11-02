@@ -75,7 +75,7 @@ def problem_file(tmp_path: Path) -> Path:
         "geometry": MINI_COMPACT,
         "parameters": {
             RADIUS: {
-                "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+                "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
                 "type": "continuous",
                 "bounds": [100.0, 600.0],
                 "unit": "mm",

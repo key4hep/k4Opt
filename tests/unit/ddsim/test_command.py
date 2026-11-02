@@ -1,4 +1,5 @@
-"""The ddsim command line: generator translation, managed options, option translation."""
+"""The ddsim command line: generator translation, managed options, option translation, and
+what a parameter of a problem can set."""
 
 from __future__ import annotations
 
@@ -9,7 +10,17 @@ from typing import Any
 
 import pytest
 
-from k4opt.ddsim import DdsimError, output_collections, threads
+from k4opt.ddsim import (
+    DdsimError,
+    Settable,
+    check_arguments,
+    check_options,
+    check_particle_gun,
+    output_collections,
+    settable_gun,
+    settable_option,
+    threads,
+)
 from k4opt.ddsim.command import ddsim_arguments, managed_conflict, option_args, particle_gun_args
 from k4opt.frozen import freeze
 
@@ -372,3 +383,72 @@ def test_the_expected_output_names_a_collection_after_each_readout() -> None:
         "MCParticles",
         "EventHeader",
     }
+
+
+# --- what a parameter of a problem can set -------------------------------------------------
+
+
+def test_a_parameter_can_set_the_particle_and_energy_of_the_gun() -> None:
+    assert settable_gun("particle") == Settable("text")
+    assert settable_gun("energy") == Settable("quantity", ("MeV", "GeV", "TeV"))
+    for key in ("direction", "vertex", "multiplicity"):
+        with pytest.raises(DdsimError, match="can set only the particle and energy"):
+            settable_gun(key)
+
+
+def test_a_parameter_can_set_a_single_valued_ddsim_option() -> None:
+    assert settable_option("physics.rangecut") == Settable("expression")
+    assert settable_option("part.minimalKineticEnergy") == Settable("expression")
+
+
+@pytest.mark.parametrize(
+    ("key", "reason"),
+    [
+        ("physics.pdgfile", "it names a file"),
+        ("numberOfThreads", "how many processors the simulation keeps busy"),
+        ("enableDetailedShowerMode", "it is a flag"),
+        ("part.enableDetailedHitsAndParticleInfo", "it is a flag"),
+        ("action.run", "it takes a list of values"),
+        ("meta.eventParameters", "it takes a list of values"),
+        ("random.seed", "an option that k4opt sets itself"),
+        ("gun.energy", "an option that k4opt sets itself"),
+        ("steeringFile", "--steeringFile is not supported"),
+        ("physics.pdg", "write the full option name"),
+    ],
+)
+def test_options_a_parameter_cannot_set(key: str, reason: str) -> None:
+    with pytest.raises(DdsimError, match=reason):
+        settable_option(key)
+
+
+def test_a_pending_key_of_the_gun_is_not_missing() -> None:
+    gun = {key: value for key, value in GENERATOR.items() if key != "energy"}
+    with pytest.raises(DdsimError, match=r"missing required key\(s\) \['energy'\]"):
+        check_particle_gun(gun)
+    check_particle_gun(gun, pending={"energy"})
+    with pytest.raises(DdsimError, match=r"generation\.energy: is given, but a parameter sets it"):
+        check_particle_gun(GENERATOR, pending={"energy"})
+    with pytest.raises(DdsimError, match="can set only the particle and energy"):
+        check_particle_gun(gun, pending={"energy", "vertex"})
+    bad = gun | {"direction": GENERATOR["direction"] | {"theta": [60, 200]}}
+    with pytest.raises(DdsimError, match=r"direction\.theta: must lie within"):
+        check_particle_gun(bad, pending={"energy"})  # what the gun gives is checked in full
+
+
+def test_a_pending_option_is_settable_and_not_given() -> None:
+    check_options({"physics.list": "FTFP_BERT"}, pending={"physics.rangecut"})
+    with pytest.raises(DdsimError, match=r"simulation\.physics\.list: is given, but a parameter"):
+        check_options({"physics.list": "FTFP_BERT"}, pending={"physics.list"})
+    with pytest.raises(DdsimError, match="it is a flag"):
+        check_options({}, pending={"enableDetailedShowerMode"})
+
+
+def test_the_arguments_are_checked_with_what_parameters_set() -> None:
+    gun = {key: value for key, value in GENERATOR.items() if key != "energy"}
+    check_arguments(events=1, seed=None, particle_gun=gun, options={}, pending_gun={"energy"})
+    with pytest.raises(DdsimError, match="missing required"):
+        check_arguments(events=1, seed=None, particle_gun=gun, options={})
+    with pytest.raises(DdsimError, match="events must be a positive integer"):
+        check_arguments(events=0, seed=None, particle_gun=GENERATOR, options={})
+    # a gun that a file replaces is not read
+    check_arguments(events=1, seed=None, input_file=Path("e.hepmc"), options={})

@@ -21,6 +21,7 @@ from k4opt.evaluation import (
     Quantity,
     Role,
     Status,
+    check_settings,
     collection_names,
     declared_artifacts,
     declared_collections,
@@ -378,6 +379,21 @@ def test_an_int_beyond_a_float_is_converted_when_its_result_fits() -> None:
     assert received["threshold"] == 1e301
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"value": 1e-300, "unit": "eV"},
+        {"value": 5e-324, "unit": "GeV"},
+        {"value": -1e-310, "unit": "GeV"},
+    ],
+)
+def test_a_quantity_too_small_to_express_is_refused(value: object) -> None:
+    # it would arrive as zero, or as a subnormal float that has lost its precision
+    with pytest.raises(EvaluationContractError, match="too small to express in GeV"):
+        with_defaults(Gated(), {"threshold": value})
+    assert with_defaults(Gated(), {"threshold": {"value": 0, "unit": "keV"}})["threshold"] == 0.0
+
+
 def test_a_required_quantity_must_be_given_and_is_a_float() -> None:
     with pytest.raises(EvaluationContractError, match=r"missing \['threshold'\]"):
         Gated().check(EvaluationRequest(settings={"radius": 1800.0}))
@@ -634,3 +650,82 @@ def test_an_unreadable_role_declaration_is_a_contract_error(
     Combined.stage = stage  # type: ignore[attr-defined]
     with pytest.raises(EvaluationContractError, match=re.escape(message)):
         declared_roles(Combined())
+
+
+# --- settings that parameters set ----------------------------------------------------------
+
+
+class Bound(Evaluator):
+    name, version = "demo.bound", "1"
+    settings = {
+        "threshold": Quantity("GeV"),
+        "scale": float,
+        "layers": int,
+        "mode": str,
+        "flag": bool,
+        "bins": {"low": 0},
+        "names": ["a"],
+    }
+
+    def evaluate(self, request: EvaluationRequest) -> Any:
+        return {}
+
+
+@pytest.mark.parametrize(
+    ("key", "values", "unit"),
+    [
+        ("threshold", float, "keV"),
+        ("threshold", int, "TeV"),
+        ("scale", float, None),
+        ("scale", int, None),
+        ("layers", int, None),
+        ("mode", str, None),
+        ("flag", bool, None),
+    ],
+)
+def test_a_parameter_sets_a_declared_setting_its_values_fit(
+    key: str, values: type, unit: str | None
+) -> None:
+    given: dict[str, Any] = {"threshold": {"value": 1, "unit": "GeV"}, "scale": 1.0}
+    given |= {"layers": 1, "mode": "m", "flag": True}
+    given.pop(key)  # the parameter gives it, so it is not missing
+    check_settings(Bound(), with_defaults(Bound(), given), {key: (values, unit)})
+
+
+@pytest.mark.parametrize(
+    ("key", "values", "unit", "message"),
+    [
+        ("other", float, None, r"settings\.other: the evaluator does not declare it"),
+        ("threshold", float, None, "is a quantity in GeV; a parameter that sets it needs a number"),
+        ("threshold", float, "mm", "with a unit of energy"),
+        ("threshold", str, None, "is a quantity in GeV"),
+        ("scale", float, "mm", "is a float without a unit, so the parameter's mm would be lost"),
+        ("scale", bool, None, "a parameter with bool values cannot set it"),
+        ("scale", str, None, "a parameter with str values cannot set it"),
+        ("layers", float, None, "is a int; a parameter with float values"),
+        ("layers", bool, None, "a parameter with bool values"),
+        ("mode", int, None, "is a str"),
+        ("flag", int, None, "is a bool"),
+        ("bins", float, None, "is a dict, which no parameter can set"),
+        ("names", str, None, "is a list, which no parameter can set"),
+    ],
+)
+def test_a_parameter_cannot_set_a_setting_its_values_do_not_fit(
+    key: str, values: type, unit: str | None, message: str
+) -> None:
+    given = {"threshold": {"value": 1, "unit": "GeV"}, "scale": 1.0, "layers": 1, "mode": "m"}
+    given = {k: v for k, v in (given | {"flag": True}).items() if k != key}
+    with pytest.raises(EvaluationContractError, match=message):
+        check_settings(Bound(), with_defaults(Bound(), given), {key: (values, unit)})
+
+
+def test_an_evaluator_that_declares_no_settings_takes_none_from_a_parameter() -> None:
+    class Free(Evaluator):
+        name, version = "demo.free", "1"
+
+        def evaluate(self, request: EvaluationRequest) -> Any:
+            return {}
+
+    check_settings(Free(), {"anything": 1})  # its settings are its own business
+    with pytest.raises(EvaluationContractError, match="declares no settings, so no parameter"):
+        check_settings(Free(), {}, {"anything": (float, None)})

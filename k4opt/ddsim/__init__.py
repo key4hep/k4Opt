@@ -5,9 +5,10 @@ The primaries come from a particle gun or from an input event file.
 Translates the generation settings of a problem into ``ddsim`` options (units included, the
 direction distribution checked against what ``ddsim`` offers) and the ddsim options a problem
 sets (``physics.list: FTFP_BERT``) into arguments, the way ddsim's command line reads each kind
-of option. Protects the options that k4opt manages, runs the executable of the active Key4hep
-environment and keeps command, exit code and logs. It does not read the output; that is up to
-the caller. See ``docs/ddsim.md``.
+of option. Says which options a parameter of a problem can set, and how its value is written
+(:class:`Settable`). Protects the options that k4opt manages, runs the executable of the active
+Key4hep environment and keeps command, exit code and logs. It does not read the output; that is
+up to the caller. See ``docs/ddsim.md``.
 
 Typical use::
 
@@ -26,27 +27,34 @@ Typical use::
     print(run.error or run.output)
 """
 
-from k4opt.ddsim.command import DIRECTION_DISTRIBUTIONS, FILE_OPTIONS, output_collections, threads
-from k4opt.ddsim.errors import DdsimError
-from k4opt.ddsim.run import (
-    LOG_FILES,
-    SimulationRun,
+from k4opt.ddsim.command import (
+    DIRECTION_DISTRIBUTIONS,
+    FILE_OPTIONS,
+    Settable,
     check_arguments,
     check_options,
     check_particle_gun,
-    simulate,
+    output_collections,
+    settable_gun,
+    settable_option,
+    threads,
 )
+from k4opt.ddsim.errors import DdsimError
+from k4opt.ddsim.run import LOG_FILES, SimulationRun, simulate
 
 __all__ = [
     "DIRECTION_DISTRIBUTIONS",
     "FILE_OPTIONS",
     "LOG_FILES",
     "DdsimError",
+    "Settable",
     "SimulationRun",
     "check_arguments",
     "check_options",
     "check_particle_gun",
     "output_collections",
+    "settable_gun",
+    "settable_option",
     "simulate",
     "threads",
 ]

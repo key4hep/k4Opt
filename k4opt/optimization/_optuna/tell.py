@@ -103,9 +103,6 @@ def _report(
     trial.set_user_attr("k4opt.status", summary["status"])
     record = {"id": summary.get("id"), "sha256": _sha256(data), "path": f"{name}/{SUMMARY_NAME}"}
     trial.set_user_attr("k4opt.record", record)
-    geometry = summary.get("geometry")
-    if isinstance(geometry, Mapping):
-        trial.set_user_attr("k4opt.fingerprint", geometry.get("fingerprint"))
     if isinstance(summary.get("message"), str):
         trial.set_user_attr("k4opt.message", summary["message"][:_MESSAGE])
     # the diagnostics that did not succeed, which the status leaves out (checked by from_summary)

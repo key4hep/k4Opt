@@ -35,6 +35,7 @@ from __future__ import annotations
 import keyword
 import math
 import re
+import sys
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, NoReturn, cast
@@ -86,8 +87,10 @@ class Collection:
 @dataclass(frozen=True, slots=True)
 class Quantity:
     """A setting with a unit. The problem writes ``value`` and ``unit`` (any unit of the same
-    dimension, ``70`` and ``keV``); the evaluator receives a float in ``unit``. ``default``, if
-    given, is in ``unit`` and makes the setting optional."""
+    dimension, ``70`` and ``keV``); the evaluator receives a float in ``unit``: the value scaled
+    exactly, then rounded once to the nearest float. A value whose float would be infinite, or
+    zero or subnormal although it is not zero, is refused rather than handed on changed.
+    ``default``, if given, is in ``unit`` and makes the setting optional."""
 
     unit: str
     default: float | None = None
@@ -132,6 +135,10 @@ class Quantity:
         converted = units.convert(number, unit, self.unit)
         if not math.isfinite(converted):
             raise EvaluationContractError(f"{path}.value: too large to express in {self.unit}")
+        if number != 0 and abs(converted) < sys.float_info.min:  # zero, or a subnormal float
+            raise EvaluationContractError(
+                f"{path}.value: {number!r} {unit} is too small to express in {self.unit}"
+            )
         return converted
 
 
@@ -270,14 +277,57 @@ def with_defaults(evaluator: object, settings: Mapping[str, Json]) -> Mapping[st
     return merged
 
 
-def check_settings(evaluator: object, settings: Mapping[str, Json]) -> None:
+def _accepts(declared: object, kind: type, unit: str | None) -> str | None:
+    """Why a setting declared as ``declared`` cannot take the values of a parameter, of the type
+    ``kind`` (``float``, ``int``, ``str`` or ``bool``) in ``unit``; ``None`` if it can."""
+    number = kind in (int, float)
+    if isinstance(declared, Quantity):
+        dimension = units.dimension(declared.unit)
+        if number and unit is not None and units.dimension(unit) == dimension:
+            return None
+        assert dimension is not None
+        return (
+            f"is a quantity in {declared.unit}; a parameter that sets it needs a number with a "
+            f"unit of {dimension} ({', '.join(units.units(dimension))})"
+        )
+    expected = _kind(declared)
+    if expected in (list, dict):
+        return f"is a {expected.__name__}, which no parameter can set"
+    fits = number if expected is float else kind is expected
+    if fits and unit is None:
+        return None
+    if fits:
+        return (
+            f"is a {expected.__name__} without a unit, so the parameter's {unit} would be lost; "
+            "declare it a Quantity"
+        )
+    return f"is a {expected.__name__}; a parameter with {kind.__name__} values cannot set it"
+
+
+def check_settings(
+    evaluator: object,
+    settings: Mapping[str, Json],
+    pending: Mapping[str, tuple[type, str | None]] | None = None,
+) -> None:
     """Reject ``settings``, as the evaluator receives them (:func:`with_defaults`), that do not
     match the ``settings`` it declares: unknown or missing keys, wrong types, a blank required
-    text. Nothing is checked for an evaluator that declares none. It needs no candidate, so a
-    problem's settings are checked once, before any candidate. Raises
-    :class:`EvaluationContractError`."""
+    text. It needs no candidate, so a problem's settings are checked once, before any candidate.
+
+    ``pending`` holds the settings parameters set, which every candidate gives instead, by key,
+    each with the type of its parameter's values (``float``, ``int``, ``str``, ``bool``) and its
+    unit: each must be one the evaluator declares, of a kind those values fit (a
+    :class:`Quantity` takes a number with a unit of its dimension, ``float`` a number without
+    one, ``int`` an integer without one, ``str`` and ``bool`` their own), and is not missing.
+    Nothing but ``pending`` is checked for an evaluator that declares no settings, and it can
+    take none. Raises :class:`EvaluationContractError`."""
     declared = getattr(evaluator, "settings", None)
+    pending = pending or {}
     if declared is None:
+        if pending:
+            raise EvaluationContractError(
+                f"settings.{next(iter(pending))}: the evaluator declares no settings, so no "
+                "parameter can set one; a parameter sets only a setting the evaluator declares"
+            )
         return
     kinds = {key: _kind(entry) for key, entry in declared.items()}
     for key, kind in kinds.items():
@@ -286,8 +336,19 @@ def check_settings(evaluator: object, settings: Mapping[str, Json]) -> None:
                 f"settings.{key}: cannot declare {kind.__name__}; use str, int, float, bool, "
                 "list or dict (or a default of one of them), or Quantity(unit)"
             )
+    for key, (values, unit) in pending.items():
+        if key not in declared:
+            raise EvaluationContractError(
+                f"settings.{key}: the evaluator does not declare it, so no parameter can set it; "
+                f"it declares {sorted(declared)}"
+            )
+        reason = _accepts(declared[key], values, unit)
+        if reason is not None:
+            raise EvaluationContractError(f"settings.{key}: {reason}")
     unknown = [key for key in settings if key not in kinds]
-    missing = [k for k, d in declared.items() if _required(d) and k not in settings]
+    missing = [
+        k for k, d in declared.items() if _required(d) and k not in settings and k not in pending
+    ]
     if unknown or missing:
         raise EvaluationContractError(
             f"settings: expected {sorted(kinds)}"

@@ -32,7 +32,9 @@ SEEN = [("analysis", "seen", "minimize")]
 
 
 def parameter(kind: str, **declared: Any) -> dict[str, Any]:
-    return {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}, "type": kind, **declared}
+    # only the setting of the evaluator, which problem_document adds: it takes any number, the
+    # geometry only those a double holds
+    return {"sets": [], "type": kind, **declared}
 
 
 @pytest.mark.parametrize(
@@ -74,7 +76,7 @@ def test_bounds_the_sampler_cannot_draw_exactly_are_refused(
 @pytest.mark.parametrize(
     "declared",
     [
-        parameter("continuous", bounds=[100, 600], unit="mm"),
+        parameter("continuous", bounds=[100, 600]),
         parameter("integer", bounds=[100, 105]),
         parameter("categorical", choices=[150, 250.5, 400]),
     ],

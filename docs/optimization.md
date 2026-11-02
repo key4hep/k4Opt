@@ -144,8 +144,8 @@ Each Optuna trial carries `k4opt.*` user attributes:
 - `k4opt.dir`, its directory;
 - `k4opt.record`, the record it was told: its `id`, the SHA-256 of `summary.json` and its path
   relative to the study;
-- `k4opt.status`, `k4opt.feasible`, `k4opt.message` (cut to 1000 characters; the record has
-  all of it) and `k4opt.fingerprint` of its geometry;
+- `k4opt.status`, `k4opt.feasible` and `k4opt.message` (cut to 1000 characters; the record has
+  all of it);
 - `k4opt.diagnostics`, the number of its diagnostics that did not succeed;
 - `k4opt.sampler_seed`, the seed of the session that proposed it;
 - `k4opt.error` when it stopped the study, and `k4opt.recovered` when a resume finished it.
@@ -297,7 +297,7 @@ directory itself is fine: a trial's record names the files of its run directory 
 | problem | its definition, but not its `name` | the path of the file |
 | files the problem names | size and SHA-256 of each | their paths |
 | evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash, or whose hash is not known to be of the code that runs, `executed: false`, cannot make a study) and of the modules it imports from beside it (`helpers`), the metrics it declares with their units and the artifacts it declares (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
-| geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
+| geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, the attribute each geometry destination of the parameters resolves to (its file below the root, locator, attribute and unmodified value; every trial's record must change exactly those) and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
 | k4opt | the SHA-256 of its code | version, git commit |
 | Optuna | its exact version; the study's directions, id, identity digest and limit names; the storage | |
@@ -411,7 +411,7 @@ with their values to 6 significant digits (the values here are illustrative). It
 study:      cld-ecal-granularity-3f9c2a1b, created 2026-10-30T12:00:00+00:00
 id:         3f9c2a1b-5d0e-4f43-9a52-77c1d2e0b6a4
 directory:  /home/me/runs/cld-ecal-study (trials in study.journal)
-parameters: ecal_cell_size  continuous [2.5, 20.0] mm  (constants.ECal_cell_size)
+parameters: ecal_cell_size  continuous [2.5, 20.0] mm  (geometry constants.ECal_cell_size)
 objectives: gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual  minimize  (mrad)
             gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells  minimize  (1)
 limits:     none

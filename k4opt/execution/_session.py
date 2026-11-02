@@ -53,7 +53,12 @@ from k4opt.execution._worker import session_spec
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
-from k4opt.problem.candidate import geometry_overrides, parse_candidate, validate_candidate
+from k4opt.problem.candidate import (
+    configure,
+    geometry_overrides,
+    parse_candidate,
+    validate_candidate,
+)
 from k4opt.problem.config import resolve_problem
 from k4opt.problem.models import ProblemSpec
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId, stage_task
@@ -315,10 +320,10 @@ class EvaluationSession:
             named |= input_files(context, *targets, provided=given)
         named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
         baseline = Baseline.take(problem, binding, named)
-        crowded = []
+        crowded = []  # of how the session runs, or what it is given: no summary keeps these
         slots = 1 if count is None else count
         for task in binding.plan.tasks:
-            cpus = task_cpus(binding, task)
+            cpus = task_cpus(binding.contexts, task)
             beyond = f"more than the {usable} processors this process may use"
             if count is not None and cpus > count:
                 crowded.append(
@@ -332,6 +337,12 @@ class EvaluationSession:
             crowded.append(
                 f"{slots} workers, more than the {usable} processors this process may use: tasks "
                 "will share processors"
+            )
+        if supplied:
+            crowded.append(
+                f"supplied {', '.join(sorted(task.label for task in supplied))}: each file is "
+                "identified (size and SHA-256), not verified to be the output of the stage the "
+                "problem defines; the records list it as supplied"
             )
         return cls(baseline, binding, supplied, (*binding.warnings, *crowded), limit, count)
 
@@ -350,7 +361,8 @@ class EvaluationSession:
         """Collections an evaluator reads that the simulation is not expected to write; the
         simulation's output decides, so they do not stop an evaluation (each summary keeps them
         too). Then how the session's workers suit what it runs: a simulation on more threads than
-        there are workers, more workers than processors (how it ran: no summary keeps these)."""
+        there are workers, more workers than processors; and that a file the caller supplies is
+        identified, not verified to be the stage it stands for (no summary keeps these)."""
         return self._warnings
 
     @property
@@ -530,6 +542,7 @@ class EvaluationSession:
         reference = _run_reference(request.run)
         started = time.perf_counter()
         values, key, prepared, overrides = self._prepare(request.candidate)
+        parameters = tuple(p.name for p, _ in self._baseline.spec.geometry_destinations)
         if self._backend is not None:  # its workers check and evaluate instances of their own
             prepared = prepared.released()
         run_dir = Path(os.path.abspath(request.output))
@@ -539,7 +552,7 @@ class EvaluationSession:
             prepared,
             key,
             self._inputs,
-            GeometryWork(tuple(overrides)),
+            GeometryWork(tuple(overrides), parameters),
             started,
             request=request,
             values=values,
@@ -547,12 +560,16 @@ class EvaluationSession:
         )
 
     def _checked(self, run: _Run, outcome: TaskOutcome, result: TaskResult) -> None:
-        """What is checked of each result as it comes: that the references only the candidate's
-        geometry names read what they read for the candidates already recorded."""
+        """What is checked of each result as it comes: that the geometry made changes the
+        attributes the session resolved, to the values the candidate's configuration gives them,
+        and that the references only the candidate's geometry names read what they read for the
+        candidates already recorded."""
         if result.id != GEOMETRY:
             return
         run.own_refs = outcome.own_refs
+        assert run.prepared is not None
         try:
+            self._baseline.check_changes(result, run.prepared.configuration)
             self._baseline.check_read(candidate_reads(result))
         except RunError as exc:
             run_dir = run.workspace.root
@@ -561,13 +578,14 @@ class EvaluationSession:
     def _prepare(
         self, candidate: Mapping[str, Scalar]
     ) -> tuple[dict[str, Scalar], CandidateKey, _Prepared, list[Override]]:
-        """The checked candidate, its key, what its preflight prepared (its own evaluator
-        instances and the requests made for it) and its overrides."""
+        """The checked candidate, its key, what its preflight prepared (its configuration, its
+        own evaluator instances and the requests made for it) and its overrides."""
         spec = self._baseline.spec
         values, key = validate_candidate(spec, candidate)
+        configuration = configure(spec, values)
         self._baseline.verify()  # first: a file that is gone changed, more than it is missing
-        prepared = _preflight(self._binding, values)
-        overrides = geometry_overrides(self._baseline.problem, values)
+        prepared = _preflight(self._binding, configuration)
+        overrides = geometry_overrides(self._baseline.problem, configuration)
         return values, key, prepared, overrides
 
 

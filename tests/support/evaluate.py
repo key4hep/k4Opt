@@ -21,7 +21,7 @@ from k4opt.execution._drive import _drive, _finish_plan, _Run
 from k4opt.execution._schedule import Scheduler
 from k4opt.execution._stages import check_run_inputs
 from k4opt.execution._tasks import GeometryWork, Workspace
-from k4opt.problem.candidate import validate_candidate
+from k4opt.problem.candidate import configure, validate_candidate
 from k4opt.problem.models import ProblemSpec
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES
@@ -40,7 +40,7 @@ def evaluate_candidate(
     """Evaluate one complete ``candidate`` of ``spec``, whose file is in ``directory``, with an
     instance of each implementation.
 
-    The candidate maps each canonical parameter reference to a scalar; ``implementations`` (an
+    The candidate maps each parameter's name to a scalar; ``implementations`` (an
     evaluator class, say) implement the problem's ``evaluators``, in any order. Before any stage
     runs, raises :class:`~k4opt.problem.CandidateError` for a candidate outside the declared
     domains and :class:`EvaluationContractError` for implementations that cannot be created or
@@ -80,7 +80,7 @@ def evaluate_candidate(
                 f"input {task.label!r}: no evaluator of the problem reads that stage of "
                 f"{task.sample}"
             )
-    prepared = _preflight(binding, values)
+    prepared = _preflight(binding, configure(spec, values))
     checked = time.perf_counter() - started
     return _execute_plan(
         spec,

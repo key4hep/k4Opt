@@ -7,10 +7,13 @@ environment:
 geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 parameters:
   ecal_cell_size:
-    geometry: {constant: ECal_cell_size}
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
+    # one value, two destinations: the geometry's constant and the cell size of the readout cost
+    sets:
+      - {geometry: {constant: ECal_cell_size}}
+      - {evaluator: readout, setting: cell_size}
 # every sample starts from these stages and adds what differs: the particle and the seed
 stages:
   generation:
@@ -34,6 +37,7 @@ evaluators:
     settings:
       threshold: {value: 70, unit: keV}
       bins: {low: 0, high: 200, count: 400}
+
   - name: calo.separation
     as: pi0_rejection
     version: "1"
@@ -41,11 +45,14 @@ evaluators:
       signal: {sample: gamma_20gev, evaluator: calo.shower_shape}
       background: {sample: pi0_20gev, evaluator: calo.shower_shape}
     settings: {signal_efficiency: 0.9}
+
   - name: ecal.channels
     as: readout
     version: "1"
     settings: {layers: 40, radius: {value: 2150, unit: mm}, length: {value: 4420, unit: mm}}
+
 objectives:
   - {evaluator: pi0_rejection, stage: analysis, metric: background_rejection, direction: maximize}
 constraints:
+
   - {evaluator: readout, stage: geometry, metric: ecal_barrel.channels, max: 5.0e+7, unit: "1"}

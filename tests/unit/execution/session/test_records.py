@@ -22,6 +22,7 @@ from k4opt.evaluation import (
 )
 from k4opt.execution import EvaluationSession, RunError, _files
 from k4opt.problem import load_problem
+from k4opt.problem.candidate import configure
 from k4opt.problem.plan import Kind, Task, TaskId
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from k4opt.record.results import TaskResult
@@ -122,6 +123,7 @@ def test_the_record_is_assembled_from_the_task_results_alone(
         session._baseline.taken,
         {"label": "golden"},
         session._baseline.process,
+        configure(session.spec, {RADIUS: 450.0}),
     )
     assert json.loads(json.dumps(again)) == written
     tasks = [

@@ -26,10 +26,16 @@ evaluator the problem's `evaluators` name, in any order, however many entries bi
 sample instead of running it, to try an evaluator on a simulation made earlier, say:
 `--input gamma_10gev/simulation=runs/cld-ecal-10mm/samples/gamma_10gev/simulation/events.edm4hep.root`.
 The sample is always named, also in a problem with one. The stages of the sample only it would
-need do not run either; the other samples run as the problem says. Its path, size and SHA-256 are recorded, and a supplied stage that the
-parameters change (the simulation, when they vary the geometry) was not made with this
-candidate's geometry: the command says so, and `summary.json` records
-`represents_candidate: false`, so such a run never counts as an evaluation of the candidate.
+need do not run either; the other samples run as the problem says. Its path, size and SHA-256
+are recorded. A supplied stage that a parameter reaches (the simulation, when the parameters set
+the geometry, the gun or a ddsim option) was not made from this candidate's values: the command
+says so, and `summary.json` records `represents_candidate: false`, so such a run never counts as
+an evaluation of the candidate. One that no parameter reaches (the simulation, when they set
+only evaluator settings) is the same for every candidate, and the run represents the candidate:
+that says only that nothing the candidate changes was replaced. k4opt identifies the file but
+cannot verify that it is the output of the stage the problem defines; the command warns of that,
+and the record lists it under `supplied`. Only a record with `supplied: []` is determined by the
+problem, the candidate and the identified files alone, which is why a study supplies none.
 
 `--timeout SECONDS` kills `ddsim` if it runs longer than that, for a geometry on which Geant4
 stalls: the simulation stage fails with the tail of ddsim's standard error, its logs stay in
@@ -137,7 +143,9 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      input role to its ordered producer labels (empty for cost models), otherwise recorded
      the same way;
    - `geometry`: its `status` (always `done`: a geometry that cannot be made stops the run), the
-     time spent making it, the geometry fingerprint and manifest, the path and SHA-256 of each file its external
+     time spent making it, the geometry fingerprint and manifest, its `changes` (each attribute
+     the candidate set: its `parameter`, `target`, `file`, `locator`, `attribute`, `old_value` and
+     `new_value`), the parameters that set it (`varies`), the path and SHA-256 of each file its external
      references read (`externals`) and of each file only this candidate's values name
      (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), the time of the
      whole evaluation, `run_dir`, where the run was made, and the environment (`declared`: the
@@ -411,10 +419,13 @@ Evaluating a candidate ([`EvaluationSession`](#evaluating-candidates-evaluations
 in order:
 
 1. validates the candidate (`CandidateError` otherwise): exactly one value per declared
-   parameter, keyed by `parameter.geometry.canonical_target`; continuous `int`/finite `float`
-   within inclusive bounds; integer a real `int` (no `bool`, no rounding) within bounds;
-   categorical one of the choices by kind (strings need a string, booleans a boolean, numbers
-   compare numerically). Units are never interpreted or converted;
+   parameter, keyed by its name; continuous `int`/finite `float` within inclusive bounds;
+   integer a real `int` (no `bool`, no rounding) within bounds; categorical one of the choices
+   by kind (strings need a string, booleans a boolean, numbers compare numerically). Then it
+   configures the candidate: each value written into every destination of its parameter (the
+   geometry's attributes as overrides, each sample's stages, each entry's settings), as a new
+   configuration of this candidate alone, which nothing shared holds. A number a text
+   destination would round is refused here;
 2. matches the evaluator classes to `evaluators` by the `name` of an instance of each, in any
    order: each evaluator the problem names must be given exactly once, however many entries
    bind it, with the declared `version` and reading the declared `stage`, and no other

@@ -137,6 +137,9 @@ def problem(
     doc["constraints"] = [
         c if "evaluator" in c else owned((c["stage"], c["metric"])) | c for c in constraints
     ]
+    if "test.parameter_echo" in names:  # it echoes the value of the cell size
+        cell = doc["parameters"]["ecal_cell_size"]
+        cell["sets"] = [cell["sets"], {"evaluator": "test.parameter_echo", "setting": "x"}]
     return parse_problem(doc)
 
 
@@ -171,6 +174,7 @@ class Spy:
         self.name, self.version = inner.name, inner.version
         self.stage, self.metrics = inner.stage, inner.metrics
         self.collections = inner.collections
+        self.settings = getattr(inner, "settings", None)
         self.evaluated: list[EvaluationRequest] = []
 
     def check(self, request: EvaluationRequest) -> None:
@@ -320,7 +324,7 @@ def test_an_evaluator_is_given_the_same_request_alone_and_among_others(
     )
     evaluate(spec, others, tmp_path / "among", geometry)
     first, second = alone.evaluated[0], among.evaluated[0]
-    for field in ("candidate", "settings", "collections", "events", "seed"):
+    for field in ("settings", "collections", "events", "seed"):
         assert getattr(first, field) == getattr(second, field)
     assert set(first.inputs) == set(second.inputs)
 

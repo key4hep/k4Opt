@@ -14,7 +14,13 @@ import pytest
 import yaml
 
 from k4opt import ConfigError, K4OptError
-from k4opt.problem import MetricRef, ProblemConfigError, load_problem, parse_problem
+from k4opt.problem import (
+    GeometryDestination,
+    MetricRef,
+    ProblemConfigError,
+    load_problem,
+    parse_problem,
+)
 
 Write = Callable[..., Path]
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-granularity.yaml"
@@ -49,8 +55,10 @@ def test_loads_the_checked_in_example() -> None:
     assert problem.environment.key4hep.version == "2026-10-20"
     assert problem.geometry == "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml"
     (parameter,) = problem.parameters
-    assert parameter.geometry.constant == "ECal_cell_size"
-    assert parameter.geometry.canonical_target == "constants.ECal_cell_size"
+    (destination,) = parameter.sets
+    assert isinstance(destination, GeometryDestination)
+    assert destination.constant == "ECal_cell_size"
+    assert destination.canonical_target == "constants.ECal_cell_size"
     assert parameter.name == "ecal_cell_size"
     assert (parameter.kind, parameter.bounds, parameter.unit) == ("continuous", (2.5, 20.0), "mm")
     assert [(e.name, e.version, e.stage) for e in problem.evaluators] == [
@@ -110,10 +118,26 @@ def test_minimal_document(doc: dict[str, Any]) -> None:
 
 def test_integer_and_categorical_parameters(doc: dict[str, Any]) -> None:
     doc["parameters"] |= {
-        "n": {"geometry": {"target": "T.layer[id=1].n"}, "type": "integer", "bounds": [60, 120]},
-        "mode": {"geometry": {"constant": "Mode"}, "type": "categorical", "choices": ["a", "b"]},
-        "flag": {"geometry": {"constant": "Flag"}, "type": "categorical", "choices": [True, False]},
-        "num": {"geometry": {"constant": "Num"}, "type": "categorical", "choices": [1, 2.5]},
+        "n": {
+            "sets": {"geometry": {"target": "T.layer[id=1].n"}},
+            "type": "integer",
+            "bounds": [60, 120],
+        },
+        "mode": {
+            "sets": {"geometry": {"constant": "Mode"}},
+            "type": "categorical",
+            "choices": ["a", "b"],
+        },
+        "flag": {
+            "sets": {"geometry": {"constant": "Flag"}},
+            "type": "categorical",
+            "choices": [True, False],
+        },
+        "num": {
+            "sets": {"geometry": {"constant": "Num"}},
+            "type": "categorical",
+            "choices": [1, 2.5],
+        },
     }
     kinds = [(p.kind, p.bounds, p.choices) for p in parse_problem(doc).parameters[1:]]
     assert kinds == [
@@ -191,8 +215,8 @@ def test_missing_top_level_sections(doc: dict[str, Any], key: str) -> None:
         (("environment", "key4hep"), "environment.key4hep: unknown key(s) ['extra']"),
         (("parameters", "ecal_cell_size"), "parameters.ecal_cell_size: unknown key(s) ['extra']"),
         (
-            ("parameters", "ecal_cell_size", "geometry"),
-            "parameters.ecal_cell_size.geometry: unknown key(s) ['extra']",
+            ("parameters", "ecal_cell_size", "sets", "geometry"),
+            "parameters.ecal_cell_size.sets.geometry: unknown key(s) ['extra']",
         ),
         (("samples", "gamma"), "samples.gamma: unknown key(s) ['extra']"),
         (("samples", "gamma", "generation"), "samples.gamma.generation: unknown key(s) ['extra']"),
@@ -527,41 +551,55 @@ def test_non_string_keys_in_schema_objects(doc: dict[str, Any]) -> None:
     ("param", "message"),
     [
         (
-            {"geometry": {"constant": "X"}, "type": "continuous"},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "continuous"},
             "continuous parameter needs 'bounds'",
         ),
-        ({"geometry": {"constant": "X"}, "type": "integer"}, "integer parameter needs 'bounds'"),
-        ({"geometry": {"constant": "X"}, "type": "categorical"}, "needs 'choices'"),
-        ({"geometry": {"constant": "X"}, "type": "real", "bounds": [1, 2]}, "type: must be one of"),
-        ({"geometry": {}, "type": "continuous", "bounds": [1, 2]}, "needs exactly one of"),
+        (
+            {"sets": {"geometry": {"constant": "X"}}, "type": "integer"},
+            "integer parameter needs 'bounds'",
+        ),
+        ({"sets": {"geometry": {"constant": "X"}}, "type": "categorical"}, "needs 'choices'"),
+        (
+            {"sets": {"geometry": {"constant": "X"}}, "type": "real", "bounds": [1, 2]},
+            "type: must be one of",
+        ),
+        (
+            {"sets": {"geometry": {}}, "type": "continuous", "bounds": [1, 2]},
+            "needs exactly one of",
+        ),
         (
             {
-                "geometry": {"constant": "X", "target": "constants.X"},
+                "sets": {"geometry": {"constant": "X", "target": "constants.X"}},
                 "type": "continuous",
                 "bounds": [1, 2],
             },
             "needs exactly one of",
         ),
         (
-            {"geometry": {"constant": ""}, "type": "continuous", "bounds": [1, 2]},
+            {"sets": {"geometry": {"constant": ""}}, "type": "continuous", "bounds": [1, 2]},
             "geometry.constant: must be a non-empty",
         ),
         (
-            {"geometry": {"constant": 5}, "type": "continuous", "bounds": [1, 2]},
+            {"sets": {"geometry": {"constant": 5}}, "type": "continuous", "bounds": [1, 2]},
             "geometry.constant: must be a non-empty",
         ),
         (
-            {"geometry": "ECal_cell_size", "type": "continuous", "bounds": [1, 2]},
-            "parameters.added.geometry: must be a mapping",
+            {"sets": {"geometry": "ECal_cell_size"}, "type": "continuous", "bounds": [1, 2]},
+            "parameters.added.sets.geometry: must be a mapping",
         ),
         # kinds are mutually exclusive
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [1, 2], "choices": [1]},
+            {
+                "sets": {"geometry": {"constant": "X"}},
+                "type": "continuous",
+                "bounds": [1, 2],
+                "choices": [1],
+            },
             "'choices' is only allowed",
         ),
         (
             {
-                "geometry": {"constant": "X"},
+                "sets": {"geometry": {"constant": "X"}},
                 "type": "categorical",
                 "choices": ["a"],
                 "bounds": [1, 2],
@@ -569,106 +607,133 @@ def test_non_string_keys_in_schema_objects(doc: dict[str, Any]) -> None:
             "'bounds' is not allowed",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": ["a"], "unit": "mm"},
+            {
+                "sets": {"geometry": {"constant": "X"}},
+                "type": "categorical",
+                "choices": ["a"],
+                "unit": "mm",
+            },
             "'unit' is not allowed",
         ),
         # bounds
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [8, 4]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "continuous", "bounds": [8, 4]},
             "low must be smaller than high, got [8, 4]",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [4, 4]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "continuous", "bounds": [4, 4]},
             "low must be smaller than high",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [1]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "continuous", "bounds": [1]},
             "must be [low, high], got 1 item",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [1, 2, 3]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "continuous", "bounds": [1, 2, 3]},
             "must be [low, high], got 3 item",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": "1,2"},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "continuous", "bounds": "1,2"},
             "bounds: must be a list",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [1, float("inf")]},
+            {
+                "sets": {"geometry": {"constant": "X"}},
+                "type": "continuous",
+                "bounds": [1, float("inf")],
+            },
             "bounds[1]: must be finite",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [float("nan"), 1]},
+            {
+                "sets": {"geometry": {"constant": "X"}},
+                "type": "continuous",
+                "bounds": [float("nan"), 1],
+            },
             "bounds[0]: must be finite",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [True, 2]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "continuous", "bounds": [True, 2]},
             "bounds[0]: must be a number, got bool",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": ["1", 2]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "continuous", "bounds": ["1", 2]},
             "bounds[0]: must be a number, got str",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "integer", "bounds": [1, 3.5]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "integer", "bounds": [1, 3.5]},
             "bounds[1]: must be an integer, got float",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "integer", "bounds": [1.0, 3]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "integer", "bounds": [1.0, 3]},
             "bounds[0]: must be an integer, got float",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "integer", "bounds": [False, 3]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "integer", "bounds": [False, 3]},
             "bounds[0]: must be an integer, got bool",
         ),
         # units
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [1, 2], "unit": ""},
+            {
+                "sets": {"geometry": {"constant": "X"}},
+                "type": "continuous",
+                "bounds": [1, 2],
+                "unit": "",
+            },
             "unit: must be a non-empty",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "continuous", "bounds": [1, 2], "unit": 5},
+            {
+                "sets": {"geometry": {"constant": "X"}},
+                "type": "continuous",
+                "bounds": [1, 2],
+                "unit": 5,
+            },
             "unit: must be a non-empty",
         ),
         # choices
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": []},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "categorical", "choices": []},
             "must list at least one choice",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": "ab"},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "categorical", "choices": "ab"},
             "choices: must be a list",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": ["a", "a"]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "categorical", "choices": ["a", "a"]},
             "choices[1]: duplicate choice 'a'",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": [1, 1.0]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "categorical", "choices": [1, 1.0]},
             "duplicate choice 1.0",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": ["a", 1]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "categorical", "choices": ["a", 1]},
             "choices must all be of one kind",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": [1, True]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "categorical", "choices": [1, True]},
             "choices must all be of one kind",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": [None]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "categorical", "choices": [None]},
             "choices[0]: choices must be strings",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": [[1]]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "categorical", "choices": [[1]]},
             "choices[0]: choices must be strings",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": [float("nan")]},
+            {
+                "sets": {"geometry": {"constant": "X"}},
+                "type": "categorical",
+                "choices": [float("nan")],
+            },
             "choices[0]: must be finite",
         ),
         (
-            {"geometry": {"constant": "X"}, "type": "categorical", "choices": [""]},
+            {"sets": {"geometry": {"constant": "X"}}, "type": "categorical", "choices": [""]},
             "choices[0]: must be a non-empty string",
         ),
     ],
@@ -680,24 +745,24 @@ def test_parameter_errors(doc: dict[str, Any], param: dict[str, Any], message: s
 
 def test_parameters_that_set_one_target_are_rejected(doc: dict[str, Any]) -> None:
     doc["parameters"]["again"] = {
-        "geometry": {"constant": "ECal_cell_size"},
+        "sets": {"geometry": {"constant": "ECal_cell_size"}},
         "type": "continuous",
         "bounds": [1, 2],
     }
     reject(
         doc,
-        "parameters.again.geometry: sets the target 'constants.ECal_cell_size' of "
-        "parameters.ecal_cell_size too",
+        "parameters.again.sets: the geometry's constants.ECal_cell_size is set by "
+        "parameters.ecal_cell_size already",
     )
 
 
 def test_constant_and_target_spellings_are_one_target(doc: dict[str, Any]) -> None:
     doc["parameters"]["again"] = {
-        "geometry": {"target": "constants.ECal_cell_size"},
+        "sets": {"geometry": {"target": "constants.ECal_cell_size"}},
         "type": "continuous",
         "bounds": [1, 2],
     }
-    reject(doc, "of parameters.ecal_cell_size too")
+    reject(doc, "constants.ECal_cell_size is set by parameters.ecal_cell_size already")
 
 
 # --- objectives and constraints --------------------------------------------------------
@@ -899,7 +964,7 @@ schema_version: k4opt.problem/v1alpha1
 environment: {key4hep: {channel: release, version: "2026-04-08"}}
 geometry: g.xml
 parameters:
-  x: {geometry: {constant: X}, type: integer, bounds: [1, 3]}
+  x: {sets: {geometry: {constant: X}}, type: integer, bounds: [1, 3]}
 evaluators: [{name: e, version: "1"}]
 objectives:
   - &base {stage: simulation, metric: a, direction: minimize}
@@ -914,8 +979,13 @@ objectives:
     ]
 
 
+# a destination that reads its value as a double refuses such bounds; an evaluator setting does not
+SETTING = {"evaluator": "calo.single_particle_shower", "setting": "size"}
+
+
 @pytest.mark.parametrize("huge", [10**400, -(10**400)], ids=["positive", "negative"])
 def test_huge_integers_are_ordinary_numbers(doc: dict[str, Any], huge: int) -> None:
+    doc["parameters"]["ecal_cell_size"]["sets"] = SETTING
     doc["parameters"]["ecal_cell_size"]["bounds"] = sorted([huge, 0])
     doc["constraints"] = [{"stage": "s", "metric": "m", "max": 10**400}]
     doc["samples"]["gamma"]["simulation"]["seed"] = huge
@@ -925,6 +995,7 @@ def test_huge_integers_are_ordinary_numbers(doc: dict[str, Any], huge: int) -> N
 
 
 def test_huge_integer_next_to_a_float_bound(doc: dict[str, Any]) -> None:
+    doc["parameters"]["ecal_cell_size"]["sets"] = SETTING
     doc["parameters"]["ecal_cell_size"]["bounds"] = [1.5, 10**400]
     assert parse_problem(doc).parameters[0].bounds == (1.5, 10**400)
     doc["parameters"]["ecal_cell_size"]["bounds"] = [10**400, 1.5]

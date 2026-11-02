@@ -3,6 +3,7 @@ read no stage, so a study of a few trials runs in a fraction of a second."""
 
 from __future__ import annotations
 
+import copy
 import json
 import textwrap
 from collections.abc import Callable
@@ -16,6 +17,7 @@ import yaml
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
 RADIUS = "radius"
+READERS = ("test.trade_off", "test.candidate_check")  # each reads the candidate from setting x
 A = ("analysis", "a")
 B = ("analysis", "b")
 
@@ -36,21 +38,26 @@ def problem_document(
     """A problem measured by ``test.trade_off`` unless it says otherwise. An objective is
     ``(stage, metric, direction)``, or ``(evaluator, stage, metric, direction)`` for a problem
     of several evaluators."""
+    evaluators = evaluators or [{"name": "test.trade_off", "version": "1"}]
+    parameter = copy.deepcopy(parameter) or {
+        "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
+        "type": "continuous",
+        "bounds": [100.0, 600.0],
+    }
+    sets = parameter["sets"] if isinstance(parameter["sets"], list) else [parameter["sets"]]
+    # the evaluators that read the candidate read it from their setting x, which it sets
+    for entry in evaluators:
+        if entry["name"] in READERS:
+            read = {"evaluator": entry.get("as", entry["name"]), "setting": "x"}
+            sets += [] if read in sets else [read]
+    parameter["sets"] = sets
     document: dict[str, Any] = {
         "schema_version": "k4opt.problem/v1alpha1",
         "name": "trade",
         "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
         "geometry": MINI_COMPACT,
-        "parameters": {
-            RADIUS: parameter
-            or {
-                "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
-                "type": "continuous",
-                "bounds": [100.0, 600.0],
-                "unit": "mm",
-            }
-        },
-        "evaluators": evaluators or [{"name": "test.trade_off", "version": "1"}],
+        "parameters": {RADIUS: parameter},
+        "evaluators": evaluators,
         "objectives": [
             dict(zip(("evaluator", "stage", "metric", "direction")[-len(o) :], o, strict=True))
             for o in objectives or [(*A, "minimize"), (*B, "minimize")]
@@ -157,7 +164,7 @@ def mixed_problem(write_problem: Callable[..., Path]) -> Path:
     """A problem whose trials end every way a record can, some of them with equal values."""
     return write_problem(
         parameter={
-            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
             "type": "categorical",
             "choices": list(OUTCOME),
         },

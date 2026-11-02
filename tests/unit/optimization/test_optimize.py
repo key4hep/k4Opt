@@ -110,7 +110,6 @@ def test_every_trial_has_a_directory_with_its_complete_record(
             "sha256": hashlib.sha256(data).hexdigest(),
             "path": f"{name}/summary.json",
         }
-        assert trial.user_attrs["k4opt.fingerprint"] == record["geometry"]["fingerprint"]
         assert isinstance(trial.user_attrs["k4opt.sampler_seed"], int)
         assert (reported.record, reported.directory) == (record["id"], output / name)
         assert trial.params == record["candidate"]
@@ -122,7 +121,7 @@ def test_invalid_and_failed_candidates_are_fail_trials_and_the_study_goes_on(
     settings = {"invalid_below": 350, "failed_below": 200}
     problem = write_problem(
         parameter={
-            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
             "type": "categorical",
             "choices": [450, 300, 150],  # valid, invalid, failed; the probe takes 450
         },
@@ -206,7 +205,8 @@ def test_check_and_evaluate_see_each_trials_own_candidate(
     # for each trial, which is checked and evaluated with that trial's values only
     probe, *trials = checking.instances  # type: ignore[attr-defined]
     assert (probe.checked, probe.evaluated) == ([], [])
-    assert [(i.checked, i.evaluated) for i in trials] == [([c], [c]) for c in proposed]
+    values = [c[RADIUS] for c in proposed]
+    assert [(i.checked, i.evaluated) for i in trials] == [([v], [v]) for v in values]
     assert len(set(map(str, proposed))) == 4
 
 
@@ -215,7 +215,7 @@ def test_a_check_that_refuses_a_candidate_stops_the_study_at_it(
 ) -> None:
     problem = write_problem(
         parameter={
-            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "sets": {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}},
             "type": "categorical",
             "choices": [150, 250],
         },

@@ -55,6 +55,7 @@ from tests.unit.execution.session.conftest import (
     change,
     combined,
     declare,
+    echo,
     errors,
     evaluate,
     particle,
@@ -337,7 +338,7 @@ def test_a_sample_whose_simulation_fails_blocks_only_its_own_evaluations(
         return 2 if particle(argv) == "pi-" else code
 
     monkeypatch.setattr(ddsim_run, "_execute", pions_crash)
-    doc = two_samples(problem_file)
+    doc = echo(two_samples(problem_file))
     doc["evaluators"].append({"name": "test.parameter_echo", "version": "1"})
     doc["objectives"].append(
         {"evaluator": "test.parameter_echo", "stage": ECHO[0], "metric": ECHO[1]}
@@ -573,7 +574,7 @@ def test_a_combined_evaluator_is_blocked_by_an_input_that_did_not_succeed(
         return 2 if particle(argv) == "pi+" else code
 
     monkeypatch.setattr(ddsim_run, "_execute", ww_crashes)
-    doc = combined(problem_file)
+    doc = echo(combined(problem_file), "readout")
     doc["evaluators"].append({"name": "test.parameter_echo", "as": "readout", "version": "1"})
     doc["constraints"] = [
         {"evaluator": "readout", "stage": ECHO[0], "metric": ECHO[1], "max": 1000}

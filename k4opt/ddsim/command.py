@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from k4opt.ddsim.errors import DdsimError
 from k4opt.frozen import Json
@@ -144,51 +146,39 @@ def _range(value: Json, path: str) -> tuple[int | float, int | float]:
     return low, high
 
 
-def particle_gun_args(particle_gun: Json) -> tuple[str, ...]:
-    """The ``ddsim`` particle-gun arguments for the generation stage of a problem.
-
-    ``particle``, ``energy`` and ``direction`` are required, ``vertex`` defaults to the
-    origin. ``energy`` is the total energy of the primary. ``direction.distribution`` is passed
-    to ``--gun.distribution`` as ddsim names it: ``cos(theta)`` is flat in cos(theta), whereas
-    ``uniform`` is flat in theta; ``theta`` and ``phi`` give the ranges. Unknown keys and
-    other distributions are errors; nothing falls back to another distribution.
-    """
-    top = _mapping(
-        particle_gun,
-        "generation",
-        ("particle", "energy", "vertex", "direction"),
-        ("particle", "energy", "direction"),
-    )
-    particle = top["particle"]
-    if not isinstance(particle, str) or not particle.strip() or particle.startswith("-"):
+def _particle(value: Json) -> tuple[str, ...]:
+    if not isinstance(value, str) or not value.strip() or value.startswith("-"):
         raise _fail(
-            "generation.particle",
-            f"must be a particle name such as 'gamma', got {particle!r}",
+            "generation.particle", f"must be a particle name such as 'gamma', got {value!r}"
         )
+    return (f"--gun.particle={value}",)
 
-    energy = _mapping(top["energy"], "generation.energy", ("value", "unit"), ("value", "unit"))
-    energy_value = _number(energy["value"], "generation.energy.value")
-    if energy_value <= 0:
-        raise _fail("generation.energy.value", f"must be positive, got {energy_value!r}")
-    energy_unit = _unit(energy["unit"], "generation.energy.unit", _ENERGY_UNITS)
 
-    vertex = _mapping(
-        top.get("vertex", {"value": (0, 0, 0), "unit": "mm"}),
-        "generation.vertex",
-        ("value", "unit"),
-        ("value", "unit"),
-    )
+def _energy(value: Json) -> tuple[str, ...]:
+    energy = _mapping(value, "generation.energy", ("value", "unit"), ("value", "unit"))
+    number = _number(energy["value"], "generation.energy.value")
+    if number <= 0:
+        raise _fail("generation.energy.value", f"must be positive, got {number!r}")
+    unit = _unit(energy["unit"], "generation.energy.unit", _ENERGY_UNITS)
+    return (f"--gun.energy={_quantity(number, unit)}",)
+
+
+def _vertex(value: Json) -> tuple[str, ...]:
+    vertex = _mapping(value, "generation.vertex", ("value", "unit"), ("value", "unit"))
     coordinates = vertex["value"]
     if not isinstance(coordinates, (list, tuple)) or len(coordinates) != 3:
         raise _fail("generation.vertex.value", f"must be a list [x, y, z], got {coordinates!r}")
-    length_unit = _unit(vertex["unit"], "generation.vertex.unit", _LENGTH_UNITS)
+    unit = _unit(vertex["unit"], "generation.vertex.unit", _LENGTH_UNITS)
     position = " ".join(
-        _quantity(_number(c, f"generation.vertex.value[{i}]"), length_unit)
+        _quantity(_number(c, f"generation.vertex.value[{i}]"), unit)
         for i, c in enumerate(coordinates)
     )
+    return (f"--gun.position={position}",)
 
+
+def _direction(value: Json) -> tuple[str, ...]:
     direction = _mapping(
-        top["direction"],
+        value,
         "generation.direction",
         ("distribution", "theta", "phi", "unit"),
         ("distribution", "theta", "phi", "unit"),
@@ -200,13 +190,13 @@ def particle_gun_args(particle_gun: Json) -> tuple[str, ...]:
             f"must be one of {list(DIRECTION_DISTRIBUTIONS)} (ddsim --gun.distribution), "
             f"got {distribution!r}",
         )
-    angle_unit = _unit(direction["unit"], "generation.direction.unit", tuple(_ANGLE_UNITS))
-    half_turn = _ANGLE_UNITS[angle_unit]
+    unit = _unit(direction["unit"], "generation.direction.unit", tuple(_ANGLE_UNITS))
+    half_turn = _ANGLE_UNITS[unit]
     theta_min, theta_max = _range(direction["theta"], "generation.direction.theta")
     if theta_min < 0 or theta_max > half_turn:
         raise _fail(
             "generation.direction.theta",
-            f"must lie within [0, {half_turn:g}] {angle_unit}, got [{theta_min}, {theta_max}]",
+            f"must lie within [0, {half_turn:g}] {unit}, got [{theta_min}, {theta_max}]",
         )
     phi_min, phi_max = _range(direction["phi"], "generation.direction.phi")
     if phi_max - phi_min > 2 * half_turn:
@@ -214,18 +204,56 @@ def particle_gun_args(particle_gun: Json) -> tuple[str, ...]:
             "generation.direction.phi",
             f"must not span more than a full turn, got [{phi_min}, {phi_max}]",
         )
+    return (
+        f"--gun.distribution={distribution}",
+        f"--gun.thetaMin={_quantity(theta_min, unit)}",
+        f"--gun.thetaMax={_quantity(theta_max, unit)}",
+        f"--gun.phiMin={_quantity(phi_min, unit)}",
+        f"--gun.phiMax={_quantity(phi_max, unit)}",
+    )
 
+
+# each key of the particle gun with what reads it into ddsim arguments; the gun fires one
+# particle, from the origin unless it says otherwise
+_GUN: Mapping[str, Callable[[Json], tuple[str, ...]]] = {
+    "particle": _particle,
+    "energy": _energy,
+    "vertex": _vertex,
+    "direction": _direction,
+}
+_GUN_REQUIRED = ("particle", "energy", "direction")
+_ORIGIN: Json = {"value": (0, 0, 0), "unit": "mm"}
+
+
+def _gun(particle_gun: Json, pending: Collection[str]) -> dict[str, tuple[str, ...]]:
+    """The arguments of each key of ``particle_gun`` that it gives, by key; a required key may be
+    ``pending`` instead (a parameter sets it per candidate), and is then not given."""
+    required = tuple(key for key in _GUN_REQUIRED if key not in pending)
+    top = _mapping(particle_gun, "generation", tuple(_GUN), required)
+    given = [key for key in pending if key in top]
+    if given:
+        raise _fail(f"generation.{given[0]}", "is given, but a parameter sets it")
+    return {key: read(top[key]) for key, read in _GUN.items() if key in top}
+
+
+def particle_gun_args(particle_gun: Json) -> tuple[str, ...]:
+    """The ``ddsim`` particle-gun arguments for the generation stage of a problem.
+
+    ``particle``, ``energy`` and ``direction`` are required, ``vertex`` defaults to the
+    origin. ``energy`` is the total energy of the primary. ``direction.distribution`` is passed
+    to ``--gun.distribution`` as ddsim names it: ``cos(theta)`` is flat in cos(theta), whereas
+    ``uniform`` is flat in theta; ``theta`` and ``phi`` give the ranges. Unknown keys and
+    other distributions are errors; nothing falls back to another distribution.
+    """
+    args = _gun(particle_gun, ())
+    vertex = args.get("vertex") or _vertex(_ORIGIN)
     return (
         "--enableGun",
-        f"--gun.particle={particle}",
+        *args["particle"],
         "--gun.multiplicity=1",
-        f"--gun.energy={_quantity(energy_value, energy_unit)}",
-        f"--gun.position={position}",
-        f"--gun.distribution={distribution}",
-        f"--gun.thetaMin={_quantity(theta_min, angle_unit)}",
-        f"--gun.thetaMax={_quantity(theta_max, angle_unit)}",
-        f"--gun.phiMin={_quantity(phi_min, angle_unit)}",
-        f"--gun.phiMax={_quantity(phi_max, angle_unit)}",
+        *args["energy"],
+        *vertex,
+        *args["direction"],
     )
 
 
@@ -364,6 +392,20 @@ def threads(options: Mapping[str, Json]) -> int:
     return 1 if value is None else _threads(value, f"simulation.{THREADS}")
 
 
+def _check_run(events: int, seed: int | None, particle_gun: Json, input_file: Path | None) -> None:
+    """Raise :class:`DdsimError` unless ``events`` is a positive integer, ``seed`` an integer or
+    ``None`` and exactly one of ``particle_gun`` and ``input_file`` gives the primaries."""
+    if isinstance(events, bool) or not isinstance(events, int) or events < 1:
+        raise DdsimError(f"events must be a positive integer, got {events!r}")
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+        raise DdsimError(f"seed must be an integer, got {seed!r}")
+    if (particle_gun is None) == (input_file is None):
+        raise DdsimError(
+            "generation: set exactly one of particle_gun and input_file "
+            f"(got {'both' if input_file is not None else 'neither'})"
+        )
+
+
 def ddsim_arguments(
     *,
     compact: Path,
@@ -383,15 +425,7 @@ def ddsim_arguments(
     :class:`DdsimError` instead of silently winning or losing. ``events`` must be a positive
     integer and ``seed`` an integer or ``None``.
     """
-    if isinstance(events, bool) or not isinstance(events, int) or events < 1:
-        raise DdsimError(f"events must be a positive integer, got {events!r}")
-    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
-        raise DdsimError(f"seed must be an integer, got {seed!r}")
-    if (particle_gun is None) == (input_file is None):
-        raise DdsimError(
-            "generation: set exactly one of particle_gun and input_file "
-            f"(got {'both' if input_file is not None else 'neither'})"
-        )
+    _check_run(events, seed, particle_gun, input_file)
     user = option_args(options)
     managed = [
         f"--compactFile={compact}",
@@ -406,3 +440,100 @@ def ddsim_arguments(
     if seed is not None:
         managed.append(f"--random.seed={seed}")
     return (*managed, *user)
+
+
+@dataclass(frozen=True, slots=True)
+class Settable:
+    """How a parameter's value is written into an option of an executor that it sets: as
+    ``text`` (a particle name), as a ``quantity`` ``{value, unit}`` with a unit of ``units``, or
+    as an ``expression``, the text ddsim's command line reads (a number, ``<value>*<unit>`` for a
+    number with a unit, a text or a boolean).
+
+    Whether a value is valid is decided by the check of that option alone, a test of its one
+    value that an interval or a set decides (positive, finite, a unit of a list, a nonblank
+    name): the ends of a parameter's domain decide it for every value between them, so a
+    problem is checked at those ends, before any candidate. An option whose check is not of
+    that kind is not settable.
+    """
+
+    form: Literal["text", "quantity", "expression"]
+    units: tuple[str, ...] = ()
+
+
+_SETTABLE_GUN: Mapping[str, Settable] = {
+    "particle": Settable("text"),
+    "energy": Settable("quantity", _ENERGY_UNITS),
+}
+
+
+def settable_gun(key: str) -> Settable:
+    """How a parameter sets the key ``key`` of the particle gun; :class:`DdsimError` for one it
+    cannot set."""
+    if key not in _SETTABLE_GUN:
+        raise _fail(
+            f"generation.{key}",
+            f"a parameter can set only the {' and '.join(_SETTABLE_GUN)} of the particle gun",
+        )
+    return _SETTABLE_GUN[key]
+
+
+def settable_option(key: str) -> Settable:
+    """How a parameter sets the ddsim option ``key``; :class:`DdsimError` for one it cannot set:
+    an option k4opt sets or refuses, one that names a file (identified once per session, not per
+    candidate), ``numberOfThreads`` (how many processors the simulation keeps busy, not what is
+    simulated), a flag and an option that takes a list."""
+    path = f"simulation.{key}"
+    _check_option_name(key, path)
+    reason = None
+    if key in FILE_OPTIONS:
+        reason = "it names a file, which k4opt identifies once per session, not per candidate"
+    elif key == THREADS:
+        reason = "it says how many processors the simulation keeps busy, not what is simulated"
+    elif _is_flag(key):
+        reason = "it is a flag, which ddsim cannot switch off on its command line"
+    elif key in _REPEATED or key in _SEVERAL:
+        reason = "it takes a list of values"
+    if reason is not None:
+        raise _fail(path, f"a parameter cannot set it: {reason}")
+    return Settable("expression")
+
+
+def check_particle_gun(particle_gun: Json, pending: Collection[str] = ()) -> None:
+    """Raise :class:`DdsimError` if ``particle_gun`` does not describe a gun ddsim can fire once
+    the keys in ``pending``, which parameters set, are given; it must not give them itself."""
+    for key in pending:
+        settable_gun(key)
+    _gun(particle_gun, pending)
+
+
+def check_options(options: Mapping[str, Json], pending: Collection[str] = ()) -> None:
+    """Raise :class:`DdsimError` if ``options`` (ddsim option names mapped to values) cannot be
+    passed to ddsim faithfully, or set what k4opt manages; the options in ``pending``, which
+    parameters set, must be settable and not given."""
+    for key in pending:
+        settable_option(key)
+        if isinstance(options, Mapping) and key in options:
+            raise _fail(f"simulation.{key}", "is given, but a parameter sets it")
+    option_args(options)
+
+
+def check_arguments(
+    *,
+    events: int,
+    seed: int | None,
+    particle_gun: Json = None,
+    input_file: Path | None = None,
+    options: Mapping[str, Json],
+    pending_gun: Collection[str] = (),
+    pending_options: Collection[str] = (),
+) -> None:
+    """Raise :class:`DdsimError` if these settings cannot be turned into a ``ddsim`` command
+    once the keys of the gun and the options that parameters set (``pending_gun``,
+    ``pending_options``) are given.
+
+    Needs no files and starts nothing, so it can run before anything is prepared.
+    """
+    _check_run(events, seed, particle_gun, input_file)
+    if input_file is None:
+        check_particle_gun(particle_gun, pending_gun)
+    check_options(options, pending_options)
