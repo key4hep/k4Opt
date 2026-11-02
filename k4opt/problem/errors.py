@@ -17,5 +17,5 @@ class ProblemConfigError(ConfigError):
 class CandidateError(K4OptError):
     """A candidate does not fit the problem it is evaluated for.
 
-    The message names the offending parameter reference(s).
+    The message names the offending parameter(s).
     """

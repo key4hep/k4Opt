@@ -67,7 +67,10 @@ def _edit(path: Path, change: Callable[[dict[str, Any]], None]) -> None:
 
 
 PROBLEM_CHANGES: dict[str, tuple[Callable[[dict[str, Any]], None], str]] = {
-    "bounds": (lambda d: d["parameters"][0].update(bounds=[100.0, 500.0]), "parameters changed"),
+    "bounds": (
+        lambda d: d["parameters"][RADIUS].update(bounds=[100.0, 500.0]),
+        "parameters changed",
+    ),
     "direction": (lambda d: d["objectives"][0].update(direction="maximize"), "objectives changed"),
     "limit": (
         lambda d: d.update(
@@ -195,7 +198,7 @@ def test_a_file_only_candidates_name_reads_alike_in_every_trial_of_a_study(
         "type": "categorical",
         "choices": ["${CAD}/b.stl"],
     }
-    _edit(problem, lambda d: d["parameters"].append(support))
+    _edit(problem, lambda d: d["parameters"].update(support=support))
     run(problem, output, 2, seed=1)
     read = {"path": str(model), "sha256": hashlib.sha256(b"solid b").hexdigest()}
     for number in (0, 1):

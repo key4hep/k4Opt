@@ -52,7 +52,7 @@ def test_each_parameter_is_searched_as_declared(
     declared: dict[str, Any], distribution: Any
 ) -> None:
     spec = parse_problem(problem_document(parameter=declared))
-    assert search_space(spec) == {"constants.InnerTracker_Barrel_radius_1": distribution}
+    assert search_space(spec) == {"radius": distribution}
 
 
 @pytest.mark.parametrize(

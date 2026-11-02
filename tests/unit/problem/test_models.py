@@ -62,7 +62,7 @@ def test_mutating_the_input_does_not_change_the_spec(doc: dict[str, Any]) -> Non
     doc["samples"]["gamma"]["generation"]["particle"] = "e-"
     doc["samples"]["gamma"]["generation"]["direction"]["theta"].append(1)
     doc["evaluators"][0]["settings"]["collection"] = "Other"
-    doc["parameters"][0]["bounds"][0] = -1
+    doc["parameters"]["ecal_cell_size"]["bounds"][0] = -1
     doc["objectives"].clear()
     assert problem.to_dict() == before
 
@@ -170,9 +170,11 @@ def test_a_stage_without_seed_omits_it(doc: dict[str, Any]) -> None:
 
 
 def test_canonical_target(doc: dict[str, Any]) -> None:
-    doc["parameters"].append(
-        {"geometry": {"target": "GlobalSolenoid.inner_field"}, "type": "integer", "bounds": [1, 2]}
-    )
+    doc["parameters"]["field"] = {
+        "geometry": {"target": "GlobalSolenoid.inner_field"},
+        "type": "integer",
+        "bounds": [1, 2],
+    }
     first, second = parse_problem(doc).parameters
     assert first.geometry.canonical_target == "constants.ECal_cell_size"
     assert second.geometry.canonical_target == "GlobalSolenoid.inner_field"

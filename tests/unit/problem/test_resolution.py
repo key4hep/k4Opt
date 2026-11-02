@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import shutil
 import subprocess
@@ -28,7 +27,8 @@ def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def problem_doc(doc: dict[str, Any]) -> dict[str, Any]:
     doc["geometry"] = MINI_COMPACT
-    doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
+    cell = doc["parameters"].pop("ecal_cell_size")
+    doc["parameters"]["radius"] = cell | {"geometry": {"constant": "InnerTracker_Barrel_radius_1"}}
     return doc
 
 
@@ -52,7 +52,7 @@ def test_load_resolves_a_constant(tmp_path: Path, problem_doc: dict[str, Any]) -
 
 def test_load_resolves_a_structured_target(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
     ref = "InnerTrackerBarrel.layer[id=1].rphi_layout.nphi"
-    problem_doc["parameters"][0] = {
+    problem_doc["parameters"]["radius"] = {
         "geometry": {"target": ref},
         "type": "integer",
         "bounds": [10, 100],
@@ -64,9 +64,11 @@ def test_load_resolves_a_structured_target(tmp_path: Path, problem_doc: dict[str
 def test_parameters_resolve_in_order_with_one_discovery(
     tmp_path: Path, problem_doc: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    problem_doc["parameters"].append(
-        {"geometry": {"constant": "world_side"}, "type": "continuous", "bounds": [1.0, 2.0]}
-    )
+    problem_doc["parameters"]["world_side"] = {
+        "geometry": {"constant": "world_side"},
+        "type": "continuous",
+        "bounds": [1.0, 2.0],
+    }
     calls: list[GeometrySource] = []
     discover = GeometrySource.discover
 
@@ -95,20 +97,21 @@ def test_parameters_resolve_in_order_with_one_discovery(
 def test_missing_or_malformed_target(
     tmp_path: Path, problem_doc: dict[str, Any], selector: dict[str, str], message: str
 ) -> None:
-    problem_doc["parameters"].insert(0, copy.deepcopy(problem_doc["parameters"][0]))
-    problem_doc["parameters"][1]["geometry"] = selector
-    with pytest.raises(ProblemConfigError, match=r"parameters\[1\]\.geometry") as info:
+    problem_doc["parameters"]["other"] = problem_doc["parameters"]["radius"] | {
+        "geometry": selector
+    }
+    with pytest.raises(ProblemConfigError, match=r"parameters\.other\.geometry") as info:
         load_problem(write_problem(tmp_path, problem_doc))
     assert message in str(info.value)
     assert isinstance(info.value.__cause__, GeometryError)
 
 
 def test_ambiguous_target_is_not_guessed(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
-    problem_doc["parameters"][0]["geometry"] = {"constant": "Tracker_cooling_gap"}
+    problem_doc["parameters"]["radius"]["geometry"] = {"constant": "Tracker_cooling_gap"}
     with pytest.raises(ProblemConfigError) as info:
         load_problem(write_problem(tmp_path, problem_doc))
     message = str(info.value)
-    assert "parameters[0].geometry" in message
+    assert "parameters.radius.geometry" in message
     assert "'constants.Tracker_cooling_gap'" in message
     assert "cannot currently be selected unambiguously" in message
     assert "compact/det_v1/tracker.xml" in message

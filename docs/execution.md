@@ -14,7 +14,7 @@ what is evaluated, the [problem](problem.md).
 ```bash
 k4opt evaluate examples/problem/cld-ecal-granularity.yaml \
   --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
-  --param constants.ECal_cell_size=10.0 \
+  --param ecal_cell_size=10.0 \
   --output runs/cld-ecal-10mm
 ```
 
@@ -53,8 +53,8 @@ process, the easiest to debug. Like `--timeout`, it is not part of the problem, 
 One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`); from
 Python, an [`EvaluationSession`](#evaluating-candidates-evaluationsession)
 evaluates many candidates of a problem the same way.
-`--param REFERENCE=VALUE` uses the canonical reference of the problem file and is repeated for
-each declared parameter. `--output` must not exist. Before anything is created, the candidate
+`--param NAME=VALUE` names a parameter of the problem file and is repeated for each of
+them. `--output` must not exist. Before anything is created, the candidate
 (keys, types, bounds), the supplied inputs, the evaluators (each one the problem names given
 once, with its version and the stage it reads, and no other), the settings and collections of
 each binding, the stages of each sample, and the metrics the objectives and constraints name of
@@ -208,7 +208,7 @@ objectives:
 k4opt evaluate problem.yaml \
   --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
   --evaluator my_cost.py:ReadoutCost \
-  --param constants.ECal_cell_size=10.0 --output runs/cost-10mm
+  --param ecal_cell_size=10.0 --output runs/cost-10mm
 ```
 
 An evaluator that needs other events, another event count or seed measures another sample of the
@@ -232,7 +232,7 @@ session = EvaluationSession.open(
     timeout=3600,  # seconds ddsim may take per candidate; no limit without it
 )
 for size in (5.0, 7.0, 10.0):
-    outcome = session.evaluate({"constants.ECal_cell_size": size}, f"runs/scan/{size}mm")
+    outcome = session.evaluate({"ecal_cell_size": size}, f"runs/scan/{size}mm")
     print(size, outcome.candidate.status, outcome.assessment.feasible)
 ```
 
@@ -278,7 +278,7 @@ Whatever proposes candidates (a person, an optimizer) can hand them over one by 
 ```python
 from k4opt.execution import RunRequest
 
-requests = (RunRequest({"constants.ECal_cell_size": v}, f"runs/{v}mm") for v in (5.0, 7.0))
+requests = (RunRequest({"ecal_cell_size": v}, f"runs/{v}mm") for v in (5.0, 7.0))
 with session.evaluate_each(requests) as evaluations:
     for request, outcome in evaluations:  # outcome: a RunOutcome, or the exception that stopped it
         ...

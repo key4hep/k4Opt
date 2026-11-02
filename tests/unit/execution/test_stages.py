@@ -50,7 +50,7 @@ from tests.support.evaluators import implementations
 from tests.support.problems import run_in_order
 from tests.support.simulation import events_with
 
-CELL = "constants.ECal_cell_size"
+CELL = "ecal_cell_size"
 
 
 GENERATOR = {

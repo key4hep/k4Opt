@@ -10,7 +10,7 @@ admits it into a new run directory of its own and runs its tasks there
 it, each pipeline stage of each sample runs once and each evaluation measures its sample, or the
 candidate, with its new instance. Its record is then checked and published
 (:mod:`k4opt.execution._publish`). :func:`run_candidate` evaluates one candidate given as
-``REFERENCE=VALUE`` strings.
+``NAME=VALUE`` strings.
 """
 
 from __future__ import annotations
@@ -404,7 +404,7 @@ class EvaluationSession:
     def check(self, candidate: Mapping[str, Scalar]) -> None:
         """Check ``candidate`` as :meth:`evaluate` does before it creates anything, and stop there.
 
-        ``candidate`` maps each canonical parameter reference to its value. Raises
+        ``candidate`` maps the name of each parameter to its value. Raises
         :class:`~k4opt.problem.CandidateError` for a value outside its domain, what creating an
         evaluator or its ``check()`` raises for the request this candidate gives it, and
         :class:`~k4opt.execution.RunError` for a file the stages or the geometry read, the
@@ -421,7 +421,7 @@ class EvaluationSession:
     ) -> RunOutcome:
         """Evaluate ``candidate`` into the new directory ``output`` and write its summary there.
 
-        ``candidate`` maps each canonical parameter reference to its value. ``run`` is recorded
+        ``candidate`` maps the name of each parameter to its value. ``run`` is recorded
         as the summary's ``run``: JSON-compatible data that says what the record was made for
         (a study and a trial, say). Raises a :class:`~k4opt.errors.K4OptError` before anything
         is created for what :meth:`check` refuses, an existing ``output`` or an unusable
@@ -641,7 +641,7 @@ def run_candidate(
     workers: int | Literal["auto", "inline"] = "inline",
     warn: Callable[[str], None] | None = None,
 ) -> RunOutcome:
-    """Evaluate the candidate given as ``REFERENCE=VALUE`` strings; ``output`` must not exist.
+    """Evaluate the candidate given as ``NAME=VALUE`` strings; ``output`` must not exist.
 
     :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
     ``SAMPLE/STAGE=FILE`` strings, ``timeout`` and ``workers`` those of

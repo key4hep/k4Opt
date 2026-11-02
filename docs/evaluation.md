@@ -129,7 +129,7 @@ class CellCount:
     version = "1"
 
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
-        size = request.candidate["constants.ECal_cell_size"]
+        size = request.candidate["ecal_cell_size"]
         if not isinstance(size, float):
             return EvaluationResult.failed("ECal_cell_size must be a float")
         return EvaluationResult.valid(
@@ -215,7 +215,7 @@ model; the toy is a data-flow test.
 
 | Field | Meaning |
 | --- | --- |
-| `candidate` | parameter values for this evaluation, keyed by the canonical parameter identity (a geometry parameter: its canonical target such as `constants.ECal_cell_size`); booleans, integers, finite floats or strings. Not checked against bounds |
+| `candidate` | parameter values for this evaluation, keyed by the names the problem gives its parameters (`ecal_cell_size`); booleans, integers, finite floats or strings. Not checked against bounds |
 | `settings` | the evaluator-defined `settings` of its entry in `evaluators`, with the declared defaults and each quantity as a float in its declared unit; nested data, copied and read-only |
 | `collections` | role to the name of the collection it reads: the one the problem's entry names, or the declared default |
 | `inputs` | role name to local `Path` of an already prepared artifact: the main output of each stage it reads, by stage (`inputs["simulation"]`, an EDM4hep file), and the compact XML snapshot as `inputs["geometry"]`. The evaluator documents the roles it accepts |

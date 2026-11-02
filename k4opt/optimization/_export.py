@@ -74,7 +74,7 @@ def _columns(results: StudyResults, stages: list[str]) -> list[str]:
         "feasible",
         "pareto",
         "recovered",
-        *(f"parameter:{_escaped(p.geometry.canonical_target)}" for p in spec.parameters),
+        *(f"parameter:{_escaped(p.name)}" for p in spec.parameters),
         *(
             f"objective:{_label(o.sample, o.evaluator, o.stage, o.metric)}{part}"
             for o in spec.objectives
@@ -137,7 +137,7 @@ def to_csv(results: StudyResults) -> str:
             trial.number in front,
             trial.recovered,
         ]
-        row += [trial.candidate.get(p.geometry.canonical_target) for p in spec.parameters]
+        row += [trial.candidate.get(p.name) for p in spec.parameters]
         for index in range(len(spec.objectives)):
             m = None if measured is None else measured[index]
             row += [None, None, None] if m is None else [m.value, m.unit, m.uncertainty]

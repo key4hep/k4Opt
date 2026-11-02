@@ -24,7 +24,7 @@ from tests.support.evaluators import (
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.simulation import COLLECTION, events_with
 
-RADIUS = "constants.InnerTracker_Barrel_radius_1"
+RADIUS = "radius"
 
 
 # the mini geometry has no calorimeter, so ddsim is not expected to write the collection the test
@@ -52,8 +52,14 @@ def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def problem_file(tmp_path: Path, doc: dict[str, Any]) -> Path:
     doc["geometry"] = MINI_COMPACT
-    doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
-    doc["parameters"][0]["bounds"] = [100.0, 600.0]
+    doc["parameters"] = {
+        RADIUS: {
+            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "type": "continuous",
+            "bounds": [100.0, 600.0],
+            "unit": "mm",
+        }
+    }
     doc["samples"]["gamma"]["simulation"].update(events=3, seed=5)
     doc["evaluators"] = [
         {

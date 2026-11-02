@@ -17,10 +17,10 @@ class EcalChannels(Evaluator):
     def check(self, request):
         if any(request.settings[k] <= 0 for k in ("layers", "radius", "length")):
             self.fail("layers, radius and length must be positive")
-        if request.candidate.get("constants.ECal_cell_size", 0) <= 0:
-            self.fail("needs a positive constants.ECal_cell_size candidate in mm")
+        if request.candidate.get("ecal_cell_size", 0) <= 0:
+            self.fail("needs a positive ecal_cell_size candidate in mm")
 
     def evaluate(self, request):
-        size = request.candidate["constants.ECal_cell_size"]
+        size = request.candidate["ecal_cell_size"]
         area = 2 * math.pi * request.settings["radius"] * request.settings["length"]
         return {("geometry", "ecal_barrel.channels"): area * request.settings["layers"] / size**2}

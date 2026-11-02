@@ -24,7 +24,7 @@ from tests.support.evaluate import evaluate_candidate
 from tests.support.evaluators import implementations
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
-CELL = "constants.ECal_cell_size"
+CELL = "ecal_cell_size"
 
 
 def document(
@@ -39,14 +39,14 @@ def document(
         "name": "judged",
         "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
         "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
-        "parameters": [
-            {
+        "parameters": {
+            CELL: {
                 "geometry": {"constant": "ECal_cell_size"},
                 "type": "continuous",
                 "bounds": [1.0, 10.0],
                 "unit": "mm",
             }
-        ],
+        },
         "evaluators": [{"name": name, "version": "1"} for name in evaluators],
         "objectives": [
             dict(zip(("evaluator", "stage", "metric")[-len(o) :], o, strict=True))
@@ -288,7 +288,7 @@ def test_the_assessment_is_plain_json() -> None:
 
 # --- records ---------------------------------------------------------------------------------
 
-RADIUS = "constants.InnerTracker_Barrel_radius_1"
+RADIUS = "radius"
 ECHO = ("analysis", "candidate.first_value")
 ECHOED = "evaluations/test.echo"  # where the record holds the work of the test.echo binding
 COST = ("analysis", "readout.cost")
@@ -332,7 +332,8 @@ def open_session(tmp_path: Path, *evaluators: Any) -> EvaluationSession:
 def open_problem(tmp_path: Path, data: dict[str, Any], *evaluators: Any) -> EvaluationSession:
     """A session of the problem ``data`` on the mini geometry."""
     data["geometry"] = MINI_COMPACT
-    data["parameters"][0] = {
+    data["parameters"] = {}
+    data["parameters"][RADIUS] = {
         "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
         "type": "continuous",
         "bounds": [100.0, 600.0],
@@ -437,8 +438,8 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_set("schema", "k4opt.run/0"), "schema is 'k4opt.run/0'"),
         (_set("candidate", []), "candidate must be a mapping"),
         (_set("candidate", {RADIUS: 700.0}), "its candidate is not one of the problem's"),
-        (_set("candidate", {RADIUS: 460.0}), "but its candidate is [['constants.Inner"),
-        (_set("candidate_key/0/3", "1e0"), "candidate_key is [['constants.InnerTracker"),
+        (_set("candidate", {RADIUS: 460.0}), "but its candidate is [['radius'"),
+        (_set("candidate_key/0/3", "1e0"), "candidate_key is [['radius'"),
         (_set("status", "invalid"), "status is 'invalid', but its tasks make it 'valid'"),
         (
             _set(f"{ECHOED}/status", "failed"),
@@ -525,7 +526,7 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
             _set("represents_candidate", False),
             "represents_candidate is False, but its required supplied",
         ),
-        (_set("problem/definition/parameters/0/bounds", [100.0, 700.0]), "parameters differ"),
+        (_set("problem/definition/parameters/radius/bounds", [100.0, 700.0]), "parameters differ"),
         (_set("problem/definition/constraints/0/max", 600), "another problem: its constraints"),
     ],
 )

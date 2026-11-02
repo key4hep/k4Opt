@@ -93,13 +93,16 @@ class GeometrySelector:
 
 @dataclass(frozen=True, slots=True)
 class Parameter:
-    """A quantity that varies between candidates, with its search domain.
+    """A quantity that varies between candidates, with its search domain and where it is set.
 
+    ``name`` identifies it in the problem: candidates, records and optimizers key its value by
+    it. ``geometry`` is the attribute of the geometry the value is written into.
     ``continuous`` and ``integer`` parameters have inclusive ``bounds``; ``categorical``
     ones have ``choices``. ``unit`` is the unit of the numbers in ``bounds``; it is never
     converted (``k4opt evaluate`` writes a value into the geometry as ``<value>*<unit>``).
     """
 
+    name: str
     geometry: GeometrySelector
     kind: ParameterKind
     bounds: tuple[Number, Number] | None = None
@@ -107,6 +110,7 @@ class Parameter:
     unit: str | None = None
 
     def to_dict(self) -> dict[str, object]:
+        """Everything but the name, which keys it in the problem's ``parameters``."""
         data: dict[str, object] = {"geometry": self.geometry.to_dict(), "type": self.kind}
         if self.bounds is not None:
             data["bounds"] = list(self.bounds)
@@ -432,7 +436,7 @@ class ProblemSpec:
             data["name"] = self.name
         data["environment"] = self.environment.to_dict()
         data["geometry"] = self.geometry
-        data["parameters"] = [parameter.to_dict() for parameter in self.parameters]
+        data["parameters"] = {parameter.name: parameter.to_dict() for parameter in self.parameters}
         if self.samples:
             data["samples"] = {name: sample.to_dict() for name, sample in self.samples.items()}
         data["evaluators"] = [evaluator.to_dict() for evaluator in self.evaluators]

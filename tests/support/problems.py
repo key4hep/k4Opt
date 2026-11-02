@@ -15,14 +15,14 @@ _BASE: dict[str, object] = {
     "name": "demo",
     "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
     "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
-    "parameters": [
-        {
+    "parameters": {
+        "ecal_cell_size": {
             "geometry": {"constant": "ECal_cell_size"},
             "type": "continuous",
             "bounds": [4.0, 8.0],
             "unit": "mm",
         }
-    ],
+    },
     "samples": {
         "gamma": {
             "generation": {

@@ -49,7 +49,7 @@ from tests.support.evaluators import CELL_COUNT, cell_count, implementations, wo
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.stack import alive, eventually
 
-RADIUS = "constants.InnerTracker_Barrel_radius_1"
+RADIUS = "radius"
 SUPPORT = "InnerTrackerSupportCAD.shape.ref"  # cad/support.stl in the mini geometry
 REPO = Path(__file__).resolve().parents[3]
 
@@ -81,8 +81,14 @@ def write_problem(
     as each of ``probes`` (``required`` or a diagnostic); an objective on ``gamma``."""
     doc = copy.deepcopy(doc)
     doc["geometry"] = MINI_COMPACT
-    doc["parameters"][0]["geometry"] = {"constant": "InnerTracker_Barrel_radius_1"}
-    doc["parameters"][0]["bounds"] = [100.0, 600.0]
+    doc["parameters"] = {
+        RADIUS: {
+            "geometry": {"constant": "InnerTracker_Barrel_radius_1"},
+            "type": "continuous",
+            "bounds": [100.0, 600.0],
+            "unit": "mm",
+        }
+    }
     gamma = doc["samples"]["gamma"]
     gamma["simulation"].update(events=3, seed=5)
     pion = copy.deepcopy(gamma)
@@ -1029,9 +1035,11 @@ def test_concurrent_candidates_that_read_one_reference_alike_are_both_recorded_e
     problem = write_problem(tmp_path / "cad.yaml", doc)
     data = yaml.safe_load(problem.read_text())
     choices = ["cad/support.stl", "${CAD}/b.stl"]
-    data["parameters"].append(
-        {"geometry": {"target": SUPPORT}, "type": "categorical", "choices": choices}
-    )
+    data["parameters"]["support"] = {
+        "geometry": {"target": SUPPORT},
+        "type": "categorical",
+        "choices": choices,
+    }
     problem.write_text(yaml.safe_dump(data))
     summary = {name: str(tmp_path / name / SUMMARY_NAME) for name in "ab"}
     told: dict[str, Any] = {
@@ -1043,7 +1051,7 @@ def test_concurrent_candidates_that_read_one_reference_alike_are_both_recorded_e
         None: {"a.gamma": {"await": ["b.gamma.started"]}},
     }[first]
     stack.install(monkeypatch, marks, **told)
-    candidate = {RADIUS: 450.0, SUPPORT: "${CAD}/b.stl"}
+    candidate = {RADIUS: 450.0, "support": "${CAD}/b.stl"}
 
     def requests() -> Iterator[RunRequest]:
         yield RunRequest(candidate, tmp_path / "a")

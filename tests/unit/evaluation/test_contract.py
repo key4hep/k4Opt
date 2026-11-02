@@ -75,7 +75,7 @@ def test_artifacts_pass_between_stages_by_hand(tmp_path: Path) -> None:
     produced = run(
         FakeSimulation(),
         EvaluationRequest(
-            candidate={"constants.cell": 5.5},
+            candidate={"cell": 5.5},
             inputs={"geometry": geometry},
             workdir=work,
             events=25,
@@ -372,7 +372,7 @@ def test_settings_are_copied_and_read_only() -> None:
 
 
 def test_candidate_values_are_scalars() -> None:
-    candidate: dict[str, Any] = {"constants.cell": 5.5, "layers": 3, "mode": "fast", "flag": True}
+    candidate: dict[str, Any] = {"cell": 5.5, "layers": 3, "mode": "fast", "flag": True}
     request = EvaluationRequest(candidate=candidate)
     candidate["layers"] = 99
     assert request.candidate["layers"] == 3

@@ -19,7 +19,7 @@ k4opt optimize examples/problem/cld-ecal-granularity.yaml \
 It prints each trial as it ends, and the study at the end (the values here are illustrative):
 
 ```text
-trial 0:   valid    feasible    constants.ECal_cell_size=9.79789  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227
+trial 0:   valid    feasible    ecal_cell_size=9.79789  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227
 trial 1:   failed   simulation failed: ddsim exited with status 1 (...); blocked: calo.photon  trial-000001/summary.json
 ...
 study:    cld-ecal-granularity-3f9c2a1b, 2 objective(s), 0 limit(s), runs/cld-ecal-study/study.json
@@ -68,7 +68,7 @@ Everything else in k4opt works without it.
 
 ## What the optimizer searches, and what it is told
 
-**Parameters.** Each parameter becomes one distribution, named by its canonical reference:
+**Parameters.** Each parameter becomes one distribution, named by the parameter's name:
 
 | Parameter | Searched as | Refused when the study is made |
 | --- | --- | --- |
@@ -411,13 +411,13 @@ with their values to 6 significant digits (the values here are illustrative). It
 study:      cld-ecal-granularity-3f9c2a1b, created 2026-10-30T12:00:00+00:00
 id:         3f9c2a1b-5d0e-4f43-9a52-77c1d2e0b6a4
 directory:  /home/me/runs/cld-ecal-study (trials in study.journal)
-parameters: constants.ECal_cell_size  continuous [2.5, 20.0] mm
+parameters: ecal_cell_size  continuous [2.5, 20.0] mm  (constants.ECal_cell_size)
 objectives: gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual  minimize  (mrad)
             gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells  minimize  (1)
 limits:     none
 trials:     30: 28 valid (28 feasible, 0 infeasible), 1 invalid, 1 failed
 pareto:     0, 4, 7
-            trial 0:  constants.ECal_cell_size=9.79789 mm  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948 mrad  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227 1
+            trial 0:  ecal_cell_size=9.79789 mm  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948 mrad  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227 1
             ...
 ```
 
@@ -526,7 +526,7 @@ or the number 1: the JSON export is the typed one.
       "status": "valid",
       "outcome": "feasible",
       "recovered": false,
-      "candidate": {"constants.ECal_cell_size": 9.797885082295046},
+      "candidate": {"ecal_cell_size": 9.797885082295046},
       "assessment": {"feasible": true, "objectives": [], "limits": []},
       "elapsed_seconds": 291.3,
       "stage_seconds": {"gamma_10gev/generation": 0.4, "gamma_10gev/simulation": 280.2},

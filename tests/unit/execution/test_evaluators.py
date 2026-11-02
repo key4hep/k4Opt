@@ -39,7 +39,7 @@ from tests.support.evaluators import (
 )
 from tests.support.simulation import COLLECTION, Event, Hits, Particle, Particles, events_with
 
-CELL = "constants.ECal_cell_size"
+CELL = "ecal_cell_size"
 GUN = {
     "particle": "gamma",
     "energy": {"value": 10, "unit": "GeV"},
