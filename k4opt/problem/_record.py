@@ -21,6 +21,7 @@ from typing import Any, NamedTuple, cast
 from k4opt.evaluation import (
     ARTIFACT_NAME,
     Artifact,
+    Declaration,
     EvaluationContractError,
     Measurement,
     Scalar,
@@ -45,7 +46,7 @@ from k4opt.problem._tasks import (
     plan_tasks,
     stage_task,
 )
-from k4opt.problem._work import MetricKey
+from k4opt.problem.contract import Demands, MetricKey, check_bindings, check_entries, check_result
 from k4opt.problem.errors import CandidateError, RecordError
 from k4opt.problem.models import MetricRef, ProblemSpec
 
@@ -128,7 +129,6 @@ class _Evaluator:
     status: Status
     message: str | None
     measured: Mapping[MetricKey, Measurement]  # its own measurements
-    declared: Mapping[MetricKey, str] | None  # the metrics its implementation declares, with units
     fragment: _Fragment  # its status, and the tasks it reads
 
 
@@ -147,135 +147,22 @@ def _check_candidate(spec: ProblemSpec, record: Mapping[str, object]) -> None:
         )
 
 
-class _Role(NamedTuple):
-    """A role a combined evaluator of a record declares."""
-
-    many: bool
-    stage: str | None
-    metrics: list[MetricKey]
-    artifacts: list[str]
-
-
-class _Implementation(NamedTuple):
-    """What an implementation of a record declares: its metrics with their units, the names of
-    its artifacts and its roles; ``None`` for none."""
-
-    metrics: dict[MetricKey, str] | None
-    artifacts: list[str] | None
-    roles: dict[str, _Role] | None
-
-
-def _implementations(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, _Implementation]:
+def _implementations(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, Declaration]:
     """What each implementation of the record declares, by name; they must be those the problem
-    binds, in the order it first binds them, with its versions and reading the stage its entries
-    say."""
+    binds, in the order it first binds them, and declare what each binding of them says
+    (:func:`~k4opt.problem.contract.check_entries`)."""
     implementations = _mapping(record.get("implementations"), "implementations")
-    versions = {entry.name: entry.version for entry in spec.evaluators}
-    if list(implementations) != list(versions):
+    names = list(dict.fromkeys(entry.name for entry in spec.evaluators))
+    if list(implementations) != names:
         raise RecordError(
-            f"its implementations are {list(implementations)}, but the problem binds "
-            f"{list(versions)}"
+            f"its implementations are {list(implementations)}, but the problem binds {names}"
         )
-    declared: dict[str, _Implementation] = {}
-    for name, entry in implementations.items():
-        where = f"implementation {name!r}"
-        implementation = _mapping(entry, where)
-        if implementation.get("version") != versions[name]:
-            raise RecordError(
-                f"{where}: version {implementation.get('version')!r}, but the problem binds "
-                f"version {versions[name]!r}"
-            )
-        for entry in spec.evaluators:
-            if entry.name == name and implementation.get("stage") != entry.stage:
-                raise RecordError(
-                    f"{where}: stage {implementation.get('stage')!r}, but the problem has it read "
-                    f"{entry.stage!r}"
-                )
-        declared[name] = _Implementation(
-            _declared(implementation.get("metrics"), where),
-            _artifact_names(implementation.get("artifacts"), where),
-            _roles(implementation.get("roles"), where),
-        )
-    _check_roles(spec, declared)
+    declared = {
+        name: Declaration.from_dict(name, entry, RecordError)
+        for name, entry in implementations.items()
+    }
+    check_entries(spec, declared, RecordError)
     return declared
-
-
-def _roles(value: object, where: str) -> dict[str, _Role] | None:
-    """The roles a combined evaluator of a record declares, ``None`` for none."""
-    if value is None:
-        return None
-    roles: dict[str, _Role] = {}
-    for name, entry in _mapping(value, f"{where}: roles").items():
-        at = f"{where}: roles.{name}"
-        role = _mapping(entry, at)
-        many, stage = role.get("many"), role.get("stage")
-        if not isinstance(many, bool) or not (stage is None or stage in STAGE_TYPES):
-            raise RecordError(f"{at}: many {many!r} or stage {stage!r} is not a role's")
-        metrics: list[MetricKey] = []
-        for key in _list(role.get("metrics"), f"{at}.metrics"):
-            if not (
-                isinstance(key, list)
-                and len(key) == 2
-                and all(isinstance(k, str) and k.strip() for k in key)
-            ):
-                raise RecordError(f"{at}.metrics: {key!r} is no [stage, metric]")
-            if (key[0], key[1]) in metrics:  # as a live Role refuses it
-                raise RecordError(f"{at}.metrics: {key[0]}/{key[1]} is named twice")
-            metrics.append((key[0], key[1]))
-        artifacts = _artifact_names(role.get("artifacts"), at) or []
-        if stage is not None and (metrics or artifacts):
-            raise RecordError(f"{at}: a role that reads a stage reads no metrics or artifacts")
-        roles[name] = _Role(many, stage, metrics, artifacts)
-    return roles
-
-
-def _check_roles(spec: ProblemSpec, declared: Mapping[str, _Implementation]) -> None:
-    """Each binding gives the roles of its implementation, as a live session checks them: every
-    one and no other, one item unless the role reads many, of the kind it reads, and of
-    evaluators that declare the metrics and artifacts it reads."""
-    implementation = {(e.binding, s): e.name for e in spec.evaluators for s in e.samples}
-    for entry in spec.evaluators:
-        where = f"evaluator {entry.binding!r}"
-        roles = declared[entry.name].roles
-        if not roles:
-            if entry.roles:
-                raise RecordError(f"{where}: the problem gives it roles, which it does not declare")
-            continue
-        if set(roles) != set(entry.roles):  # in any order, as a live session checks them
-            raise RecordError(
-                f"{where}: its implementation declares the roles {list(roles)}, but the problem "
-                f"gives {list(entry.roles)}"
-            )
-        for name, role in roles.items():
-            items = entry.roles[name]
-            if not role.many and len(items) > 1:
-                raise RecordError(f"{where}: role {name!r} reads one item, given {len(items)}")
-            for item in items:
-                if item.stage != role.stage:  # None for both: an evaluation
-                    raise RecordError(f"{where}: role {name!r} does not read {item.label}")
-                if item.evaluator is None:
-                    continue
-                upstream = declared[implementation[(item.evaluator, item.sample)]]
-                metrics, artifacts = upstream.metrics or {}, upstream.artifacts or []
-                if any(key not in metrics for key in role.metrics) or any(
-                    a not in artifacts for a in role.artifacts
-                ):
-                    raise RecordError(
-                        f"{where}: role {name!r} reads what {item.label} does not declare"
-                    )
-
-
-def _artifact_names(value: object, where: str) -> list[str] | None:
-    """The names of the artifacts an implementation of a record declares, ``None`` for none."""
-    if value is None:
-        return None
-    names = _list(value, f"{where}: artifacts")
-    for name in names:
-        if not isinstance(name, str) or not ARTIFACT_NAME.fullmatch(name):
-            raise RecordError(f"{where}: artifacts: {name!r} is no artifact name")
-    if len(set(names)) != len(names):
-        raise RecordError(f"{where}: artifacts: {names} names one twice")
-    return cast(list[str], names)
 
 
 def _in_run(value: object, directory: str | None, where: str) -> str:
@@ -333,14 +220,16 @@ def _evaluations(
     spec: ProblemSpec,
     record: Mapping[str, object],
     samples: Mapping[str, Mapping[str, object]],
-    declared: Mapping[str, _Implementation],
+    declared: Mapping[str, Declaration],
+    demands: Demands,
     plan: Plan,
 ) -> dict[TaskId, _Evaluator]:
     """Each evaluation of the record, in plan order, checked as a live result is: of the
     implementation the problem binds it to, with the settings and collections the problem gives
-    it, and the artifacts it declares in the directory ``plan`` gives it. Those of each sample
-    are in its part of the record, those of the candidate in ``evaluations``, each by binding in
-    problem order."""
+    it, its artifacts in the directory ``plan`` gives it, and what it returned against what the
+    problem asks of it (:func:`~k4opt.problem.contract.check_result`, the metrics the roles that
+    read it ``demand`` included). Those of each sample are in its part of the record, those of
+    the candidate in ``evaluations``, each by binding in problem order."""
     held: dict[str | None, Mapping[str, object]] = {
         name: _mapping(part.get("evaluations"), f"samples.{name}.evaluations")
         for name, part in samples.items()
@@ -383,7 +272,6 @@ def _evaluations(
                     f"{where}: roles {entry.get('roles')!r}, but the problem's are {roles}"
                 )
         fragment = _fragment(entry, where, set(Status))
-        metrics, names, _ = declared[spec_entry.name]
         directory = plan[task].directory
         workdir = entry.get("workdir")
         if workdir not in (None, directory):
@@ -393,13 +281,6 @@ def _evaluations(
                 f"{where}: it is {fragment.status}, so it was called, yet has no workdir"
             )
         files = _files(entry.get("artifacts"), task, workdir, f"{where}: artifacts", hashed=True)
-        if names is not None:
-            unknown = [name for name in files if name not in names]
-            if unknown:
-                raise RecordError(f"{where}: artifacts {unknown}, which it does not declare")
-            missing = [name for name in names if name not in files]
-            if missing and fragment.status == Status.VALID:
-                raise RecordError(f"{where}: it is valid without its declared artifacts {missing}")
         if fragment.status == Status.BLOCKED and workdir is not None:
             raise RecordError(f"{where}: it is blocked, so it was never called, yet has a workdir")
         own: dict[MetricKey, Measurement] = {}
@@ -409,31 +290,25 @@ def _evaluations(
             key = (measurement.stage, measurement.metric)
             if key in own:
                 raise RecordError(f"{at}: {key[0]}/{key[1]} is measured twice")
-            if metrics is not None and key in metrics and measurement.unit != metrics[key]:
-                # whatever the status, as live: one metric identity never carries two units
-                raise RecordError(
-                    f"{at}: {key[0]}/{key[1]} is in {measurement.unit!r}, but the evaluator "
-                    f"declares {metrics[key]!r}"
-                )
             own[key] = measurement
-        if fragment.status == Status.BLOCKED and own:
-            raise RecordError(f"{where}: it is blocked, so it was never called, yet it measured")
         status = Status(fragment.status)
-        evaluators[task] = _Evaluator(status, fragment.message, own, metrics, fragment)
-    for task, spec_entry in planned:  # a valid evaluation carries the metrics roles read of it
-        for name, role in (declared[spec_entry.name].roles or {}).items():
-            for item in spec_entry.roles.get(name, ()):
-                if item.evaluator is None:
-                    continue
-                read = evaluators[evaluator_task(item.evaluator, item.sample)]
-                if read.status is not Status.VALID:
-                    continue
-                missing_metrics = [key for key in role.metrics if key not in read.measured]
-                if missing_metrics:
-                    raise RecordError(
-                        f"evaluator {item.label!r} is valid without {missing_metrics}, which role "
-                        f"{name!r} of {task.label!r} reads"
-                    )
+        if status is Status.BLOCKED:
+            if own:
+                raise RecordError(
+                    f"{where}: it is blocked, so it was never called, yet it measured"
+                )
+        else:  # what a live evaluation accepts of what it returned
+            check_result(
+                spec,
+                task,
+                declared[spec_entry.name],
+                demands.get(task, ()),
+                status,
+                list(own.values()),
+                list(files),
+                RecordError,
+            )
+        evaluators[task] = _Evaluator(status, fragment.message, own, fragment)
     return evaluators
 
 
@@ -546,24 +421,6 @@ def _text(value: object, where: str) -> str:
     return value
 
 
-_DECLARED = ("stage", "metric", "unit")
-
-
-def _declared(value: object, where: str) -> dict[MetricKey, str] | None:
-    """The ``metrics`` an evaluator of a record declares, ``None`` if it declares none."""
-    if value is None:
-        return None
-    declared: dict[MetricKey, str] = {}
-    for index, item in enumerate(_list(value, f"{where}: metrics")):
-        at = f"{where}: metrics[{index}]"
-        entry = _mapping(item, at)
-        stage, metric, unit = (_text(entry.get(key), f"{at}.{key}") for key in _DECLARED)
-        if (stage, metric) in declared:
-            raise RecordError(f"{where}: {stage}/{metric} is declared twice")
-        declared[(stage, metric)] = unit
-    return declared
-
-
 def _measured(item: Mapping[str, object], where: str) -> Measurement:
     fields: dict[str, Any] = {
         key: item.get(key) for key in ("stage", "metric", "value", "unit", "uncertainty")
@@ -572,25 +429,6 @@ def _measured(item: Mapping[str, object], where: str) -> Measurement:
         return Measurement(**fields)
     except EvaluationContractError as exc:
         raise RecordError(f"{where}: {exc}") from None
-
-
-def _check_units(
-    spec: ProblemSpec, evaluations: Mapping[TaskId, _Evaluator], value: _Lookup
-) -> None:
-    """A constraint that declares a unit is in the unit its evaluator declares for the metric,
-    and so is a valid measurement of it, as a live evaluation enforces: a record consistent in
-    another unit would compare its value with a limit in the wrong one."""
-    for constraint in spec.constraints:
-        if constraint.unit is None:
-            continue
-        where = f"{constraint.label}: its constraint declares {constraint.unit!r}"
-        declared = evaluations[_task(constraint.ref)].declared
-        key = (constraint.stage, constraint.metric)
-        if declared is not None and declared[key] != constraint.unit:
-            raise RecordError(f"{where}, but its evaluator declares {declared[key]!r}")
-        measurement = value(constraint.ref)  # None unless the evaluator is valid, as live
-        if measurement is not None and measurement.unit != constraint.unit:
-            raise RecordError(f"{where}, but it is measured in {measurement.unit!r}")
 
 
 _NAMED = ("evaluator", "sample", "stage", "metric", "label")
@@ -641,10 +479,11 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
     _check_candidate(spec, record)
     _text(record.get("run_dir"), "run_dir")  # where it was made: provenance only
     declared = _implementations(spec, record)
+    demands = check_bindings(spec, declared, RecordError)
     samples = _samples(spec, record)
     supplied = _supplied(spec, record)
     plan = plan_tasks(spec.samples, spec.evaluators, supplied, references=spec.references)
-    evaluators = _evaluations(spec, record, samples, declared, plan)
+    evaluators = _evaluations(spec, record, samples, declared, demands, plan)
     results = _results(record, samples, supplied, evaluators, plan)
     required = [task.id.label for task in plan.tasks if task.required]
     if record.get("required") != required:
@@ -676,23 +515,12 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
             f"represents_candidate is {record.get('represents_candidate')!r}, but its "
             f"required supplied stages make it {represents}"
         )
-    for ref in spec.references:
-        metrics = evaluators[_task(ref)].declared
-        if metrics is not None and (ref.stage, ref.metric) not in metrics:
-            raise RecordError(f"metric {ref.label}: its evaluator does not declare it")
 
     def value(ref: MetricRef) -> Measurement | None:
         owner = evaluators[_task(ref)]
         if owner.status is not Status.VALID:
             return None
-        found = owner.measured.get((ref.stage, ref.metric))
-        if found is None:
-            raise RecordError(
-                f"evaluator {ref.invocation!r} is valid but did not measure "
-                f"{ref.stage}/{ref.metric}, which the problem names"
-            )
-        return found
+        return owner.measured[(ref.stage, ref.metric)]  # a valid one measured it: check_result
 
     _check_metrics(spec, record, value)
-    _check_units(spec, evaluators, value)
     return Recorded(status, represents, value)

@@ -227,8 +227,8 @@ SIMULATED = "samples/gamma/stages/simulation"
         (
             "implementations/test.cell_count/stage",
             "generation",
-            "implementation 'test.cell_count': stage 'generation', but the problem has it read "
-            "'simulation'",
+            "evaluator 'test.cell_count' does not read the stage the problem says: it reads "
+            "'generation', not 'simulation'",
         ),
         ("message", "gamma/simulation failed: boom", "but its tasks make it"),
         ("status", "valid", "status is 'valid', but its tasks make it 'failed'"),
@@ -461,8 +461,12 @@ OUTPUT = "samples/gamma/stages/simulation/outputs/events"
         ("run_dir", None, "run_dir must be a nonblank string"),
         # what a stage that is done made, and what an evaluator declares, the record holds
         ("samples/gamma/stages/simulation/outputs", {}, "outputs [], but a stage that is done"),
-        (f"{VALID}/artifacts", {}, "it is valid without its declared artifacts ['histogram']"),
-        ("implementations/test.cell_count/artifacts", ["plot"], "artifacts ['histogram'], which"),
+        (f"{VALID}/artifacts", {}, "a valid result without its declared artifact(s) histogram"),
+        (
+            "implementations/test.cell_count/artifacts",
+            ["plot"],
+            "returned the artifact(s) histogram, which it does not declare; it declares plot",
+        ),
         ("implementations/test.cell_count/artifacts", ["plot", "plot"], "names one twice"),
         ("implementations/test.cell_count/artifacts", ["a#b"], "'a#b' is no artifact name"),
     ],

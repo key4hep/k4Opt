@@ -36,6 +36,7 @@ from pathlib import Path
 
 from k4opt.evaluation import (
     Artifact,
+    Declaration,
     EvaluationContractError,
     EvaluationFailed,
     EvaluationInvalid,
@@ -65,13 +66,11 @@ from k4opt.problem._files import (
 )
 from k4opt.problem._stages import StageContext, make_stage, stage_output
 from k4opt.problem._tasks import DONE, GEOMETRY, Kind, PeakMemory, Task, TaskId, TaskResult
+from k4opt.problem.contract import MetricKey, check_result
 from k4opt.problem.errors import RunError
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
 
 SUMMARY_NAME = "summary.json"
-
-type MetricKey = tuple[str, str]
-"""A metric as an evaluator declares and measures it: ``(stage, metric)``."""
 
 type Output = Callable[[Path], AbstractContextManager[object]]
 """Where an evaluator's output goes while it is called, given its own directory."""
@@ -90,13 +89,13 @@ class Workspace:
 
 @dataclass(frozen=True, slots=True)
 class Measuring:
-    """What the work of an evaluation needs besides its request: the ``entry`` that binds it, the
-    ``metrics`` and ``artifacts`` its implementation declared when bound (``None`` where it
-    declares none), and the metrics the roles of combined evaluators ``demanded`` of it."""
+    """What the work of an evaluation needs besides its request: the ``entry`` that binds it,
+    what its implementation declared when bound (``declaration``: its results are checked
+    against that, which the record holds, not against what it declares now) and the metrics the
+    roles of combined evaluators ``demanded`` of it."""
 
     entry: EvaluatorSpec
-    metrics: Mapping[MetricKey, str] | None
-    artifacts: Mapping[str, str] | None
+    declaration: Declaration
     demanded: tuple[MetricKey, ...] = ()
 
 
@@ -456,7 +455,7 @@ def _evaluation(
 
     def ended(result: EvaluationResult) -> tuple[TaskOutcome, Observations]:
         """A result of an evaluator that was not called."""
-        check_result(context, task, measuring, evaluator.name, result)
+        _check_result(context, task, measuring, result)
         return TaskOutcome(
             task, result.status, result.message, elapsed_seconds=_since(began), result=result
         ), Observations()
@@ -486,9 +485,8 @@ def _evaluation(
     except EvaluationInvalid as exc:
         result = EvaluationResult.invalid(str(exc))
     elapsed = time.perf_counter() - started
-    check_result(context, task, measuring, evaluator.name, result)
-    # what it declared when bound, which the record holds, not what it declares now
-    made = artifacts(task, measuring.artifacts, result, workdir)
+    _check_result(context, task, measuring, result)
+    made = artifacts(task, result, workdir)
     changed = changed_reads(spec, root, seen)
     if changed:  # what it returned stays, as diagnostics of a failed result
         result = EvaluationResult.failed(
@@ -508,6 +506,24 @@ def _evaluation(
         workdir=None if workdir is None else portable(workdir, root),
         call_seconds=elapsed,
     ), Observations(made={file.artifact.ref: file.stat for file in made.values()})
+
+
+def _check_result(
+    context: SessionContext, task: TaskId, measuring: Measuring, result: EvaluationResult
+) -> None:
+    """The result of the evaluation ``task`` against what the problem asks of it
+    (:func:`~k4opt.problem.contract.check_result`), raising
+    :class:`~k4opt.evaluation.EvaluationContractError`."""
+    check_result(
+        context.spec,
+        task,
+        measuring.declaration,
+        measuring.demanded,
+        result.status,
+        result.measurements,
+        list(result.artifacts),
+        EvaluationContractError,
+    )
 
 
 def asked(spec: TaskSpec, root: Path | None) -> EvaluationRequest:
@@ -532,64 +548,6 @@ def _roles(spec: TaskSpec, root: Path | None) -> dict[str, tuple[RoleInput, ...]
         )
         for role, items in spec.roles.items()
     }
-
-
-def show(metrics: Sequence[MetricKey] | Mapping[MetricKey, object]) -> str:
-    return ", ".join(f"{stage}/{metric}" for stage, metric in metrics)
-
-
-def check_units(
-    name: str, declared: Mapping[MetricKey, str] | None, result: EvaluationResult
-) -> None:
-    """Every measurement of a metric the evaluator ``name`` ``declared`` must carry the declared
-    unit.
-
-    Whatever the status: diagnostic values of an ``invalid`` result are recorded too. An
-    evaluator that declares no ``metrics``, and metrics it does not declare, are not checked.
-    """
-    if declared is None:
-        return
-    for m in result.measurements:
-        unit = declared.get((m.stage, m.metric))
-        if (m.stage, m.metric) in declared and m.unit != unit:
-            raise EvaluationContractError(
-                f"measurement {m.stage}/{m.metric} has unit {m.unit!r} but evaluator "
-                f"{name!r} declares {unit!r}"
-            )
-
-
-def check_result(
-    context: SessionContext,
-    task: TaskId,
-    measuring: Measuring,
-    name: str,
-    result: EvaluationResult,
-) -> None:
-    """The result of the evaluation ``task`` carries the declared units (:func:`check_units`),
-    and a ``valid`` one every metric an objective or a constraint names of it, in the unit a
-    constraint declares, and every metric the roles that read it demand."""
-    check_units(name, measuring.metrics, result)
-    if result.status is not Status.VALID:
-        return
-    spec = context.spec
-    measured = {(m.stage, m.metric): m for m in result.measurements}
-    owned = [(r.stage, r.metric) for r in spec.references if r.invocation == task.label]
-    wanted = dict.fromkeys([*owned, *measuring.demanded])
-    missing = [key for key in wanted if key not in measured]
-    if missing:
-        raise EvaluationContractError(
-            f"evaluator {task.label!r} returned a valid result without required metric(s): "
-            f"{show(missing)}"
-        )
-    for constraint in spec.constraints:
-        if constraint.ref.invocation != task.label:
-            continue
-        unit = measured[(constraint.stage, constraint.metric)].unit
-        if constraint.unit is not None and unit != constraint.unit:
-            raise EvaluationContractError(
-                f"constraint on {constraint.label} declares unit {constraint.unit!r} but the "
-                f"measurement has unit {unit!r}"
-            )
 
 
 def collection_error(

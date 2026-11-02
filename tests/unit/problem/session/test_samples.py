@@ -17,6 +17,7 @@ import yaml
 from k4opt.cli import main
 from k4opt.ddsim import run as ddsim_run
 from k4opt.evaluation import (
+    EvaluationContractError,
     EvaluationRequest,
     EvaluationResult,
     Evaluator,
@@ -793,47 +794,135 @@ def test_a_record_whose_roles_disagree_with_its_problem_is_refused(
         (
             f"{roles}/signal/many",
             "no",
-            "implementation 'test.toy_significance': roles.signal: many 'no' or stage None is "
-            "not a role's",
+            "implementation 'test.toy_significance': roles.signal: Role: many must be True or "
+            "False, got 'no'",
         ),
         (
             f"{roles}/backgrounds/many",
             False,
-            "evaluator 'significance': role 'backgrounds' reads one item, given 2",
+            "evaluator 'significance': role 'backgrounds' reads one item, but the problem gives 2: "
+            "zz/test.yields, ww/test.yields",
         ),
         (
             roles,
             None,
-            "evaluator 'significance': the problem gives it roles, which it does not declare",
+            "evaluator 'test.toy_significance' (as 'significance') declares no roles, so it is no "
+            "combined evaluator; remove roles: from its entry",
         ),
         (
             f"{roles}/signal/metrics",
             [["analysis", "selected.sum_weights"], ["analysis", "other"]],
-            "evaluator 'significance': role 'signal' reads what sig/test.yields does not declare",
+            "evaluator 'significance': role 'signal' reads analysis/other of sig/test.yields, but "
+            "test.yields does not declare it",
         ),
         (
             f"{roles}/signal/metrics",
             [["analysis", "selected.sum_weights"], ["analysis", "selected.sum_weights"]],
-            "implementation 'test.toy_significance': roles.signal.metrics: "
-            "analysis/selected.sum_weights is named twice",
+            "implementation 'test.toy_significance': roles.signal: Role: metrics "
+            "[('analysis', 'selected.sum_weights'), ('analysis', 'selected.sum_weights')] name one "
+            "twice",
         ),
         (
             f"{roles}/signal/metrics",
             [["analysis", " "]],
-            "implementation 'test.toy_significance': roles.signal.metrics: ['analysis', ' '] is "
-            "no [stage, metric]",
+            "implementation 'test.toy_significance': roles.signal: Role: metrics must be (stage, "
+            "metric) pairs, such as ('analysis', 'yield'); got (('analysis', ' '),)",
         ),
         (
             "samples/sig/evaluations/test.yields/measurements",
             [],
-            "evaluator 'sig/test.yields' is valid without [('analysis', 'selected.sum_weights'), "
-            "('analysis', 'generated.sum_weights')], which role 'signal' of 'significance' reads",
+            "evaluator 'sig/test.yields' returned a valid result without required metric(s): "
+            "analysis/selected.sum_weights, analysis/generated.sum_weights",
         ),
     ]:
         tampered = copy.deepcopy(written)
         change(tampered, path, value)
         with pytest.raises(RecordError, match=re.escape(message)):
             Assessment.from_summary(session.spec, tampered)
+
+
+_SELECTED = ("analysis", "selected.sum_weights")
+_GENERATED = ("analysis", "generated.sum_weights")
+
+
+@pytest.mark.parametrize(
+    ("roles", "path", "value"),
+    [
+        (  # a role that reads a metric its upstream evaluator does not declare
+            {
+                "signal": Role(metrics=[_SELECTED, ("analysis", "other")]),
+                "backgrounds": Role(many=True, metrics=[_SELECTED, _GENERATED]),
+            },
+            "implementations/test.toy_significance/roles/signal/metrics",
+            [list(_SELECTED), ["analysis", "other"]],
+        ),
+        (  # one item for a role the problem gives two
+            {
+                "signal": Role(metrics=[_SELECTED, _GENERATED]),
+                "backgrounds": Role(metrics=[_SELECTED, _GENERATED]),
+            },
+            "implementations/test.toy_significance/roles/backgrounds/many",
+            False,
+        ),
+        (  # roles the problem gives to an evaluator that declares none
+            None,
+            "implementations/test.toy_significance/roles",
+            None,
+        ),
+        (  # a role the problem does not give
+            {
+                "signal": Role(metrics=[_SELECTED, _GENERATED]),
+                "backgrounds": Role(many=True, metrics=[_SELECTED, _GENERATED]),
+                "control": Role(metrics=[_SELECTED]),
+            },
+            "implementations/test.toy_significance/roles/control",
+            {"many": False, "stage": None, "metrics": [list(_SELECTED)], "artifacts": []},
+        ),
+    ],
+)
+def test_a_record_of_roles_is_refused_as_a_live_session_refuses_them(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    roles: dict[str, Role] | None,
+    path: str,
+    value: Any,
+) -> None:
+    # the same rules, with the same words, whether the session sees the implementation's roles
+    # or a record says it declared them
+    combined(problem_file)
+    significance = toy_significance()
+    declaring = type("Declaring", (significance,), {"roles": roles})
+    with pytest.raises(EvaluationContractError) as live:
+        EvaluationSession.open(problem_file, [declaring, yields()])
+    session = EvaluationSession.open(problem_file, [significance, yields()])
+    written = json.loads(session.evaluate({RADIUS: 450.0}, tmp_path / "a").summary_path.read_text())
+    change(written, path, value)
+    with pytest.raises(RecordError) as recorded:
+        Assessment.from_summary(session.spec, written)
+    assert str(recorded.value) == str(live.value)
+
+
+def test_a_record_without_what_a_role_reads_is_refused_as_a_live_session_refuses_it(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    combined(problem_file)
+    sums = yields()
+
+    class Empty(yields()):  # type: ignore[misc]
+        def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+            return EvaluationResult.valid([])
+
+    with pytest.raises(EvaluationContractError) as live:
+        EvaluationSession.open(problem_file, [toy_significance(), Empty]).evaluate(
+            {RADIUS: 450.0}, tmp_path / "live"
+        )
+    session = EvaluationSession.open(problem_file, [toy_significance(), sums])
+    written = json.loads(session.evaluate({RADIUS: 450.0}, tmp_path / "a").summary_path.read_text())
+    change(written, "samples/sig/evaluations/test.yields/measurements", [])
+    with pytest.raises(RecordError) as recorded:
+        Assessment.from_summary(session.spec, written)
+    assert str(recorded.value) == str(live.value)
 
 
 def test_the_command_reports_what_each_role_of_a_combined_evaluator_read(

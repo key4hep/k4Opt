@@ -468,18 +468,25 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_set("evaluations", []), "evaluations must be a mapping"),
         (_set("evaluations", {"echo": {}}), "its evaluations are ['echo'], but the problem's"),
         (_set("implementations", {}), "its implementations are [], but the problem binds"),
-        (_set("implementations/test.echo/version", "2"), "version '2', but the problem binds"),
+        (
+            _set("implementations/test.echo/version", "2"),
+            "problem declares evaluator 'test.echo' version '1', got version '2'",
+        ),
         # what the record says of a binding's code and inputs is the problem's, too
         (
             _set("implementations/test.echo/stage", "simulation"),
-            "implementation 'test.echo': stage 'simulation', but the problem has it read None",
+            "evaluator 'test.echo' does not read the stage the problem says: add stage: simulation "
+            "to its entry in the problem",
         ),
         (
             _set(f"{ECHOED}/settings/declared", {"invalid_below": 999}),
             "evaluator 'test.echo': settings.declared {'invalid_below': 999}, but the problem",
         ),
         (_set(f"{ECHOED}/settings", None), "evaluator 'test.echo': settings must be a mapping"),
-        (_set(f"{ECHOED}/measurements", []), "is valid but did not measure"),
+        (
+            _set(f"{ECHOED}/measurements", []),
+            "evaluator 'test.echo' returned a valid result without required metric(s)",
+        ),
         (_set(f"{ECHOED}/measurements/0/value", "450"), "must be a number"),
         (_set(f"{ECHOED}/measurements/0/value", 400.0), "recorded"),
         (_set("metrics/0/value", 1.0), f"metric test.echo/{ECHO[0]}/{ECHO[1]}: recorded"),
@@ -487,10 +494,20 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
         (_set("metrics/0/label", "analysis/candidate.first_value"), "its metrics are"),
         (_set("metrics", []), "its metrics are"),
         (_consistent_lie, "its assessment is not the one its measurements give"),
-        (_other_unit, "analysis/candidate.first_value is in 'mm', but the evaluator declares '1'"),
-        (_other_declared_unit, "constraint declares '1', but its evaluator declares 'mm'"),
-        (_undeclared_unit, "constraint declares '1', but it is measured in 'mm'"),
-        (_set("implementations/test.echo/metrics", []), "its evaluator does not declare it"),
+        (
+            _other_unit,
+            "measurement analysis/candidate.first_value has unit 'mm' but evaluator 'test.echo' "
+            "declares '1'",
+        ),
+        (
+            _other_declared_unit,
+            "declares unit '1' but evaluator 'test.echo' measures it in 'mm'",
+        ),
+        (_undeclared_unit, "declares unit '1' but the measurement has unit 'mm'"),
+        (
+            _set("implementations/test.echo/metrics", []),
+            "evaluator 'test.echo' does not measure analysis/candidate.first_value",
+        ),
         (
             _set("implementations/test.echo/metrics/0/unit", ""),
             "metrics[0].unit must be a nonblank string",
@@ -582,12 +599,19 @@ def _owner_changed(data: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        (_moved, "evaluator 'test.echo' is valid but did not measure analysis/candidate.first"),
+        (
+            _moved,
+            "evaluator 'test.echo' returned a valid result without required metric(s): "
+            "analysis/candidate.first",
+        ),
         (
             _owner_changed,
             "its metrics are [['test.cost', None, 'analysis', 'candidate.first_value'",
         ),
-        (_set("implementations/test.cost/metrics", []), "its evaluator does not declare it"),
+        (
+            _set("implementations/test.cost/metrics", []),
+            "evaluator 'test.cost' does not measure analysis/readout.cost",
+        ),
     ],
 )
 def test_each_value_of_a_record_is_that_of_the_evaluator_its_metric_names(

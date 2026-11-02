@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from k4opt.evaluation import Artifact, EvaluationContractError, EvaluationResult, Status
+from k4opt.evaluation import Artifact, EvaluationContractError, EvaluationResult
 from k4opt.frozen import FrozenMap, Json
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -198,32 +198,14 @@ def local_artifact(artifact: Artifact, root: Path | None) -> Artifact:
     return replace(artifact, path=local(artifact.path, root))
 
 
-def artifacts(
-    task: TaskId,
-    declared: Mapping[str, str] | None,
-    result: EvaluationResult,
-    workdir: Path | None,
-) -> dict[str, Made]:
+def artifacts(task: TaskId, result: EvaluationResult, workdir: Path | None) -> dict[str, Made]:
     """The artifacts of the result of the evaluation ``task``, each hashed once, now.
 
-    Each must be a file in the evaluation's own directory ``workdir``, its links resolved. An
-    evaluator that ``declared`` artifacts returns no other, and a ``valid`` result of it every
-    one. Raises :class:`EvaluationContractError`.
+    Each must be a file in the evaluation's own directory ``workdir``, its links resolved (which
+    names it may return is the problem's to say, :func:`~k4opt.problem.contract.check_result`).
+    Raises :class:`EvaluationContractError`.
     """
     where = f"evaluator {task.label!r}"
-    if declared is not None:
-        unknown = [name for name in result.artifacts if name not in declared]
-        if unknown:
-            raise EvaluationContractError(
-                f"{where} returned the artifact(s) {', '.join(unknown)}, which it does not "
-                f"declare; it declares {', '.join(declared) or 'none'}"
-            )
-        missing = [name for name in declared if name not in result.artifacts]
-        if missing and result.status is Status.VALID:
-            raise EvaluationContractError(
-                f"{where} returned a valid result without its declared artifact(s) "
-                f"{', '.join(missing)}"
-            )
     made: dict[str, Made] = {}
     for name, path in result.artifacts.items():
         if workdir is None:

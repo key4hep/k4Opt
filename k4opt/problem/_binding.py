@@ -36,19 +36,15 @@ from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRequest,
     EvaluatorProtocol,
-    Role,
     Scalar,
     check_settings,
     collection_names,
-    declared_artifacts,
     declared_collections,
-    declared_roles,
     evaluator_source,
-    metric_units,
     with_defaults,
 )
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
-from k4opt.problem._instances import _Bound, _create, _Declaration, _declaration, _instance, _stage
+from k4opt.problem._instances import _Bound, _create, _instance, _Probe, _probe, _stage
 from k4opt.problem._stages import StageContext, check_stages, no_edm4hep_file
 from k4opt.problem._tasks import (
     Kind,
@@ -58,17 +54,12 @@ from k4opt.problem._tasks import (
     evaluations,
     plan_tasks,
     read_stages,
-    reference_task,
     stage_task,
 )
-from k4opt.problem._work import Measuring, MetricKey, SessionContext, show
+from k4opt.problem._work import Measuring, SessionContext
+from k4opt.problem.contract import MetricKey, check_bindings, check_entries
 from k4opt.problem.errors import RunError
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
-
-
-def _as(entry: EvaluatorSpec) -> str:
-    """`` (as b)`` for an entry whose binding is not its implementation's name, else nothing."""
-    return "" if entry.binding == entry.name else f" (as {entry.binding!r})"
 
 
 def _bind(
@@ -77,9 +68,8 @@ def _bind(
     """Pair every binding the problem declares with the implementation given for it, in problem
     order, each with the probe instance that decided it.
 
-    A probe of each implementation is matched by its ``name`` to the entries of that name, each
-    of which must declare its ``version`` and read its ``stage``; an implementation that is
-    missing, not declared, given twice or reads another stage is an
+    A probe of each implementation is matched by its ``name`` to the entries of that name; an
+    implementation that is missing, not declared or given twice is an
     :class:`EvaluationContractError`, and so is one that cannot be created. Several entries may
     bind one implementation; they share its probe.
     """
@@ -89,42 +79,13 @@ def _bind(
     given: dict[str, tuple[type[EvaluatorProtocol], EvaluatorProtocol]] = {}
     for implementation in implementations:
         evaluator = _create(implementation)
-        name, version = evaluator.name, evaluator.version
+        name = evaluator.name
         if name in given:
             raise EvaluationContractError(f"evaluator {name!r} is given twice")
-        entries = declared.get(name)
-        if entries is None:
+        if name not in declared:
             raise EvaluationContractError(
                 f"problem declares no evaluator {name!r}; declared: {', '.join(declared)}"
             )
-        stage, roles = _stage(evaluator), declared_roles(evaluator)
-        for entry in entries:
-            if version != entry.version:
-                raise EvaluationContractError(
-                    f"problem declares evaluator {name!r}{_as(entry)} version "
-                    f"{entry.version!r}, got version {version!r}"
-                )
-            if stage != entry.stage:
-                if entry.stage is None:
-                    fix = f"add stage: {stage} to its entry in the problem"
-                elif stage is None:
-                    fix = f"it reads no stage; remove stage: {entry.stage} from its entry"
-                else:
-                    fix = f"it reads {stage!r}, not {entry.stage!r}"
-                raise EvaluationContractError(
-                    f"evaluator {name!r}{_as(entry)} does not read the stage the problem says: "
-                    f"{fix}"
-                )
-            if entry.roles and not roles:
-                raise EvaluationContractError(
-                    f"evaluator {name!r}{_as(entry)} declares no roles, so it is no combined "
-                    "evaluator; remove roles: from its entry"
-                )
-            if roles and not entry.roles:
-                raise EvaluationContractError(
-                    f"evaluator {name!r}{_as(entry)} is a combined evaluator with the roles "
-                    f"{', '.join(roles)}; say what each reads under roles: in its entry"
-                )
         given[name] = (implementation, evaluator)
     missing = [
         f"{name!r} version {entries[0].version!r}"
@@ -134,102 +95,6 @@ def _bind(
     if missing:
         raise EvaluationContractError(f"no evaluator given for {', '.join(missing)}")
     return [(entry, *given[entry.name]) for entry in spec.evaluators]
-
-
-def _show(metrics: Collection[MetricKey]) -> str:
-    return show(list(metrics))
-
-
-def _check_references(
-    spec: ProblemSpec, evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]]
-) -> None:
-    """Each objective and constraint names a metric its evaluator measures, if that one declares
-    its ``metrics``, and a constraint ``unit`` is the unit it declares for it; otherwise the
-    result decides. Raises :class:`EvaluationContractError`."""
-    units = {entry.binding: metric_units(evaluator) for entry, evaluator in evaluators}
-    for ref in spec.references:
-        metrics = units[ref.evaluator]
-        if metrics is not None and (ref.stage, ref.metric) not in metrics:
-            raise EvaluationContractError(
-                f"evaluator {ref.evaluator!r} does not measure {ref.stage}/{ref.metric}; "
-                f"supported: {_show(sorted(metrics))}"
-            )
-    for constraint in spec.constraints:
-        metrics = units[constraint.evaluator]
-        if metrics is None or constraint.unit is None:
-            continue
-        unit = metrics[(constraint.stage, constraint.metric)]
-        if constraint.unit != unit:
-            raise EvaluationContractError(
-                f"constraint on {constraint.label} declares unit {constraint.unit!r} but "
-                f"evaluator {constraint.evaluator!r} measures it in {unit!r}"
-            )
-
-
-def _check_roles(
-    spec: ProblemSpec, evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]]
-) -> dict[TaskId, tuple[MetricKey, ...]]:
-    """Each combined evaluator gets for its roles what its implementation declares: every role
-    and no other, one item unless the role reads ``many``, evaluations where the role reads them
-    (of evaluators that declare the metrics and artifacts it reads) and the files of its stage
-    otherwise. Returns the metrics the roles read of each evaluation, which a ``valid`` result of
-    that evaluation must carry. Raises :class:`EvaluationContractError`."""
-    probes = {
-        (entry.binding, sample): (entry, evaluator)
-        for entry, evaluator in evaluators
-        for sample in entry.samples
-    }
-    demands: dict[TaskId, dict[MetricKey, None]] = {}
-    for entry, evaluator in evaluators:
-        declared = declared_roles(evaluator)
-        if not entry.roles or declared is None:
-            continue  # the form is checked when it is bound (_bind)
-        where = f"evaluator {entry.binding!r}"
-        unknown = [role for role in entry.roles if role not in declared]
-        missing = [role for role in declared if role not in entry.roles]
-        if unknown or missing:
-            raise EvaluationContractError(
-                f"{where}: its roles are {', '.join(declared)}"
-                + (f"; unknown {', '.join(unknown)}" if unknown else "")
-                + (f"; missing {', '.join(missing)}" if missing else "")
-            )
-        for name, role in declared.items():
-            items, at = entry.roles[name], f"{where}: role {name!r}"
-            if not role.many and len(items) > 1:
-                raise EvaluationContractError(
-                    f"{at} reads one item, but the problem gives {len(items)}: "
-                    f"{', '.join(item.label for item in items)}"
-                )
-            for item in items:
-                if role.stage is not None:
-                    if item.stage != role.stage:
-                        raise EvaluationContractError(
-                            f"{at} reads the {role.stage} file of a sample, as "
-                            f"{{sample: ..., stage: {role.stage}}}; got {item.label}"
-                        )
-                    continue
-                if item.evaluator is None:
-                    raise EvaluationContractError(
-                        f"{at} reads evaluations, as {{sample: ..., evaluator: ...}}; got the "
-                        f"stage {item.label}"
-                    )
-                upstream, probe = probes[(item.evaluator, item.sample)]
-                metrics = metric_units(probe) or {}
-                undeclared = [key for key in role.metrics if key not in metrics]
-                if undeclared:
-                    raise EvaluationContractError(
-                        f"{at} reads {_show(undeclared)} of {item.label}, but {upstream.name} "
-                        f"does not declare {'it' if len(undeclared) == 1 else 'them'}"
-                    )
-                artifacts = declared_artifacts(probe) or {}
-                absent = [name for name in role.artifacts if name not in artifacts]
-                if absent:
-                    raise EvaluationContractError(
-                        f"{at} reads the artifact(s) {', '.join(absent)} of {item.label}, but "
-                        f"{upstream.name} does not declare {'it' if len(absent) == 1 else 'them'}"
-                    )
-                demands.setdefault(reference_task(item), {}).update(dict.fromkeys(role.metrics))
-    return {task: tuple(keys) for task, keys in demands.items()}
 
 
 def _identical(
@@ -372,9 +237,9 @@ def _bind_problem(
     Binds ``implementations`` to the problem through a probe instance of each, which is then
     dropped: checks the stages of each sample they read (those in ``provided``, the files the
     caller supplies by stage task, are not run), each binding's settings and collections against
-    what its implementation declares, and the metric each objective and constraint names
-    (:func:`_check_references`). An evaluator that declares collections of a stage without an
-    EDM4hep file (the gun's, or a HepMC file) is refused. Raises
+    what its implementation declares, and each binding, objective and constraint against what
+    the implementations declare (:mod:`k4opt.problem.contract`). An evaluator that declares
+    collections of a stage without an EDM4hep file (the gun's, or a HepMC file) is refused. Raises
     :class:`EvaluationContractError`. Collections the simulation is not expected to write, and
     what is measured or simulated twice, are only warnings.
     """
@@ -382,6 +247,11 @@ def _bind_problem(
     contexts = {name: StageContext.of(spec, name) for name in spec.samples}
     targets = {sample: read_stages(sample, spec.evaluators) for sample in spec.samples}
     probed = _bind(spec, implementations)
+    probes: dict[type, _Probe] = {}  # one per implementation
+    for _, implementation, evaluator in probed:
+        probes.setdefault(implementation, _probe(evaluator))
+    declarations = {probe.declaration.name: probe.declaration for probe in probes.values()}
+    check_entries(spec, declarations, EvaluationContractError)
     bound = [(entry, probe) for entry, _, probe in probed]
     for sample, context in contexts.items():
         given = {task.name: path for task, path in provided.items() if task.sample == sample}
@@ -402,13 +272,10 @@ def _bind_problem(
         # what needs no candidate is checked before any: a check() may depend on the candidate
         check_settings(evaluator, with_defaults(evaluator, entry.settings))
         collection_names(evaluator, entry.collections)
-    _check_references(spec, bound)
-    demands = _check_roles(spec, bound)
+    demands = check_bindings(spec, declarations, EvaluationContractError)
     warnings = _unexpected_collections(spec, bound, provided) + _identical(spec, bound)
-    declarations: dict[type, _Declaration] = {}  # one probe per implementation
     evaluators = tuple(
-        _Bound(entry, implementation, declarations.setdefault(implementation, _declaration(probe)))
-        for entry, implementation, probe in probed
+        _Bound(entry, implementation, probes[implementation]) for entry, implementation, _ in probed
     )
     of = {id(bound.entry): bound for bound in evaluators}
     planned = tuple(
@@ -498,12 +365,7 @@ def _context(
         FrozenMap({name: replace(c, timeout=timeout) for name, c in binding.contexts.items()}),
         FrozenMap(
             {
-                task: Measuring(
-                    bound.entry,
-                    bound.declaration.metrics,
-                    bound.declaration.artifacts,
-                    binding.demands.get(task, ()),
-                )
+                task: Measuring(bound.entry, bound.probe.declaration, binding.demands.get(task, ()))
                 for task, bound in binding.evaluations
             }
         ),
@@ -521,50 +383,16 @@ def task_cpus(binding: _Binding, task: Task) -> int:
     return threads(stage.options) if stage.executor == "ddsim" else 1
 
 
-def _declared(units: Mapping[MetricKey, str] | None) -> list[dict[str, str]] | None:
-    """The metrics an evaluator declares (``units``), each with its unit; ``None`` if it declares
-    none."""
-    if units is None:
-        return None
-    return [{"stage": s, "metric": m, "unit": unit} for (s, m), unit in units.items()]
-
-
-def _roles(roles: Mapping[str, Role] | None) -> dict[str, dict[str, Json]] | None:
-    """The roles a combined evaluator declares, each with what it reads; ``None`` if it declares
-    none."""
-    if roles is None:
-        return None
-    return {
-        name: {
-            "many": role.many,
-            "stage": role.stage,
-            "metrics": tuple(role.metrics),
-            "artifacts": tuple(role.artifacts),
-        }
-        for name, role in roles.items()
-    }
-
-
 def _implementations(binding: _Binding) -> dict[str, Mapping[str, Json]]:
     """What a record says of each implementation ``binding`` binds, by name, in first-bound
-    order: what the first instance of each declared (its version, stage, metrics, artifacts
-    and roles) and the identity of its source."""
+    order: what the first instance of each declared (:meth:`~k4opt.evaluation.Declaration.to_dict`)
+    and the identity of its source."""
     taken: dict[str, Mapping[str, Json]] = {}
     for bound in binding.evaluators:  # what the first instance of each declared
-        declaration = bound.declaration
+        declaration = bound.probe.declaration
         if declaration.name in taken:
             continue
-        data = {
-            "version": declaration.version,
-            "stage": declaration.stage,
-            "source": evaluator_source(declaration.cls),
-            # each with the unit every measurement of it carries, whatever the status
-            "metrics": _declared(declaration.metrics),
-            # the names of the files a valid result of it returns; null if it declares none
-            "artifacts": None if declaration.artifacts is None else list(declaration.artifacts),
-            # what each role of a combined evaluator reads; null for an evaluator of no roles
-            "roles": _roles(declaration.roles),
-        }
+        data = {**declaration.to_dict(), "source": evaluator_source(bound.probe.cls)}
         frozen = freeze(data, f"evaluator {declaration.name}", RunError)
         assert isinstance(frozen, Mapping)
         taken[declaration.name] = frozen
