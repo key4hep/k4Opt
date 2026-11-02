@@ -54,7 +54,7 @@ from k4opt.problem._binding import (
     task_cpus,
 )
 from k4opt.problem._candidate import CandidateRecord, _validate_candidate
-from k4opt.problem._files import portable, portable_artifact
+from k4opt.problem._files import NOTHING, Observed, portable, portable_artifact
 from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import (
     STAGE_TYPES,
@@ -119,7 +119,7 @@ def _role_input(
             binding=item.evaluator,
             measurements=record.result.measurements,
             artifacts={
-                name: portable_artifact(made.artifact, root) for name, made in result.made.items()
+                name: portable_artifact(artifact, root) for name, artifact in result.made.items()
             },
             events=record.request.events,
             seed=record.request.seed,
@@ -132,7 +132,7 @@ def _role_input(
     name = stage_output(item.stage)
     made = result.made.get(name)
     if made is not None:  # made in its directory: never hashed
-        artifact = made.artifact
+        artifact = made
     else:  # a file of the problem or the caller's, hashed when the session opened
         size, sha256 = result.provenance.get("bytes"), result.provenance.get("sha256")
         artifact = Artifact(
@@ -159,7 +159,10 @@ class _Run:
     prepared, its key, the files the caller supplied for its stages and how its geometry is made.
     ``started`` is when its evaluation began, its checks included; ``specs`` holds the
     description of each task handed out, ``results`` its results once all its tasks ended, and
-    ``error`` what stopped it, if anything did. ``request``, ``values`` and ``reference`` (what
+    ``error`` what stopped it, if anything did. ``observed`` holds, by task, what is watched of
+    the files each task that ran made, from when its result came until the candidate is
+    published: what the tasks that read them check, and the candidate checks at its end; a task
+    that never ran (blocked) has none. ``request``, ``values`` and ``reference`` (what
     its record says it was made for) are the caller's."""
 
     workspace: Workspace
@@ -170,6 +173,7 @@ class _Run:
     started: float = 0.0
     specs: dict[TaskId, TaskSpec] = field(default_factory=dict)
     results: dict[TaskId, TaskResult] = field(default_factory=dict)
+    observed: dict[TaskId, Observed] = field(default_factory=dict)
     error: Exception | None = None
     own_refs: bool = False
     request: object = None
@@ -178,16 +182,16 @@ class _Run:
 
 
 def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> TaskSpec:
-    """The description of ``task`` of ``run``, from the results of the tasks it reads."""
+    """The description of ``task`` of ``run``, from the results of the tasks it reads and what
+    is watched of the files they made."""
     assert run.prepared is not None
     binding, root = run.prepared.binding, run.workspace.root
     reads = {need: results[need] for need in task.needs}
+    observed = _observed(run, task)
     watched = tuple(
-        portable_artifact(made.artifact, root)
-        for result in reads.values()
-        for made in result.made.values()
+        portable_artifact(made.artifact, root) for each in observed for made in each.made.values()
     )
-    trees = [result.tree for result in reads.values() if result.tree is not None]
+    trees = [each.tree for each in observed if each.tree is not None]
     tree = None if not trees else portable(trees[0].root, root)
     workspace = run.workspace.id
     if task.id.kind is Kind.GEOMETRY:
@@ -206,20 +210,26 @@ def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> T
     return TaskSpec(workspace, task, given, watched, tree, request=request, roles=roles)
 
 
-def _seen(task: Task, results: Mapping[TaskId, TaskResult]) -> Observations:
+def _observed(run: _Run, task: Task) -> list[Observed]:
+    """What is watched of the files the tasks ``task`` reads made, in the order it reads them."""
+    return [run.observed.get(need, NOTHING) for need in task.needs]
+
+
+def _seen(run: _Run, task: Task) -> Observations:
     """The stats taken of the files the tasks ``task`` reads made, where they were made."""
-    reads = [results[need] for need in task.needs]
-    made = {m.artifact.ref: m.stat for result in reads for m in result.made.values()}
-    trees = [result.tree.stats for result in reads if result.tree is not None]
+    observed = _observed(run, task)
+    made = {m.artifact.ref: m.stat for each in observed for m in each.made.values()}
+    trees = [each.tree.stats for each in observed if each.tree is not None]
     return Observations(FrozenMap(made), trees[0] if trees else None)
 
 
 def _result(run: _Run, task: Task, outcome: TaskOutcome, observed: Observations) -> TaskResult:
-    """The coordinator's result of ``task`` of ``run`` from what it left behind; the record of an
-    evaluation holds the request it was asked, its files where the workspace is here."""
+    """The coordinator's result of ``task`` of ``run`` from what it left behind, with what is
+    watched of the files it made kept in ``run.observed``; the record of an evaluation holds the
+    request it was asked, its files where the workspace is here."""
     assert run.prepared is not None
     root = run.workspace.root
-    result = to_result(task, outcome, observed, root)
+    result, run.observed[task.id] = to_result(task, outcome, observed, root)
     if task.id.kind is not Kind.EVALUATOR:
         return result
     entry = run.prepared.entries[task.id]
@@ -295,7 +305,7 @@ def _drive(
                     results = scheduler.results(key)
                     spec = _task_spec(run, task, results)
                     run.specs[task.id] = spec
-                    backend.submit(spec, _seen(task, results))
+                    backend.submit(spec, _seen(run, task))
                 except Exception as exc:
                     stop(run, exc)
                     ended.append(run)

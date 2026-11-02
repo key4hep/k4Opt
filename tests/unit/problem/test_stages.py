@@ -642,7 +642,7 @@ def test_the_bridge_runs_the_stage_and_gives_the_evaluator_its_file(
     simulated = stage(candidate, "simulation")
     assert set(simulated.artifacts) == {"stdout", "stderr", "command"}  # its logs
     (events,) = simulated.made.values()
-    assert (events.artifact.ref, events.artifact.path) == ("gamma/simulation#events", events_file)
+    assert (events.ref, events.path) == ("gamma/simulation#events", events_file)
     ran = simulated.provenance
     assert ran["returncode"] == 0 and ran["argv"][0] == simulation.DDSIM  # type: ignore[index]
     (read,) = candidate.plan.of(Kind.EVALUATOR)
@@ -1222,7 +1222,7 @@ def test_an_evaluator_keeps_its_own_artifacts_and_provenance_whatever_their_name
     assert thaw(record.result.provenance) == claimed
     events_file = tmp_path / "run/samples/gamma/simulation/events.edm4hep.root"
     simulated = stage(candidate, "simulation")
-    assert simulated.made["events"].artifact.path == events_file
+    assert simulated.made["events"].path == events_file
     assert simulated.provenance["argv"][0] == simulation.DDSIM  # type: ignore[index]
 
 
@@ -1419,7 +1419,6 @@ def test_a_file_that_changes_fails_the_tasks_that_read_it(
         "not run: gamma/simulation#events changed after it was made",
     )
     assert calls == ["called"] and later.elapsed_seconds is None
-    assert candidate.changed() == ["gamma/simulation#events"]
 
 
 def test_an_evaluator_without_stages_keeps_its_own_provenance_and_artifacts(

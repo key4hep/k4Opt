@@ -14,11 +14,10 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from k4opt import __version__
-from k4opt.evaluation import Scalar
+from k4opt.evaluation import Artifact, Scalar
 from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.problem._assess import Assessment
 from k4opt.problem._candidate import CandidateRecord
-from k4opt.problem._files import Made
 from k4opt.problem._record import SUMMARY_SCHEMA, _measurement
 from k4opt.problem._tasks import GEOMETRY, Kind, PeakMemory, Task, TaskResult, evaluations
 from k4opt.problem.errors import RecordError
@@ -33,9 +32,8 @@ def _relative(path: Path, run_dir: Path) -> str:
     return path.resolve().relative_to(run_dir.resolve()).as_posix()
 
 
-def _artifact(made: Made, run_dir: Path) -> dict[str, object]:
+def _artifact(artifact: Artifact, run_dir: Path) -> dict[str, object]:
     """A file a task made, as the record names it; ``sha256`` is ``null`` unless it was hashed."""
-    artifact = made.artifact
     return {
         "ref": artifact.ref,
         "path": _relative(artifact.path, run_dir),

@@ -33,7 +33,6 @@ from k4opt.problem._tasks import (
     TaskResult,
     candidate_message,
     candidate_status,
-    changed_files,
     diagnostics,
     stage_task,
 )
@@ -318,11 +317,6 @@ class CandidateRecord:
     def diagnostics(self) -> tuple[TaskResult, ...]:
         """The result of each task that is not required and did not succeed, in plan order."""
         return tuple(diagnostics(self.plan, self.results))
-
-    def changed(self) -> list[str]:
-        """The references of the files its tasks made that are no longer what its record says
-        (:meth:`~k4opt.problem._files.Made.changed`)."""
-        return changed_files(self.results.values())
 
     def record(self, label: str) -> EvaluationRecord:
         """The record of the evaluation ``label`` (``gamma/calo.photon``, ``readout``);

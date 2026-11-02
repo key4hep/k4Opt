@@ -55,7 +55,7 @@ from k4opt.problem._candidate import (
 )
 from k4opt.problem._cpus import AUTO, usable_cpus
 from k4opt.problem._evaluate import Activity, _drive, _finish_plan, _Run
-from k4opt.problem._files import readable_identity
+from k4opt.problem._files import changed_files, readable_identity
 from k4opt.problem._record import SUMMARY_SCHEMA
 from k4opt.problem._schedule import Scheduler
 from k4opt.problem._stages import STAGE_TYPES, input_files, plan_stages
@@ -738,7 +738,9 @@ class EvaluationSession:
         externals = _externals(geometry)
         try:
             self._verify()  # the record names what the stages and evaluators read
-            changed = record.changed()
+            # in plan order, what is watched of the files each task that ran made
+            watched = {t.id: run.observed[t.id] for t in record.plan.tasks if t.id in run.observed}
+            changed = changed_files(watched)
             if changed:
                 raise RunError(
                     f"{', '.join(changed)} changed after it was made, so the record could not "

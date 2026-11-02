@@ -24,7 +24,7 @@ import functools
 import hashlib
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -144,6 +144,31 @@ class Tree:
             for name in dict.fromkeys([*self.stats, *now])
             if now.get(name) != self.stats.get(name)
         ]
+
+
+@dataclass(frozen=True, slots=True)
+class Observed:
+    """What the coordinator watches of the files one task made, until its candidate ends: each
+    file with its stat where it was made (``made``, by name) and the geometry it made
+    (``tree``). As machine-specific as the stats it holds, so never part of a record."""
+
+    made: Mapping[str, Made] = field(default_factory=lambda: FrozenMap({}))
+    tree: Tree | None = None
+
+
+NOTHING = Observed()
+"""What is watched of a task that made no file, or never ran."""
+
+
+def changed_files(observed: Mapping[TaskId, Observed]) -> list[str]:
+    """The files the tasks ``observed`` made that changed since: the reference of each, or for a
+    tree its path below the task (``geometry/compact/ECalBarrel.xml``)."""
+    found = []
+    for task, watched in observed.items():
+        if watched.tree is not None:
+            found += [f"{task.label}/{name}" for name in watched.tree.changed()]
+        found += [made.artifact.ref for made in watched.made.values() if made.changed()]
+    return found
 
 
 def portable(path: Path, root: Path | None) -> Path:

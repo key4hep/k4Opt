@@ -12,7 +12,7 @@ import pytest
 
 from k4opt.evaluation import EvaluationContractError, Status
 from k4opt.problem import EvaluatorSpec, MetricRef, Reference, Sample, Stage
-from k4opt.problem._files import Made, Tree
+from k4opt.problem._files import Made, Observed, Tree, changed_files
 from k4opt.problem._tasks import (
     GEOMETRY,
     Kind,
@@ -23,7 +23,6 @@ from k4opt.problem._tasks import (
     blocked,
     candidate_message,
     candidate_status,
-    changed_files,
     diagnostics,
     evaluator_task,
     plan_tasks,
@@ -437,27 +436,18 @@ def test_a_made_file_is_changed_once_its_stat_or_its_bytes_are(
     assert made.changed()
 
 
-def test_the_changed_files_are_those_of_the_results_given(tmp_path: Path) -> None:
+def test_the_changed_files_are_those_of_the_tasks_observed(tmp_path: Path) -> None:
     kept, rewritten = tmp_path / "kept.root", tmp_path / "rewritten.root"
     for path in (kept, rewritten):
         path.write_bytes(b"events")
-    results = [
-        TaskResult(
-            SIMULATION, "done", made={"events": Made.file(SIMULATION, "events", kept, hashed=False)}
-        ),
-        TaskResult(GEOMETRY, "done"),
-        TaskResult(
-            stage_task("simulation", "pion"),
-            "done",
-            made={
-                "events": Made.file(
-                    stage_task("simulation", "pion"), "events", rewritten, hashed=False
-                )
-            },
-        ),
-    ]
+    pion = stage_task("simulation", "pion")
+    observed = {
+        SIMULATION: Observed({"events": Made.file(SIMULATION, "events", kept, hashed=False)}),
+        GEOMETRY: Observed(),
+        pion: Observed({"events": Made.file(pion, "events", rewritten, hashed=False)}),
+    }
     rewritten.write_bytes(b"more events")
-    assert changed_files(results) == ["pion/simulation#events"]
+    assert changed_files(observed) == ["pion/simulation#events"]
 
 
 def test_a_tree_is_changed_by_any_file_in_it_that_changes_goes_or_is_added(
@@ -472,5 +462,5 @@ def test_a_tree_is_changed_by_any_file_in_it_that_changes_goes_or_is_added(
     (tmp_path / "b.xml").unlink()
     (tmp_path / "c.xml").write_text("<c/>")
     assert tree.changed() == ["b.xml", "compact/a.xml", "c.xml"]
-    held = TaskResult(GEOMETRY, "done", tree=tree)
-    assert changed_files([held]) == ["geometry/b.xml", "geometry/compact/a.xml", "geometry/c.xml"]
+    observed = {GEOMETRY: Observed(tree=tree)}
+    assert changed_files(observed) == ["geometry/b.xml", "geometry/compact/a.xml", "geometry/c.xml"]

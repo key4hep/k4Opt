@@ -167,7 +167,7 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
     for simulation in (candidate.results[t.id] for t in stages if t.id.name == "simulation"):
         files, at = dict(simulation.artifacts), simulation.id.sample
         if "events" in simulation.made:
-            files["edm4hep"] = simulation.made["events"].artifact.path
+            files["edm4hep"] = simulation.made["events"].path
         for role in ("stdout", "stderr", "edm4hep"):
             if role in files:
                 print(f"{role + ':':12} {at}: {files[role]}", file=out)

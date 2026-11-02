@@ -53,6 +53,7 @@ from k4opt.frozen import FrozenMap, Json, thaw
 from k4opt.geometry import GeometryError, GeometrySource, Override
 from k4opt.problem._files import (
     Made,
+    Observed,
     Stat,
     Tree,
     artifacts,
@@ -640,20 +641,21 @@ _LISTED = 64  # stage files whose collections are kept listed: those of a few ca
 
 def to_result(
     task: Task, outcome: TaskOutcome, observed: Observations, root: Path | None
-) -> TaskResult:
+) -> tuple[TaskResult, Observed]:
     """The coordinator's :class:`~k4opt.problem._tasks.TaskResult` of ``outcome``, its files
-    where the workspace ``root`` is here, with the stats ``observed`` where they were taken.
-    An evaluation's record is the coordinator's to add: it made the request."""
-    made = {
-        name: Made(local_artifact(artifact, root), observed.made[artifact.ref])
-        for name, artifact in outcome.made.items()
-    }
+    where the workspace ``root`` is here, and what it watches of the files the task made: each
+    with the stat ``observed`` where it was made, and the geometry it made. An evaluation's
+    record is the coordinator's to add: it made the request."""
+    made = {name: local_artifact(artifact, root) for name, artifact in outcome.made.items()}
     tree = None
     if observed.tree is not None:
         assert root is not None
         assert task.directory is not None
         tree = Tree(root / task.directory, FrozenMap(dict(observed.tree)))
-    return TaskResult(
+    watched = Observed(
+        FrozenMap({name: Made(made[name], observed.made[made[name].ref]) for name in made}), tree
+    )
+    result = TaskResult(
         outcome.task,
         outcome.status,
         outcome.message,
@@ -662,9 +664,9 @@ def to_result(
         outcome.provenance,
         outcome.elapsed_seconds,
         made=made,
-        tree=tree,
         memory=outcome.memory,
     )
+    return result, watched
 
 
 def local_result(outcome: TaskOutcome, root: Path | None) -> tuple[EvaluationResult, Path | None]:

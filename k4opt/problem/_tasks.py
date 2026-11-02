@@ -28,23 +28,21 @@ no task, so the stages before it are planned only if something else needs them. 
 share nothing but the geometry: a task of one sample never reads a task of another, and only a
 combined evaluator reads tasks of several.
 
-The files a task makes in its directory (the events of a simulation, an evaluator's artifacts,
-the geometry) are held by its result as :class:`~k4opt.problem._files.Made` and
-:class:`~k4opt.problem._files.Tree`, watched for changes until the candidate ends
-(:func:`changed_files`).
+A result names the files its task made in its directory (the events of a simulation, an
+evaluator's artifacts) as the record does; the coordinator watches them, and the geometry, for
+changes until the candidate ends (:class:`~k4opt.problem._files.Observed`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from k4opt.evaluation import EvaluationContractError, EvaluationRecord, Status
+from k4opt.evaluation import Artifact, EvaluationContractError, EvaluationRecord, Status
 from k4opt.frozen import FrozenMap, Json, freeze
-from k4opt.problem._files import Made, Tree
 from k4opt.problem._stages import STAGE_TYPES, graph, reads_geometry, writes_files
 from k4opt.problem.models import EvaluatorSpec, MetricRef, Reference, Sample
 
@@ -247,17 +245,6 @@ def plan_tasks(
     return Plan(tuple(replace(each, required=each.id in needed) for each in tasks))
 
 
-def changed_files(results: Iterable[TaskResult]) -> list[str]:
-    """The files that the tasks of ``results`` made and that changed since: the reference of
-    each, or for a tree its path below the task (``geometry/compact/ECalBarrel.xml``)."""
-    changed = []
-    for result in results:
-        if result.tree is not None:
-            changed += [f"{result.id.label}/{name}" for name in result.tree.changed()]
-        changed += [made.artifact.ref for made in result.made.values() if made.changed()]
-    return changed
-
-
 @dataclass(frozen=True, slots=True)
 class PeakMemory:
     """The peak resident memory of a task, in bytes, ``None`` where it is not known.
@@ -294,8 +281,8 @@ class TaskResult:
     by its name (the compact file of the geometry, the events of a stage), ``None`` if it gives
     nothing (a particle gun); ``artifacts`` are its other files (logs) and ``provenance`` how it
     ran. ``made`` holds, by name, the files it made that its record identifies: the output of a
-    stage that ran, the artifacts of an evaluator; ``tree`` the files of the geometry it made,
-    which its record identifies together. ``blocked_by`` holds the tasks that did not
+    stage that ran, the artifacts of an evaluator (the geometry it made is identified by its
+    fingerprint, in ``provenance``). ``blocked_by`` holds the tasks that did not
     succeed and kept a ``blocked`` one from running; ``record`` the evaluator's record, blocked
     ones included. ``elapsed_seconds`` is
     the wall time k4opt spent on it, ``None`` if it did not run; ``memory`` its peak memory,
@@ -311,8 +298,7 @@ class TaskResult:
     elapsed_seconds: float | None = None
     blocked_by: tuple[TaskId, ...] = ()
     record: EvaluationRecord | None = None
-    made: Mapping[str, Made] = field(default_factory=lambda: FrozenMap({}))
-    tree: Tree | None = None
+    made: Mapping[str, Artifact] = field(default_factory=lambda: FrozenMap({}))
     memory: PeakMemory | None = None
 
     def __post_init__(self) -> None:

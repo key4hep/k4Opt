@@ -356,7 +356,7 @@ def test_an_artifact_is_recorded_by_reference_path_size_and_hash(
     (made,) = outcome.candidate.results[
         TaskId(Kind.EVALUATOR, "test.cell_count", "gamma")
     ].made.values()
-    assert made.artifact == Artifact(
+    assert made == Artifact(
         "gamma/test.cell_count#histogram",
         path,
         path.stat().st_size,

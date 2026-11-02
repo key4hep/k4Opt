@@ -386,6 +386,31 @@ def test_a_dangling_symlink_as_output_is_refused_as_existing(
     assert not (tmp_path / "nowhere").exists()
 
 
+@pytest.mark.parametrize("jobs", [1, 2])
+@pytest.mark.parametrize("named", ["gamma/simulation#events", "geometry/added.xml"])
+def test_a_file_changed_after_the_last_task_keeps_the_record_from_being_written(
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, jobs: int, named: str
+) -> None:
+    # every task that read the file found it as it was made; only the candidate's own check,
+    # once all its tasks ended, can tell that its record would not say what the files hold
+    stack.install(monkeypatch)
+    finish = _run.EvaluationSession._finish
+
+    def finishing(self: Any, run: Any) -> Any:
+        if named == "geometry/added.xml":  # a file added to the geometry changes it too
+            changed = run.workspace.root / "geometry" / "added.xml"
+        else:
+            changed = run.results[stage_task("simulation", "gamma")].output
+        with changed.open("ab") as handle:
+            handle.write(b"more")
+        return finish(self, run)
+
+    monkeypatch.setattr(_run.EvaluationSession, "_finish", finishing)
+    with pytest.raises(RunError, match=rf"^{named} changed after it was made, so the record"):
+        session_of(jobs).evaluate({RADIUS: 300.0}, tmp_path / "a")
+    assert not (tmp_path / "a" / SUMMARY_NAME).exists()
+
+
 def threaded(path: Path, threads: int) -> Path:
     """``path``'s problem with the gamma simulation run on ``threads`` threads."""
     document = yaml.safe_load(path.read_text())
