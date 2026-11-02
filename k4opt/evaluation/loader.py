@@ -172,21 +172,30 @@ def _identified(
 
 def changed_helpers(cls: type) -> list[str]:
     """The local modules the identity of ``cls`` names (``helpers`` of
-    :func:`evaluator_source`) whose files no longer hold what they did when it was loaded, or
-    that Python imported from another file since (one earlier on ``sys.path`` by then); none for
-    a class :func:`load_evaluator` did not identify. A module Python imports later, inside a
-    function, would then run other code than the identity says."""
+    :func:`evaluator_source`) whose files no longer hold what they did when it was loaded, that
+    Python imported from another file since (one earlier on ``sys.path`` by then), or from none,
+    or, for an identity of the code that runs (``executed``), that something else than k4opt's
+    source loader imported, or from other bytes; none for a class :func:`load_evaluator` did not
+    identify. A module Python imports later, inside a function, would then run other code than
+    the identity says."""
     identity, files = _SOURCES.get(cls), _HELPER_FILES.get(cls)
     if identity is None or files is None:
         return []
     then = identity["helpers"]
     assert isinstance(then, Mapping)
+    verified = identity.get("executed") is True
     changed = []
     for key, (module, path) in files.items():
-        imported = getattr(sys.modules.get(module), "__file__", None)
-        if imported is not None and Path(imported).resolve() != path.resolve():
-            changed.append(f"{key} (imported from {imported})")
-        elif _sha256(path) != then.get(key):
+        loaded = sys.modules.get(module)
+        imported = getattr(loaded, "__file__", None)
+        ran = None if loaded is None else executed(loaded)
+        if loaded is not None and (imported is None or Path(imported).resolve() != path.resolve()):
+            changed.append(f"{key} (imported from {imported or 'no file'})")
+        elif loaded is not None and verified and ran is None:
+            changed.append(f"{key} (imported by another import hook, perhaps from a cached .pyc)")
+        elif (loaded is not None and verified and ran != then.get(key)) or (
+            _sha256(path) != then.get(key)
+        ):
             changed.append(key)
     return changed
 

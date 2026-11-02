@@ -606,6 +606,19 @@ class _Seventeen(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         module.value = 17  # type: ignore[attr-defined]
 
 
+class _FromFile(importlib.abc.MetaPathFinder):
+    """An import hook that imports the module ``name`` from ``file`` as Python's own loader does,
+    which may run a cached ``.pyc``."""
+
+    def __init__(self, name: str, file: Path) -> None:
+        self.name, self.file = name, file
+
+    def find_spec(self, fullname: str, path: object, target: object = None) -> Any:
+        if fullname != self.name:
+            return None
+        return importlib.util.spec_from_file_location(fullname, self.file)
+
+
 def test_an_import_hook_before_pythons_path_finder_keeps_its_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
@@ -649,6 +662,31 @@ def test_a_module_in_a_zip_archive_is_imported_by_python_and_not_identified(
         "path": f"{archive}/{module}.py",
         "reference": f"{module}:Good",
     }
+
+
+def test_a_lazy_helper_another_import_hook_runs_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    helper = "lazy_hooked_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    path = tmp_path / f"{helper}.py"
+    path.write_text("value = 11\n")
+    py_compile.compile(str(path), doraise=True)
+    original = path.stat()
+    path.write_text("value = 22\n")  # Python's own loader would run the .pyc of 11
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    lazy = GOOD.replace(
+        "def evaluate(self, request):", f"def evaluate(self, request):\n        import {helper}"
+    ).replace('"answer", 42', f'"answer", {helper}.value')
+    (tmp_path / "lazy.py").write_text(lazy)
+    cls = load_evaluator(f"{tmp_path / 'lazy.py'}:Good")  # identified with value = 22
+    assert evaluator_source(cls)["executed"] is True
+    hook = _FromFile(helper, path)  # comes first, and imports as Python's own loader does
+    monkeypatch.setattr(sys, "meta_path", [hook, *sys.meta_path])
+    assert cls().evaluate(None).measurements[0].value == 11  # type: ignore[arg-type]
+    assert changed_helpers(cls) == [
+        f"{helper}.py (imported by another import hook, perhaps from a cached .pyc)"
+    ]
 
 
 @requires_git
