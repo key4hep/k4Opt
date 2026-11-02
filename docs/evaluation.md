@@ -466,7 +466,9 @@ registry; the `name` of each entry of `evaluators` stays a label that must equal
 an evaluator that is loaded.
 
 `evaluator_source(cls)` reports the path, size and SHA-256 of the file that defines an
-evaluator class, taken when `load_evaluator` imports it, and whether those are the bytes Python
+evaluator class (for `FILE.py:Class`, that file, also when it imports the class from a helper
+and perhaps changes it: the helper is among its `helpers`), taken when `load_evaluator` imports
+it, and whether those are the bytes Python
 `executed`. They are (`executed: true`): `load_evaluator` imports the file from the bytes of its
 source and hashes the bytes it compiled, never a cached `.pyc`, which an edit that keeps size
 and timestamp leaves stale. For `package.module:Class` it finds the module, the packages it is
@@ -488,7 +490,8 @@ counts the modules beside it, as a file does, unless it is installed (in `site-p
 standard library). They are found in the source, so an import inside a method counts as one at
 the top; a module imported by name at run time (`importlib.import_module`) and a data file the
 evaluator reads are not. Helpers are imported from their source too, so their hashes are those
-of the code that runs. Loading is refused for a helper that
+of the code that runs; they are otherwise imported as Python imports a source file, so a
+package's resources (`importlib.resources`, `pkgutil.get_data`) read as usual. Loading is refused for a helper that
 Python imported before and whose file changed since (it keeps running the old module), for one
 that something imported before `load_evaluator` read it, and for one that evaluator code loaded
 before imports by the same name from elsewhere, also only inside a method. A session checks

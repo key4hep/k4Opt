@@ -450,6 +450,42 @@ def test_a_stale_bytecode_cache_of_a_module_cannot_disagree_with_its_hash(
         sys.modules.pop("my_evaluator", None)
 
 
+def test_a_helper_package_reads_its_resources_as_from_any_import(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    package = "data_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(package, None))
+    (tmp_path / package).mkdir()
+    (tmp_path / package / "__init__.py").write_text("")
+    (tmp_path / package / "calibration.json").write_text("7")
+    evaluator = tmp_path / "calibrated.py"
+    evaluator.write_text(
+        f"import pkgutil\nfrom importlib.resources import files\n\nimport {package}\n\n"
+        f"FILES = files({package!r}).joinpath('calibration.json').read_text()\n"
+        f"DATA = pkgutil.get_data({package!r}, 'calibration.json')\n" + GOOD
+    )
+    module = sys.modules[load_evaluator(f"{evaluator}:Good").__module__]
+    assert (module.FILES, module.DATA) == ("7", b"7")
+    assert _imports.executed(sys.modules[package]) is not None  # imported from its source
+
+
+def test_a_file_that_re_exports_a_class_identifies_it_by_what_it_executed(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    helper = "defines_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / f"{helper}.py").write_text(GOOD)
+    wrapper = tmp_path / "wrapper.py"
+    text = f"from {helper} import Good\n\nGood.scale = 2  # changes what it measures\n"
+    wrapper.write_text(text)
+    source = evaluator_source(load_evaluator(f"{wrapper}:Good"))
+    assert (source["path"], source["sha256"]) == (
+        str(wrapper),
+        hashlib.sha256(text.encode()).hexdigest(),
+    )
+    assert source["helpers"] == {f"{helper}.py": hashlib.sha256(GOOD.encode()).hexdigest()}
+
+
 @requires_git
 def test_the_revision_of_the_checkout_is_taken_when_the_file_is_loaded(tmp_path: Path) -> None:
     files = {"tracked_good.py": GOOD, "later_good.py": GOOD, "helper.py": ""}

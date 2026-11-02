@@ -19,7 +19,7 @@ import sys
 import sysconfig
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
-from types import ModuleType
+from types import CodeType, ModuleType
 
 # the modules imported from their source, by name
 _SERVED: dict[str, Path] = {}
@@ -143,17 +143,18 @@ def locate(name: str) -> dict[str, Path]:
     return found
 
 
-class SourceLoader(importlib.abc.Loader):
-    """Executes a module from the bytes of its source file; the SHA-256 of the bytes compiled is
-    the spec's ``loader_state``."""
+class SourceLoader(importlib.machinery.SourceFileLoader):
+    """Python's loader of a source file, which compiles the bytes of the source every time,
+    never reading or writing a cached ``.pyc``; ``sha256`` is the SHA-256 of the bytes it
+    compiled last. All else, package resources (``importlib.resources``, ``pkgutil.get_data``)
+    included, is as for any module imported from a source file."""
 
-    def exec_module(self, module: ModuleType) -> None:
-        spec = module.__spec__
-        assert spec is not None
-        assert spec.origin is not None
-        data = Path(spec.origin).read_bytes()
-        spec.loader_state = hashlib.sha256(data).hexdigest()
-        exec(compile(data, spec.origin, "exec", dont_inherit=True), module.__dict__)
+    sha256: str | None = None
+
+    def get_code(self, fullname: str) -> CodeType:
+        data = self.get_data(self.path)
+        self.sha256 = hashlib.sha256(data).hexdigest()
+        return compile(data, self.path, "exec", dont_inherit=True)
 
 
 class _SourceFinder(importlib.abc.MetaPathFinder):
@@ -165,13 +166,10 @@ class _SourceFinder(importlib.abc.MetaPathFinder):
         file = _SERVED.get(fullname)
         if file is None:
             return None
-        package = [str(file.parent)] if file.name == "__init__.py" else None
-        return importlib.util.spec_from_file_location(
-            fullname, file, loader=_LOADER, submodule_search_locations=package
-        )
+        loader = SourceLoader(fullname, str(file))
+        return importlib.util.spec_from_file_location(fullname, file, loader=loader)
 
 
-_LOADER = SourceLoader()
 _FINDER = _SourceFinder()
 
 
@@ -200,8 +198,6 @@ def executed(module: ModuleType) -> str | None:
     """The SHA-256 of the source :class:`SourceLoader` executed ``module`` from; ``None`` for a
     module Python imported otherwise."""
     spec = getattr(module, "__spec__", None)
-    if spec is None or spec.loader is not _LOADER:
+    if spec is None or not isinstance(spec.loader, SourceLoader):
         return None
-    state = spec.loader_state
-    assert isinstance(state, str)
-    return state
+    return spec.loader.sha256

@@ -306,6 +306,29 @@ def test_a_module_its_evaluator_imports_that_changes_during_a_study_stops_it(
         )
 
 
+def test_a_study_does_not_resume_with_another_file_that_re_exports_its_evaluator(
+    tmp_path: Path, write_problem: Callable[..., Path], request: pytest.FixtureRequest
+) -> None:
+    helper = "trade_off_defined_here"
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / "evaluators").mkdir()
+    (tmp_path / "evaluators" / f"{helper}.py").write_bytes(
+        Path(TRADE_OFF.partition(":")[0]).read_bytes()
+    )
+
+    def wrapper(name: str, scale: int) -> Any:
+        path = tmp_path / "evaluators" / f"{name}.py"
+        path.write_text(f"from {helper} import TradeOff\n\nTradeOff.scale = {scale}\n")
+        return load_evaluator(f"{path}:TradeOff")
+
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1, evaluators=[wrapper("wrapper", 2)])
+    with pytest.raises(
+        OptimizationError, match=r"evaluator 'test\.trade_off': .*wrapper_again\.py changed"
+    ):
+        run(problem, output, 1, resume=True, evaluators=[wrapper("wrapper_again", 3)])
+
+
 UNITS = """
     import os
     from k4opt.evaluation import Evaluator

@@ -34,8 +34,9 @@ from k4opt.revision import tracked_revision
 _SOURCES: WeakKeyDictionary[type, FrozenMap[str, Json]] = WeakKeyDictionary()
 # the reference each class was last loaded by, the file as an absolute path
 _REFERENCES: WeakKeyDictionary[type, str] = WeakKeyDictionary()
-# the identity of each FILE.py this process executed, by the module name it was imported as
-_EXECUTED: dict[str, FrozenMap[str, Json]] = {}
+# the identity of each FILE.py this process executed, and the local modules it names, by the
+# module name it was imported as
+_EXECUTED: dict[str, tuple[FrozenMap[str, Json], Mapping[str, Path]]] = {}
 # the files of the local modules each class's identity names, by the name it gives them
 _HELPER_FILES: WeakKeyDictionary[type, FrozenMap[str, Path]] = WeakKeyDictionary()
 
@@ -43,8 +44,9 @@ _HELPER_FILES: WeakKeyDictionary[type, FrozenMap[str, Path]] = WeakKeyDictionary
 def evaluator_source(cls: type) -> dict[str, Json]:
     """Identify the source of an evaluator class without hashing a file that may have changed.
 
-    The identity is taken when :func:`load_evaluator` imports the file that defines the class: the
-    exact bytes executed (``executed``), which it imports from the source, never from a cached
+    The identity is taken when :func:`load_evaluator` imports the file that defines the class (for
+    ``FILE.py:Class``, that file, also when it imports the class from elsewhere and may change it):
+    the exact bytes executed (``executed``), which it imports from the source, never from a cached
     ``.pyc``; for a module that only Python's own import finds (not a source file on ``sys.path``),
     the file read right after the import (Python may have executed a cached ``.pyc`` instead).
     ``helpers`` holds the SHA-256 of each local module the file imports, directly or through one
@@ -285,7 +287,7 @@ def _load_file(path: Path, before: Collection[str]) -> ModuleType:
     digest = hashlib.sha256(str(path).encode()).hexdigest()[:12]
     name = f"k4opt_evaluator_{path.stem}_{digest}"
     if name in sys.modules:
-        change = _changed(path, _EXECUTED[name])
+        change = _changed(path, _EXECUTED[name][0])
         if change is not None:
             raise EvaluatorLoadError(
                 f"{path} changed since this process imported it ({change}); Python cannot "
@@ -327,7 +329,7 @@ def _load_file(path: Path, before: Collection[str]) -> ModuleType:
         if not isinstance(exc, Exception):
             raise
         raise EvaluatorLoadError(f"importing {path} failed: {type(exc).__name__}: {exc}") from exc
-    _EXECUTED[name] = identity
+    _EXECUTED[name] = identity, local
     return module
 
 
@@ -354,8 +356,8 @@ def load_evaluator(reference: str) -> type[EvaluatorProtocol]:
             f"evaluator {reference!r}: expected FILE.py:Class or package.module:Class"
         )
     imported_before = set(sys.modules)
-    if where.endswith(".py") or "/" in where:
-        path = Path(where).expanduser().resolve()
+    path = Path(where).expanduser().resolve() if where.endswith(".py") or "/" in where else None
+    if path is not None:
         module = _load_file(path, imported_before)
         canonical = f"{path}:{attribute}"
     else:
@@ -368,7 +370,10 @@ def load_evaluator(reference: str) -> type[EvaluatorProtocol]:
         raise EvaluatorLoadError(f"{attribute} is not a class: name the class of an evaluator")
     if not callable(getattr(cls, "evaluate", None)):
         raise EvaluatorLoadError(f"{attribute} is not an evaluator: it has no evaluate() method")
-    if cls.__module__ not in imported_before:
+    if path is not None:  # what the file executed, also for a class it imports and may change
+        identity, local = _EXECUTED[module.__name__]
+        _identified(cls, identity, path.parent, local)
+    elif cls.__module__ not in imported_before:
         _identify_import(cls, where, imported_before)
     _REFERENCES[cls] = canonical
     return cls
