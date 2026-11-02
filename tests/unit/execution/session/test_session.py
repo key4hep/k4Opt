@@ -25,8 +25,11 @@ from k4opt.evaluation import (
     EvaluationFailed,
     EvaluationInvalid,
     EvaluationRequest,
+    Evaluator,
+    EvaluatorLoadError,
     Quantity,
     collection_names,
+    load_evaluator,
     metric_units,
     with_defaults,
 )
@@ -751,6 +754,28 @@ def test_a_check_must_be_a_classmethod(problem_file: Path) -> None:
 
     with pytest.raises(EvaluationContractError, match=r"Bound\.check must be a classmethod"):
         EvaluationSession.open(problem_file, [Bound])
+
+
+def test_an_evaluator_without_evaluate_of_its_own_is_refused_before_anything_runs(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, guard: list[str]
+) -> None:
+    unfinished = tmp_path / "unfinished.py"
+    unfinished.write_text(
+        "from k4opt.evaluation import Collection, Evaluator\n\n"
+        "class Unfinished(Evaluator):\n"
+        "    name, version, stage = 'test.cell_count', '1', 'simulation'\n"
+        "    collections = {'hits': Collection('SimCalorimeterHit')}\n"
+        "    metrics = {'ecal_barrel.mean_hit_cells': '1'}\n"
+    )
+    with pytest.raises(EvaluatorLoadError, match="it has no evaluate"):
+        load_evaluator(f"{unfinished}:Unfinished")
+
+    class Unfinished(Spy):
+        evaluate = Evaluator.evaluate  # the abstract one, as a subclass that forgets it has
+
+    with pytest.raises(EvaluationContractError, match="does not implement evaluate"):
+        EvaluationSession.open(problem_file, [Unfinished])
+    assert fake.calls == [] and "materialize" not in guard
 
 
 def test_a_declaration_computed_by_code_is_refused(problem_file: Path) -> None:

@@ -571,7 +571,8 @@ does not say. An evaluation goes through four steps, each where it belongs:
    binds it to the entries of `evaluators` that name it. Nothing is created and none of the
    class's code runs: each declaration must be plain data on the class (a string, a mapping,
    `None`); a property or another descriptor, whose value only code could give, is refused, as
-   is a `check` that is not a classmethod (`check_class`). What the class declares is copied all
+   is a `check` that is not a classmethod and a class without an `evaluate()` of its own (one
+   that only inherits the abstract one of `Evaluator`; `check_class`). What the class declares is copied all
    through, and the records name it as the code that ran.
 2. **The candidate's request, checked.** For each evaluation of a candidate, k4opt makes the
    request and calls the class's [`check`](#writing-an-evaluator) once with it, in the session's

@@ -40,6 +40,7 @@ evaluation runs (a worker process, or that same process), one new instance is cr
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from collections.abc import Iterable, Iterator, Mapping
 from typing import NoReturn, cast
 
@@ -120,7 +121,9 @@ class Evaluator:
     artifacts: Mapping[str, str] | None = None
     roles: Mapping[str, Role] | None = None
 
+    @abstractmethod
     def evaluate(self, request: EvaluationRequest) -> EvaluationResult | Values:
+        """Measure the candidate of ``request``; every evaluator implements it."""
         raise NotImplementedError
 
     @classmethod

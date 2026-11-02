@@ -106,8 +106,20 @@ def _is(value: object, kind: type) -> bool:
     return isinstance(value, _KINDS[kind])
 
 
+def _settings(evaluator: object) -> Mapping[str, Any] | None:
+    """The ``settings`` ``evaluator`` declares, ``None`` if it declares none; raises
+    :class:`EvaluationContractError` for a declaration that is no mapping."""
+    declared = getattr(evaluator, "settings", None)
+    if declared is not None and not isinstance(declared, Mapping):
+        raise EvaluationContractError(
+            "settings: declare a mapping of key to a type, a default or a Quantity, such as "
+            f"{{'threshold': Quantity('GeV'), 'cut': 0.5}}; got {declared!r}"
+        )
+    return declared
+
+
 def _declared(evaluator: object) -> Mapping[str, Any]:
-    return getattr(evaluator, "settings", None) or {}
+    return _settings(evaluator) or {}
 
 
 def _kind(declared: object) -> type:
@@ -157,7 +169,7 @@ def check_bound(evaluator: object, key: str, kind: type, unit: str | None) -> No
     ``evaluator``: one it declares in its ``settings``, of a kind those values fit. A
     :class:`Quantity` takes numbers with a unit of its dimension, ``float`` numbers without one,
     ``int`` integers without one, ``str`` and ``bool`` their own; a ``list`` or a ``dict`` none."""
-    declared = getattr(evaluator, "settings", None)
+    declared = _settings(evaluator)
     if declared is None:
         raise EvaluationContractError(
             "cannot be set: the evaluator declares no settings, and a parameter sets only a "
@@ -213,7 +225,7 @@ def check_settings(
     one, ``int`` an integer without one, ``str`` and ``bool`` their own), and is not missing.
     Nothing but ``pending`` is checked for an evaluator that declares no settings, and it can
     take none. Raises :class:`EvaluationContractError`."""
-    declared = getattr(evaluator, "settings", None)
+    declared = _settings(evaluator)
     pending = pending or {}
     for key, (values, unit) in pending.items():
         try:

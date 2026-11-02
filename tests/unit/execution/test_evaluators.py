@@ -524,6 +524,9 @@ class Ahead(Evaluator):
     stage = "reconstruction"
     metrics = {("reconstruction", "pfo.count"): "1"}
 
+    def evaluate(self, request: EvaluationRequest) -> Any:
+        return {("reconstruction", "pfo.count"): 0}
+
 
 @pytest.mark.parametrize(
     ("declared", "given", "options", "message"),

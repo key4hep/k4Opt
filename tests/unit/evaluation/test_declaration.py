@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from k4opt.errors import K4OptError
-from k4opt.evaluation import Collection, Declaration, Evaluator, Quantity, Role
+from k4opt.evaluation import Collection, Declaration, Evaluator, Quantity, Role, with_defaults
 from k4opt.frozen import thaw
 
 SELECTED = ("analysis", "selected.sum_weights")
@@ -22,6 +22,9 @@ class Plain(Evaluator):
     name = "test.plain"
     version = "1"
 
+    def evaluate(self, request: Any) -> Any:
+        return {}
+
 
 class Reader(Evaluator):
     """Reads the simulation, with metrics, artifacts, settings and collections."""
@@ -33,6 +36,9 @@ class Reader(Evaluator):
     artifacts = {"histogram": "the widths, JSON", "plot": "a PNG"}
     settings = {"threshold": Quantity("GeV", default=0.1)}
     collections = {"hits": Collection("SimCalorimeterHit")}
+
+    def evaluate(self, request: Any) -> Any:
+        return {}
 
 
 class Combined(Evaluator):
@@ -48,6 +54,9 @@ class Combined(Evaluator):
         "events": Role(stage="simulation"),
     }
 
+    def evaluate(self, request: Any) -> Any:
+        return {}
+
 
 class Empty(Evaluator):
     """Declares empty metrics, artifacts and roles, which are not the same as none."""
@@ -57,6 +66,9 @@ class Empty(Evaluator):
     metrics: dict[str, str] = {}
     artifacts: dict[str, str] = {}
     roles: dict[str, Role] = {}
+
+    def evaluate(self, request: Any) -> Any:
+        return {}
 
 
 @pytest.mark.parametrize("cls", [Plain, Reader, Combined, Empty])
@@ -140,3 +152,42 @@ def test_data_that_is_no_declaration_raises_the_error_asked_for(change: Any, mes
     with pytest.raises(RefusedError, match=r"^implementation 'test.combined'") as raised:
         Declaration.from_dict("test.combined", data, RefusedError)
     assert message in str(raised.value)
+
+
+# --- what a class must declare, refused before anything runs ---------------------------------
+
+
+def test_a_class_that_inherits_evaluate_without_implementing_it_is_no_evaluator() -> None:
+    from k4opt.evaluation import EvaluationContractError, check_class
+
+    class Unfinished(Evaluator):
+        name, version = "test.unfinished", "1"
+
+    with pytest.raises(EvaluationContractError, match="Unfinished does not implement evaluate"):
+        check_class(Unfinished)
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value", "message"),
+    [
+        ("metrics", ["energy"], r"metrics: declare a mapping of metric to its unit"),
+        ("settings", ["cut"], r"settings: declare a mapping of key to a type"),
+    ],
+)
+def test_a_declaration_that_is_no_mapping_breaks_the_contract(
+    attribute: str, value: object, message: str
+) -> None:
+    from k4opt.evaluation import EvaluationContractError, check_bound, check_settings
+
+    cls = type("Listed", (Plain,), {attribute: value})
+    if attribute == "metrics":
+        with pytest.raises(EvaluationContractError, match=message):
+            Declaration.of(cls)
+        return
+    for call in (
+        lambda: check_settings(cls, {}),
+        lambda: with_defaults(cls, {}),
+        lambda: check_bound(cls, "cut", float, None),
+    ):
+        with pytest.raises(EvaluationContractError, match=message):
+            call()

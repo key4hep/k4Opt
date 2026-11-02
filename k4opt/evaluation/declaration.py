@@ -235,6 +235,11 @@ def metric_units(evaluator: object) -> dict[tuple[str, str], str] | None:
     declared = getattr(evaluator, "metrics", None)
     if declared is None:
         return None
+    if not isinstance(declared, Mapping):
+        raise EvaluationContractError(
+            "metrics: declare a mapping of metric to its unit, such as "
+            f"{{'ecal.cells': '1', ('analysis', 'rms'): 'mm'}}; got {declared!r}"
+        )
     units: dict[tuple[str, str], str] = {}
     for key, unit in declared.items():
         qualified = _qualified(evaluator, key)
@@ -280,7 +285,8 @@ def check_class(cls: object) -> type:
     """``cls`` if it is an evaluator class whose declarations can be read without running its
     code; :class:`EvaluationContractError` otherwise.
 
-    It must be a class with ``name``, ``version`` and an ``evaluate`` method. Each of
+    It must be a class with ``name``, ``version`` and an ``evaluate`` method of its own (not only
+    the abstract one of :class:`~k4opt.evaluation.Evaluator`). Each of
     :data:`DECLARED` it has must be plain data on the class (a string, a mapping, ``None``), not
     a property, a method or another descriptor, whose value only code could give. Its ``check``,
     if it has one, must be a classmethod (or a staticmethod): k4opt calls it with each candidate's
@@ -299,10 +305,15 @@ def check_class(cls: object) -> type:
         for member in ("name", "version", "evaluate")
         if inspect.getattr_static(cls, member, None) is None
     ]
-    if missing or not callable(inspect.getattr_static(cls, "evaluate", None)):
+    evaluate = inspect.getattr_static(cls, "evaluate", None)
+    if missing or not callable(evaluate):
         raise EvaluationContractError(
             f"{label} is not an evaluator: needs name, version and an evaluate() method"
             + (f" (missing {', '.join(missing)})" if missing else "")
+        )
+    if getattr(evaluate, "__isabstractmethod__", False):
+        raise EvaluationContractError(
+            f"{label} does not implement evaluate(): it inherits the abstract one of its base"
         )
     for attribute in DECLARED:
         value = inspect.getattr_static(cls, attribute, None)
