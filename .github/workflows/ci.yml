@@ -70,12 +70,12 @@ jobs:
             pip install --no-build-isolation --no-deps '.[test]'
             echo '::endgroup::'
 
-            echo '::group::Run unit tests'
-            python -m pytest tests/unit --cov --cov-report= --junitxml=junit-unit.xml -o junit_family=legacy
+            echo '::group::Run unit tests (on every available core)'
+            python -m pytest -p xdist -n auto tests/unit --cov --cov-report= --junitxml=junit-unit.xml -o junit_family=legacy
             echo '::endgroup::'
 
             echo '::group::Run integration tests (against \$K4GEO from the stack)'
-            python -m pytest tests/integration --cov --cov-append --cov-report=xml:/workspace/coverage.xml --junitxml=junit-integration.xml -o junit_family=legacy
+            python -m pytest -p xdist -n auto tests/integration --cov --cov-append --cov-report=xml:/workspace/coverage.xml --junitxml=junit-integration.xml -o junit_family=legacy
             echo '::endgroup::'
           "
 
