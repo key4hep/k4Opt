@@ -120,19 +120,30 @@ def _hashed(root: Path, modules: Mapping[str, Path]) -> dict[str, str]:
     )
 
 
-def _read(root: Path, modules: Mapping[str, Path], before: Collection[str]) -> dict[str, str]:
-    """The identity of ``modules`` (``helpers``), by path relative to ``root``, sorted.
+def _read(
+    root: Path, modules: Mapping[str, Path], before: Collection[str]
+) -> tuple[dict[str, str], bool]:
+    """The identity of ``modules`` (``helpers``), by path relative to ``root``, sorted, and
+    whether each imported one is known to run the bytes it names.
 
     A module imported from its source runs those bytes: refused if its file changed since. One
-    Python imported itself during this load (not a source file on ``sys.path``) is identified by
-    its file read now, right after the import; one it imported before this load (``before``) is
-    refused: which of its code runs is not known. One not imported yet is identified by its file
-    now, which :func:`changed_helpers` watches."""
-    hashes = {}
+    imported otherwise during this load (by Python itself, or another import hook that comes
+    first) is identified by its file read now, right after the import, which it may not have run
+    (a cached ``.pyc``); one imported so before this load (``before``) is refused: which of its
+    code runs is not known, and so is one imported from another file, or none. One not imported
+    yet is identified by its file now, which :func:`changed_helpers` watches."""
+    hashes, verified = {}, True
     for module, path in modules.items():
         now = _sha256(path)
         loaded = sys.modules.get(module)
         ran = None if loaded is None else executed(loaded)
+        imported = None if loaded is None else getattr(loaded, "__file__", None)
+        if loaded is not None and (imported is None or Path(imported).resolve() != path.resolve()):
+            raise EvaluatorLoadError(
+                f"{module!r} is {path}, but Python imported it from {imported or 'no file'} (an "
+                "import hook before Python's path finder, or a directory earlier on sys.path); "
+                "rename one of them, or put the evaluator in a package of its own"
+            )
         if ran is not None and ran != now:
             raise EvaluatorLoadError(
                 f"{path} changed since this process imported it, and Python keeps running the "
@@ -144,8 +155,9 @@ def _read(root: Path, modules: Mapping[str, Path], before: Collection[str]) -> d
                 "code runs is not known; load the evaluator in a new process, or before importing "
                 "the modules it imports"
             )
+        verified = verified and (loaded is None or ran is not None)
         hashes[path.relative_to(root).as_posix()] = now
-    return dict(sorted(hashes.items()))
+    return dict(sorted(hashes.items())), verified
 
 
 def _identified(
@@ -188,7 +200,7 @@ def _check_local(importer: object, modules: Mapping[str, Path]) -> None:
         loaded = sys.modules.get(name)
         if loaded is not None:
             where = getattr(loaded, "__file__", None)
-            other = f"this process imported {name!r} from {where or 'Python itself'} before"
+            other = f"this process imported {name!r} from {where or 'no file'} before"
         elif (file := served(name)) is not None:
             where = str(file)
             other = f"evaluator code loaded before imports {name!r} from {where}"
@@ -253,8 +265,7 @@ def _identify_import(cls: type, where: str, before: Collection[str]) -> None:
     else:  # a top-level module, which imports modules beside it like a file
         root = file.parent
         local = {} if installed(root) else local_modules(file, root)
-        _check_local(file, local)
-    helpers = _read(root, local, before)
+    helpers, verified = _read(root, local, before)
     ran = executed(sys.modules[where])
     try:
         data = file.read_bytes()
@@ -264,7 +275,9 @@ def _identify_import(cls: type, where: str, before: Collection[str]) -> None:
         raise EvaluatorLoadError(
             f"{file} changed while it was imported; load the evaluator in a new process"
         )
-    _identified(cls, _identity(path, data, helpers, executed=ran is not None), root, local)
+    _identified(
+        cls, _identity(path, data, helpers, executed=verified and ran is not None), root, local
+    )
 
 
 def _changed(path: Path, identity: Mapping[str, Json]) -> str | None:
@@ -321,8 +334,8 @@ def _load_file(path: Path, before: Collection[str]) -> ModuleType:
         data = path.read_bytes()
         code = compile(data, str(path), "exec", dont_inherit=True)
         exec(code, module.__dict__)
-        _check_local(path, local)  # also a directory already later on the path than another
-        identity = _identity(str(path), data, _read(path.parent, local, before), executed=True)
+        helpers, verified = _read(path.parent, local, before)
+        identity = _identity(str(path), data, helpers, executed=verified)
         for value in vars(module).values():  # the classes these bytes defined
             if isinstance(value, type) and value.__module__ == name:
                 _identified(value, identity, path.parent, local)

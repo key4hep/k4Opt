@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.abc
+import importlib.util
 import os
 import py_compile
 import sys
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -586,6 +591,64 @@ def test_a_module_of_a_namespace_package_is_imported_from_its_source(
     assert cls().evaluate(None).measurements[0].value == 99  # type: ignore[arg-type]
     source = evaluator_source(cls)
     assert (source["sha256"], source["executed"]) == (hashlib.sha256(data).hexdigest(), True)
+
+
+class _Seventeen(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """An import hook that provides the module ``name``, with ``value = 17``, from no file."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def find_spec(self, fullname: str, path: object, target: object = None) -> Any:
+        return importlib.util.spec_from_loader(fullname, self) if fullname == self.name else None
+
+    def exec_module(self, module: ModuleType) -> None:
+        module.value = 17  # type: ignore[attr-defined]
+
+
+def test_an_import_hook_before_pythons_path_finder_keeps_its_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    helper = "hooked_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / f"{helper}.py").write_text("value = 29\n")
+    lazy = GOOD.replace(
+        "def evaluate(self, request):", f"def evaluate(self, request):\n        import {helper}"
+    )
+    (tmp_path / "lazy.py").write_text(lazy)
+    (tmp_path / "eager.py").write_text(f"import {helper}\n" + GOOD)
+    hook = _Seventeen(helper)
+    # as a process that has the hook before k4opt's source finder is installed
+    monkeypatch.setattr(
+        sys, "meta_path", [hook, *(f for f in sys.meta_path if f is not _imports._FINDER)]
+    )
+    load_evaluator(f"{tmp_path / 'lazy.py'}:Good")  # serves the helper's file from now on
+    assert sys.meta_path.index(hook) < sys.meta_path.index(_imports._FINDER)
+    assert importlib.import_module(helper).value == 17  # what the hook gives, as without k4opt
+    # an evaluator that imports it would run the hook's module, which no file identifies
+    del sys.modules[helper]
+    with pytest.raises(
+        EvaluatorLoadError, match=rf"'{helper}' is .*, but Python imported it from no file"
+    ):
+        load_evaluator(f"{tmp_path / 'eager.py'}:Good")
+
+
+def test_a_module_in_a_zip_archive_is_imported_by_python_and_not_identified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    module = "zipped_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(module, None))
+    archive = tmp_path / "archive.zip"
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr(f"{module}.py", GOOD)
+    monkeypatch.syspath_prepend(str(archive))
+    cls = load_evaluator(f"{module}:Good")  # as Python imports it
+    assert cls().evaluate(None).measurements[0].value == 42  # type: ignore[arg-type]
+    # no file on disk to read: which bytes ran is not established, so no hash is claimed
+    assert evaluator_source(cls) == {
+        "path": f"{archive}/{module}.py",
+        "reference": f"{module}:Good",
+    }
 
 
 @requires_git

@@ -147,19 +147,31 @@ def installed(directory: Path) -> bool:
     )
 
 
+def _source_file(spec: importlib.machinery.ModuleSpec) -> Path | None:
+    """The source file Python's path finder imports a module from, if it is one: a file on disk
+    its source-file loader reads (not a module in a ZIP archive, say)."""
+    if not isinstance(spec.loader, importlib.machinery.SourceFileLoader) or spec.origin is None:
+        return None
+    file = Path(spec.origin)
+    return file if file.suffix == ".py" and file.is_file() else None
+
+
 def locate(name: str) -> dict[str, Path]:
     """The source file of the module ``name`` and of each package it is in, by module name, as
     Python's path finder finds them on ``sys.path``, without importing any; a namespace package
-    has none, and the search ends at a module that is no source file (an extension module) or
-    none at all."""
+    has none, and the search ends at a module that is no source file on disk (an extension
+    module, one in a ZIP archive) or none at all."""
     found: dict[str, Path] = {}
     search: list[str] | None = None
     for prefix in prefixes(name):
         spec = importlib.machinery.PathFinder.find_spec(prefix, search)
         if spec is None:
             break
-        if spec.origin is not None and spec.origin.endswith(".py"):
-            found[prefix] = Path(spec.origin)
+        file = _source_file(spec)
+        if file is not None:
+            found[prefix] = file
+        elif spec.origin is not None:  # imported otherwise: so are the modules in it
+            break
         if spec.submodule_search_locations is None:
             break
         search = list(spec.submodule_search_locations)
@@ -190,9 +202,9 @@ class _SourceFinder(importlib.abc.MetaPathFinder):
         if file is None:
             return None
         python = importlib.machinery.PathFinder.find_spec(fullname, path)
-        origin = None if python is None else python.origin
-        if origin is None or Path(origin).resolve() != file.resolve():
-            return None  # Python imports another file now: never redirected
+        origin = None if python is None else _source_file(python)
+        if origin is None or origin.resolve() != file.resolve():
+            return None  # Python imports another file now, or not from one: never redirected
         loader = SourceLoader(fullname, str(file))
         return importlib.util.spec_from_file_location(fullname, file, loader=loader)
 
@@ -206,10 +218,13 @@ def served(name: str) -> Path | None:
 
 
 def serve(modules: Mapping[str, Path]) -> list[str]:
-    """Import ``modules`` (by name) from their source from now on, wherever they are imported;
-    the names that were not served before, which :func:`unserve` takes back."""
+    """Import ``modules`` (by name) from their source from now on, wherever they are imported
+    and Python's path finder would import that file; the names that were not served before, which
+    :func:`unserve` takes back. The finder goes right before Python's path finder: an import hook
+    before that one still comes first."""
     if _FINDER not in sys.meta_path:
-        sys.meta_path.insert(0, _FINDER)
+        hooks, path_finder = sys.meta_path, importlib.machinery.PathFinder
+        hooks.insert(hooks.index(path_finder) if path_finder in hooks else len(hooks), _FINDER)
     new = [name for name in modules if name not in _SERVED]
     _SERVED.update(modules)
     return new

@@ -4,6 +4,8 @@ session left behind."""
 from __future__ import annotations
 
 import hashlib
+import importlib.abc
+import importlib.util
 import json
 import shutil
 import sys
@@ -19,7 +21,7 @@ pytest.importorskip("optuna")
 import optuna
 from optuna.trial import TrialState
 
-from k4opt.evaluation import load_evaluator
+from k4opt.evaluation import evaluator_source, load_evaluator
 from k4opt.optimization import OptimizationError, optimize
 from k4opt.optimization._optuna import tell as adapter
 from k4opt.optimization._optuna.space import search_space
@@ -256,7 +258,7 @@ def test_a_study_does_not_resume_with_another_module_its_evaluator_imports(
     tmp_path: Path, write_problem: Callable[..., Path], request: pytest.FixtureRequest
 ) -> None:
     source = Path(TRADE_OFF.partition(":")[0])
-    helper = "corrections_of_resume_test"
+    helper = "corrections_of_resume"
     request.addfinalizer(lambda: sys.modules.pop(helper, None))
     (tmp_path / "evaluators").mkdir()
     (tmp_path / "evaluators" / f"{helper}.py").write_text("scale = 1.0\n")
@@ -383,6 +385,39 @@ def test_a_study_stops_when_another_file_that_changes_its_evaluator_class_is_loa
             evaluators=[load_evaluator(f"{tmp_path / 'wrapper_a.py'}:TradeOff")],
             progress=load_b,
         )
+
+
+class _FromFile(importlib.abc.MetaPathFinder):
+    """An import hook that imports the module ``name`` from ``file`` as Python's own loader does,
+    which may run a cached .pyc: k4opt cannot tell which bytes ran."""
+
+    def __init__(self, name: str, file: Path) -> None:
+        self.name, self.file = name, file
+
+    def find_spec(self, fullname: str, path: object, target: object = None) -> Any:
+        if fullname != self.name:
+            return None
+        return importlib.util.spec_from_file_location(fullname, self.file)
+
+
+def test_a_study_refuses_an_evaluator_whose_executed_code_is_not_known(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    module = "trade_off_hooked"
+    request.addfinalizer(lambda: sys.modules.pop(module, None))
+    file = tmp_path / f"{module}.py"
+    file.write_bytes(Path(TRADE_OFF.partition(":")[0]).read_bytes())
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sys, "meta_path", [_FromFile(module, file), *sys.meta_path])
+    evaluator = load_evaluator(f"{module}:TradeOff")
+    source = evaluator_source(evaluator)
+    assert source["sha256"] is not None and source["executed"] is False
+    with pytest.raises(OptimizationError, match="the code it runs is not known to be the source"):
+        run(write_problem(), tmp_path / "s", 1, seed=1, evaluators=[evaluator])
+    assert not (tmp_path / "s").exists()
 
 
 UNITS = """

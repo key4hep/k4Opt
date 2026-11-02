@@ -474,8 +474,9 @@ source and hashes the bytes it compiled, never a cached `.pyc`, which an edit th
 and timestamp leaves stale. For `package.module:Class` it finds the module, the packages it is
 in and their local modules as Python's path finder would on `sys.path`, and imports them the
 same way; only a module that is no source file there (one another import finder provides, such
-as some editable installs) is imported by Python itself and read right after the import
-(`executed: false`). The class keeps that identity if its file is later edited or
+as some editable installs, or a module in a ZIP archive) is imported by Python itself: read
+right after the import (`executed: false`), or not identified by a hash at all when it is no
+file on disk. Plain evaluation accepts such an identity; a study refuses it. The class keeps that identity if its file is later edited or
 removed. A class whose module was imported before `load_evaluator`, or reloaded since
 (`importlib.reload`), carries only its path: hashing the current file would not establish which
 code Python executed. `reference` is what loads the class again: `FILE.py:Class` with the
@@ -494,8 +495,11 @@ of the code that runs; they are otherwise imported as Python imports a source fi
 package's resources (`importlib.resources`, `pkgutil.get_data`) read as usual. Which file a
 helper is, Python's path finder decides on the current `sys.path` (a package before a module of
 its name, an earlier path entry before a later one), and k4opt never imports another file than
-it would: a helper beside the evaluator that Python would take from elsewhere refuses the load,
-and a session stops if one is imported from another file later. Loading is refused for a helper that
+it would: its source finder comes right after any import hook installed before Python's path
+finder, a helper beside the evaluator that Python would take from elsewhere (another file, or an
+import hook's module) refuses the load, one imported by another hook from the same file makes
+the identity `executed: false`, and a session stops if one is imported from another file
+later. Loading is refused for a helper that
 Python imported before and whose file changed since (it keeps running the old module), for one
 that something imported before `load_evaluator` read it, and for one that evaluator code loaded
 before imports by the same name from elsewhere, also only inside a method. A session checks

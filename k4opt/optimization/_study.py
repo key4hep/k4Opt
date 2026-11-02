@@ -228,14 +228,25 @@ def digest(identity: Mapping[str, Any]) -> str:
 
 
 def unhashed(identity: Mapping[str, Any]) -> list[str]:
-    """Why an identity cannot identify a study: evaluators without a source hash, or a file the
-    problem names that could not be read."""
-    reasons = [
-        f"evaluator {name!r} has no source hash: its module was imported before "
-        "load_evaluator could hash it, so load it with load_evaluator in a new process"
-        for name, entry in identity["implementations"].items()
-        if not entry["source"].get("sha256")
-    ]
+    """Why an identity cannot identify a study: evaluators without a source hash, or whose hash
+    is not known to be that of the code that runs (``executed``), or a file the problem names
+    that could not be read."""
+    reasons = []
+    for name, entry in identity["implementations"].items():
+        source = entry["source"]
+        if not source.get("sha256"):
+            reasons.append(
+                f"evaluator {name!r} has no source hash: its module was imported before "
+                "load_evaluator could hash it, or is no source file on disk (in a ZIP archive, "
+                "say), so load it with load_evaluator in a new process, from a source file"
+            )
+        elif source.get("executed") is not True:
+            reasons.append(
+                f"evaluator {name!r}: the code it runs is not known to be the source its hash "
+                "names (an import hook imported it, or a module it imports, perhaps from a cached "
+                ".pyc), so load it from source files Python's path finder imports, or as "
+                "FILE.py:Class"
+            )
     reasons += [
         f"{label}: {entry['path']} cannot be read"
         for label, entry in identity["inputs"].items()
