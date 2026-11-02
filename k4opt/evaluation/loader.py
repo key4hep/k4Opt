@@ -204,18 +204,19 @@ def _check_local(importer: object, modules: Mapping[str, Path]) -> None:
 
 def _planned(where: str) -> dict[str, Path]:
     """The modules to import from their source for the module ``where``: it and the packages it
-    is in, as Python's path finder finds them, and what they import of their top-level package
-    or, for a top-level module that is not installed, from beside it."""
+    is in that have a source file (a namespace package has none), as Python's path finder finds
+    them, and what they import of their top-level package or, for a top-level module that is not
+    installed, from beside it."""
     located = locate(where)
-    top = where.partition(".")[0]
-    if top not in located:
+    file = located.get(where)
+    if file is None:  # no source file Python's path finder imports: Python imports it itself
         return {}
-    first = located[top]
-    if first.name == "__init__.py":
-        return local_modules(None, first.parent.parent, {top}, executed=located)
-    if installed(first.parent):
+    if "." in where or file.name == "__init__.py":
+        top = where.partition(".")[0]
+        return local_modules(None, package_root(file, where), {top}, executed=located)
+    if installed(file.parent):
         return located
-    return local_modules(None, first.parent, executed=located)
+    return local_modules(None, file.parent, executed=located)
 
 
 def _import(where: str) -> ModuleType:

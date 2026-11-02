@@ -566,6 +566,28 @@ def test_an_import_python_resolves_elsewhere_later_is_not_redirected(
     assert changed_helpers(cls) == [f"{helper}.py (imported from {tmp_path / 'other' / helper}.py)"]
 
 
+def test_a_module_of_a_namespace_package_is_imported_from_its_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    package = "namespace_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(
+        lambda: [sys.modules.pop(n, None) for n in (package, f"{package}.evaluator")]
+    )
+    (tmp_path / package).mkdir()  # no __init__.py
+    path = tmp_path / package / "evaluator.py"
+    path.write_text(GOOD)
+    py_compile.compile(str(path), doraise=True)
+    original = path.stat()
+    data = GOOD.replace('"answer", 42', '"answer", 99').encode()
+    path.write_bytes(data)  # Python's own import would run the .pyc of 42
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    cls = load_evaluator(f"{package}.evaluator:Good")
+    assert cls().evaluate(None).measurements[0].value == 99  # type: ignore[arg-type]
+    source = evaluator_source(cls)
+    assert (source["sha256"], source["executed"]) == (hashlib.sha256(data).hexdigest(), True)
+
+
 @requires_git
 def test_the_revision_of_the_checkout_is_taken_when_the_file_is_loaded(tmp_path: Path) -> None:
     files = {"tracked_good.py": GOOD, "later_good.py": GOOD, "helper.py": ""}
