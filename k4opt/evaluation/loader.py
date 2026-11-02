@@ -39,6 +39,9 @@ _REFERENCES: WeakKeyDictionary[type, str] = WeakKeyDictionary()
 _EXECUTED: dict[str, tuple[FrozenMap[str, Json], Mapping[str, Path]]] = {}
 # the local modules each class's identity names: by the name it gives them, the module and its file
 _HELPER_FILES: WeakKeyDictionary[type, FrozenMap[str, tuple[str, Path]]] = WeakKeyDictionary()
+# the module each class's reference names, whose globals its methods read, and the spec it had
+# then: importlib.reload() executes the module again in place, under a new spec
+_ENTRIES: WeakKeyDictionary[type, tuple[ModuleType, object]] = WeakKeyDictionary()
 
 
 def evaluator_source(cls: type) -> dict[str, Json]:
@@ -58,7 +61,7 @@ def evaluator_source(cls: type) -> dict[str, Json]:
     those beside it, unless it is installed (in ``site-packages`` or the standard library), where
     they are other distributions. Local modules are imported from their source too, and identified
     by the bytes executed. One imported later (inside a function) is identified by its file when the
-    class is loaded (:func:`changed_helpers` sees later edits). ``revision`` is the commit and dirty
+    class is loaded (:func:`changed_code` sees later edits). ``revision`` is the commit and dirty
     flag of the git checkout that tracks the file, taken at the same time, ``None`` if no checkout
     tracks it; it labels what the hashes do not cover, such as data files. For a class whose module
     was imported before, or reloaded since, only the path is known: the current file cannot
@@ -131,7 +134,7 @@ def _read(
     first) is identified by its file read now, right after the import, which it may not have run
     (a cached ``.pyc``); one imported so before this load (``before``) is refused: which of its
     code runs is not known, and so is one imported from another file, or none. One not imported
-    yet is identified by its file now, which :func:`changed_helpers` watches."""
+    yet is identified by its file now, which :func:`changed_code` watches."""
     hashes, verified = {}, True
     for module, path in modules.items():
         now = _sha256(path)
@@ -161,18 +164,27 @@ def _read(
 
 
 def _identified(
-    cls: type, identity: FrozenMap[str, Json], root: Path, modules: Mapping[str, Path]
+    cls: type,
+    identity: FrozenMap[str, Json],
+    root: Path,
+    modules: Mapping[str, Path],
+    entry: ModuleType,
 ) -> None:
-    """Remember ``identity`` for ``cls``, and the ``modules`` it names."""
+    """Remember ``identity`` for ``cls``, the ``modules`` it names and the module its reference
+    names (``entry``)."""
     _SOURCES[cls] = identity
+    _ENTRIES[cls] = entry, entry.__spec__
     _HELPER_FILES[cls] = FrozenMap(
         {path.relative_to(root).as_posix(): (name, path) for name, path in modules.items()}
     )
 
 
-def changed_helpers(cls: type) -> list[str]:
-    """The local modules the identity of ``cls`` names (``helpers`` of
-    :func:`evaluator_source`) whose files no longer hold what they did when it was loaded, that
+def changed_code(cls: type) -> list[str]:
+    """What runs for ``cls`` and is no longer what its identity says: the module its reference
+    names if it was reloaded since (``importlib.reload``, which executes it again in place, so
+    that the class's methods read new globals), and the local modules the identity names
+    (``helpers`` of :func:`evaluator_source`) whose files no longer hold what they did when it
+    was loaded, that
     Python imported from another file since (one earlier on ``sys.path`` by then), or from none,
     or, for an identity of the code that runs (``executed``), that something else than k4opt's
     source loader imported, or from other bytes; none for a class :func:`load_evaluator` did not
@@ -185,6 +197,9 @@ def changed_helpers(cls: type) -> list[str]:
     assert isinstance(then, Mapping)
     verified = identity.get("executed") is True
     changed = []
+    entry, spec = _ENTRIES.get(cls, (None, None))
+    if entry is not None and entry.__spec__ is not spec:
+        changed.append(f"{Path(str(identity['path'])).name} (reloaded)")
     for key, (module, path) in files.items():
         loaded = sys.modules.get(module)
         imported = getattr(loaded, "__file__", None)
@@ -284,9 +299,8 @@ def _identify_import(cls: type, where: str, before: Collection[str]) -> None:
         raise EvaluatorLoadError(
             f"{file} changed while it was imported; load the evaluator in a new process"
         )
-    _identified(
-        cls, _identity(path, data, helpers, executed=verified and ran is not None), root, local
-    )
+    identity = _identity(path, data, helpers, executed=verified and ran is not None)
+    _identified(cls, identity, root, local, sys.modules[where])
 
 
 def _changed(path: Path, identity: Mapping[str, Json]) -> str | None:
@@ -347,7 +361,7 @@ def _load_file(path: Path, before: Collection[str]) -> ModuleType:
         identity = _identity(str(path), data, helpers, executed=verified)
         for value in vars(module).values():  # the classes these bytes defined
             if isinstance(value, type) and value.__module__ == name:
-                _identified(value, identity, path.parent, local)
+                _identified(value, identity, path.parent, local, module)
     except BaseException as exc:
         sys.modules.pop(name, None)
         unserve(registered)
@@ -402,7 +416,7 @@ def load_evaluator(reference: str) -> type[EvaluatorProtocol]:
         raise EvaluatorLoadError(f"{attribute} is not an evaluator: it has no evaluate() method")
     if path is not None:  # what the file executed, also for a class it imports and may change
         identity, local = _EXECUTED[module.__name__]
-        _identified(cls, identity, path.parent, local)
+        _identified(cls, identity, path.parent, local, module)
     elif where not in imported_before:  # else, which of its code runs is not known
         _identify_import(cls, where, imported_before)
     _REFERENCES[cls] = canonical

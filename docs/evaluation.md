@@ -505,7 +505,9 @@ that something imported before `load_evaluator` read it, and for one that evalua
 before imports by the same name from elsewhere, also only inside a method. A session checks
 before and after each candidate that every helper still holds what it did when the evaluator
 was loaded, so that one imported inside a method cannot run other code than the record says,
-and that its class is still identified as then: loading, in the same process, another file that
+that the module its reference names was not reloaded (`importlib.reload` executes it again in
+place, and the class's methods read its new globals), and that its class is still identified
+as then: loading, in the same process, another file that
 imports the same class and may change it identifies the class by that file and stops the
 session.
 To label those, `revision` holds the commit and dirty flag of the git checkout

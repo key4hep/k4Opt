@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from k4opt import __version__
-from k4opt.evaluation.loader import changed_helpers, evaluator_source
+from k4opt.evaluation.loader import changed_code, evaluator_source
 from k4opt.execution._binding import _Binding, _implementations
 from k4opt.execution._files import readable_identity
 from k4opt.execution._work import content
@@ -145,9 +145,10 @@ class Baseline:
     def _verify_implementations(self) -> None:
         """Each implementation is still identified as when the session opened: loading another
         file that imports its class (and may change it) in this process identifies it by that
-        file, and the class the session evaluates with may have changed. And the modules each
-        imports from beside it are what its identity says: one it imports only when it evaluates
-        (inside a function) would otherwise run other code."""
+        file, and the class the session evaluates with may have changed. And the code each runs
+        is what its identity says (:func:`~k4opt.evaluation.loader.changed_code`): the module its
+        reference names, not reloaded since, and the modules it imports from beside it, one it
+        imports only when it evaluates (inside a function) too."""
         for name, implementation in self.classes.items():
             source = self.taken[name]["source"]
             assert isinstance(source, Mapping)
@@ -158,7 +159,7 @@ class Baseline:
                     f"{now.get('reference')}, which may have changed it; open the session in a new "
                     "process"
                 )
-            changed = changed_helpers(implementation)
+            changed = changed_code(implementation)
             if changed:
                 raise RunError(
                     f"evaluator {name!r}: {', '.join(changed)} changed after the session loaded "

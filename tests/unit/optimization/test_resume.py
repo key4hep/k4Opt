@@ -4,6 +4,7 @@ session left behind."""
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.abc
 import importlib.util
 import json
@@ -418,6 +419,35 @@ def test_a_study_refuses_an_evaluator_whose_executed_code_is_not_known(
     with pytest.raises(OptimizationError, match="the code it runs is not known to be the source"):
         run(write_problem(), tmp_path / "s", 1, seed=1, evaluators=[evaluator])
     assert not (tmp_path / "s").exists()
+
+
+def test_a_study_stops_when_its_evaluator_module_is_reloaded(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    module = "trade_off_reloaded"
+    request.addfinalizer(lambda: sys.modules.pop(module, None))
+    file = tmp_path / f"{module}.py"
+    file.write_text("SCALE = 2\n" + Path(TRADE_OFF.partition(":")[0]).read_text())
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def reload(trial: Any) -> None:  # after the first trial, while the study runs
+        file.write_text(file.read_text().replace("SCALE = 2", "SCALE = 31"))
+        importlib.reload(sys.modules[module])
+
+    with pytest.raises(
+        OptimizationError, match=rf"trial 1 stops the study.*{module}\.py \(reloaded\) changed"
+    ):
+        run(
+            write_problem(),
+            tmp_path / "s",
+            3,
+            seed=1,
+            evaluators=[load_evaluator(f"{module}:TradeOff")],
+            progress=reload,
+        )
 
 
 UNITS = """

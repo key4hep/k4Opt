@@ -19,7 +19,7 @@ import pytest
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import EvaluatorLoadError, _imports, evaluator_source, load_evaluator
-from k4opt.evaluation.loader import changed_helpers
+from k4opt.evaluation.loader import changed_code
 from tests.support.common import git_checkout, requires_git
 
 GOOD = """
@@ -383,14 +383,14 @@ def test_a_helper_imported_before_the_loader_read_it_is_refused(
         load_evaluator(f"{tmp_path / 'late.py'}:Good")
 
 
-def test_changed_helpers_names_the_modules_edited_since_the_class_was_loaded(
+def test_changed_code_names_the_modules_edited_since_the_class_was_loaded(
     with_helpers: Path,
 ) -> None:
     cls = load_evaluator(f"{with_helpers}:Good")
-    assert changed_helpers(cls) == []
+    assert changed_code(cls) == []
     late = next(with_helpers.parent.glob("late_*.py"))  # imported only when it evaluates
     late.write_text("value = 200\n")
-    assert changed_helpers(cls) == [late.name]
+    assert changed_code(cls) == [late.name]
 
 
 def test_a_module_imported_before_does_not_claim_an_unverified_source_hash(
@@ -568,7 +568,7 @@ def test_an_import_python_resolves_elsewhere_later_is_not_redirected(
     # unrelated code gets what Python resolves, not the evaluator's module ...
     assert importlib.import_module(helper).value == 17
     # ... and a session sees that the evaluator would not run the module its identity names
-    assert changed_helpers(cls) == [f"{helper}.py (imported from {tmp_path / 'other' / helper}.py)"]
+    assert changed_code(cls) == [f"{helper}.py (imported from {tmp_path / 'other' / helper}.py)"]
 
 
 def test_a_module_of_a_namespace_package_is_imported_from_its_source(
@@ -684,9 +684,26 @@ def test_a_lazy_helper_another_import_hook_runs_is_reported(
     hook = _FromFile(helper, path)  # comes first, and imports as Python's own loader does
     monkeypatch.setattr(sys, "meta_path", [hook, *sys.meta_path])
     assert cls().evaluate(None).measurements[0].value == 11  # type: ignore[arg-type]
-    assert changed_helpers(cls) == [
+    assert changed_code(cls) == [
         f"{helper}.py (imported by another import hook, perhaps from a cached .pyc)"
     ]
+
+
+def test_a_reloaded_module_is_reported_for_the_class_loaded_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    module = "reloaded_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(module, None))
+    path = tmp_path / f"{module}.py"
+    path.write_text("SCALE = 2\n" + GOOD.replace('"answer", 42', '"answer", SCALE'))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    first = load_evaluator(f"{module}:Good")
+    assert changed_code(first) == []
+    path.write_text(path.read_text().replace("SCALE = 2", "SCALE = 31"))
+    importlib.reload(sys.modules[module])
+    # the class loaded before still runs, and reads the module's new globals
+    assert first().evaluate(None).measurements[0].value == 31  # type: ignore[arg-type]
+    assert changed_code(first) == [f"{module}.py (reloaded)"]
 
 
 @requires_git
