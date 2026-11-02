@@ -50,6 +50,7 @@ from k4opt.problem.plan import (
 from k4opt.problem.stages import STAGE_TYPES, stage_output
 from k4opt.record.errors import RecordError
 from k4opt.record.results import (
+    DECLINED,
     DONE,
     TaskResult,
     blocked,
@@ -301,6 +302,8 @@ def _evaluations(
             raise RecordError(
                 f"{where}: it is {fragment.status}, so it was called, yet has no workdir"
             )
+        if workdir is None and fragment.status == Status.INVALID:
+            _check_declined(entry, fragment, where)
         files = _files(entry.get("artifacts"), task, workdir, f"{where}: artifacts", hashed=True)
         if fragment.status == Status.BLOCKED and workdir is not None:
             raise RecordError(f"{where}: it is blocked, so it was never called, yet has a workdir")
@@ -331,6 +334,25 @@ def _evaluations(
             )
         evaluators[task] = _Evaluator(status, fragment.message, own, fragment)
     return evaluators
+
+
+def _check_declined(entry: Mapping[str, object], fragment: _Fragment, where: str) -> None:
+    """A diagnostic that is ``invalid`` without a directory is one whose ``check()`` rejected the
+    candidate (:data:`~k4opt.record.results.DECLINED`): it was never called, so it holds that
+    message and measured, made, printed and took nothing; :class:`RecordError` otherwise."""
+    message = fragment.message or ""
+    if not message.startswith(f"{DECLINED} (") or not message.endswith(")"):
+        raise RecordError(
+            f"{where}: it is invalid without a workdir, which only a diagnostic whose check() "
+            f"rejected the candidate is, but its message is {message!r}"
+        )
+    ran = [key for key in ("measurements", "artifacts", "provenance") if entry.get(key)]
+    ran += [key for key in ("log", "elapsed_seconds") if entry.get(key) is not None]
+    if ran:
+        raise RecordError(
+            f"{where}: its check() rejected the candidate, so it was never called, yet it holds "
+            f"{', '.join(ran)}"
+        )
 
 
 def _supplied(spec: ProblemSpec, record: Mapping[str, object]) -> list[TaskId]:

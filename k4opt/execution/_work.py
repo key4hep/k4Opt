@@ -60,7 +60,7 @@ from k4opt.geometry import GeometryError, GeometrySource
 from k4opt.problem.contract import check_result
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId
 from k4opt.problem.stages import stage_output
-from k4opt.record.results import DONE, PeakMemory
+from k4opt.record.results import DONE, PeakMemory, declined
 from k4opt.record.write import SUMMARY_NAME
 
 
@@ -340,8 +340,7 @@ def _evaluation(
         ), Observations()
 
     if spec.declined is not None:  # a diagnostic whose check() rejected the candidate
-        message = f"not run: its check() rejected the candidate ({spec.declined})"
-        return ended(EvaluationResult.invalid(message))
+        return ended(EvaluationResult.invalid(declined(spec.declined)))
     changed = changed_reads(spec, root, seen)
     if changed:
         return ended(EvaluationResult.failed(_changed_before(changed)))

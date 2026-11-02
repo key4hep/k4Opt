@@ -3,6 +3,7 @@ candidate, many candidates, and a new evaluator instance for each."""
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import shutil
@@ -33,7 +34,7 @@ from k4opt.execution import EvaluationSession, Rejected, RunError, RunOutcome
 from k4opt.geometry import GeometrySource, Override
 from k4opt.problem import CandidateError, ProblemConfigError, load_problem, parse_problem
 from k4opt.problem.candidate import configure, parse_candidate
-from k4opt.record import SUMMARY_NAME, Assessment
+from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from k4opt.revision import code_fingerprint, code_identity
 from tests.support import simulation
 from tests.support.common import tree_digest
@@ -709,8 +710,22 @@ def test_only_a_required_evaluation_s_check_rejects_its_candidate(
         "not run: its check() rejected the candidate (the readout cannot be built)"
     )
     summary = json.loads(outcome.summary_path.read_text())
-    assessment = Assessment.from_summary(load_problem(problem_file), summary)
+    spec = load_problem(problem_file)
+    assessment = Assessment.from_summary(spec, summary)
     assert assessment.feasible is True and summary["diagnostics"][0]["status"] == "invalid"
+    # read back strictly: never called, so a record that says it measured, printed or was invalid
+    # for another reason does not hold up
+    evaluations = summary["samples"]["gamma"]["evaluations"]
+    measured = evaluations["test.cell_count"]["measurements"]
+    for key, value, refusal in (
+        ("measurements", measured, "never called, yet it holds measurements"),
+        ("log", "samples/gamma/evaluators/test.veto/evaluator.log", "yet it holds log"),
+        ("message", "unusable", "only a diagnostic whose check\\(\\) rejected the candidate"),
+    ):
+        forged = copy.deepcopy(summary)
+        forged["samples"]["gamma"]["evaluations"]["test.veto"][key] = value
+        with pytest.raises(RecordError, match=refusal):
+            Assessment.from_summary(spec, forged)
 
 
 @pytest.mark.parametrize("ending", [EvaluationFailed, EvaluationInvalid, ValueError])
