@@ -5,16 +5,18 @@ outside its directory. The cases need SQLAlchemy and alembic."""
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("optuna")
-pytest.importorskip("sqlalchemy")
-pytest.importorskip("alembic")
+if not os.environ.get("CI"):  # CI installs them (requirements.txt): these tests run there
+    pytest.importorskip("sqlalchemy")
+    pytest.importorskip("alembic")
 
-from k4opt.optimization import OptimizationError, optimize
+from k4opt.optimization import OptimizationError, load_study, optimize
 from k4opt.optimization._optuna import storage
 from tests.support.evaluators import trade_off
 
@@ -107,6 +109,10 @@ def test_a_database_outside_the_directory_keeps_the_trials_and_no_journal_is_mad
         "trial-000000",
         "trial-000001",
     ]
+    # read back with the URL it was made with, and nothing written
+    before = (tmp_path / "studies.db").read_bytes()
+    assert [t.status for t in load_study(tmp_path / "s", storage=url).trials] == ["valid"] * 2
+    assert (tmp_path / "studies.db").read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -123,11 +129,30 @@ def test_a_database_that_is_no_sqlite_file_is_none(url: str) -> None:
     assert storage.sqlite_file(url) is None
 
 
-def test_a_uri_filename_names_the_file_of_its_path_decoded_and_relative_to_the_working_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "database",
+    [
+        "studies.db",
+        "file:studies.db?uri=true",
+        "file:my%20studies.db?uri=true",
+        "file:my%2520studies.db?uri=true",
+        "file:{here}/deeper/studies.db?uri=true",
+        "file://{here}/deeper/studies.db?uri=true",
+        "file://localhost{here}/deeper/studies.db?uri=true",
+    ],
+)
+def test_the_file_of_a_sqlite_url_is_the_one_sqlite_makes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database: str
 ) -> None:
+    # however the installed SQLAlchemy and SQLite decode the name: a relative one is relative to
+    # the working directory
+    import sqlalchemy
+
     monkeypatch.chdir(tmp_path)
-    assert storage.sqlite_file("sqlite:///file:studies.db?uri=true") == tmp_path / "studies.db"
-    assert storage.sqlite_file("sqlite:///file:my%2520studies.db?uri=true") == (
-        tmp_path / "my studies.db"  # %25 is decoded by the URL, %20 by SQLite
-    )
+    (tmp_path / "deeper").mkdir()
+    url = f"sqlite:///{database.format(here=tmp_path)}"
+    engine = sqlalchemy.create_engine(url)
+    engine.connect().close()
+    engine.dispose()
+    (made,) = (path for path in tmp_path.rglob("*") if path.is_file())
+    assert storage.sqlite_file(url) == made

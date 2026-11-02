@@ -106,11 +106,12 @@ _OPTUNA_TABLES = ("studies", "trials", "version_info", "alembic_version")
 def _read_only(url: str) -> dict[str, Any]:
     """The engine options that open the database ``url`` names so that it refuses every write.
 
-    SQLite is opened in its read-only mode, which also refuses a file that does not exist instead
-    of creating it; a database in WAL mode is refused, since a reader writes files beside it
-    there. PostgreSQL over libpq (``psycopg2``, ``psycopg``) with
-    ``default_transaction_read_only``, added to the URL's own ``options``. Any other database is
-    refused: nothing would keep it from being written.
+    SQLite, named by its path or by a URI filename (:func:`sqlite_file`), is opened in its
+    read-only mode, which also refuses a file that does not exist instead of creating it; a
+    database in WAL mode is refused, since a reader writes files beside it there. PostgreSQL
+    over libpq (``psycopg2``, ``psycopg``) with ``default_transaction_read_only``, added to the
+    URL's own ``options``. Any other database is refused: nothing would keep it from being
+    written.
     """
     try:
         from sqlalchemy.engine import make_url
@@ -125,8 +126,7 @@ def _read_only(url: str) -> dict[str, Any]:
         raise OptimizationError(f"--storage {redacted(url)} is not a database URL") from None
     backend, driver = parsed.get_backend_name(), parsed.get_driver_name()
     if backend == "sqlite":
-        database = parsed.database or ""
-        path = None if database.startswith("file:") else _database_file(database)
+        path = _database_file(parsed.database, parsed.query.get("mode"))
         if path is None:
             raise OptimizationError(f"--storage {redacted(url)} names no database file to read")
         if not path.is_file():
@@ -166,14 +166,17 @@ def sqlite_file(url: str) -> Path | None:
         parsed = make_url(url)
     except (ArgumentError, ValueError):
         return None
-    if parsed.get_backend_name() != "sqlite" or parsed.query.get("mode") == "memory":
+    if parsed.get_backend_name() != "sqlite":
         return None
-    return _database_file(parsed.database)
+    return _database_file(parsed.database, parsed.query.get("mode"))
 
 
-def _database_file(database: str | None) -> Path | None:
+def _database_file(database: str | None, mode: object = None) -> Path | None:
     """The file the database of a SQLite URL names, absolute; ``None`` for none or one in
-    memory. A URI filename (``file:``) names the file of its path, which SQLite decodes."""
+    memory (``mode=memory`` for a URI filename). A URI filename (``file:``) names the file of
+    its path, which SQLite percent-decodes once more."""
+    if mode == "memory":
+        return None
     if database and database.startswith("file:"):
         database = urllib.parse.unquote(urllib.parse.urlsplit(database).path)
     if not database or database == ":memory:":
