@@ -680,17 +680,19 @@ class EvaluationSession:
             if backend is not self._backend:  # the session's workers serve its next evaluation
                 backend.close()
 
-    def _start(self, request: RunRequest, taken: Collection[Path | None] = ()) -> _Run:
+    def _start(self, request: RunRequest, under_way: Collection[Path | None] = ()) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory
-        (not yet created) as its workspace; the directories of the candidates under way
-        (``taken``), which their geometry may not have made yet, count as existing."""
+        (not yet created) as its workspace; the directories of the candidates ``under_way``,
+        which their geometry may not have made yet, count as existing, also when named through
+        a symlink."""
         reference = _run_reference(request.run)
         started = time.perf_counter()
         values, key, prepared, overrides = self._prepare(request.candidate)
         if self._backend is not None:  # its workers check and evaluate instances of their own
             prepared = prepared.released()
         run_dir = Path(os.path.abspath(request.output))
-        if run_dir.exists() or run_dir.is_symlink() or run_dir in taken:
+        taken = {root.resolve() for root in under_way if root is not None}
+        if run_dir.exists() or run_dir.is_symlink() or run_dir.resolve() in taken:
             raise RunError(f"output {run_dir} already exists; choose a new directory")
         return _Run(
             Workspace(str(uuid.uuid4()), run_dir),

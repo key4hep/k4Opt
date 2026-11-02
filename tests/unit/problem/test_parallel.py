@@ -42,7 +42,7 @@ from k4opt.problem import (
     _worker,
     load_problem,
 )
-from k4opt.problem._tasks import Task, stage_task
+from k4opt.problem._tasks import GEOMETRY, Task, stage_task
 from k4opt.problem._work import TaskOutcome, TaskSpec
 from tests.support import stack
 from tests.support.common import scientific
@@ -283,22 +283,51 @@ def test_concurrent_candidates_each_write_and_record_only_their_own_files(
     assert len(ids) == 3
 
 
+@pytest.mark.parametrize("alias", [False, True])
 def test_an_output_a_candidate_under_way_writes_to_is_refused_as_existing(
-    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch, alias: bool
 ) -> None:
-    # the second request may be taken while the first one's geometry still runs in a worker,
-    # before that made the directory (a large geometry, a slow filesystem): it is refused as with
-    # one job, not left to race the first one for the directory
+    # the first candidate's geometry reaches its worker only once the session took the second
+    # request, as when making a geometry takes longer than preparing the next candidate: the
+    # second request, for the same directory (or for it through a symlink), is refused as with
+    # one job, not left to race the first one for it
     stack.install(monkeypatch)
+    taken: list[object] = []
+    held: list[tuple[TaskSpec, Any]] = []
+    start, submit = _run.EvaluationSession._start, _backends.ProcessBackend.submit
+    wait = _backends.ProcessBackend.wait
+
+    def starting(self: Any, request: RunRequest, *rest: Any) -> Any:
+        taken.append(request.run["name"])  # type: ignore[index]
+        return start(self, request, *rest)
+
+    def submitting(self: Any, spec: TaskSpec, seen: Any) -> Any:
+        if spec.task.id == GEOMETRY and len(taken) < 2:
+            held.append((spec, seen))
+            return _backends.Handle(spec.workspace, spec.task.id)
+        return submit(self, spec, seen)
+
+    def waiting(self: Any, timeout: float) -> Any:
+        while held and len(taken) >= 2:
+            submit(self, *held.pop(0))
+        return wait(self, timeout)
+
+    monkeypatch.setattr(_run.EvaluationSession, "_start", starting)
+    monkeypatch.setattr(_backends.ProcessBackend, "submit", submitting)
+    monkeypatch.setattr(_backends.ProcessBackend, "wait", waiting)
+    (tmp_path / "real").mkdir()
+    (tmp_path / "alias").symlink_to(tmp_path / "real")
+    second = tmp_path / ("alias" if alias else "real") / "a"
     requests = [
-        RunRequest({RADIUS: 300.0}, tmp_path / "a", {"name": "first"}),
-        RunRequest({RADIUS: 400.0}, tmp_path / "a", {"name": "second"}),
+        RunRequest({RADIUS: 300.0}, tmp_path / "real" / "a", {"name": "first"}),
+        RunRequest({RADIUS: 400.0}, second, {"name": "second"}),
     ]
     with session_of(2).evaluate_each(requests) as evaluations:
         ended = {request.run["name"]: outcome for request, outcome in evaluations}  # type: ignore[index]
+    assert taken == ["first", "second"] and not held
     refused, outcome = ended["second"], ended["first"]
     assert isinstance(refused, RunError), refused
-    assert f"output {tmp_path / 'a'} already exists; choose a new directory" in str(refused)
+    assert f"output {second} already exists; choose a new directory" in str(refused)
     assert isinstance(outcome, RunOutcome) and outcome.candidate.status == "valid"
     assert verified(outcome)["candidate"] == {RADIUS: 300.0}
 

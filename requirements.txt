@@ -14,5 +14,11 @@ platformdirs==4.13.7
 codespell==2.4.3
 pyyaml==6.0.3
 # The optimizer behind k4opt optimize. Its dependencies (numpy, PyYAML, packaging, tqdm, colorlog)
-# come from the Key4hep stack; SQLAlchemy is needed only for a --storage database URL.
+# come from the Key4hep stack.
 optuna==5.0.0
+# A --storage database (and the tests that make and read one): SQLAlchemy, and alembic, with
+# which Optuna sets the database up, with alembic's Mako; typing_extensions and MarkupSafe come
+# from the Key4hep stack. k4opt itself needs none of them without --storage.
+SQLAlchemy==2.1.6
+alembic==1.20.1
+Mako==1.4.3

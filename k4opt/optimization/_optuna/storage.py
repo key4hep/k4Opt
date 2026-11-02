@@ -125,7 +125,8 @@ def _read_only(url: str) -> dict[str, Any]:
         raise OptimizationError(f"--storage {redacted(url)} is not a database URL") from None
     backend, driver = parsed.get_backend_name(), parsed.get_driver_name()
     if backend == "sqlite":
-        path = _database_file(parsed.database)
+        database = parsed.database or ""
+        path = None if database.startswith("file:") else _database_file(database)
         if path is None:
             raise OptimizationError(f"--storage {redacted(url)} names no database file to read")
         if not path.is_file():
@@ -153,8 +154,9 @@ def _read_only(url: str) -> dict[str, Any]:
 
 def sqlite_file(url: str) -> Path | None:
     """The file of the SQLite database ``url`` names, as an absolute path (a relative one is
-    relative to the working directory); ``None`` for any other database, one in memory or named
-    by a URI, and for a URL that cannot be parsed (opening it says why)."""
+    relative to the working directory), also when it is named by a URI filename
+    (``sqlite:///file:/path/studies.db?uri=true``); ``None`` for any other database, one in
+    memory, and a URL that cannot be parsed (opening it says why)."""
     try:
         from sqlalchemy.engine import make_url
         from sqlalchemy.exc import ArgumentError
@@ -164,13 +166,17 @@ def sqlite_file(url: str) -> Path | None:
         parsed = make_url(url)
     except (ArgumentError, ValueError):
         return None
-    return _database_file(parsed.database) if parsed.get_backend_name() == "sqlite" else None
+    if parsed.get_backend_name() != "sqlite" or parsed.query.get("mode") == "memory":
+        return None
+    return _database_file(parsed.database)
 
 
 def _database_file(database: str | None) -> Path | None:
-    """The file the database of a SQLite URL names, absolute; ``None`` for none, one in memory
-    or one named by a URI."""
-    if not database or database == ":memory:" or database.startswith("file:"):
+    """The file the database of a SQLite URL names, absolute; ``None`` for none or one in
+    memory. A URI filename (``file:``) names the file of its path, which SQLite decodes."""
+    if database and database.startswith("file:"):
+        database = urllib.parse.unquote(urllib.parse.urlsplit(database).path)
+    if not database or database == ":memory:":
         return None
     return Path(os.path.abspath(database))
 
