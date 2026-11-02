@@ -214,7 +214,15 @@ none. That is checked when the session binds the implementations:
 | `list`, `dict` | never |
 
 An evaluator reads a candidate only through its settings: the request has no parameter values
-of its own, so what an evaluator measures depends on no parameter's name.
+of its own, so what an evaluator measures depends on no parameter's name. A setting destination
+that does not fit is refused when the session opens, naming the parameter
+(`parameters.energy_cut.sets: evaluator 'calo.photon', setting 'threshold': it is a quantity in
+GeV, so it takes numbers with a unit of energy (eV, keV, MeV, GeV, TeV); the parameter's values
+are numbers in mm`).
+
+[`cld-ecal-bindings.yaml`](../examples/problem/cld-ecal-bindings.yaml) is a runnable example of
+each kind of destination, and `k4opt evaluate --dry-run` shows what a candidate of it sets
+([execution](execution.md#k4opt-evaluate)).
 
 ```yaml
 parameters:

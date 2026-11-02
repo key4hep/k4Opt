@@ -378,3 +378,66 @@ def test_a_worker_that_read_events_with_podio_runs_the_next_simulation(
     for run in runs:
         assert run.candidate.status == "valid", run.candidate.message
         assert run.events == {SAMPLE: (EVENTS, EVENTS)}
+
+
+def test_parameters_set_a_ddsim_option_and_the_gun_energy_that_ddsim_accepts(
+    problem: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """A range cut and the photon energy, each a parameter: the installed ddsim takes
+    ``--physics.rangecut=0.5*mm`` and ``--gun.energy=12.0*GeV``, and the file it writes holds
+    photons of that energy, which the evaluator measures."""
+    from podio.reading import get_reader
+
+    doc = yaml.safe_load(problem.read_text())
+    del doc["samples"][SAMPLE]["generation"]["energy"]
+    doc["parameters"] |= {
+        "range_cut": {
+            "type": "continuous",
+            "bounds": [0.1, 1.0],
+            "unit": "mm",
+            "sets": {"stage": "simulation", "option": "physics.rangecut"},
+        },
+        "photon_energy": {
+            "type": "continuous",
+            "bounds": [5.0, 50.0],
+            "unit": "GeV",
+            "sets": {"stage": "generation", "option": "energy"},
+        },
+    }
+    base = tmp_path_factory.mktemp("bound")
+    path = base / "problem.yaml"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False))  # the parameters in this order
+    candidate = {CELL: 6.0, "range_cut": 0.5, "photon_energy": 12.0}
+    with EvaluationSession.open(path, [load_evaluator(CALO_PHOTON)]) as session:
+        outcome = session.evaluate(candidate, base / "run")
+        spec = session.spec
+    assert outcome.candidate.status == "valid", outcome.candidate.message
+    stages = outcome.summary["samples"][SAMPLE]["stages"]  # type: ignore[index]
+    argv = stages["simulation"]["argv"]
+    assert "--physics.rangecut=0.5*mm" in argv and "--gun.energy=12.0*GeV" in argv
+    assert stages["simulation"]["definition"]["physics.rangecut"] == "0.5*mm"
+    assert stages["generation"]["definition"]["energy"] == {"value": 12.0, "unit": "GeV"}
+    assert stages["simulation"]["varies"] == [CELL, "range_cut", "photon_energy"]
+    events = Path(outcome.run_dir) / stages["simulation"]["outputs"]["events"]["path"]
+    for event in get_reader(str(events)).get("events"):
+        (primary,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
+        assert primary.getEnergy() == pytest.approx(12.0, rel=1e-6)
+    assert Assessment.from_summary(spec, outcome.summary) == outcome.assessment
+
+
+def test_the_example_of_every_destination_previews_on_the_installed_geometry(
+    stack: None,
+) -> None:
+    """``--dry-run`` on the real CLD geometry: what each parameter sets, and nothing simulated."""
+    example = EXAMPLE.with_name("cld-ecal-bindings.yaml")
+    out, err = io.StringIO(), io.StringIO()
+    params = ["ecal_cell_size=8.0", "range_cut=0.5", "cell_threshold=70"]
+    argv = ["evaluate", str(example), "--evaluator", CALO_PHOTON, "--dry-run"]
+    code = main([*argv, *(arg for p in params for arg in ("--param", p))], stdout=out, stderr=err)
+    assert code == 0, out.getvalue() + err.getvalue()
+    lines = out.getvalue().splitlines()
+    assert lines[0] == "candidate:   ecal_cell_size = 8.0 mm"
+    assert lines[1].startswith("               sets geometry constants.ECal_cell_size (")
+    assert lines[1].endswith("): 5.1*mm -> 8.0*mm")
+    assert "               sets samples.gamma_10gev.simulation.physics.rangecut = 0.5*mm" in lines
+    assert "               sets calo.photon.threshold = 70.0 keV" in lines

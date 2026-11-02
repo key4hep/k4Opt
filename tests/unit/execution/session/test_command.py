@@ -45,7 +45,7 @@ def test_command_prints_the_result_and_exits_zero(
         str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
     )
     assert code == 0, err
-    assert "status:      valid" in out
+    assert out.startswith(f"candidate:   {RADIUS} = 450.0 mm\nstatus:      valid\n")
     assert "evaluator:   test.cell_count 1 on gamma: valid" in out
     assert "simulation/ecal_barrel.mean_hit_cells = 3 +- 0.57735 [1]" in out
     assert "feasible:    yes" in out and "limit:" not in out  # the problem has no constraints
@@ -54,6 +54,60 @@ def test_command_prints_the_result_and_exits_zero(
     assert f"summary:     {tmp_path / 'a' / SUMMARY_NAME}" in out
     assert "ddsim.stderr.log" in out
     assert err.startswith(f"k4opt: warning: {UNEXPECTED}")  # printed before anything ran
+
+
+def test_a_dry_run_shows_what_the_candidate_sets_and_runs_nothing(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["parameters"][RADIUS]["sets"] = [
+        doc["parameters"][RADIUS]["sets"],
+        {"stage": "simulation", "option": "physics.rangecut"},
+    ]
+    problem_file.write_text(yaml.safe_dump(doc))
+    code, out, err = evaluate(str(problem_file), "--param", f"{RADIUS}=450", "--dry-run")
+    assert code == 0, err
+    assert out.splitlines() == [
+        f"candidate:   {RADIUS} = 450.0 mm",
+        "               sets geometry constants.InnerTracker_Barrel_radius_1 "
+        "(compact/det_v1/tracker.xml): 400*mm -> 450.0*mm",
+        "               sets samples.gamma.simulation.physics.rangecut = 450.0*mm",
+        "checked:     every evaluator accepts the candidate and its stages; nothing was created "
+        "or run (--dry-run)",
+    ]
+    assert fake.calls == [] and sorted(p.name for p in tmp_path.iterdir()) == ["problem.yaml"]
+    # a candidate outside its domain is refused as an evaluation refuses it
+    code, _, err = evaluate(str(problem_file), "--param", f"{RADIUS}=50", "--dry-run")
+    assert code == 1 and "outside the bounds" in err
+
+
+@pytest.mark.parametrize("flags", [[], ["--dry-run", "--output", "x"]])
+def test_evaluate_needs_an_output_or_a_dry_run(problem_file: Path, flags: list[str]) -> None:
+    code, _, err = evaluate(str(problem_file), "--param", f"{RADIUS}=450", *flags)
+    assert code == 2 and "give exactly one of --output DIR and --dry-run" in err
+
+
+def test_a_setting_a_parameter_cannot_set_names_that_parameter(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["parameters"][RADIUS]["sets"] = [
+        doc["parameters"][RADIUS]["sets"],
+        {"evaluator": "test.cell_count", "setting": "threshold"},
+    ]
+    problem_file.write_text(yaml.safe_dump(doc))
+
+    class Thresholded(cell_count()):  # type: ignore[misc]
+        settings = {"threshold": Quantity("GeV")}
+
+    with pytest.raises(EvaluationContractError) as info:
+        run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[Thresholded])
+    assert str(info.value) == (
+        f"parameters.{RADIUS}.sets: evaluator 'test.cell_count', setting 'threshold': it is a "
+        "quantity in GeV, so it takes numbers with a unit of energy (eV, keV, MeV, GeV, TeV); the "
+        "parameter's values are numbers in mm"
+    )
+    assert not (tmp_path / "a").exists()
 
 
 def test_command_exits_nonzero_for_a_failed_run(
@@ -95,12 +149,6 @@ def test_command_reports_a_bad_candidate_without_creating_anything(
     assert err.startswith("k4opt: error: ")
     assert "outside the bounds" in err
     assert not (tmp_path / "a").exists()
-
-
-def test_command_requires_an_output_directory(problem_file: Path) -> None:
-    with pytest.raises(SystemExit) as info:
-        evaluate(str(problem_file), "--param", f"{RADIUS}=450")
-    assert info.value.code == 2
 
 
 def test_a_generation_file_is_simulated_and_its_hash_recorded(

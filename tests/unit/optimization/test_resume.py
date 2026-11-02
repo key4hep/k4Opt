@@ -1007,3 +1007,26 @@ def test_a_study_does_not_resume_with_other_roles_declared(
     other = evaluator_from(tmp_path / "e", "roles", ROLES)  # the same bytes, other roles
     with pytest.raises(OptimizationError, match=r"'test\.toy_significance' declares other roles"):
         run(combined_problem, output, 1, resume=True, evaluators=[other, yields()])
+
+
+def test_a_study_whose_parameter_sets_the_geometry_and_a_stage_resumes_configured_alike(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the radius sets the geometry and a ddsim option of both samples: every trial, before and
+    # after the resume, simulates with the option its own value gives, and its record says so
+    simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    rangecut = {"stage": "simulation", "option": "physics.rangecut", "samples": ["gamma", "pion"]}
+    _edit(sampled_problem, lambda d: d["parameters"][RADIUS]["sets"].append(rangecut))
+    output = tmp_path / "s"
+    run(sampled_problem, output, 2, seed=1, evaluators=[cell_count()])
+    resumed = run(sampled_problem, output, 1, resume=True, evaluators=[cell_count()])
+    assert [t.status for t in resumed.trials] == ["valid"] * 3
+    for trial in resumed.trials:
+        record = summary(output, trial.number)
+        radius = record["candidate"][RADIUS]
+        for sample in ("gamma", "pion"):
+            stage = record["samples"][sample]["stages"]["simulation"]
+            assert stage["definition"]["physics.rangecut"] == radius
+            assert f"--physics.rangecut={radius!r}" in stage["argv"]
+            assert stage["varies"] == [RADIUS]
+        assert record["geometry"]["changes"][0]["new_value"] == repr(radius)

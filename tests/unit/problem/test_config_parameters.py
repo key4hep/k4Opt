@@ -432,3 +432,29 @@ def test_a_supplied_stage_represents_the_candidate_unless_a_parameter_reaches_it
             parameters=problem.parameters,
         )
         assert represents_candidate(plan) is represents
+
+
+def test_the_example_of_every_destination_parses_and_fits_its_evaluator() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    from k4opt.evaluation import check_bound
+    from tests.support.evaluators import calo_photon
+
+    path = Path(__file__).parents[3] / "examples" / "problem" / "cld-ecal-bindings.yaml"
+    problem = parse_problem(yaml.safe_load(path.read_text()), source=path)
+    assert [(p.name, d.label) for p, d in problem.destinations] == [
+        ("ecal_cell_size", "geometry constants.ECal_cell_size"),
+        ("range_cut", "simulation.physics.rangecut of gamma_10gev"),
+        ("cell_threshold", "calo.photon.threshold"),
+    ]
+    threshold = problem.parameters[2]
+    check_bound(calo_photon()(), "threshold", float, threshold.unit)  # keV into its GeV
+    values, _ = validate_candidate(
+        problem, {"ecal_cell_size": 8.0, "range_cut": 0.5, "cell_threshold": 70.0}
+    )
+    configuration = configure(problem, values)
+    simulation = configuration.samples["gamma_10gev"].stages["simulation"].options
+    assert simulation["physics.rangecut"] == "0.5*mm"
+    assert configuration.evaluators[0].settings["threshold"] == {"value": 70.0, "unit": "keV"}

@@ -53,7 +53,9 @@ from k4opt.execution._worker import session_spec
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
+from k4opt.geometry import Parameter as GeometryParameter
 from k4opt.problem.candidate import (
+    Configuration,
     configure,
     geometry_overrides,
     parse_candidate,
@@ -413,8 +415,9 @@ class EvaluationSession:
         """
         self._baseline.verify_inputs()
 
-    def check(self, candidate: Mapping[str, Scalar]) -> None:
-        """Check ``candidate`` as :meth:`evaluate` does before it creates anything, and stop there.
+    def check(self, candidate: Mapping[str, Scalar]) -> Configuration:
+        """Check ``candidate`` as :meth:`evaluate` does before it creates anything, and stop there;
+        what the candidate configures, each value written where its parameter sends it.
 
         ``candidate`` maps the name of each parameter to its value. Raises
         :class:`~k4opt.problem.CandidateError` for a value outside its domain, what creating an
@@ -422,7 +425,8 @@ class EvaluationSession:
         :class:`~k4opt.execution.RunError` for a file the stages or the geometry read, the
         environment or k4opt's code that changed since the session opened.
         """
-        self._prepare(candidate)
+        _, _, prepared, _ = self._prepare(candidate)
+        return prepared.configuration
 
     def evaluate(
         self,
@@ -646,6 +650,42 @@ def _workers(value: int | Literal["auto", "inline"]) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise RunError(f"workers must be a positive integer, 'auto' or 'inline', got {value!r}")
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class Preview:
+    """A candidate checked as :func:`run_candidate` checks it, with nothing created or run: the
+    problem (``spec``), the candidate's ``values``, what it configures (``configuration``) and the
+    attribute each geometry destination sets, with its value now (``targets``, in the order of
+    :attr:`~k4opt.problem.ProblemSpec.geometry_destinations`)."""
+
+    spec: ProblemSpec
+    values: Mapping[str, Scalar]
+    configuration: Configuration
+    targets: tuple[GeometryParameter, ...]
+
+
+def preview_candidate(
+    problem_path: str | os.PathLike[str],
+    assignments: Sequence[str],
+    *,
+    implementations: Sequence[type[EvaluatorProtocol]],
+    inputs: Sequence[str] = (),
+    warn: Callable[[str], None] | None = None,
+) -> Preview:
+    """Check the candidate given as ``NAME=VALUE`` strings as :func:`run_candidate` does before it
+    creates anything (:meth:`EvaluationSession.check`), and stop there: ``k4opt evaluate
+    --dry-run``. ``warn`` is called with each of the session's warnings, as there."""
+    with EvaluationSession.open(
+        problem_path, implementations, inputs=_parse_inputs(inputs)
+    ) as session:
+        values = parse_candidate(session.spec, assignments)
+        checked, _ = validate_candidate(session.spec, values)
+        if warn is not None:
+            for warning in session.warnings:
+                warn(warning)
+        configuration = session.check(checked)
+        return Preview(session.spec, checked, configuration, session._baseline.problem.targets)
 
 
 def run_candidate(

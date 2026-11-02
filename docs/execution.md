@@ -37,6 +37,30 @@ cannot verify that it is the output of the stage the problem defines; the comman
 and the record lists it under `supplied`. Only a record with `supplied: []` is determined by the
 problem, the candidate and the identified files alone, which is why a study supplies none.
 
+`--dry-run`, instead of `--output`, checks the candidate as an evaluation checks it before it
+creates anything (its values, every evaluator's settings and `check()`, every stage's options and
+files) and shows what it sets, below each parameter's value: each attribute of the geometry, from
+its value now to the candidate's, each stage option and each evaluator setting as the candidate
+writes it. Nothing is created or run, so it is the quick way to see what a parameter changes
+before an expensive simulation. For the example of every kind of destination,
+[`cld-ecal-bindings.yaml`](../examples/problem/cld-ecal-bindings.yaml):
+
+```text
+$ k4opt evaluate examples/problem/cld-ecal-bindings.yaml \
+    --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
+    --param ecal_cell_size=8.0 --param range_cut=0.5 --param cell_threshold=70 --dry-run
+candidate:   ecal_cell_size = 8.0 mm
+               sets geometry constants.ECal_cell_size (CLD_o2_v09/...xml): 5.1*mm -> 8.0*mm
+             range_cut = 0.5 mm
+               sets samples.gamma_10gev.simulation.physics.rangecut = 0.5*mm
+             cell_threshold = 70.0 keV
+               sets calo.photon.threshold = 70.0 keV
+checked:     every evaluator accepts the candidate and its stages; nothing was created or run (--dry-run)
+```
+
+A candidate it refuses is refused with the message an evaluation would give, and the exit status
+is 1.
+
 `--timeout SECONDS` kills `ddsim` if it runs longer than that, for a geometry on which Geant4
 stalls: the simulation stage fails with the tail of ddsim's standard error, its logs stay in
 `samples/<sample>/simulation/`, and the candidate is `failed`. The limit applies to each
@@ -155,7 +179,7 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      (those the session opened with, checked before each candidate) and the `ddsim` that was
      started; the pin and the stack are not compared).
 
-The command prints the candidate's status, each evaluation's status and metrics with their
+The command prints the candidate's values, its status, each evaluation's status and metrics with their
 uncertainty (a binding named with `as` beside its evaluator, and the sample it measures:
 `photon_200kev (calo.photon 1) on gamma_10gev`), each limit with its verdict and margin, whether
 the candidate is feasible, the events of each sample, the fingerprint and the paths. For the 10 mm candidate of the
@@ -163,6 +187,7 @@ the candidate is feasible, the events of each sample, the fingerprint and the pa
 [1 mrad constraint](problem.md#constraints) added to the problem (abridged, values rounded):
 
 ```text
+candidate:   ecal_cell_size = 10.0 mm
 status:      valid
 evaluator:   calo.photon 1 on gamma_10gev: valid
 metric:      simulation/ecal_barrel.angular_residual = 0.946 +- 0.034 [mrad]

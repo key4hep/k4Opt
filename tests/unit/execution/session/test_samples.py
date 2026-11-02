@@ -935,3 +935,46 @@ def test_the_command_reports_what_each_role_of_a_combined_evaluator_read(
         "roles:       backgrounds zz/test.yields, ww/test.yields; signal sig/test.yields\n"
         "metric:      analysis/expected_significance = "
     ) in report
+
+
+def test_a_threshold_alone_is_evaluated_on_a_fixed_simulation_file(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # nothing a fixed file stands for depends on the candidate: the session opens, every
+    # candidate reads the file, gets its own threshold and represents the candidate
+    simulation.install_events(monkeypatch, events_with([1, 2], [3]))
+    events_file = tmp_path / "earlier.edm4hep.root"
+    events_file.write_bytes(b"fake")
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["samples"]["gamma"] = {"simulation": {"file": events_file.name}}
+    doc["parameters"] = {
+        "threshold": {
+            "type": "continuous",
+            "bounds": [20.0, 150.0],
+            "unit": "keV",
+            "sets": {"evaluator": "test.cell_count", "setting": "threshold"},
+        }
+    }
+    problem_file.write_text(yaml.safe_dump(doc))
+    seen: list[float] = []
+
+    class Thresholded(cell_count()):  # type: ignore[misc]
+        settings = {"threshold": Quantity("GeV")}
+
+        def evaluate(self, request: Any) -> Any:
+            seen.append(request.settings["threshold"])
+            return super().evaluate(request)
+
+    with EvaluationSession.open(problem_file, [Thresholded]) as session:
+        first = session.evaluate({"threshold": 70.0}, tmp_path / "a")
+        second = session.evaluate({"threshold": 120.0}, tmp_path / "b")
+    assert seen == [70e-6, 120e-6]
+    for outcome in (first, second):
+        assert outcome.candidate.status == "valid"
+        assert outcome.candidate.represents_candidate
+        assert outcome.summary["supplied"] == []
+        stage = outcome.summary["samples"]["gamma"]["stages"]["simulation"]  # type: ignore[index]
+        assert stage["file"] == str(events_file) and stage["varies"] == []
+        evaluation = outcome.summary["samples"]["gamma"]["evaluations"]["test.cell_count"]  # type: ignore[index]
+        assert evaluation["varies"] == ["threshold"]
+        assert Assessment.from_summary(session.spec, outcome.summary) == outcome.assessment

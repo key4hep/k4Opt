@@ -36,6 +36,7 @@ from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRequest,
     EvaluatorProtocol,
+    check_bound,
     check_settings,
     collection_names,
     declared_collections,
@@ -323,7 +324,20 @@ def _bind_problem(
                     f"evaluator {entry.binding!r} reads collections from the {stage!r} stage of "
                     f"{sample}, but {reason}"
                 )
-        # what needs no candidate is checked before any: a check() may depend on the candidate
+        # what needs no candidate is checked before any: a check() may depend on the candidate;
+        # a setting a parameter sets, first, so that a refusal names that parameter
+        for parameter, destination in spec.destinations:
+            if (
+                isinstance(destination, SettingDestination)
+                and destination.evaluator == entry.binding
+            ):
+                try:
+                    check_bound(evaluator, destination.setting, _values(parameter), parameter.unit)
+                except EvaluationContractError as exc:
+                    raise EvaluationContractError(
+                        f"parameters.{parameter.name}.sets: evaluator {entry.binding!r}, setting "
+                        f"{destination.setting!r}: {exc}"
+                    ) from None
         try:
             check_settings(
                 evaluator,

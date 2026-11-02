@@ -1,11 +1,13 @@
 """Command-line interface of the problem component: ``k4opt evaluate``.
 
     k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] [--param NAME=VALUE ...]
-        [--input SAMPLE/STAGE=FILE ...] [--timeout SECONDS] [--workers N|auto|inline] --output DIR
+        [--input SAMPLE/STAGE=FILE ...] [--timeout SECONDS] [--workers N|auto|inline]
+        (--output DIR | --dry-run)
 
-A thin wrapper over :func:`k4opt.execution._session.run_candidate`; :func:`register` plugs it into
-the top-level ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate,
-feasible or not, whatever its diagnostics gave.
+A thin wrapper over :func:`k4opt.execution._session.run_candidate`, or with ``--dry-run``
+:func:`~k4opt.execution._session.preview_candidate`; :func:`register` plugs it into the top-level
+``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate, feasible or not,
+whatever its diagnostics gave, or one ``--dry-run`` checked.
 """
 
 from __future__ import annotations
@@ -14,9 +16,11 @@ import argparse
 from collections.abc import Mapping
 from typing import TextIO
 
-from k4opt.evaluation import Status, load_evaluator
+from k4opt.evaluation import Scalar, Status, load_evaluator
 from k4opt.execution._publish import RunOutcome
-from k4opt.execution._session import run_candidate
+from k4opt.execution._session import Preview, preview_candidate, run_candidate
+from k4opt.frozen import Json
+from k4opt.problem.models import GeometryDestination, StageDestination
 from k4opt.problem.plan import Kind
 from k4opt.record.assess import Limit
 from k4opt.record.write import peak_memory
@@ -87,8 +91,15 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
             "process"
         ),
     )
+    evaluate.add_argument("--output", help="new directory for the geometry, simulation and summary")
     evaluate.add_argument(
-        "--output", required=True, help="new directory for the geometry, simulation and summary"
+        "--dry-run",
+        action="store_true",
+        help=(
+            "check the candidate as an evaluation would and show what it sets: each parameter's "
+            "value in the geometry, the stages and the evaluator settings it goes to; nothing is "
+            "created or run, and no --output is needed"
+        ),
     )
     evaluate.set_defaults(func=cmd_evaluate)
 
@@ -116,10 +127,76 @@ def _limit(limit: Limit) -> str:
     return f"{text}: {'satisfied' if limit.satisfied else 'violated'}{margin}{unit}"
 
 
+def _value(value: object, unit: object) -> str:
+    """A parameter's value as the candidate gives it, with the parameter's unit."""
+    return f"{value!r}" + (f" {unit}" if isinstance(unit, str) else "")
+
+
+def _written(value: Json) -> str:
+    """A value as a destination holds it: a quantity as ``70 keV``, a text as it is."""
+    if isinstance(value, Mapping) and set(value) == {"value", "unit"}:
+        return _value(value["value"], value["unit"])
+    return value if isinstance(value, str) else repr(value)
+
+
+def _candidate(values: Mapping[str, object], units: Mapping[str, object], out: TextIO) -> None:
+    """``candidate:   name = value unit``, one line per parameter, in the problem's order."""
+    for index, (name, value) in enumerate(values.items()):
+        label = "candidate:" if index == 0 else ""
+        print(f"{label:12} {name} = {_value(value, units.get(name))}", file=out)
+
+
+def _preview(preview: Preview, out: TextIO) -> None:
+    """What each parameter of the candidate sets, below its value: each attribute of the geometry
+    from its value now to the candidate's, each stage option and each evaluator setting as the
+    candidate writes it."""
+    spec, configuration = preview.spec, preview.configuration
+    geometry = iter(zip(preview.targets, configuration.geometry, strict=True))
+    values: Mapping[str, Scalar] = preview.values
+    for index, parameter in enumerate(spec.parameters):
+        label = "candidate:" if index == 0 else ""
+        print(
+            f"{label:12} {parameter.name} = {_value(values[parameter.name], parameter.unit)}",
+            file=out,
+        )
+        for destination in parameter.sets:
+            if isinstance(destination, GeometryDestination):
+                target, text = next(geometry)
+                set_to = f"{target.target} ({target.file}): {target.value} -> {text}"
+                lines = [f"geometry {set_to}"]
+            elif isinstance(destination, StageDestination):
+                lines = [
+                    f"samples.{sample}.{destination.stage}.{destination.option} = "
+                    + _written(
+                        configuration.samples[sample]
+                        .stages[destination.stage]
+                        .options[destination.option]
+                    )
+                    for sample in destination.samples
+                ]
+            else:
+                entry = next(
+                    e for e in configuration.evaluators if e.binding == destination.evaluator
+                )
+                lines = [f"{destination.label} = {_written(entry.settings[destination.setting])}"]
+            for line in lines:
+                print(f"{'':12}   sets {line}", file=out)
+    print(
+        "checked:     every evaluator accepts the candidate and its stages; nothing was created "
+        "or run (--dry-run)",
+        file=out,
+    )
+
+
 def _report(outcome: RunOutcome, out: TextIO) -> None:
     candidate = outcome.candidate
     evaluations = outcome.summary["evaluations"]  # of the candidate, with what their roles read
     assert isinstance(evaluations, Mapping)
+    values, problem = outcome.summary["candidate"], outcome.summary["problem"]
+    assert isinstance(values, Mapping)
+    assert isinstance(problem, Mapping)
+    parameters = problem["definition"]["parameters"]  # the problem as the record holds it
+    _candidate(values, {name: p.get("unit") for name, p in parameters.items()}, out)
     print(f"status:      {candidate.status}", file=out)
     for task in candidate.plan.of(Kind.EVALUATOR):
         record = candidate.results[task.id].record
@@ -176,7 +253,20 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
 
 
 def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    if (args.output is None) != args.dry_run:
+        print("k4opt evaluate: give exactly one of --output DIR and --dry-run", file=err)
+        return 2
     implementations = [load_evaluator(reference) for reference in args.evaluator]
+    if args.dry_run:
+        preview = preview_candidate(
+            args.problem,
+            args.param,
+            implementations=implementations,
+            inputs=args.input,
+            warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
+        )
+        _preview(preview, out)
+        return 0
     outcome = run_candidate(
         args.problem,
         args.param,

@@ -277,31 +277,59 @@ def with_defaults(evaluator: object, settings: Mapping[str, Json]) -> Mapping[st
     return merged
 
 
-def _accepts(declared: object, kind: type, unit: str | None) -> str | None:
-    """Why a setting declared as ``declared`` cannot take the values of a parameter, of the type
-    ``kind`` (``float``, ``int``, ``str`` or ``bool``) in ``unit``; ``None`` if it can."""
-    number = kind in (int, float)
-    if isinstance(declared, Quantity):
-        dimension = units.dimension(declared.unit)
-        if number and unit is not None and units.dimension(unit) == dimension:
-            return None
-        assert dimension is not None
-        return (
-            f"is a quantity in {declared.unit}; a parameter that sets it needs a number with a "
-            f"unit of {dimension} ({', '.join(units.units(dimension))})"
+_VALUES = {float: "numbers", int: "integers", str: "strings", bool: "booleans"}
+
+
+def _values(kind: type, unit: str | None) -> str:
+    """What a parameter's values are, for a message: ``numbers in mm``, ``strings``."""
+    text = _VALUES.get(kind, kind.__name__)
+    if kind in (int, float):
+        text += " without a unit" if unit is None else f" in {unit}"
+    return text
+
+
+def check_bound(evaluator: object, key: str, kind: type, unit: str | None) -> None:
+    """Raise :class:`EvaluationContractError` unless a parameter whose values are of the type
+    ``kind`` (``float``, ``int``, ``str`` or ``bool``), in ``unit``, can set the setting ``key`` of
+    ``evaluator``: one it declares in its ``settings``, of a kind those values fit. A
+    :class:`Quantity` takes numbers with a unit of its dimension, ``float`` numbers without one,
+    ``int`` integers without one, ``str`` and ``bool`` their own; a ``list`` or a ``dict`` none."""
+    declared = getattr(evaluator, "settings", None)
+    if declared is None:
+        raise EvaluationContractError(
+            "the evaluator declares no settings, so no parameter can set one; a parameter sets "
+            "only a setting the evaluator declares"
         )
-    expected = _kind(declared)
+    if key not in declared:
+        raise EvaluationContractError(
+            f"the evaluator declares no setting {key!r}, so no parameter can set it; it "
+            f"declares {sorted(declared)}"
+        )
+    entry, given = declared[key], _values(kind, unit)
+    number = kind in (int, float)
+    if isinstance(entry, Quantity):
+        dimension = units.dimension(entry.unit)
+        assert dimension is not None
+        if number and unit is not None and units.dimension(unit) == dimension:
+            return
+        raise EvaluationContractError(
+            f"it is a quantity in {entry.unit}, so it takes numbers with a unit of {dimension} "
+            f"({', '.join(units.units(dimension))}); the parameter's values are {given}"
+        )
+    expected = _kind(entry)
     if expected in (list, dict):
-        return f"is a {expected.__name__}, which no parameter can set"
+        raise EvaluationContractError(f"it is a {expected.__name__}, which no parameter can set")
     fits = number if expected is float else kind is expected
     if fits and unit is None:
-        return None
+        return
     if fits:
-        return (
-            f"is a {expected.__name__} without a unit, so the parameter's {unit} would be lost; "
-            "declare it a Quantity"
+        raise EvaluationContractError(
+            f"it is a {expected.__name__} without a unit, so the parameter's unit {unit} would be "
+            "lost; declare it a Quantity of that dimension, or give the parameter no unit"
         )
-    return f"is a {expected.__name__}; a parameter with {kind.__name__} values cannot set it"
+    raise EvaluationContractError(
+        f"it is a {expected.__name__}; the parameter's values are {given}"
+    )
 
 
 def check_settings(
@@ -322,12 +350,12 @@ def check_settings(
     take none. Raises :class:`EvaluationContractError`."""
     declared = getattr(evaluator, "settings", None)
     pending = pending or {}
+    for key, (values, unit) in pending.items():
+        try:
+            check_bound(evaluator, key, values, unit)
+        except EvaluationContractError as exc:
+            raise EvaluationContractError(f"settings.{key}: {exc}") from None
     if declared is None:
-        if pending:
-            raise EvaluationContractError(
-                f"settings.{next(iter(pending))}: the evaluator declares no settings, so no "
-                "parameter can set one; a parameter sets only a setting the evaluator declares"
-            )
         return
     kinds = {key: _kind(entry) for key, entry in declared.items()}
     for key, kind in kinds.items():
@@ -336,15 +364,6 @@ def check_settings(
                 f"settings.{key}: cannot declare {kind.__name__}; use str, int, float, bool, "
                 "list or dict (or a default of one of them), or Quantity(unit)"
             )
-    for key, (values, unit) in pending.items():
-        if key not in declared:
-            raise EvaluationContractError(
-                f"settings.{key}: the evaluator does not declare it, so no parameter can set it; "
-                f"it declares {sorted(declared)}"
-            )
-        reason = _accepts(declared[key], values, unit)
-        if reason is not None:
-            raise EvaluationContractError(f"settings.{key}: {reason}")
     unknown = [key for key in settings if key not in kinds]
     missing = [
         k for k, d in declared.items() if _required(d) and k not in settings and k not in pending
