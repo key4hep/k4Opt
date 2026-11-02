@@ -1,11 +1,13 @@
 """Internal: which local modules evaluator code imports, and importing them from their source.
 
 Which modules an evaluator imports from beside it, or from its own package, is read from the
-source, not found by running it (:func:`local_modules`); where a module's file is, Python's path
-finder says without importing anything (:func:`locate`). The modules :func:`serve` is given are
-imported from the bytes of their source, never from a cached ``.pyc``, which a same-sized edit
-that keeps the timestamp leaves stale (:class:`SourceLoader`); :func:`executed` says which bytes
-those were.
+source, not found by running it (:func:`local_modules`); which file each is, Python's path finder
+says on the current ``sys.path``, without importing anything (:func:`locate`), so packages come
+before modules and earlier path entries before later ones, as in any import. The modules
+:func:`serve` is given are imported from the bytes of their source, never from a cached ``.pyc``,
+which a same-sized edit that keeps the timestamp leaves stale (:class:`SourceLoader`), but only
+where Python would import that same file: the finder never redirects an import.
+:func:`executed` says which bytes were executed.
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ import sysconfig
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from types import CodeType, ModuleType
+
+from k4opt.evaluation.errors import EvaluatorLoadError
 
 # the modules imported from their source, by name
 _SERVED: dict[str, Path] = {}
@@ -54,14 +58,31 @@ def _imported(node: ast.AST, name: str | None, package: bool) -> list[str]:
     return [base, *(f"{base}.{alias.name}" for alias in node.names if alias.name != "*")]
 
 
-def module_file(root: Path, name: str) -> Path | None:
-    """The file that defines the module ``name`` under ``root``, if there is one."""
+def _beside(root: Path, name: str) -> Path | None:
+    """The source file of the module ``name`` directly under ``root`` (a package before a module,
+    as Python takes them), if there is one."""
     *parents, last = name.split(".")
     directory = root.joinpath(*parents)
-    for candidate in (directory / f"{last}.py", directory / last / "__init__.py"):
+    for candidate in (directory / last / "__init__.py", directory / f"{last}.py"):
         if candidate.is_file():
             return candidate
     return None
+
+
+def resolve(root: Path, name: str) -> Path | None:
+    """The source file Python imports the module ``name`` from, if it is under ``root``: its
+    top-level package, or itself, directly in ``root``. Raises :class:`EvaluatorLoadError` if a
+    module of that name is there but Python imports another file (one earlier on ``sys.path``)."""
+    found = locate(name)
+    here = _beside(root, name)
+    if here is not None and found.get(name, Path()).resolve() != here.resolve():
+        elsewhere = found.get(name)
+        taken = f"from {elsewhere}" if elsewhere is not None else "no source file of it"
+        raise EvaluatorLoadError(
+            f"{name!r} is {here}, but Python imports {taken} (earlier on sys.path); rename one "
+            "of them, or put the evaluator in a package of its own (package.module:Class)"
+        )
+    return here
 
 
 def local_modules(
@@ -98,7 +119,7 @@ def local_modules(
                 for module in prefixes(imported):  # importing a.b imports a first
                     if module in found:
                         continue
-                    module_path = module_file(root, module)
+                    module_path = resolve(root, module)
                     if module_path is None or module_path == path:
                         continue
                     found[module] = module_path
@@ -128,15 +149,17 @@ def installed(directory: Path) -> bool:
 
 def locate(name: str) -> dict[str, Path]:
     """The source file of the module ``name`` and of each package it is in, by module name, as
-    Python's path finder finds them on ``sys.path``, without importing any; up to the first that
-    is no source file there (an extension module, a namespace package, or none at all)."""
+    Python's path finder finds them on ``sys.path``, without importing any; a namespace package
+    has none, and the search ends at a module that is no source file (an extension module) or
+    none at all."""
     found: dict[str, Path] = {}
     search: list[str] | None = None
     for prefix in prefixes(name):
         spec = importlib.machinery.PathFinder.find_spec(prefix, search)
-        if spec is None or spec.origin is None or not spec.origin.endswith(".py"):
+        if spec is None:
             break
-        found[prefix] = Path(spec.origin)
+        if spec.origin is not None and spec.origin.endswith(".py"):
+            found[prefix] = Path(spec.origin)
         if spec.submodule_search_locations is None:
             break
         search = list(spec.submodule_search_locations)
@@ -166,6 +189,10 @@ class _SourceFinder(importlib.abc.MetaPathFinder):
         file = _SERVED.get(fullname)
         if file is None:
             return None
+        python = importlib.machinery.PathFinder.find_spec(fullname, path)
+        origin = None if python is None else python.origin
+        if origin is None or Path(origin).resolve() != file.resolve():
+            return None  # Python imports another file now: never redirected
         loader = SourceLoader(fullname, str(file))
         return importlib.util.spec_from_file_location(fullname, file, loader=loader)
 

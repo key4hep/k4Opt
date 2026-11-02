@@ -17,9 +17,9 @@ from k4opt.evaluation._imports import (
     installed,
     local_modules,
     locate,
-    module_file,
     package_root,
     prefixes,
+    resolve,
     serve,
     served,
     unserve,
@@ -37,8 +37,8 @@ _REFERENCES: WeakKeyDictionary[type, str] = WeakKeyDictionary()
 # the identity of each FILE.py this process executed, and the local modules it names, by the
 # module name it was imported as
 _EXECUTED: dict[str, tuple[FrozenMap[str, Json], Mapping[str, Path]]] = {}
-# the files of the local modules each class's identity names, by the name it gives them
-_HELPER_FILES: WeakKeyDictionary[type, FrozenMap[str, Path]] = WeakKeyDictionary()
+# the local modules each class's identity names: by the name it gives them, the module and its file
+_HELPER_FILES: WeakKeyDictionary[type, FrozenMap[str, tuple[str, Path]]] = WeakKeyDictionary()
 
 
 def evaluator_source(cls: type) -> dict[str, Json]:
@@ -151,24 +151,32 @@ def _read(root: Path, modules: Mapping[str, Path], before: Collection[str]) -> d
 def _identified(
     cls: type, identity: FrozenMap[str, Json], root: Path, modules: Mapping[str, Path]
 ) -> None:
-    """Remember ``identity`` for ``cls``, and the files of the ``modules`` it names."""
+    """Remember ``identity`` for ``cls``, and the ``modules`` it names."""
     _SOURCES[cls] = identity
     _HELPER_FILES[cls] = FrozenMap(
-        {path.relative_to(root).as_posix(): path for path in modules.values()}
+        {path.relative_to(root).as_posix(): (name, path) for name, path in modules.items()}
     )
 
 
 def changed_helpers(cls: type) -> list[str]:
     """The local modules the identity of ``cls`` names (``helpers`` of
-    :func:`evaluator_source`) whose files no longer hold what they did when it was loaded; none
-    for a class :func:`load_evaluator` did not identify. A module Python imports later, inside a
+    :func:`evaluator_source`) whose files no longer hold what they did when it was loaded, or
+    that Python imported from another file since (one earlier on ``sys.path`` by then); none for
+    a class :func:`load_evaluator` did not identify. A module Python imports later, inside a
     function, would then run other code than the identity says."""
     identity, files = _SOURCES.get(cls), _HELPER_FILES.get(cls)
     if identity is None or files is None:
         return []
     then = identity["helpers"]
     assert isinstance(then, Mapping)
-    return [name for name, path in files.items() if _sha256(path) != then.get(name)]
+    changed = []
+    for key, (module, path) in files.items():
+        imported = getattr(sys.modules.get(module), "__file__", None)
+        if imported is not None and Path(imported).resolve() != path.resolve():
+            changed.append(f"{key} (imported from {imported})")
+        elif _sha256(path) != then.get(key):
+            changed.append(key)
+    return changed
 
 
 def _check_local(importer: object, modules: Mapping[str, Path]) -> None:
@@ -239,7 +247,7 @@ def _identify_import(cls: type, where: str, before: Collection[str]) -> None:
         names = [
             n for n in prefixes(where) + prefixes(cls.__module__) if n.split(".")[0] in packages
         ]
-        reached = {n: f for n in names if (f := module_file(root, n)) is not None}
+        reached = {n: f for n in names if (f := resolve(root, n)) is not None}
         local = local_modules(file, root, packages, where, reached)
     else:  # a top-level module, which imports modules beside it like a file
         root = file.parent
@@ -294,18 +302,19 @@ def _load_file(path: Path, before: Collection[str]) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise EvaluatorLoadError(f"{path} cannot be imported as a Python module")
-    local = local_modules(path, path.parent)
-    _check_local(path, local)
-    registered = serve(local)
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module  # before executing: dataclasses and pickling look it up
     # like ``python file.py``, modules next to the file are importable, also later (an import
-    # inside a method); a failed import leaves the path as it was
+    # inside a method), and found on the path as it is then; a failed load leaves it as it was
     directory = str(path.parent)
     added = directory not in sys.path
     if added:
         sys.path.insert(0, directory)
+    registered: list[str] = []
     try:
+        local = local_modules(path, path.parent)
+        _check_local(path, local)
+        registered = serve(local)
+        sys.modules[name] = module  # before executing: dataclasses and pickling look it up
         # Read, hash and compile the same bytes. exec_module() may use a stale .pyc
         # when a same-sized edit preserves the source's timestamp.
         data = path.read_bytes()
@@ -317,7 +326,7 @@ def _load_file(path: Path, before: Collection[str]) -> ModuleType:
             if isinstance(value, type) and value.__module__ == name:
                 _identified(value, identity, path.parent, local)
     except BaseException as exc:
-        del sys.modules[name]
+        sys.modules.pop(name, None)
         unserve(registered)
         if added:
             sys.path.remove(directory)
@@ -347,6 +356,7 @@ def load_evaluator(reference: str) -> type[EvaluatorProtocol]:
     and ``version`` too. The file is executed as ordinary code: only name evaluators you trust.
     Raises :class:`EvaluatorLoadError`.
     """
+    importlib.invalidate_caches()  # files written since are found, as by a new process
     where, separator, attribute = reference.rpartition(":")
     if not separator or not where or not attribute.isidentifier():
         raise EvaluatorLoadError(

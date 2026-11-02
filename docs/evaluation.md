@@ -491,7 +491,11 @@ standard library). They are found in the source, so an import inside a method co
 the top; a module imported by name at run time (`importlib.import_module`) and a data file the
 evaluator reads are not. Helpers are imported from their source too, so their hashes are those
 of the code that runs; they are otherwise imported as Python imports a source file, so a
-package's resources (`importlib.resources`, `pkgutil.get_data`) read as usual. Loading is refused for a helper that
+package's resources (`importlib.resources`, `pkgutil.get_data`) read as usual. Which file a
+helper is, Python's path finder decides on the current `sys.path` (a package before a module of
+its name, an earlier path entry before a later one), and k4opt never imports another file than
+it would: a helper beside the evaluator that Python would take from elsewhere refuses the load,
+and a session stops if one is imported from another file later. Loading is refused for a helper that
 Python imported before and whose file changed since (it keeps running the old module), for one
 that something imported before `load_evaluator` read it, and for one that evaluator code loaded
 before imports by the same name from elsewhere, also only inside a method. A session checks

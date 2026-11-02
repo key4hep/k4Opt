@@ -510,6 +510,62 @@ def test_a_file_that_re_exports_a_class_identifies_it_by_what_it_executed(
     assert source["helpers"] == {f"{helper}.py": hashlib.sha256(GOOD.encode()).hexdigest()}
 
 
+def test_a_package_beside_a_module_of_its_name_is_imported_as_python_does(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    helper = "both_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / f"{helper}.py").write_text("value = 99\n")
+    (tmp_path / helper).mkdir()
+    (tmp_path / helper / "__init__.py").write_text("value = 1\n")  # Python takes the package
+    evaluator = tmp_path / "uses_both.py"
+    evaluator.write_text(
+        f"import {helper}\n" + GOOD.replace('"answer", 42', f'"answer", {helper}.value')
+    )
+    cls = load_evaluator(f"{evaluator}:Good")
+    assert cls().evaluate(None).measurements[0].value == 1  # type: ignore[arg-type]
+    assert list(evaluator_source(cls)["helpers"]) == [f"{helper}/__init__.py"]  # type: ignore[arg-type]
+
+
+def test_a_helper_python_takes_from_earlier_on_the_path_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    helper = "shadowed_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    for directory, value in (("first", 17), ("evaluators", 29)):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / f"{helper}.py").write_text(f"value = {value}\n")
+    (tmp_path / "evaluators" / "evaluator.py").write_text(f"import {helper}\n" + GOOD)
+    monkeypatch.syspath_prepend(str(tmp_path / "evaluators"))
+    monkeypatch.syspath_prepend(str(tmp_path / "first"))  # before it, as Python searches
+    with pytest.raises(
+        EvaluatorLoadError, match=rf"{helper}\.py, but Python imports from .*first/{helper}\.py"
+    ):
+        load_evaluator(f"{tmp_path / 'evaluators' / 'evaluator.py'}:Good")
+    assert helper not in sys.modules  # nothing ran
+
+
+def test_an_import_python_resolves_elsewhere_later_is_not_redirected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    helper = "later_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    for directory, value in (("evaluators", 29), ("other", 17)):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / f"{helper}.py").write_text(f"value = {value}\n")
+    lazy = GOOD.replace(
+        "def evaluate(self, request):", f"def evaluate(self, request):\n        import {helper}"
+    )
+    (tmp_path / "evaluators" / "evaluator.py").write_text(lazy)
+    cls = load_evaluator(f"{tmp_path / 'evaluators' / 'evaluator.py'}:Good")  # imports nothing yet
+    monkeypatch.syspath_prepend(str(tmp_path / "other"))
+    importlib.invalidate_caches()
+    # unrelated code gets what Python resolves, not the evaluator's module ...
+    assert importlib.import_module(helper).value == 17
+    # ... and a session sees that the evaluator would not run the module its identity names
+    assert changed_helpers(cls) == [f"{helper}.py (imported from {tmp_path / 'other' / helper}.py)"]
+
+
 @requires_git
 def test_the_revision_of_the_checkout_is_taken_when_the_file_is_loaded(tmp_path: Path) -> None:
     files = {"tracked_good.py": GOOD, "later_good.py": GOOD, "helper.py": ""}
