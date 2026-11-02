@@ -242,7 +242,7 @@ def test_a_reloaded_module_does_not_keep_the_identity_of_the_code_it_replaced(
         sys.modules.pop("my_evaluator", None)
 
 
-def test_a_class_re_exported_by_a_package_is_identified_by_its_own_file_and_the_package(
+def test_a_class_a_package_re_exports_is_identified_by_the_package_and_its_own_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     package = tmp_path / "study"
@@ -254,12 +254,36 @@ def test_a_class_re_exported_by_a_package_is_identified_by_its_own_file_and_the_
     monkeypatch.syspath_prepend(str(tmp_path))
     try:
         source = evaluator_source(load_evaluator("study:Good"))
-        assert source["path"] == str(package / "impl.py")
-        assert source["sha256"] == hashlib.sha256(GOOD.encode()).hexdigest()
-        assert source["helpers"] == {"study/__init__.py": hashlib.sha256(init.encode()).hexdigest()}
+        assert source["path"] == str(package / "__init__.py")  # what the reference names
+        assert source["sha256"] == hashlib.sha256(init.encode()).hexdigest()
+        assert source["helpers"] == {"study/impl.py": hashlib.sha256(GOOD.encode()).hexdigest()}
         assert source["reference"] == "study:Good"  # as it was loaded
     finally:
         for name in ("study", "study.impl"):
+            sys.modules.pop(name, None)
+
+
+def test_a_top_level_module_that_re_exports_a_class_is_identified_by_its_own_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    tag = hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    wrapper, implementation = f"wrapper_{tag}", f"implementation_{tag}"
+    (tmp_path / f"{implementation}.py").write_text(GOOD)
+    text = f"from {implementation} import Good\n\nGood.scale = 2  # changes what it measures\n"
+    (tmp_path / f"{wrapper}.py").write_text(text)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        source = evaluator_source(load_evaluator(f"{wrapper}:Good"))
+        assert (source["path"], source["sha256"], source["executed"]) == (
+            str(tmp_path / f"{wrapper}.py"),
+            hashlib.sha256(text.encode()).hexdigest(),
+            True,
+        )
+        assert source["helpers"] == {
+            f"{implementation}.py": hashlib.sha256(GOOD.encode()).hexdigest()
+        }
+    finally:
+        for name in (wrapper, implementation):
             sys.modules.pop(name, None)
 
 

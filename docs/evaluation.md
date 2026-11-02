@@ -496,7 +496,10 @@ Python imported before and whose file changed since (it keeps running the old mo
 that something imported before `load_evaluator` read it, and for one that evaluator code loaded
 before imports by the same name from elsewhere, also only inside a method. A session checks
 before and after each candidate that every helper still holds what it did when the evaluator
-was loaded, so that one imported inside a method cannot run other code than the record says.
+was loaded, so that one imported inside a method cannot run other code than the record says,
+and that its class is still identified as then: loading, in the same process, another file that
+imports the same class and may change it identifies the class by that file and stops the
+session.
 To label those, `revision` holds the commit and dirty flag of the git checkout
 that tracks the file, taken at the same time: an edited file of that checkout shows as
 `dirty: true`. It is `null` for a file that no checkout tracks (outside one, or new or ignored

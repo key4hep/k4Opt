@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from k4opt import __version__
-from k4opt.evaluation.loader import changed_helpers
+from k4opt.evaluation.loader import changed_helpers, evaluator_source
 from k4opt.execution._binding import _Binding, _implementations
 from k4opt.execution._files import readable_identity
 from k4opt.execution._work import content
@@ -93,7 +93,7 @@ class Baseline:
         )
         check_code()
         assert isinstance(process, Mapping)
-        classes = {b.probe.declaration.name: b.implementation for b in binding.evaluators}
+        classes = {b.probe.declaration.name: b.probe.cls for b in binding.evaluators}
         return cls(problem, files, externals, _implementations(binding), process, classes)
 
     def identity(self) -> dict[str, object]:
@@ -134,18 +134,30 @@ class Baseline:
 
     def verify(self) -> None:
         """Raise :class:`RunError` if the environment, k4opt's code, a file the stages read,
-        what the geometry's external references read or a module an implementation imports
-        changed since the session opened."""
+        what the geometry's external references read, the identity of an implementation or a
+        module it imports changed since the session opened."""
         self._verify_environment()
         check_code()
         self.verify_inputs()
         self._verify_externals()
-        self._verify_helpers()
+        self._verify_implementations()
 
-    def _verify_helpers(self) -> None:
-        """The modules each implementation imports from beside it are what its identity says: one
-        it imports only when it evaluates (inside a function) would otherwise run other code."""
+    def _verify_implementations(self) -> None:
+        """Each implementation is still identified as when the session opened: loading another
+        file that imports its class (and may change it) in this process identifies it by that
+        file, and the class the session evaluates with may have changed. And the modules each
+        imports from beside it are what its identity says: one it imports only when it evaluates
+        (inside a function) would otherwise run other code."""
         for name, implementation in self.classes.items():
+            source = self.taken[name]["source"]
+            assert isinstance(source, Mapping)
+            now = evaluator_source(implementation)
+            if any(now.get(key) != source.get(key) for key in ("path", "sha256", "helpers")):
+                raise RunError(
+                    f"evaluator {name!r}: its class was loaded again in this process, through "
+                    f"{now.get('reference')}, which may have changed it; open the session in a new "
+                    "process"
+                )
             changed = changed_helpers(implementation)
             if changed:
                 raise RunError(

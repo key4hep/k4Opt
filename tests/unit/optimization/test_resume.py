@@ -329,6 +329,62 @@ def test_a_study_does_not_resume_with_another_file_that_re_exports_its_evaluator
         run(problem, output, 1, resume=True, evaluators=[wrapper("wrapper_again", 3)])
 
 
+def test_a_study_does_not_resume_with_another_module_that_re_exports_its_evaluator(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    implementation, wrapper = "trade_off_implemented", "trade_off_wrapper"
+    request.addfinalizer(lambda: [sys.modules.pop(n, None) for n in (implementation, wrapper)])
+    (tmp_path / f"{implementation}.py").write_bytes(Path(TRADE_OFF.partition(":")[0]).read_bytes())
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def wrapped(scale: int) -> Any:  # as a new process loads the module the file holds now
+        sys.modules.pop(wrapper, None)
+        (tmp_path / f"{wrapper}.py").write_text(
+            f"from {implementation} import TradeOff\n\nTradeOff.scale = {scale}\n"
+        )
+        return load_evaluator(f"{wrapper}:TradeOff")
+
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1, evaluators=[wrapped(2)])
+    with pytest.raises(
+        OptimizationError, match=rf"evaluator 'test\.trade_off': .*{wrapper}\.py changed"
+    ):
+        run(problem, output, 1, resume=True, evaluators=[wrapped(3)])
+
+
+def test_a_study_stops_when_another_file_that_changes_its_evaluator_class_is_loaded(
+    tmp_path: Path, write_problem: Callable[..., Path], request: pytest.FixtureRequest
+) -> None:
+    # both files give one class, which the second changes under the study's feet
+    implementation = "trade_off_shared"
+    request.addfinalizer(lambda: sys.modules.pop(implementation, None))
+    (tmp_path / f"{implementation}.py").write_bytes(Path(TRADE_OFF.partition(":")[0]).read_bytes())
+    for name, scale in (("wrapper_a", 2), ("wrapper_b", 3)):
+        (tmp_path / f"{name}.py").write_text(
+            f"from {implementation} import TradeOff\n\nTradeOff.scale = {scale}\n"
+        )
+
+    def load_b(trial: Any) -> None:  # after the first trial, while the study runs
+        load_evaluator(f"{tmp_path / 'wrapper_b.py'}:TradeOff")
+
+    with pytest.raises(
+        OptimizationError,
+        match=r"trial 1 stops the study.*its class was loaded again in this process, through "
+        r".*wrapper_b\.py:TradeOff",
+    ):
+        run(
+            write_problem(),
+            tmp_path / "s",
+            3,
+            seed=1,
+            evaluators=[load_evaluator(f"{tmp_path / 'wrapper_a.py'}:TradeOff")],
+            progress=load_b,
+        )
+
+
 UNITS = """
     import os
     from k4opt.evaluation import Evaluator

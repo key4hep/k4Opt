@@ -44,25 +44,25 @@ _HELPER_FILES: WeakKeyDictionary[type, FrozenMap[str, Path]] = WeakKeyDictionary
 def evaluator_source(cls: type) -> dict[str, Json]:
     """Identify the source of an evaluator class without hashing a file that may have changed.
 
-    The identity is taken when :func:`load_evaluator` imports the file that defines the class (for
-    ``FILE.py:Class``, that file, also when it imports the class from elsewhere and may change it):
-    the exact bytes executed (``executed``), which it imports from the source, never from a cached
-    ``.pyc``; for a module that only Python's own import finds (not a source file on ``sys.path``),
-    the file read right after the import (Python may have executed a cached ``.pyc`` instead).
-    ``helpers`` holds the SHA-256 of each local module the file imports, directly or through one
-    another, by its path relative to the file's directory: every ``import`` statement counts, also
-    one inside a function, but not a module imported by name at run time (``importlib``). For a
-    module of a package, the local modules are those of its top-level package (and of the
-    reference's), relative to the directory that package is in, and include the packages Python
-    executed to reach the class and the module the reference names; a top-level module's are those
-    beside it, unless it is installed (in ``site-packages`` or the standard library), where they are
-    other distributions. Local modules are imported from their source too, and identified by the
-    bytes executed. One imported later (inside a function) is identified by its file when the class
-    is loaded (:func:`changed_helpers` sees later edits). ``revision`` is the commit and dirty flag
-    of the git checkout that tracks the file, taken at the same time, ``None`` if no checkout tracks
-    it; it labels what the hashes do not cover, such as data files. For a class whose module was
-    imported before, or reloaded since, only the path is known: the current file cannot establish
-    which bytes Python executed. ``reference`` is what loads the class again
+    The identity is taken when :func:`load_evaluator` imports the file its reference names
+    (``FILE.py``, or the file of the module), also when that file imports the class from elsewhere
+    and may change it: the exact bytes executed (``executed``), which it imports from the source,
+    never from a cached ``.pyc``; for a module that only Python's own import finds (not a source
+    file on ``sys.path``), the file read right after the import (Python may have executed a cached
+    ``.pyc`` instead). ``helpers`` holds the SHA-256 of each local module the file imports, directly
+    or through one another, the module defining the class among them, by its path relative to the
+    file's directory: every ``import`` statement counts, also one inside a function, but not a
+    module imported by name at run time (``importlib``). For a module of a package, the local
+    modules are those of its top-level package (and of the class's), relative to the directory that
+    package is in, and include the packages Python executes to reach it; a top-level module's are
+    those beside it, unless it is installed (in ``site-packages`` or the standard library), where
+    they are other distributions. Local modules are imported from their source too, and identified
+    by the bytes executed. One imported later (inside a function) is identified by its file when the
+    class is loaded (:func:`changed_helpers` sees later edits). ``revision`` is the commit and dirty
+    flag of the git checkout that tracks the file, taken at the same time, ``None`` if no checkout
+    tracks it; it labels what the hashes do not cover, such as data files. For a class whose module
+    was imported before, or reloaded since, only the path is known: the current file cannot
+    establish which bytes Python executed. ``reference`` is what loads the class again
     (``/abs/path/file.py:Class`` or ``package.module:Class``), ``None`` for a class
     :func:`load_evaluator` did not load.
     """
@@ -226,30 +226,27 @@ def _import(where: str) -> ModuleType:
 
 
 def _identify_import(cls: type, where: str, before: Collection[str]) -> None:
-    """Record the source file of a class whose module was imported just now, by the reference
-    module ``where``, if readable; ``before`` are the modules imported before."""
-    if cls in _SOURCES:  # defined in a FILE.py, identified by the bytes it executed
+    """Record the source of a class the module ``where``, imported just now, gives: that module's
+    file, also when it imports the class from elsewhere and may change it, and the local modules
+    it imports (the class's own among them); ``before`` are the modules imported before."""
+    path = getattr(sys.modules.get(where), "__file__", None)
+    if path is None or not path.endswith(".py"):  # built in, or no source file to identify
         return
-    try:
-        path = inspect.getsourcefile(cls)
-    except TypeError:  # defined in a built-in module
-        return
-    if path is None:
-        return
-    file, module = Path(path).resolve(), cls.__module__
-    if "." in module or file.name == "__init__.py":  # of a package, and so is what it imports
-        root = package_root(file, module)
-        packages = {module.partition(".")[0], where.partition(".")[0]}
-        names = [n for n in prefixes(module) + prefixes(where) if n.partition(".")[0] in packages]
+    file = Path(path).resolve()
+    if "." in where or file.name == "__init__.py":  # of a package, and so is what it imports
+        root = package_root(file, where)
+        packages = {where.partition(".")[0], cls.__module__.partition(".")[0]}
+        names = [
+            n for n in prefixes(where) + prefixes(cls.__module__) if n.split(".")[0] in packages
+        ]
         reached = {n: f for n in names if (f := module_file(root, n)) is not None}
-        local = local_modules(file, root, packages, module, reached)
+        local = local_modules(file, root, packages, where, reached)
     else:  # a top-level module, which imports modules beside it like a file
         root = file.parent
         local = {} if installed(root) else local_modules(file, root)
         _check_local(file, local)
     helpers = _read(root, local, before)
-    loaded = sys.modules.get(module)
-    ran = None if loaded is None else executed(loaded)
+    ran = executed(sys.modules[where])
     try:
         data = file.read_bytes()
     except OSError:
@@ -373,7 +370,7 @@ def load_evaluator(reference: str) -> type[EvaluatorProtocol]:
     if path is not None:  # what the file executed, also for a class it imports and may change
         identity, local = _EXECUTED[module.__name__]
         _identified(cls, identity, path.parent, local)
-    elif cls.__module__ not in imported_before:
+    elif where not in imported_before:  # else, which of its code runs is not known
         _identify_import(cls, where, imported_before)
     _REFERENCES[cls] = canonical
     return cls
