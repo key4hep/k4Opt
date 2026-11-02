@@ -32,6 +32,7 @@ from typing import Any
 
 from k4opt.jsonio import write_json
 from k4opt.optimization.errors import OptimizationError
+from k4opt.problem.models import ordered
 
 STUDY_NAME = "study.json"
 STUDY_SCHEMA = "k4opt.study/1"
@@ -189,7 +190,7 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
     """What must be equal for two runs to belong to one study, from an identity
     (:meth:`k4opt.execution.EvaluationSession.identity`, or ``study.json`` which holds one)."""
     try:
-        definition = dict(identity["problem"]["definition"])
+        definition = ordered(identity["problem"]["definition"])
         definition.pop("name", None)  # a label, the file name by default
         return {
             "problem": definition,

@@ -35,6 +35,7 @@ from tests.unit.optimization.conftest import (
     evaluator_from,
     left_running,
     optuna_study,
+    problem_document,
     summary,
 )
 
@@ -83,6 +84,23 @@ PROBLEM_CHANGES: dict[str, tuple[Callable[[dict[str, Any]], None], str]] = {
         "evaluators changed",
     ),
 }
+
+
+def test_a_study_does_not_resume_with_its_parameters_in_another_order(tmp_path: Path) -> None:
+    # candidates, the sampler and evaluators (test.trade_off reads the first value) follow it
+    document = problem_document()
+    document["parameters"]["world"] = {
+        "geometry": {"constant": "world_side"},
+        "type": "continuous",
+        "bounds": [1.0, 2.0],
+    }
+    problem, output = tmp_path / "problem.yaml", tmp_path / "s"
+    problem.write_text(yaml.safe_dump(document, sort_keys=False))
+    run(problem, output, 1, seed=1)
+    document["parameters"] = dict(reversed(document["parameters"].items()))
+    problem.write_text(yaml.safe_dump(document, sort_keys=False))
+    with pytest.raises(OptimizationError, match="the problem's parameters changed"):
+        run(problem, output, 1, resume=True)
 
 
 @pytest.mark.parametrize("change", sorted(PROBLEM_CHANGES))

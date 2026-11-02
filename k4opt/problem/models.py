@@ -446,6 +446,23 @@ class ProblemSpec:
         return data
 
 
+# the sections of a problem that map names in an order it defines: candidates, samplers,
+# records and reports follow it
+_ORDERED = ("parameters", "samples")
+
+
+def ordered(definition: Mapping[str, object]) -> dict[str, object]:
+    """``definition`` (:meth:`ProblemSpec.to_dict` data) with each section whose order the problem
+    defines (``parameters``, ``samples``) as a list of ``[name, value]`` pairs, so that comparing
+    two, or a digest of one, sees that order too."""
+    return {
+        key: [[name, item] for name, item in value.items()]
+        if key in _ORDERED and isinstance(value, Mapping)
+        else value
+        for key, value in definition.items()
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedProblem:
     """A problem as loaded from its file: its definition (``spec``), the file (``path``,
