@@ -1,7 +1,7 @@
 # Optimization: `k4opt optimize` and `k4opt study`
 
 `k4opt optimize` runs a **study** of a problem. An optimizer proposes candidates. Each one is
-evaluated exactly as [`k4opt evaluate`](evaluators.md#k4opt-evaluate) evaluates one, into a
+evaluated exactly as [`k4opt evaluate`](execution.md#k4opt-evaluate) evaluates one, into a
 trial directory of the study. The optimizer then learns each result from that trial's
 `summary.json`, read back from disk and checked. The optimizer is
 [Optuna](https://optuna.org)'s TPE sampler, but k4opt is not built around it. The problem file,
@@ -86,7 +86,7 @@ its `direction`. One objective and several take the same path. Each is named by 
 (`gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells`; `evaluator/stage/metric` for an
 evaluator of the candidate; a `%` or `/` within a part is percent-escaped, so two objectives
 never share a label). The values are those of the run's
-[assessment](evaluation.md#assessment-objectives-limits-and-feasibility): that evaluation's
+[assessment](record.md#assessment-objectives-limits-and-feasibility): that evaluation's
 measurement, as a float. A value that no float holds exactly (an integer beyond 2**53) stops
 the study rather than being told as another value.
 
@@ -190,7 +190,7 @@ back from disk and checked:
   session or an earlier one;
 - it was made from the candidate alone (no supplied stage);
 - its assessment holds up when recomputed from its raw measurements
-  ([`Assessment.from_summary`](evaluation.md#assessment-objectives-limits-and-feasibility)).
+  ([`Assessment.from_summary`](record.md#assessment-objectives-limits-and-feasibility)).
 
 Only then is Optuna told. This is also how a resume finishes a trial that an interrupted
 session left with a record, so a recovered trial is told exactly what a live one would have
@@ -200,7 +200,7 @@ been.
 
 `--workers N` (`optimize(..., workers=N)`) runs the tasks in N worker processes of this machine,
 up to N at once: the geometries, simulations and evaluations of one trial and of several, as
-[`k4opt evaluate --workers`](evaluation.md#execution-inline-or-in-worker-processes) runs them.
+[`k4opt evaluate --workers`](execution.md#execution-inline-or-in-worker-processes) runs them.
 `k4opt optimize` runs one worker by default, `optimize()` inline unless told otherwise (its
 evaluators may be classes of a script or a notebook). A simulation on several threads
 (`numberOfThreads`) holds as many slots, and `--workers auto` takes as many workers as the
@@ -447,7 +447,7 @@ describes (id, identity, directions, limits). Every trial the optimizer was told
 must still have it, with the bytes whose SHA-256 it was told and the id it was told, made for
 this trial of this study with its candidate, evaluators, Key4hep stack, k4opt code and files,
 and its assessment must recompute from its raw measurements
-([`Assessment.from_summary`](evaluation.md#assessment-objectives-limits-and-feasibility)).
+([`Assessment.from_summary`](record.md#assessment-objectives-limits-and-feasibility)).
 What the optimizer holds must agree: a COMPLETE trial has a valid record with the same objective
 values, feasibility and constraint values, a FAIL trial an invalid or failed one. A record that
 is missing or does not hold up, a trial without any mark of k4opt, or a study that was never set
@@ -566,7 +566,7 @@ report.trials  # TrialReport: number, directory, candidate, status, feasible, ob
 
 `optimize` raises `OptimizationError` (a `K4OptError`) when a study cannot start, resume or go
 on, and `KeyboardInterrupt` after a clean stop on Ctrl-C or SIGTERM. Underneath it is an
-[`EvaluationSession`](evaluation.md#evaluating-candidates-evaluationsession), which any other
+[`EvaluationSession`](execution.md#evaluating-candidates-evaluationsession), which any other
 optimizer can drive the same way.
 
 `load_study` reads a study back, as `k4opt study` does:

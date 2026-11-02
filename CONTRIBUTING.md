@@ -2,8 +2,9 @@
 
 k4opt is a detector optimization framework for Key4hep. It is organized by
 **component**: each component is a subpackage with its own public API, errors,
-CLI command group, docs page and tests: `geometry`, `problem`, `evaluation`, `ddsim`
-and `optimization`.
+CLI command group, docs page and tests: `geometry`, `ddsim`, `evaluation`, `problem`,
+`record`, `execution` and `optimization`, each depending only on those before it
+(`problem` <- `record` <- `execution` <- `optimization`).
 
     k4opt/
       __init__.py      version + K4OptError, nothing else
@@ -25,9 +26,11 @@ and `optimization`.
 
 Rules of thumb:
 
-- Components share only the top-level modules (`k4opt.errors`, `k4opt.frozen`,
-  `k4opt.yamlio`, `k4opt.jsonio`, `k4opt.revision`, `k4opt.terminal`), never each other's
-  internals; a component talks to another through its public API (`k4opt.<component>`).
+- Components share the top-level modules (`k4opt.errors`, `k4opt.frozen`,
+  `k4opt.yamlio`, `k4opt.jsonio`, `k4opt.revision`, `k4opt.terminal`). A component uses
+  another through its public API (`k4opt.<component>`) or, inside k4opt, through that
+  component's modules without a leading underscore (`k4opt.problem.plan`), never through its
+  `_private` modules; imports go one way only (a unit test checks it).
 - Users import from the component (`from k4opt.geometry import GeometrySource`),
   never from its private modules.
 - The CLI is a thin wrapper over the library; it holds no logic.

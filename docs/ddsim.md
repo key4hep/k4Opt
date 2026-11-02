@@ -47,7 +47,7 @@ memory).
 
 `numberOfThreads` (Geant4's worker threads) must be a positive integer, written in full: k4opt
 reads it, since such a simulation holds as many of the `--workers` of `k4opt evaluate` and
-`k4opt optimize` while it runs ([execution](evaluation.md#execution-inline-or-in-worker-processes)).
+`k4opt optimize` while it runs ([execution](execution.md#execution-inline-or-in-worker-processes)).
 
 `SimulationRun.peak_memory_bytes` is ddsim's peak resident memory, as the kernel kept it when
 ddsim ended (`wait4`): the largest of ddsim's own and of each process it started and waited for,
