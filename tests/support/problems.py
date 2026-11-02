@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Mapping
+from typing import Any
 
 from k4opt.execution._schedule import Scheduler
 from k4opt.problem.plan import Plan, Task, TaskId
@@ -80,3 +81,15 @@ def run_in_order(
         scheduler.finished("candidate", run(task, {need: done[need] for need in task.needs}))
     results = scheduler.remove("candidate")
     return {task.id: results[task.id] for task in plan.tasks}
+
+
+def two_samples(doc: dict[str, Any]) -> dict[str, Any]:
+    """``doc`` with a second sample, ``pion``, which the evaluator measures too."""
+    pion = copy.deepcopy(doc["samples"]["gamma"])
+    pion["generation"]["particle"] = "pi-"
+    pion["simulation"]["seed"] = 43
+    doc["samples"]["pion"] = pion
+    doc["evaluators"][0]["samples"] = ["gamma", "pion"]
+    for item in (*doc["objectives"], *doc["constraints"]):
+        item["sample"] = "gamma"
+    return doc
