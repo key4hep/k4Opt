@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from k4opt.execution._backends import ProcessBackend
+from k4opt.execution._process import ProcessBackend
 from tests.benchmarks.parallel import held, main, valid
 
 SIMULATION = {"argv": ["/bin/ddsim", "--numberOfEvents=10", "--numberOfThreads=4"]}

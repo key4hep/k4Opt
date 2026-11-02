@@ -22,13 +22,8 @@ Typical use::
 """
 
 from k4opt.execution._drive import Activity
-from k4opt.execution._session import (
-    Evaluations,
-    EvaluationSession,
-    RunOutcome,
-    RunRequest,
-    run_candidate,
-)
+from k4opt.execution._publish import RunOutcome
+from k4opt.execution._session import Evaluations, EvaluationSession, RunRequest, run_candidate
 from k4opt.execution.errors import RunError
 
 __all__ = [

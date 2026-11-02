@@ -16,7 +16,8 @@ import pytest
 
 from k4opt.execution import EvaluationSession, RunError, RunRequest
 from k4opt.execution._files import Tree, stat_of
-from k4opt.execution._work import TaskSpec, asked
+from k4opt.execution._tasks import TaskSpec
+from k4opt.execution._work import asked
 from k4opt.record import SUMMARY_NAME
 from tests.support import simulation
 from tests.support.evaluators import (
@@ -95,7 +96,8 @@ def test_a_task_crosses_to_where_it_runs_as_plain_data_named_in_its_workspace(
 def test_a_task_run_again_in_a_copied_workspace_leaves_the_same_portable_outcome(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from k4opt.execution._work import Observations, execute_task
+    from k4opt.execution._tasks import Observations
+    from k4opt.execution._work import execute_task
 
     combined(problem_file)
     handed = described(monkeypatch)

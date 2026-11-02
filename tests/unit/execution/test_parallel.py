@@ -35,10 +35,11 @@ from k4opt.execution import (
     RunOutcome,
     RunRequest,
     _backends,
+    _process,
     _session,
     _worker,
 )
-from k4opt.execution._work import TaskOutcome, TaskSpec
+from k4opt.execution._tasks import TaskOutcome, TaskSpec
 from k4opt.problem import CandidateError, load_problem
 from k4opt.problem.plan import GEOMETRY, Task, stage_task
 from k4opt.record import SUMMARY_NAME, Assessment
@@ -304,8 +305,8 @@ def test_an_output_that_overlaps_a_candidate_under_way_is_refused(
     stack.install(monkeypatch)
     taken: list[object] = []
     held: list[tuple[TaskSpec, Any]] = []
-    start, submit = _session.EvaluationSession._start, _backends.ProcessBackend.submit
-    wait = _backends.ProcessBackend.wait
+    start, submit = _session.EvaluationSession._start, _process.ProcessBackend.submit
+    wait = _process.ProcessBackend.wait
 
     def starting(self: Any, request: RunRequest, *rest: Any) -> Any:
         taken.append(request.run["name"])  # type: ignore[index]
@@ -323,8 +324,8 @@ def test_an_output_that_overlaps_a_candidate_under_way_is_refused(
         return wait(self, timeout)
 
     monkeypatch.setattr(_session.EvaluationSession, "_start", starting)
-    monkeypatch.setattr(_backends.ProcessBackend, "submit", submitting)
-    monkeypatch.setattr(_backends.ProcessBackend, "wait", waiting)
+    monkeypatch.setattr(_process.ProcessBackend, "submit", submitting)
+    monkeypatch.setattr(_process.ProcessBackend, "wait", waiting)
     (tmp_path / "real").mkdir()
     (tmp_path / "alias").symlink_to(tmp_path / "real")
     (tmp_path / "ahead").symlink_to(tmp_path / "real" / "a" / "b" / "x")  # dangling yet
@@ -393,18 +394,18 @@ def test_a_file_changed_after_the_last_task_keeps_the_record_from_being_written(
     # every task that read the file found it as it was made; only the candidate's own check,
     # once all its tasks ended, can tell that its record would not say what the files hold
     stack.install(monkeypatch)
-    finish = _session.EvaluationSession._finish
+    publish = _session.publish
 
-    def finishing(self: Any, run: Any) -> Any:
+    def publishing(run: Any, *rest: Any) -> Any:
         if named == "geometry/added.xml":  # a file added to the geometry changes it too
             changed = run.workspace.root / "geometry" / "added.xml"
         else:
             changed = run.results[stage_task("simulation", "gamma")].output
         with changed.open("ab") as handle:
             handle.write(b"more")
-        return finish(self, run)
+        return publish(run, *rest)
 
-    monkeypatch.setattr(_session.EvaluationSession, "_finish", finishing)
+    monkeypatch.setattr(_session, "publish", publishing)
     with pytest.raises(RunError, match=rf"^{named} changed after it was made, so the record"):
         session_of(jobs).evaluate({RADIUS: 300.0}, tmp_path / "a")
     assert not (tmp_path / "a" / SUMMARY_NAME).exists()
@@ -844,14 +845,14 @@ def test_a_worker_that_hangs_while_it_sets_up_is_stopped(
     message = r"a worker process did not set up the session within 2 s .* and was stopped"
     if hangs == "the first worker":
         marker.touch()
-        monkeypatch.setattr(_backends, "_SETUP", 2.0)
+        monkeypatch.setattr(_process, "_SETUP", 2.0)
         with pytest.raises(RunError, match=message):
             EvaluationSession.open(problem, [implementation], jobs=2)
         assert stack.workers() == []
         return
     with EvaluationSession.open(problem, [implementation], jobs=2) as session:
         marker.touch()  # the second worker starts once both simulations are ready
-        monkeypatch.setattr(_backends, "_SETUP", 2.0)
+        monkeypatch.setattr(_process, "_SETUP", 2.0)
         with pytest.raises(RunError, match=message):
             session.evaluate({RADIUS: 450.0}, tmp_path / "a")
         assert len(stack.workers()) == 1  # the one that set up; the hung one was stopped
@@ -893,7 +894,7 @@ def test_a_worker_that_sends_part_of_an_answer_is_stopped_with_its_candidate(
     problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
     stack.install(monkeypatch)
     probe(monkeypatch, **{"a.p": {"stall": True}})
-    monkeypatch.setattr(_backends, "_MESSAGE", 1.0)  # taken by each worker as it starts
+    monkeypatch.setattr(_process, "_MESSAGE", 1.0)  # taken by each worker as it starts
     session = session_of(2, problem)
     message = r"gamma/p: a worker process sent part of an answer and nothing more for 1 s"
     with pytest.raises(RunError, match=message):
@@ -903,12 +904,12 @@ def test_a_worker_that_sends_part_of_an_answer_is_stopped_with_its_candidate(
 
 
 def test_a_worker_found_dead_as_its_setup_deadline_passes_is_ended_once(tmp_path: Path) -> None:
-    backend = _backends.ProcessBackend(None, 2)  # type: ignore[arg-type]  # starts no worker
+    backend = _process.ProcessBackend(None, 2)  # type: ignore[arg-type]  # starts no worker
     process = subprocess.Popen([sys.executable, "-c", "pass"])
     process.wait()
     ours, theirs = socket.socketpair()
     theirs.close()  # what the worker's death leaves: the end of the stream
-    worker = _backends._Worker(process, Connection(ours.detach()), setup=time.monotonic() - 1)
+    worker = _process._Worker(process, Connection(ours.detach()), setup=time.monotonic() - 1)
     task = Task(stage_task("simulation", "gamma"), directory="samples/gamma/simulation")
     worker.running = (_backends.Handle("w", task.id), TaskSpec("w", task))
     backend._workers.append(worker)

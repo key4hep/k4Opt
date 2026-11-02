@@ -29,7 +29,6 @@ from k4opt.evaluation import (
 )
 from k4opt.execution import _stages as stages_module
 from k4opt.execution._binding import _request
-from k4opt.execution._drive import _evaluate_candidate
 from k4opt.execution._files import _sha256, file_identity
 from k4opt.execution._stages import (
     StageContext,
@@ -46,6 +45,7 @@ from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, plan_tasks, stage_t
 from k4opt.problem.stages import changed_by_geometry, plan_stages
 from k4opt.record.results import CandidateRecord, TaskResult
 from tests.support import simulation
+from tests.support.evaluate import evaluate_candidate
 from tests.support.evaluators import implementations
 from tests.support.problems import run_in_order
 from tests.support.simulation import events_with
@@ -98,7 +98,7 @@ def evaluate(
 ) -> CandidateRecord:
     """The bridge with ``evaluator``, a class or a watched instance, as the problem's only
     evaluator."""
-    return _evaluate_candidate(spec, candidate, implementations(evaluator), **kwargs)
+    return evaluate_candidate(spec, candidate, implementations(evaluator), **kwargs)
 
 
 def evaluate_one(

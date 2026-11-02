@@ -23,11 +23,12 @@ from k4opt.evaluation import (
     Status,
 )
 from k4opt.execution import _drive, _work
-from k4opt.execution._drive import _evaluate_candidate
 from k4opt.problem import MetricRef, ProblemSpec, parse_problem
 from k4opt.problem.plan import Kind, stage_task
 from k4opt.record.results import CandidateRecord
+from tests.support import evaluate as bridge
 from tests.support import simulation
+from tests.support.evaluate import evaluate_candidate
 from tests.support.evaluators import (
     cell_count,
     hit_energy,
@@ -183,7 +184,7 @@ class Spy:
 
 
 def evaluate(spec: ProblemSpec, evaluators: list[Any], tmp_path: Path, geometry: Path) -> Any:
-    return _evaluate_candidate(
+    return evaluate_candidate(
         spec,
         {CELL: 6},
         implementations(*evaluators),
@@ -335,7 +336,7 @@ def test_supplied_stage_files_only_reach_the_evaluators_that_read_them(
     events_file = tmp_path / "provided.root"
     events_file.write_bytes(b"fake")
     cells, size, echo = Spy(cell_count(), log), FileSize(), Spy(parameter_echo(), log)
-    result = _evaluate_candidate(
+    result = evaluate_candidate(
         in_directory(spec, tmp_path),
         {CELL: 6},
         implementations(cells, size, echo),
@@ -427,7 +428,7 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
 
         monkeypatch.setattr(Path, "open", unreadable)
     cells = Spy(cell_count(), log)
-    candidate = _evaluate_candidate(
+    candidate = evaluate_candidate(
         in_directory(spec, tmp_path),
         {CELL: 6},
         implementations(cells, FileSize()),
@@ -486,7 +487,7 @@ def test_the_candidate_status_follows_its_evaluators(
     doc: dict[str, Any], first: str, second: str, status: str, message: str | None
 ) -> None:
     spec = problem(doc, "a", "b", objectives=(("analysis", "a.value"), ("analysis", "b.value")))
-    candidate = _evaluate_candidate(
+    candidate = evaluate_candidate(
         spec, {CELL: 6}, implementations(toy("a", first), toy("b", second))
     )
     assert candidate.status == status
@@ -580,7 +581,7 @@ def test_another_version_is_refused(doc: dict[str, Any], tmp_path: Path, log: li
     with pytest.raises(
         EvaluationContractError, match=r"'test\.hit_energy' version '2', got version '1'"
     ):
-        _evaluate_candidate(spec, {CELL: 6}, implementations(cell_count(), hit_energy()))
+        evaluate_candidate(spec, {CELL: 6}, implementations(cell_count(), hit_energy()))
     assert log == []
 
 
@@ -702,7 +703,7 @@ def test_each_evaluator_writes_and_names_its_files_on_its_own(
     doc: dict[str, Any], tmp_path: Path
 ) -> None:
     spec = problem(doc, "a", "b", "test.parameter_echo", objectives=(ECHO,))
-    candidate = _evaluate_candidate(
+    candidate = evaluate_candidate(
         spec,
         {CELL: 6},
         implementations(plotter("a"), plotter("b"), parameter_echo()),
@@ -730,6 +731,7 @@ def test_every_second_is_counted_once(
     clock = Clock()
     monkeypatch.setattr(_drive, "time", clock)
     monkeypatch.setattr(_work, "time", clock)
+    monkeypatch.setattr(bridge, "time", clock)
     simulation.install(monkeypatch)
     fake = ddsim_run._execute
 
@@ -910,7 +912,7 @@ def test_collections_of_a_file_podio_cannot_read_are_refused_before_anything_run
         match=r"'test\.truth' reads collections from the 'generation' stage of gamma, but its file "
         r"zh\.hepmc is no EDM4hep file that podio reads \(\.root or \.sio\)",
     ):
-        _evaluate_candidate(
+        evaluate_candidate(
             in_directory(spec, tmp_path),
             {CELL: 6},
             implementations(cell_count(), Truth()),
@@ -1038,7 +1040,7 @@ def test_a_binding_of_another_version_is_named_by_its_binding(
         match=r"problem declares evaluator 'test\.threshold' \(as 't1'\) version '2', got "
         r"version '1'",
     ):
-        _evaluate_candidate(spec, {CELL: 6}, implementations(Threshold))
+        evaluate_candidate(spec, {CELL: 6}, implementations(Threshold))
     assert log == []
 
 
@@ -1209,7 +1211,7 @@ def test_roles_that_do_not_fit_their_implementation_are_refused_before_anything_
 ) -> None:
     spec = combined_problem(doc, {"roles": roles})
     with pytest.raises(EvaluationContractError, match=re.escape(message)):
-        _evaluate_candidate(spec, {CELL: 6}, implementations(yields(), combiner(**declared)))
+        evaluate_candidate(spec, {CELL: 6}, implementations(yields(), combiner(**declared)))
     assert log == []
 
 
@@ -1224,7 +1226,7 @@ def test_a_combined_evaluator_and_its_entry_must_agree_that_it_is_one(
             "roles: from its entry"
         ),
     ):
-        _evaluate_candidate(spec, {CELL: 6}, implementations(yields(), combiner()))
+        evaluate_candidate(spec, {CELL: 6}, implementations(yields(), combiner()))
     spec = combined_problem(doc, {})
     with pytest.raises(
         EvaluationContractError,
@@ -1233,7 +1235,7 @@ def test_a_combined_evaluator_and_its_entry_must_agree_that_it_is_one(
             "each reads under roles: in its entry"
         ),
     ):
-        _evaluate_candidate(
+        evaluate_candidate(
             spec, {CELL: 6}, implementations(yields(), combiner(signal=Role(metrics=[SELECTED])))
         )
     assert log == []
@@ -1248,7 +1250,7 @@ def test_malformed_settings_of_a_combined_evaluator_are_refused_before_anything_
     with pytest.raises(
         EvaluationContractError, match=re.escape("settings.luminosity_invab: expected float")
     ):
-        _evaluate_candidate(spec, {CELL: 6}, implementations(yields(), toy_significance()))
+        evaluate_candidate(spec, {CELL: 6}, implementations(yields(), toy_significance()))
     assert log == []
 
 

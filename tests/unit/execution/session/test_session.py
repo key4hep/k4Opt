@@ -859,10 +859,10 @@ def test_a_file_that_changes_stops_the_session_before_its_next_candidate(
 def test_the_code_that_ran_is_identified_before_it_runs(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from k4opt.execution import _session
+    from k4opt.execution import _baseline
 
     identities = iter(({"sha256": "opened", "git": None}, {"sha256": "edited", "git": None}))
-    monkeypatch.setattr(_session, "code_identity", lambda: next(identities))
+    monkeypatch.setattr(_baseline, "code_identity", lambda: next(identities))
     session = EvaluationSession.open(problem_file, [cell_count()])
     next(identities)  # the checkout is edited while the session runs
     for name in ("a", "b"):

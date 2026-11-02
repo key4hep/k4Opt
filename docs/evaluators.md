@@ -87,7 +87,7 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      `k4opt evaluate`, a study and trial when an optimizer asks for it;
    - `problem`: the original path and name plus `definition`, the normalized problem loaded
      for this run, including parameter domains, objective directions and constraint limits;
-   - `status` and `message` of the candidate ([how they follow from its tasks'](evaluation.md#internal-bridge-not-the-physicist-facing-workflow)),
+   - `status` and `message` of the candidate ([how they follow from its tasks'](evaluation.md#how-a-candidate-is-evaluated)),
      the `required` tasks that decide them (by label: `geometry`, `gamma_10gev/simulation`,
      `gamma_10gev/calo.photon`), the `diagnostics` that did not succeed (each with its `task`,
      `status` and `message`), the candidate and its key, whether the run

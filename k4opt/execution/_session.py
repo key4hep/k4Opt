@@ -1,15 +1,15 @@
 """Candidates of a problem file, evaluated end to end (behind ``k4opt evaluate``).
 
 :class:`EvaluationSession` loads the problem once, binds and checks the evaluator
-implementations (:mod:`k4opt.execution._binding`) and records the identity of every file the
-problem names. For each candidate it then validates the candidate, creates a new instance of each
-evaluator and checks its request for the candidate, checks that no such file changed (nothing is
-created before this succeeds), and runs the candidate's tasks in a new run directory
+implementations (:mod:`k4opt.execution._binding`) and takes what it evaluates with, the identity
+of every file the problem names included (:mod:`k4opt.execution._baseline`). For each candidate
+it then validates the candidate, creates a new instance of each evaluator and checks its request
+for the candidate, checks that none of that changed (nothing is created before this succeeds),
+admits it into a new run directory of its own and runs its tasks there
 (:mod:`k4opt.execution._drive`): the geometry task materializes the candidate's geometry into
 it, each pipeline stage of each sample runs once and each evaluation measures its sample, or the
-candidate, with its new instance. It then assesses the candidate against the objectives and
-constraints (:mod:`k4opt.record.assess`) and writes its ``summary.json``
-(:mod:`k4opt.record.write`). :func:`run_candidate` evaluates one candidate given as
+candidate, with its new instance. Its record is then checked and published
+(:mod:`k4opt.execution._publish`). :func:`run_candidate` evaluates one candidate given as
 ``REFERENCE=VALUE`` strings.
 """
 
@@ -27,75 +27,40 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal
 
-from k4opt import __version__
 from k4opt.evaluation import (
     CandidateKey,
     EvaluatorProtocol,
     Scalar,
 )
-from k4opt.execution._backends import Backend, InlineBackend, ProcessBackend
+from k4opt.execution._backends import Backend, InlineBackend
+from k4opt.execution._baseline import Baseline, candidate_reads
 from k4opt.execution._binding import (
     _bind_problem,
     _Binding,
     _context,
-    _implementations,
     _preflight,
     _Prepared,
     task_cpus,
 )
 from k4opt.execution._cpus import AUTO, usable_cpus
-from k4opt.execution._drive import Activity, _drive, _finish_plan, _Run
-from k4opt.execution._files import changed_files, readable_identity
+from k4opt.execution._drive import Activity, _drive, _Run
+from k4opt.execution._process import ProcessBackend
+from k4opt.execution._publish import RunOutcome, publish
 from k4opt.execution._schedule import Scheduler
 from k4opt.execution._stages import input_files
-from k4opt.execution._work import GeometryWork, TaskOutcome, Workspace, candidate_externals, content
+from k4opt.execution._tasks import GeometryWork, TaskOutcome, Workspace
 from k4opt.execution._worker import session_spec
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
-from k4opt.jsonio import write_json
 from k4opt.problem.candidate import geometry_overrides, parse_candidate, validate_candidate
 from k4opt.problem.config import load_problem
 from k4opt.problem.models import ProblemSpec
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES, plan_stages
-from k4opt.record.assess import Assessment, assess
 from k4opt.record.read import SUMMARY_SCHEMA
-from k4opt.record.results import CandidateRecord, TaskResult
-from k4opt.record.write import SUMMARY_NAME, assemble
-from k4opt.revision import code_identity, code_unchanged
-
-
-@dataclass(frozen=True, slots=True)
-class RunOutcome:
-    """What one run produced: the candidate's record, the written summary and where it is, and
-    the candidate's assessment against the objectives and constraints."""
-
-    candidate: CandidateRecord
-    summary: Mapping[str, object]
-    run_dir: Path
-    fingerprint: str
-    assessment: Assessment
-
-    @property
-    def summary_path(self) -> Path:
-        return self.run_dir / SUMMARY_NAME
-
-    @property
-    def events(self) -> dict[str, tuple[object, object]]:
-        """``(found, requested)``: the events found in the simulation output of each sample whose
-        output was inspected, and those its simulation stage asks for (``None`` for none)."""
-        definition = self.summary["problem"]
-        assert isinstance(definition, Mapping)
-        samples = definition["definition"].get("samples", {})
-        events: dict[str, tuple[object, object]] = {}
-        for task in self.candidate.plan.of(Kind.STAGE):
-            found = self.candidate.results[task.id].provenance.get("events_read")
-            if task.id.name == "simulation" and found is not None:
-                assert task.id.sample is not None
-                requested = samples[task.id.sample]["simulation"].get("events")
-                events[task.id.sample] = (found, requested)
-        return events
+from k4opt.record.results import TaskResult
+from k4opt.record.write import SUMMARY_NAME
 
 
 def _parse_inputs(assignments: Sequence[str]) -> dict[str, str]:
@@ -144,15 +109,6 @@ def _timeout(value: float | None) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < math.inf:
         raise RunError(f"timeout must be a positive number of seconds, got {value!r}")
     return float(value)
-
-
-def _check_code() -> None:
-    """Raise :class:`RunError` if k4opt's files are no longer those this process identified."""
-    if not code_unchanged():
-        raise RunError(
-            "k4opt's code changed on disk after this process first identified it, so its "
-            "records could not say which code ran; start a new process"
-        )
 
 
 def _run_reference(run: Mapping[str, Json] | None) -> object:
@@ -247,56 +203,38 @@ class EvaluationSession:
     __slots__ = (
         "__weakref__",
         "_backend",
+        "_baseline",
         "_binding",
         "_context",
         "_execution",
-        "_externals",
-        "_files",
         "_inputs",
         "_open",
-        "_path",
-        "_process",
-        "_read",
-        "_spec",
-        "_taken",
         "_timeout",
         "_warnings",
     )
 
     def __init__(
         self,
-        path: Path,
-        spec: ProblemSpec,
+        baseline: Baseline,
         binding: _Binding,
         inputs: Mapping[TaskId, Path],
-        files: Mapping[str, tuple[Path, Mapping[str, Json] | None]],
-        externals: Mapping[str, Json],
-        taken: Mapping[str, Mapping[str, Json]],
         warnings: tuple[str, ...],
-        process: Mapping[str, Json],
         timeout: float | None,
         jobs: int = 1,
     ) -> None:
         """Use :meth:`open`."""
-        self._path = path
-        self._spec = spec
+        self._baseline = baseline
         self._binding = binding
         self._inputs = FrozenMap(inputs)
-        self._files = FrozenMap(files)
-        self._externals = externals
-        self._taken = FrozenMap(taken)
         self._warnings = warnings
-        self._process = process
         self._timeout = timeout
-        # what the external references only candidates have read, by reference, without the path
-        self._read: dict[str, Json] = {}
         # what every task needs, wherever it runs
-        self._context = _context(spec, binding, timeout, externals)
+        self._context = _context(baseline.spec, binding, timeout, baseline.externals)
         self._execution: Mapping[str, Json] = FrozenMap({"backend": "local", "jobs": jobs})
         self._open: Evaluations | None = None
         self._backend: ProcessBackend | None = None
         if jobs > 1:  # one worker started at once: one that cannot work refuses here
-            environment = process["environment"]
+            environment = baseline.process["environment"]
             assert isinstance(environment, Mapping)
             described = session_spec(self._context, binding.evaluations, environment)
             backend = self._backend = ProcessBackend(described, jobs)
@@ -361,20 +299,7 @@ class EvaluationSession:
                     )
             named |= input_files(context, *targets, provided=given)
         named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
-        # an unreadable file has no identity: its stage reports it, and a record still names it
-        files = {label: (file, readable_identity(file)) for label, file in named.items()}
-        assert spec._source is not None
-        externals = freeze(spec._source.external_files(spec._catalog), "geometry", RunError)
-        assert isinstance(externals, Mapping)
-        taken = _implementations(binding)
-        # before anything runs, so that an edit to the checkout during a long run is not
-        # recorded as the code that ran, nor a later change of the environment as the session's
-        environment = {name: os.environ.get(name) for name in ("KEY4HEP_STACK", "K4GEO")}
-        process = freeze(
-            {"k4opt": code_identity(), "environment": environment}, "process", RunError
-        )
-        _check_code()
-        assert isinstance(process, Mapping)
+        baseline = Baseline.take(path.absolute(), spec, binding, named)
         crowded = []
         for task in binding.plan.tasks:
             cpus = task_cpus(binding, task)
@@ -392,29 +317,17 @@ class EvaluationSession:
                 f"{jobs} jobs, more than the {usable} processors this process may use: tasks "
                 "will share processors"
             )
-        return cls(
-            path.absolute(),
-            spec,
-            binding,
-            supplied,
-            files,
-            externals,
-            taken,
-            (*binding.warnings, *crowded),
-            process,
-            limit,
-            jobs,
-        )
+        return cls(baseline, binding, supplied, (*binding.warnings, *crowded), limit, jobs)
 
     @property
     def spec(self) -> ProblemSpec:
         """The problem, as loaded when the session was opened."""
-        return self._spec
+        return self._baseline.spec
 
     @property
     def problem_path(self) -> Path:
         """The absolute path of the problem file."""
-        return self._path
+        return self._baseline.path
 
     @property
     def warnings(self) -> tuple[str, ...]:
@@ -461,27 +374,7 @@ class EvaluationSession:
         git checkout, as every summary records them. The environment, k4opt and the external
         files are taken when the session opened. A fresh copy on every call.
         """
-        source, catalog = self._spec._source, self._spec._catalog
-        assert source is not None
-        assert catalog is not None
-        process = thaw(self._process)
-        assert isinstance(process, dict)
-        return {
-            "problem": {"path": str(self._path), "definition": self._spec.to_dict()},
-            "inputs": {
-                label: {"path": str(file), **(identity or {})}
-                for label, (file, identity) in self._files.items()
-            },
-            "implementations": {name: thaw(entry) for name, entry in self._taken.items()},
-            "geometry": {
-                "compact": source.compact,
-                "source_root": str(source.root),
-                "fingerprint": source.fingerprint([], catalog=catalog),
-                "externals": thaw(self._externals),
-            },
-            "environment": process["environment"],
-            "k4opt": {"version": __version__, **process["k4opt"]},
-        }
+        return self._baseline.identity()
 
     def verify_inputs(self) -> None:
         """Raise :class:`~k4opt.execution.RunError` if a file the stages read (named by the problem
@@ -490,62 +383,7 @@ class EvaluationSession:
 
         A file is hashed again only when its size, times or inode changed.
         """
-        for label, (file, opened) in self._files.items():
-            now = readable_identity(file)
-            if now != opened:
-                raise RunError(
-                    f"{label}: {file} changed after the session opened ({_described(opened)} "
-                    f"then, {_described(now)} now); evaluate the candidates of a problem with the "
-                    "same files"
-                )
-
-    def _verify_externals(self) -> None:
-        """Raise :class:`~k4opt.execution.RunError` if an external reference of the geometry
-        (``${DD4hepINSTALL}/...``) does not read the files it read when the session opened."""
-        source = self._spec._source
-        assert source is not None
-        now = source.external_files(self._spec._catalog)
-        for ref, opened in self._externals.items():
-            if now.get(ref) != thaw(opened):
-                path = (now.get(ref) or {}).get("path") or "no file"
-                raise RunError(
-                    f"geometry: {ref} does not read the files it read when the session opened "
-                    f"(now {path}); the candidates of a session start from one geometry"
-                )
-
-    def _check_read(self, externals: Mapping[str, Mapping[str, Json]]) -> None:
-        """Raise :class:`~k4opt.execution.RunError` if a reference only candidates name reads other
-        files than it did for an earlier candidate of the session."""
-        for ref, entry in externals.items():
-            if ref in self._read and self._read[ref] != content(entry):
-                raise RunError(
-                    f"geometry: {ref} does not read the files it read for an earlier candidate "
-                    f"(now {entry.get('path') or 'no file'}); the candidates of a session start "
-                    "from one geometry"
-                )
-
-    def _verify(self) -> None:
-        """Raise :class:`~k4opt.execution.RunError` if the environment, k4opt's code, a file the
-        stages read or what the geometry's external references read changed since the session
-        opened."""
-        self._verify_environment()
-        _check_code()
-        self.verify_inputs()
-        self._verify_externals()
-
-    def _verify_environment(self) -> None:
-        """Raise :class:`~k4opt.execution.RunError` if ``KEY4HEP_STACK`` or ``K4GEO`` is not what
-        it was when the session opened: the stages would run in another environment than the
-        geometry was discovered in, and than the records say."""
-        opened = self._process["environment"]
-        assert isinstance(opened, Mapping)
-        for name, then in opened.items():
-            now = os.environ.get(name)
-            if now != then:
-                raise RunError(
-                    f"{name} changed after the session opened ({then!r} then, {now!r} now); the "
-                    "candidates of a session run in one environment"
-                )
+        self._baseline.verify_inputs()
 
     def check(self, candidate: Mapping[str, Scalar]) -> None:
         """Check ``candidate`` as :meth:`evaluate` does before it creates anything, and stop there.
@@ -660,7 +498,7 @@ class EvaluationSession:
                     yield request, run.error
                     continue
                 try:
-                    outcome = self._finish(run)
+                    outcome = publish(run, self._baseline, self._execution)
                 except Exception as exc:
                     yield request, exc
                     continue
@@ -699,85 +537,21 @@ class EvaluationSession:
             return
         run.own_refs = outcome.own_refs
         try:
-            self._check_read(_externals(result))
+            self._baseline.check_read(candidate_reads(result))
         except RunError as exc:
             run_dir = run.workspace.root
             raise RunError(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
-
-    def _finish(self, run: _Run) -> RunOutcome:
-        """The record of a candidate whose tasks all ended, checked and published.
-
-        Nothing is published, and nothing is remembered of the candidate, if what the session
-        verifies changed while it ran, a file a task made is no longer what its record says, or
-        a reference only its geometry names reads other files than for a candidate recorded
-        meanwhile. Those checks, the record and what the session remembers of it come one
-        candidate after another."""
-        spec = self._spec
-        source = spec._source
-        assert source is not None
-        run_dir = run.workspace.root
-        assert run_dir is not None
-        record = _finish_plan(run)
-        geometry = record.results[GEOMETRY]
-        externals = _externals(geometry)
-        try:
-            self._verify()  # the record names what the stages and evaluators read
-            # in plan order, what is watched of the files each task that ran made
-            watched = {t.id: run.observed[t.id] for t in record.plan.tasks if t.id in run.observed}
-            changed = changed_files(watched)
-            if changed:
-                raise RunError(
-                    f"{', '.join(changed)} changed after it was made, so the record could not "
-                    "say what it holds"
-                )
-            now = candidate_externals(
-                source.compact, run_dir / GEOMETRY.name, run.own_refs, self._externals
-            )
-            if _plain(now) != _plain(externals):
-                refs = dict.fromkeys([*externals, *now])
-                changed = [ref for ref in refs if now.get(ref) != externals.get(ref)]
-                raise RunError(
-                    f"geometry: {', '.join(changed)} does not read the files it read when the "
-                    "candidate started"
-                )
-            # again, now: a candidate recorded while this one ran may have read other files
-            self._check_read(externals)
-        except RunError as exc:
-            raise RunError(
-                f"{exc} (while the candidate in {run_dir} ran, which has no {SUMMARY_NAME})"
-            ) from None
-        assessment = assess(spec, record)
-        summary = assemble(
-            run.workspace.id,
-            self._path,
-            spec,
-            run.values,
-            record,
-            assessment,
-            run_dir,
-            self._taken,
-            run.reference,
-            self._process,
-            self._execution,
-        )
-        try:
-            write_json(run_dir / SUMMARY_NAME, summary)
-        except OSError as exc:
-            raise RunError(f"cannot write summary in {run_dir}: {exc}") from exc
-        self._read |= {ref: content(entry) for ref, entry in externals.items()}
-        fingerprint = geometry.provenance["fingerprint"]
-        assert isinstance(fingerprint, str)
-        return RunOutcome(record, summary, run_dir, fingerprint, assessment)
 
     def _prepare(
         self, candidate: Mapping[str, Scalar]
     ) -> tuple[dict[str, Scalar], CandidateKey, _Prepared, list[Override]]:
         """The checked candidate, its key, what its preflight prepared (its own evaluator
         instances and the requests made for it) and its overrides."""
-        values, key = validate_candidate(self._spec, candidate)
-        self._verify()  # first: a file that is gone changed, more than it is missing
+        spec = self._baseline.spec
+        values, key = validate_candidate(spec, candidate)
+        self._baseline.verify()  # first: a file that is gone changed, more than it is missing
         prepared = _preflight(self._binding, values)
-        overrides = geometry_overrides(self._spec, values)
+        overrides = geometry_overrides(spec, values)
         return values, key, prepared, overrides
 
 
@@ -827,19 +601,6 @@ def _prepared(run: _Run) -> _Prepared:
     return run.prepared
 
 
-def _externals(geometry: TaskResult) -> dict[str, dict[str, Json]]:
-    """What the references only the candidate's geometry names read, as its geometry task
-    recorded it."""
-    externals = thaw(geometry.provenance.get("candidate_externals") or {})
-    assert isinstance(externals, dict)
-    return externals
-
-
-def _plain(value: object) -> object:
-    """``value`` as plain JSON data, as a record holds it."""
-    return thaw(freeze(value, "geometry", RunError))
-
-
 def _jobs(value: int | Literal["auto"]) -> int:
     """The number of jobs ``value`` says: itself, or for ``"auto"`` the processors this process
     may use. :class:`RunError` unless it is a positive integer or ``"auto"``."""
@@ -848,12 +609,6 @@ def _jobs(value: int | Literal["auto"]) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise RunError(f"jobs must be a positive integer or 'auto', got {value!r}")
     return value
-
-
-def _described(identity: Mapping[str, Json] | None) -> str:
-    if identity is None:
-        return "unreadable"
-    return f"{identity['bytes']} bytes, SHA-256 {str(identity['sha256'])[:12]}"
 
 
 def run_candidate(

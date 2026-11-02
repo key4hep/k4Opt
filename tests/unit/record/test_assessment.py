@@ -17,10 +17,10 @@ import yaml
 
 from k4opt.evaluation import EvaluationRequest, EvaluationResult, Measurement
 from k4opt.execution import EvaluationSession
-from k4opt.execution._drive import _evaluate_candidate
 from k4opt.problem import ProblemSpec, parse_problem
 from k4opt.record import Assessment, ObjectiveValue, RecordError
 from k4opt.record.assess import assess
+from tests.support.evaluate import evaluate_candidate
 from tests.support.evaluators import implementations
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
@@ -97,7 +97,7 @@ def judged(
     """The assessment of a candidate whose only evaluator returned these measurements."""
     message = None if status == "valid" else f"the evaluator says {status}"
     result = EvaluationResult(status, measurements, message=message)  # type: ignore[arg-type]
-    record = _evaluate_candidate(spec, {CELL: 5.0}, implementations(Fixed(result)))
+    record = evaluate_candidate(spec, {CELL: 5.0}, implementations(Fixed(result)))
     if not represents:  # as for a stage supplied with --input
         record = dataclasses.replace(record, represents_candidate=False)
     return assess(spec, record)
@@ -239,7 +239,7 @@ def test_a_valid_owner_does_not_make_a_candidate_a_required_check_finds_invalid_
     spec = _checked(required=True)
     owner = _Owner(EvaluationResult.valid([a(0.5)]))
     check = _Check(EvaluationResult.invalid("the candidate fails a validity check"))
-    record = _evaluate_candidate(spec, {CELL: 5.0}, implementations(owner, check))
+    record = evaluate_candidate(spec, {CELL: 5.0}, implementations(owner, check))
     assert record.status == "invalid"
     assert record.message == "test.check invalid: the candidate fails a validity check"
     assert record.diagnostics == ()
@@ -255,7 +255,7 @@ def test_a_diagnostic_that_does_not_succeed_leaves_the_candidate_valid_and_asses
     spec = _checked(required=False)
     owner = _Owner(EvaluationResult.valid([a(0.5)]))
     result = EvaluationResult(check, message="the check says no")  # type: ignore[arg-type]
-    record = _evaluate_candidate(spec, {CELL: 5.0}, implementations(owner, _Check(result)))
+    record = evaluate_candidate(spec, {CELL: 5.0}, implementations(owner, _Check(result)))
     assert (record.status, record.message) == ("valid", None)
     assert [(d.id.label, d.status, d.message) for d in record.diagnostics] == [
         ("test.check", check, "the check says no")

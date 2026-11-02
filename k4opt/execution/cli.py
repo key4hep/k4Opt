@@ -15,7 +15,8 @@ from collections.abc import Mapping
 from typing import TextIO
 
 from k4opt.evaluation import Status, load_evaluator
-from k4opt.execution._session import RunOutcome, run_candidate
+from k4opt.execution._publish import RunOutcome
+from k4opt.execution._session import run_candidate
 from k4opt.problem.plan import Kind
 from k4opt.record.assess import Limit
 from k4opt.record.write import peak_memory

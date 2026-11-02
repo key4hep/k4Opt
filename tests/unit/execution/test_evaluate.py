@@ -22,8 +22,8 @@ from k4opt.evaluation import (
     EvaluationResult,
     Measurement,
 )
-from k4opt.execution._drive import _evaluate_candidate
 from k4opt.problem import CandidateError, ProblemSpec, parse_problem
+from tests.support.evaluate import evaluate_candidate
 from tests.support.evaluators import implementations
 
 CELL = "constants.ECal_cell_size"
@@ -54,7 +54,7 @@ def evaluate_one(
     spec: ProblemSpec, candidate: Any, evaluator: Any, **kwargs: Any
 ) -> EvaluationRecord:
     """The record of ``evaluator``, the instance of the problem's only evaluator."""
-    (record,) = _evaluate_candidate(spec, candidate, implementations(evaluator), **kwargs).records
+    (record,) = evaluate_candidate(spec, candidate, implementations(evaluator), **kwargs).records
     return record
 
 

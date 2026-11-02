@@ -1,6 +1,6 @@
 """Internal: a worker process, which does the tasks of one session's candidates, one at a time.
 
-The local process backend (:class:`~k4opt.execution._backends.ProcessBackend`) starts each worker
+The local process backend (:class:`~k4opt.execution._process.ProcessBackend`) starts each worker
 in the coordinator's current directory, as a new Python that puts the directory holding the
 coordinator's k4opt first on its path and calls :func:`main` with ``FD PARENT``: its end of a
 socket pair to the coordinator, and the coordinator's process id. The worker dies with the
@@ -43,7 +43,8 @@ from types import FrameType
 from k4opt.errors import K4OptError
 from k4opt.evaluation import EvaluatorProtocol, evaluator_source, load_evaluator
 from k4opt.execution._instances import _Bound, _instance
-from k4opt.execution._work import Observations, SessionContext, TaskSpec, execute_task
+from k4opt.execution._tasks import Observations, SessionContext, TaskSpec
+from k4opt.execution._work import execute_task
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json
 from k4opt.problem.plan import Kind, TaskId

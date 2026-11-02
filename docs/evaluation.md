@@ -547,18 +547,10 @@ agree. Numbers are written as exact decimal text, so huge integers are never for
 `float`. The key is scoped to one problem definition; it is not a cross-problem hash, a
 geometry fingerprint or a complete evaluation-cache key.
 
-### Internal bridge (not the physicist-facing workflow)
+### How a candidate is evaluated
 
-`k4opt.execution._drive._evaluate_candidate(spec, candidate, evaluators, *, inputs=None,
-workdir=None)` connects a `ProblemSpec` to explicitly supplied evaluators and returns a
-`CandidateRecord`. It is private and meant for tests; the public entry point is
-[`EvaluationSession`](#evaluating-candidates-evaluationsession), which takes the problem file.
-
-```python
-candidate = _evaluate_candidate(spec, {"constants.ECal_cell_size": 6.0}, [CellCount])
-```
-
-In order, it:
+Evaluating a candidate ([`EvaluationSession`](#evaluating-candidates-evaluationsession)), k4opt
+in order:
 
 1. validates the candidate (`CandidateError` otherwise): exactly one value per declared
    parameter, keyed by `parameter.geometry.canonical_target`; continuous `int`/finite `float`

@@ -358,12 +358,12 @@ def test_summary_write_failure_is_a_controlled_error(
     fake: simulation.FakeDdsim,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from k4opt.execution import _session
+    from k4opt.execution import _publish
 
     def denied(*args: Any, **kwargs: Any) -> None:
         raise PermissionError("summary is not writable")
 
-    monkeypatch.setattr(_session, "write_json", denied)
+    monkeypatch.setattr(_publish, "write_json", denied)
     with pytest.raises(RunError, match="cannot write summary"):
         run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a")
     assert len(fake.calls) == 1

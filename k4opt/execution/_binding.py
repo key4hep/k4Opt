@@ -45,7 +45,7 @@ from k4opt.evaluation import (
 )
 from k4opt.execution._instances import _Bound, _create, _instance, _Probe, _probe, _stage
 from k4opt.execution._stages import StageContext, check_stages, no_edm4hep_file
-from k4opt.execution._work import Measuring, SessionContext
+from k4opt.execution._tasks import Measuring, SessionContext
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.problem.contract import MetricKey, check_bindings, check_entries

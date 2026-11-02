@@ -13,9 +13,6 @@ must be a file in the evaluation's own directory, and is hashed once, when the e
 returns. A task whose input files changed since they were made fails. Once all its tasks ended,
 :func:`_finish_plan` makes the candidate's :class:`~k4opt.record.CandidateRecord`.
 
-:func:`_evaluate_candidate` evaluates one candidate without a session, in this thread. It
-neither locates evaluators nor materializes geometry: the caller gives the geometry, or none.
-
 Only the required tasks decide the candidate's status: the evaluations its objectives and
 constraints name, those of bindings marked ``required: true``, and what they read. Every other
 evaluation is a diagnostic: it runs, and its record is kept, but it neither fails the candidate
@@ -25,51 +22,43 @@ representing the candidate.
 
 from __future__ import annotations
 
-import contextlib
-import os
 import time
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from k4opt.evaluation import (
     Artifact,
     CandidateKey,
-    EvaluationContractError,
     EvaluationRecord,
     EvaluationResult,
-    EvaluatorProtocol,
     RoleInput,
     Scalar,
     Status,
 )
-from k4opt.execution._backends import Backend, Handle, InlineBackend
+from k4opt.execution._backends import Backend, Handle
 from k4opt.execution._binding import (
-    _bind_problem,
     _Binding,
-    _context,
-    _preflight,
     _Prepared,
     task_cpus,
 )
-from k4opt.execution._files import NOTHING, Observed, portable, portable_artifact
-from k4opt.execution._schedule import Scheduler
-from k4opt.execution._stages import check_run_inputs
-from k4opt.execution._work import (
-    GeometryWork,
-    Observations,
-    TaskOutcome,
-    TaskSpec,
-    Workspace,
-    asked,
-    local_result,
-    to_result,
+from k4opt.execution._files import (
+    NOTHING,
+    Made,
+    Observed,
+    Tree,
+    local,
+    local_artifact,
+    portable,
+    portable_artifact,
 )
+from k4opt.execution._schedule import Scheduler
+from k4opt.execution._tasks import GeometryWork, Observations, TaskOutcome, TaskSpec, Workspace
+from k4opt.execution._work import asked
 from k4opt.frozen import FrozenMap
-from k4opt.problem.candidate import validate_candidate
-from k4opt.problem.models import EvaluatorSpec, ProblemSpec, Reference
-from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, reference_task, stage_task
-from k4opt.problem.stages import STAGE_TYPES, changed_by_geometry, stage_output
+from k4opt.problem.models import EvaluatorSpec, Reference
+from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, reference_task
+from k4opt.problem.stages import changed_by_geometry, stage_output
 from k4opt.record.results import CandidateRecord, TaskResult
 
 
@@ -349,109 +338,6 @@ def _drive(
         runs.clear()
 
 
-def _evaluate_candidate(
-    spec: ProblemSpec,
-    candidate: Mapping[str, Scalar],
-    implementations: Sequence[type[EvaluatorProtocol]],
-    *,
-    inputs: Mapping[str, Path] | None = None,
-    workdir: Path | None = None,
-) -> CandidateRecord:
-    """Evaluate one complete ``candidate`` of ``spec`` with an instance of each implementation.
-
-    The candidate maps each canonical parameter reference to a scalar; ``implementations`` (an
-    evaluator class, say) implement the problem's ``evaluators``, in any order. Before any stage
-    runs, raises :class:`~k4opt.problem.CandidateError` for a candidate outside the declared
-    domains and :class:`EvaluationContractError` for implementations that cannot be created or
-    do not match the problem (missing, undeclared, given twice, another version), settings an
-    evaluator's ``check()`` rejects, a stage that cannot run, or an objective or constraint
-    metric its evaluator does not declare. ``inputs["geometry"]`` is the candidate's geometry,
-    already prepared; any other entry of ``inputs`` supplies the file of the stage of a sample
-    it is named after (``gamma/simulation``). The stages the evaluators read and ``inputs`` does
-    not supply then run once each, in ``workdir``. An evaluator whose stage failed, or whose
-    stage output lacks the requested events, is ``blocked`` and not called, as is a combined
-    evaluator an item of whose roles did not succeed (failed, invalid or blocked); the others
-    are still called. An evaluator that raises :class:`~k4opt.evaluation.EvaluationFailed` or
-    :class:`~k4opt.evaluation.EvaluationInvalid` gets that result; any other exception
-    propagates, and so does an :class:`EvaluationContractError` for a result that breaks the
-    contract.
-    """
-    started = time.perf_counter()
-    values, key = validate_candidate(spec, candidate)
-    given = dict(inputs or {})
-    geometry = given.pop(GEOMETRY.name, None)
-    if geometry is not None:  # an input from outside the workspace: named absolutely
-        geometry = Path(os.path.abspath(geometry))
-    supplied = {}
-    for label, path in given.items():
-        sample, _, stage = label.partition("/")
-        if sample not in spec.samples or stage not in STAGE_TYPES:
-            raise EvaluationContractError(
-                f"input {label!r}: expected SAMPLE/STAGE, a sample of the problem and one of "
-                f"{', '.join(STAGE_TYPES)}"
-            )
-        supplied[stage_task(stage, sample)] = Path(os.path.abspath(path))
-    binding = _bind_problem(spec, implementations, supplied)
-    planned = {task.id for task in binding.plan.of(Kind.STAGE)}
-    for task in supplied:  # a file no task reads would be dropped without a word
-        if task not in planned:
-            raise EvaluationContractError(
-                f"input {task.label!r}: no evaluator of the problem reads that stage of "
-                f"{task.sample}"
-            )
-    prepared = _preflight(binding, values)
-    checked = time.perf_counter() - started
-    return _execute_plan(
-        spec,
-        prepared,
-        key,
-        supplied=supplied,
-        geometry=None if geometry is None else GeometryWork(given=geometry),
-        workdir=workdir,
-        checked_seconds=checked,
-    )
-
-
-def _execute_plan(
-    spec: ProblemSpec,
-    prepared: _Prepared,
-    key: CandidateKey,
-    *,
-    supplied: Mapping[TaskId, Path],
-    geometry: GeometryWork | None,
-    workdir: Path | None,
-    checked_seconds: float,
-    timeout: float | None = None,
-) -> CandidateRecord:
-    """Run the tasks of a prepared candidate, one after another in plan order, in this thread;
-    evaluator checks and defaults are not repeated.
-
-    ``supplied`` holds the files the caller supplies by stage task, the ones the plan was made with;
-    ``geometry`` says how the candidate's geometry is made, and ``None`` gives none (to evaluators
-    that need none). Each task writes below ``workdir``, in the directory the plan gives it.
-    ``checked_seconds``, the time the candidate's validation and preflight took, counts towards
-    ``elapsed_seconds``, which thus covers k4opt's checks too (not what the caller does between).
-    ``timeout`` limits each stage that runs a program
-    (:attr:`~k4opt.execution._stages.StageContext.timeout`).
-    """
-    started = time.perf_counter() - checked_seconds
-    binding = prepared.binding
-    stages = binding.plan.of(Kind.STAGE)
-    check_run_inputs([t.id.name for t in stages if t.given is None], geometry is not None, workdir)
-    run = _Run(Workspace("candidate", workdir), prepared, key, supplied, geometry, started)
-    backend = InlineBackend(
-        _context(spec, binding, timeout), lambda workspace, task: prepared.instances[task]
-    )
-    pulled = iter([run])
-    driven = _drive(Scheduler(backend.capacity), backend, {}, lambda: next(pulled, None))
-    with contextlib.closing(driven):
-        for ended in driven:
-            if ended.error is not None:
-                raise ended.error
-            return _finish_plan(ended)
-    raise AssertionError("the candidate never ended")  # pragma: no cover
-
-
 def _finish_plan(run: _Run) -> CandidateRecord:
     """The record of a candidate whose tasks all ended. A blocked evaluator's record holds what it
     would have been asked."""
@@ -479,3 +365,42 @@ def _finish_plan(run: _Run) -> CandidateRecord:
 
 def _since(started: float) -> float:
     return time.perf_counter() - started
+
+
+def to_result(
+    task: Task, outcome: TaskOutcome, observed: Observations, root: Path | None
+) -> tuple[TaskResult, Observed]:
+    """The coordinator's :class:`~k4opt.record.TaskResult` of ``outcome``, its files
+    where the workspace ``root`` is here, and what it watches of the files the task made: each
+    with the stat ``observed`` where it was made, and the geometry it made. An evaluation's
+    record is the coordinator's to add: it made the request."""
+    made = {name: local_artifact(artifact, root) for name, artifact in outcome.made.items()}
+    tree = None
+    if observed.tree is not None:
+        assert root is not None
+        assert task.directory is not None
+        tree = Tree(root / task.directory, FrozenMap(dict(observed.tree)))
+    watched = Observed(
+        FrozenMap({name: Made(made[name], observed.made[made[name].ref]) for name in made}), tree
+    )
+    result = TaskResult(
+        outcome.task,
+        outcome.status,
+        outcome.message,
+        None if outcome.output is None else local(outcome.output, root),
+        {role: local(path, root) for role, path in outcome.artifacts.items()},
+        outcome.provenance,
+        outcome.elapsed_seconds,
+        made=made,
+        memory=outcome.memory,
+    )
+    return result, watched
+
+
+def local_result(outcome: TaskOutcome, root: Path | None) -> tuple[EvaluationResult, Path | None]:
+    """What an evaluation returned and its own directory (``None`` if it was not called), its
+    files where the workspace ``root`` is here."""
+    assert outcome.result is not None
+    returned = {name: local(path, root) for name, path in outcome.result.artifacts.items()}
+    workdir = None if outcome.workdir is None else local(outcome.workdir, root)
+    return replace(outcome.result, artifacts=returned), workdir

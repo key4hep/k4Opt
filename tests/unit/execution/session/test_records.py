@@ -119,9 +119,9 @@ def test_the_record_is_assembled_from_the_task_results_alone(
         outcome.candidate,
         outcome.assessment,
         tmp_path / "a",
-        session._taken,
+        session._baseline.taken,
         {"label": "golden"},
-        session._process,
+        session._baseline.process,
     )
     assert json.loads(json.dumps(again)) == written
     tasks = [
