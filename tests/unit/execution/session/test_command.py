@@ -87,6 +87,24 @@ def test_a_dry_run_shows_what_the_candidate_sets_and_runs_nothing(
     assert code == 1 and "outside the bounds" in err
 
 
+def test_a_dry_run_checks_a_problem_whose_evaluations_have_time_limits(
+    tmp_path: Path, problem_file: Path
+) -> None:
+    # a dry run evaluates nothing, so it needs no worker to keep the limits
+    doc = yaml.safe_load(problem_file.read_text())
+    doc["timeout"] = 600
+    doc["evaluators"][0]["timeout"] = 60
+    problem_file.write_text(yaml.safe_dump(doc))
+    code, out, err = evaluate(str(problem_file), "--param", f"{RADIUS}=450", "--dry-run")
+    assert code == 0, err
+    assert "Configuration validated" in out
+    code, _, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--output", str(tmp_path / "a")
+    )
+    assert code == 1 and "cannot be stopped when its time runs out" in err
+    assert not (tmp_path / "a").exists()
+
+
 def test_a_dry_run_refuses_the_options_of_a_run(problem_file: Path) -> None:
     code, out, err = evaluate(
         str(problem_file), "--param", f"{RADIUS}=450", "--dry-run", "--workers", "2"

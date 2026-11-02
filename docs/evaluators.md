@@ -124,7 +124,10 @@ the cut, and missing reconstruction/systematics limit this demonstration.
 Its dimensions and cell size are explicit settings in mm; the parameter `ecal_cell_size` sets
 both the geometry's constant and its `cell_size` (one value, two targets), so the cost is
 always that of the geometry simulated. It approximates a cylindrical barrel and omits
-gaps, endcaps and layer differences; it does not count the detector's actual channels.
+gaps, endcaps and layer differences; it does not count the detector's actual channels. Its
+`check` shows both ways a classmethod `check` ends ([evaluation](evaluation.md#writing-an-evaluator)):
+dimensions that are not positive are the problem's mistake (`EvaluationContractError`), a cell
+size that is not positive is the candidate's (`cls.reject`), which rejects that candidate alone.
 
 The two simulations each run once, both histogram artifacts are hashed, and the combined
 record names the producer of each role. This is a runnable demonstration of the data flow,

@@ -214,6 +214,7 @@ def _run_study(
     activity: Watch | None,
 ) -> StudyResults:
     # everything that can be checked before a file is created
+    session.check_limits()  # the problem's time limits can be kept where the trials run
     spec = session.spec
     space = search_space(spec)  # the evaluators' settings were checked when the session opened
     identity: dict[str, Any] = session.identity()

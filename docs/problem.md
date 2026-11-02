@@ -121,6 +121,7 @@ stay separate (see [Identity](#identity-and-provenance)).
 | `schema_version` | yes | `k4opt.problem/v1alpha1`. Draft; incompatible changes are expected until a `v1`. |
 | `name` | no | Human-readable label of the problem. It carries no semantics and is not an identity; if omitted, the file name is used. |
 | `environment` | yes | The software stack the problem is meant to be evaluated with. |
+| `timeout` | no | Seconds every stage that runs and every evaluation may take, unless it sets its own `timeout` ([Time limits](#time-limits)). |
 | `geometry` | yes | The starting detector description. |
 | `parameters` | yes | The quantities that vary between candidates. |
 | `stages` | no | Stages every sample starts from, so that samples say only what differs. |
@@ -225,8 +226,8 @@ The options of a stage a parameter can set, and how each is written:
 | `gun` (`generation`) | `particle` (a categorical of strings); `energy` (continuous or integer, with a unit of `MeV`, `GeV`, `TeV`) | the string; `{value: v, unit: u}` |
 | `ddsim` (`simulation`) | any option that takes one value, named as in `ddsim --help` (`physics.rangecut`, `part.minimalKineticEnergy`) | as ddsim's command line reads it: `0.5*mm` for a number with a unit (DD4hep evaluates it, so `--physics.rangecut=0.5*mm` means what it says), the number, a string or a boolean |
 
-Not settable, each refused with its reason: `executor`, `file`, `events` and `seed` (k4opt's own
-keys of a stage), the gun's `direction` and `vertex`, the options k4opt sets or refuses, a ddsim
+Not settable, each refused with its reason: `executor`, `file`, `events`, `seed` and `timeout`
+(k4opt's own keys of a stage), the gun's `direction` and `vertex`, the options k4opt sets or refuses, a ddsim
 option that names a file (`physics.pdgfile`, identified once per session, not per candidate),
 `numberOfThreads` (how many processors the simulation keeps busy, not what is simulated), a
 flag (ddsim cannot switch one off) and an option that takes a list. A stage given as a `file:`
@@ -333,6 +334,9 @@ takes only its own keys:
 - `ddsim`: `events`, the number of events to simulate (required), `seed` (optional; ddsim's own
   default otherwise), and any other key is a ddsim option named as `ddsim --help` names it,
   such as `physics.list: FTFP_BERT` ([ddsim](ddsim.md#options-simulation)).
+
+Every stage that runs (not one given as a `file:`) may take a `timeout`: how many seconds it may
+take, the problem's `timeout` when not given ([Time limits](#time-limits)).
 
 Samples share nothing but the candidate's geometry, which every simulation reads, and what the
 problem writes once for all of them in [`stages`](#stages). The stages of a sample, once
@@ -458,6 +462,7 @@ Who measures a candidate: one or more evaluators. Each entry:
 | `roles` | For a combined evaluator: named references to evaluations or stage files of samples. Mutually exclusive with `stage`, `samples` and `collections`; see below. |
 | `settings` | Optional. Evaluator-defined, semantically meaningful inputs (a threshold, a cut, ...). |
 | `required` | Optional, and only `true`. Makes the candidate's status depend on this binding on each of its samples, as it does on one an objective or constraint names; see below. |
+| `timeout` | Optional. Seconds each evaluation of this binding may take, its evaluator's creation included; the problem's `timeout` when not given ([Time limits](#time-limits)). |
 
 **Required evaluations and diagnostics.** The candidate's status is decided by its required
 evaluations alone: those whose metrics an objective or a constraint names, those of an entry
@@ -634,7 +639,8 @@ combined (priorities, weights, scalarization) is deferred.
 ### `constraints`
 
 Optional hard limits on measured quantities. Each item has `sample`, `evaluator`, `stage` and
-`metric` as above, plus `min` and/or `max` (inclusive) and `unit` where the metric has one.
+`metric` as above, plus `min` and/or `max` (inclusive), `unit` where the metric has one, and
+`scale` where the problem has constraints on more than one metric (below).
 
 A constraint is judged on the central value of the measurement: `max` is satisfied when the
 value is at most the limit, `min` when it is at least the limit, and equality satisfies both.
@@ -657,6 +663,53 @@ constraints:
 
 A limit such as this needs a baseline measurement before it means anything; in the
 [example study](evaluators.md#the-example-study) this one keeps cells up to about 12 mm.
+
+**`scale`.** How far a candidate is beyond a limit is its *margin*, in the metric's unit
+(`value - max`, `min - value`; zero or below when satisfied). An optimizer that compares
+infeasible candidates adds their margins, which means nothing across metrics of different
+units or magnitudes: 2 mrad and 300 cells. `scale` is a characteristic size of the metric, a
+positive number in the unit of its limits, and an optimizer is told the margin in units of it,
+`margin / scale`, which is dimensionless. Choose it as the amount by which a violation starts
+to matter, or the spread of the metric over the search space: it says how a violation of one
+constraint weighs against a violation of another, which is a scientific choice the problem
+states, never one k4opt makes. Once the constraints name two or more metrics, every constraint
+needs a `scale`; with one, it may be left out and counts as 1, which cannot change how its
+violations rank. It changes no verdict (a limit is satisfied or not by the physical comparison)
+and both the margin and the normalized margin are recorded
+([assessment](record.md#assessment-objectives-limits-and-feasibility)). The scales are part of
+the problem, so of a study's identity.
+
+```yaml
+constraints:
+  - {stage: simulation, metric: ecal_barrel.angular_residual, max: 1.0, unit: mrad, scale: 0.2}
+  - {evaluator: readout, stage: geometry, metric: ecal_barrel.channels, max: 5.0e+7, unit: "1", scale: 1.0e+6}
+```
+
+## Time limits
+
+A stage that runs or an evaluation that takes longer than its `timeout` (in seconds) is stopped
+and fails, and its candidate is `failed` with its logs kept: a simulation on which Geant4
+stalls, an evaluator that never returns, cannot hold an unattended campaign. `timeout` may be
+given at the top level, for every stage that runs and every evaluation, and on a stage of a
+sample (or of the shared `stages`) or on an entry of `evaluators`, which wins:
+
+```yaml
+timeout: 1800                      # every stage and evaluation, unless it says otherwise
+samples:
+  gamma_10gev:
+    simulation: {executor: ddsim, events: 1000, timeout: 7200}
+evaluators:
+  - {name: calo.photon, version: "1", stage: simulation, timeout: 600}
+```
+
+The limits are part of the problem, so of a study's identity: a study is judged under one set of
+limits, and resuming it with others is refused. How a limit is kept is the executor's
+([execution](execution.md#execution-inline-or-in-worker-processes)): a worker process that runs
+too long is stopped with every program it started; inline, a stage's program (ddsim) is still
+killed at its limit, but nothing stops an evaluation that runs in the session's own process, so a
+problem that limits its evaluations needs workers to be evaluated (`--workers 1`; a `--dry-run`
+works inline). The geometry is not limited by the problem: k4opt's own work on files, it has a
+fixed limit of 10 minutes in a worker.
 
 ## Metrics are defined by the evaluator
 
@@ -687,12 +740,15 @@ records do not exist yet, and `load_problem()` neither resolves nor runs an eval
 
 ### Evaluation outcomes
 
-Three outcomes are distinguished and are never collapsed into a number:
+Three outcomes of an evaluation are distinguished and are never collapsed into a number:
 
 - **valid**: the evaluation ran and the measurements are scientifically usable;
 - **invalid**: the evaluation ran, but the result is not scientifically valid (for
   example, the evaluator's own checks failed);
-- **failed**: execution failed (crash, missing output).
+- **failed**: execution failed (crash, missing output, a time limit reached).
+
+A candidate an evaluator's `check` **rejects** is not evaluated at all: nothing of it runs, and
+it has none of these outcomes ([execution](execution.md#what-ends-a-candidate-and-what-stops-a-session)).
 
 Only required evaluations and the tasks they read decide the candidate's outcome; a diagnostic
 is recorded with its own outcome

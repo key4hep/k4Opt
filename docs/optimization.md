@@ -57,7 +57,6 @@ color off.
 | `--seed S` | the sampler's seed, in [0, 2**32); one is drawn and recorded without it. It is not the simulation's seed, which stays each sample's `simulation.seed` |
 | `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)) |
 | `--storage URL` | an Optuna database URL (SQLite on a local disk, PostgreSQL) in place of the journal file in `DIR`; it needs SQLAlchemy, and the same URL on every resume |
-| `--timeout SECONDS` | kill `ddsim` if a trial's simulation runs longer than that: the candidate is `failed`, the trial FAIL, and the study goes on. No limit without it, and none for evaluators. It is recorded in each trial's record and is not part of the study, so a resume may give another one |
 | `--workers N\|auto\|inline` | run the tasks in N worker processes, up to N at once, of one trial and of several; a simulation on several threads holds as many; `auto`: as many as the processors this process may use ([Trials at once](#trials-at-once---workers)). Default 1: one trial after another, each task in turn in one worker, so that an evaluator that crashes or is killed for its memory fails only its trial; if it does so twice in a row (N + 1 worker deaths), the study stops ([execution](execution.md#execution-inline-or-in-worker-processes)), as it would for any task that cannot run. `inline`: in this process, to debug, where such a crash ends the study (`--resume` continues it). Not part of the study: a resume may give another one |
 
 The exit status is 0 once every trial asked for has ended, even if candidates were `invalid` or
@@ -65,6 +64,11 @@ The exit status is 0 once every trial asked for has ended, even if candidates we
 and 2 for a usage error. Optuna is not part of the Key4hep stack: `setup.sh` installs the
 version pinned in `requirements.txt`, and `pip install 'k4opt[optimize]'` installs it elsewhere.
 Everything else in k4opt works without it.
+
+Time limits are the problem's (`timeout`, [problem](problem.md#time-limits)), so they are part of
+the study: a trial one of whose stages or evaluations runs longer is `failed`, its trial FAIL,
+and the study goes on. A problem that limits its evaluations needs worker processes, which the
+default of one worker provides; `--workers inline` refuses it before anything is created.
 
 ## What the optimizer searches, and what it is told
 
@@ -92,23 +96,24 @@ the study rather than being told as another value.
 
 **Constraints.** Each bound of a constraint is a *limit*, named by its metric's label and its
 bound, `sample/evaluator/stage/metric:bound`
-(`gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual:max`). For each limit the optimizer is told its
-physical margin (`value - max`, `min - value`, in the metric's unit), which is zero or below
-when the limit is satisfied. `study.json` records this choice as `"constraint_values":
-"physical margins"`. A limit is judged on the central value of the measurement, and its
-uncertainty is recorded but does not decide. An infeasible candidate is a complete trial with
-its real objective values, but it is left out of the Pareto front.
+(`gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual:max`). For each limit the
+optimizer is told its *normalized margin*: the physical margin (`value - max`, `min - value`, in
+the metric's unit) divided by the constraint's [`scale`](problem.md#constraints), a
+dimensionless number that is zero or below when the limit is satisfied. It is computed exactly
+and rounded once, so its sign is always the physical verdict's (a violation too small for a
+float is the smallest positive float, never 0); one too large for a float stops the study.
+`study.json` records this choice as `"constraint_values": "margin / scale"`, and the record
+keeps both the physical and the normalized margin. A limit is judged on the central value of the
+measurement, and its uncertainty is recorded but does not decide. An infeasible candidate is a
+complete trial with its real objective values, but it is left out of the Pareto front.
 
 Optuna's TPE handles constraints by ranking infeasible trials by the sum of their positive
-margins. While feasible trials are scarce (early in a study, or under tight limits), the least
+values. While feasible trials are scarce (early in a study, or under tight limits), the least
 infeasible trials join the "good" trials the sampler learns from. So constraints steer the
-search toward feasibility, but they do not guarantee it.
-
-- **Limits on one metric:** a value cannot be both below `min` and above `max`, so the sum is
-  one margin, in that metric's unit, and the ranking means something.
-- **Limits on several metrics:** the sum adds values in different units. `k4opt optimize` warns
-  about this. Treat such a study as not yet scientifically mature: a characteristic `scale` per
-  constraint is planned for it.
+search toward feasibility, but they do not guarantee it. With limits on several metrics, the
+scales make that sum add like with like: a violation of 2 mrad on a scale of 0.2 mrad weighs as
+much as one of 10⁷ channels on a scale of 10⁶. The problem must give them then; with one metric,
+only one of its limits can be violated at a time, and its scale (1 by default) changes nothing.
 
 **The sampler.** Optuna's `TPESampler`, made explicitly with its seed, 10 startup trials and
 the constant liar, all recorded, so that a change of Optuna's defaults cannot change a study.
@@ -125,13 +130,20 @@ knows the result.
 | `valid`, a limit violated | COMPLETE | the objectives | at least one above zero |
 | `invalid` | FAIL | none | none |
 | `failed` | FAIL | none | none |
+| `rejected`: an evaluator's `check` rejected the candidate; no record, no directory | FAIL | none | none |
 | interrupted, no record | FAIL | none | none |
 | the trial stopped the study | FAIL | none | none |
 | still running when another trial stopped the study | FAIL, as interrupted | none | none |
 
-An invalid or failed trial never gets made-up values (0, infinity) or constraint values. TPE
-ignores FAIL trials, so a region that is always invalid can be proposed again. Treating
-invalidity as a constraint would be a scientific choice, and it is not made.
+An invalid, failed or rejected trial never gets made-up values (0, infinity) or constraint
+values. TPE ignores FAIL trials, so a region that is always invalid or rejected can be proposed
+again. Treating invalidity as a constraint would be a scientific choice, and it is not made.
+
+A rejected trial has no record: nothing of its candidate was created. What the study keeps of it
+is in the optimizer's storage, `k4opt.status: rejected`, `k4opt.rejected_by` (the evaluation
+whose `check` rejected it, `gamma_10gev/calo.photon`) and `k4opt.message`, and a study read back
+holds exactly that or refuses the trial: with values, a record, other attributes or a trial
+directory, it is not one k4opt made.
 
 The record's status is decided by its required evaluations: those an objective or constraint
 reads, those marked `required: true`, and what they read
@@ -148,22 +160,24 @@ Each Optuna trial carries `k4opt.*` user attributes:
   all of it);
 - `k4opt.diagnostics`, the number of its diagnostics that did not succeed;
 - `k4opt.sampler_seed`, the seed of the session that proposed it;
+- `k4opt.rejected_by` for a rejected candidate;
 - `k4opt.error` when it stopped the study, and `k4opt.recovered` when a resume finished it.
 
 The Optuna study carries `k4opt.study` (the id of `study.json`), `k4opt.identity`,
 `k4opt.parameters`, `k4opt.objectives` and `k4opt.constraints`.
 
-**The study goes on** after an `invalid` or `failed` candidate, also after many in a row: a
-failure can be a legitimate finding (ddsim refusing an overlapping geometry, say). So does a
-simulation killed at `--timeout`; without one, a candidate on which Geant4 stalls holds up an
-unattended study until it is stopped, and so does an evaluator that never returns, which no
-`--timeout` limits. Each trial
-is printed as it ends, so a broken environment shows at once.
+**The study goes on** after a `rejected`, `invalid` or `failed` candidate, also after many in a
+row: a failure can be a legitimate finding (ddsim refusing an overlapping geometry, say). So does
+a stage or an evaluation stopped at its time limit, and a geometry whose worker died or ran out
+of time; without a `timeout`, a candidate on which Geant4 stalls, or an evaluator that never
+returns, holds up an unattended study until it is stopped. Each trial is printed as it ends, so
+a broken environment shows at once.
 
-**The trial is FAIL with `k4opt.error`, and the study stops,** when:
+**The trial is FAIL with `k4opt.error`, and the study stops,** when
+([the kinds](execution.md#what-ends-a-candidate-and-what-stops-a-session)):
 
-- an evaluator's `check()` refuses the candidate, or anything else is wrong before its
-  evaluation starts;
+- an evaluator's `check()` raises anything but `CandidateRejected` (`cls.reject`), or anything
+  else is wrong before its evaluation starts;
 - a file the problem names, a file the geometry's external references read, the environment or
   k4opt's code changed since the study's session opened, also while the trial ran;
 - a result breaks the evaluation contract (a `valid` result without a metric an objective or a
@@ -176,7 +190,8 @@ is printed as it ends, so a broken environment shows at once.
 
 Each evaluator's settings and collections are checked once, when the study opens and before
 any file is created, so a mistake in them costs no trial. They need no candidate, so an
-evaluator's own `check()` is only ever asked about candidates the sampler proposes.
+evaluator's own `check()` is only ever asked about candidates the sampler proposes, and what it
+rejects is a finding about that candidate.
 
 **The optimizer is told what the record holds.** After each evaluation, `summary.json` is read
 back from disk and checked:
@@ -296,7 +311,7 @@ directory itself is fine: a trial's record names the files of its run directory 
 | --- | --- | --- |
 | problem | its definition, but not its `name` | the path of the file |
 | files the problem names | size and SHA-256 of each | their paths |
-| evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash, or whose hash is not known to be of the code that runs, `executed: false`, cannot make a study) and of the modules it imports from beside it (`helpers`), the metrics it declares with their units and the artifacts it declares (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
+| evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash, or whose hash is not known to be of the code that runs, `executed: false`, cannot make a study) and of the modules it imports from beside it (`helpers`), the metrics it declares with their units and the artifacts it declares (read from its class, where an evaluator declares them) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, the attribute each geometry target of the parameters resolves to (its file below the root, locator, attribute and unmodified value; every trial's record must change exactly those) and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
 | k4opt | the SHA-256 of its code | version, git commit |
@@ -436,6 +451,7 @@ holds; nothing is estimated.
 | a valid record, every limit satisfied | `valid`, feasible | objectives, limits with margins |
 | a valid record, a limit violated | `valid`, infeasible | the same; never on the front |
 | an invalid or failed record | `invalid`, `failed` | no objective values; limits not assessed; its message |
+| rejected by an evaluator's `check` | `rejected` | nothing measured, no record; the evaluation that rejected it and why |
 | ended without a record | `interrupted` | nothing measured |
 | stopped the study | `error` | nothing measured; why it stopped. A valid record whose values never reached the optimizer is named but not used |
 | RUNNING in the optimizer | `running` | nothing measured or checked; a record already on disk is not read: the optimizer has not taken it yet, a resume will |
@@ -488,12 +504,12 @@ JSON, never 0 or NaN, and a float keeps all its digits.
 | --- | --- |
 | `study` | the study's id |
 | `trial` | the trial's number |
-| `status` | `valid`, `invalid`, `failed`, `interrupted`, `error` or `running` |
+| `status` | `valid`, `invalid`, `failed`, `rejected`, `interrupted`, `error` or `running` |
 | `feasible` | `true` or `false` for a valid trial, empty otherwise |
 | `pareto`, `recovered` | `true` for a trial on the front, for one a resume finished |
 | `parameter:<reference>` | the candidate's value (its unit is the problem's) |
 | `objective:<sample>/<evaluator>/<stage>/<metric>`, `…:unit`, `…:uncertainty` | the measured value, its unit, its uncertainty (without `<sample>/` for an evaluator of the candidate) |
-| `limit:<sample>/<evaluator>/<stage>/<metric>:<bound>:value`, `…:margin`, `…:satisfied` | the value judged, its margin (zero or below when satisfied), the verdict |
+| `limit:<sample>/<evaluator>/<stage>/<metric>:<bound>:value`, `…:margin`, `…:normalized`, `…:satisfied` | the value judged, its margin (zero or below when satisfied), the margin in units of the constraint's scale (what the optimizer was told), the verdict |
 | `elapsed_seconds`, `stage:<sample>/<stage>:elapsed_seconds` | the recorded wall-clock time of the evaluation, and of each stage of each sample that ran (`stage:gamma_10gev/simulation:elapsed_seconds`) |
 | `record`, `record_sha256`, `record_path` | the record's id, SHA-256 and path in the study |
 | `message` | why the trial is invalid, failed or an error |
@@ -517,7 +533,7 @@ or the number 1: the JSON export is the typed one.
   "format": "k4opt.study-results/1",
   "directory": "/home/me/runs/cld-ecal-study",
   "study": {"schema": "k4opt.study/1", "id": "3f9c2a1b-...", "problem": {}, "optimizer": {}},
-  "outcomes": {"feasible": 28, "infeasible": 0, "invalid": 1, "failed": 1, "interrupted": 0, "error": 0, "running": 0},
+  "outcomes": {"feasible": 28, "infeasible": 0, "invalid": 1, "failed": 1, "rejected": 0, "interrupted": 0, "error": 0, "running": 0},
   "pareto": [0, 4, 7],
   "warnings": [],
   "trials": [
@@ -541,7 +557,8 @@ or the number 1: the JSON export is the typed one.
 
 A trial's `assessment` is the one its `summary.json` holds (`null` without a record): each
 objective as `stage`, `metric`, `value`, `unit` and `uncertainty`, and each limit as `stage`,
-`metric`, `bound`, `limit`, `unit`, `value`, `uncertainty`, `margin` and `satisfied`. Its
+`metric`, `bound`, `limit`, `unit`, `value`, `uncertainty`, `margin`, `scale`, `normalized` and
+`satisfied`. Its
 `diagnostics` are those of the record: each diagnostic that did not succeed, as `task`, `status`
 and `message`.
 
@@ -559,12 +576,15 @@ report = optimize(
     seed=42,  # or resume=True, storage="postgresql://..."
     workers=4,  # worker processes, tasks at once; "inline" by default
     warn=print,  # each warning
-    progress=print,  # each TrialReport as its trial ends, the recovered ones of a resume first
+    progress=print,  # each TrialResult as its trial ends, the recovered ones of a resume first
 )
 report.pareto  # the trial numbers on the Pareto front of the feasible valid trials
-report.trials  # TrialReport: number, directory, candidate, status, feasible, objectives,
-# record (the summary's id), message, recovered
+report.trials  # each TrialResult, as load_study reads it back (below)
 ```
+
+`optimize` returns the study as [`load_study`](#inspecting-and-exporting-a-study) would read it once its
+trials ended, read from the storage it still holds, and gives `progress` each trial as that
+reads it: one interpretation of a trial, live and later.
 
 `optimize` raises `OptimizationError` (a `K4OptError`) when a study cannot start, resume or go
 on, and `KeyboardInterrupt` after a clean stop on Ctrl-C or SIGTERM. Underneath it is an
@@ -587,7 +607,7 @@ trial = study.trial(12)  # by its number
 trial.status, trial.outcome, trial.candidate, trial.message, trial.recovered
 for m in trial.assessment.objectives:  # None for a trial without a valid result
     print(m.stage, m.metric, m.value, m.unit, m.uncertainty)
-trial.assessment.limits  # each Limit: value, limit, margin, satisfied
+trial.assessment.limits  # each Limit: value, limit, margin, scale, normalized, satisfied
 trial.elapsed_seconds, trial.stage_seconds  # recorded times, stages by label
 trial.record, trial.sha256, trial.summary_path  # the summary.json it was read from
 
@@ -595,9 +615,8 @@ data = study.to_dict()  # the JSON export, plain data
 ```
 
 `StudyResults` and `TrialResult` are a snapshot: immutable, detached from the storage, and free
-of Optuna types; `study.document` is `study.json` as a read-only mapping. They are not the
-`StudyReport` and `TrialReport` of `optimize`, which report a study as it runs. `load_study`
-raises `OptimizationError` for anything it cannot read or does not trust (above), and needs
+of Optuna types; `study.document` is `study.json` as a read-only mapping. `optimize` returns the
+same. `load_study` raises `OptimizationError` for anything it cannot read or does not trust (above), and needs
 Optuna, which holds the trials; the rest of k4opt does not.
 
 ## Not done

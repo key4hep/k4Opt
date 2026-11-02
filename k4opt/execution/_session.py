@@ -259,10 +259,10 @@ class EvaluationSession:
         use (its affinity, at most its cgroup's quota). A simulation on several threads
         (``numberOfThreads``) holds as many workers while it runs. Each evaluator class's ``check``
         is still called in this process, without a time limit, before anything of its candidate is
-        created. Inline, nothing stops the Python of a task, so a ``geometry`` or ``evaluator`` time
-        limit needs workers (a :class:`~k4opt.execution.RunError` otherwise); a ``stage`` limit
-        stops the program the stage runs. Close a session (:meth:`close`, or ``with``) to stop its
-        workers.
+        created. Inline, nothing stops the Python of a task, so a problem that limits its
+        evaluations (its ``timeout``) needs workers to evaluate candidates, though not to check
+        them (:meth:`check_limits`); a stage's limit stops the program the stage runs. Close a
+        session (:meth:`close`, or ``with``) to stop its workers.
         Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
         stage or input (an :class:`~k4opt.evaluation.EvaluationContractError` for an evaluator
         class that declares anything but plain data, too), and
@@ -273,13 +273,6 @@ class EvaluationSession:
         count, usable = _workers(workers), usable_cpus()
         problem = resolve_problem(path)
         spec = problem.spec
-        limited = [f"evaluators[{i}].timeout" for i, e in enumerate(spec.evaluators) if e.timeout]
-        if count is None and (limited or spec.timeout is not None):
-            raise RunError(
-                f"{', '.join(limited) or 'timeout'}: an evaluation that runs in the session's own "
-                "process cannot be stopped when its time runs out; evaluate with worker processes "
-                "(--workers 1, or more)"
-            )
         supplied = _supplied(spec, inputs or {})
         binding = _bind_problem(
             spec, implementations, supplied, directory=problem.directory, catalog=problem.catalog
@@ -388,6 +381,23 @@ class EvaluationSession:
         """
         return self._baseline.identity()
 
+    def check_limits(self) -> None:
+        """Raise :class:`~k4opt.execution.RunError` if this session could not keep the time
+        limits of the problem's evaluations: inline, nothing stops an evaluation that runs in
+        this process when its time runs out, and no limit is claimed that is not kept. Checking a
+        candidate (:meth:`check`) needs none of that; evaluating one does, so :meth:`evaluate`
+        and :meth:`evaluate_each` refuse such a session before they create anything."""
+        if self._backend is not None:
+            return
+        spec = self.spec
+        limited = [f"evaluators[{i}].timeout" for i, e in enumerate(spec.evaluators) if e.timeout]
+        if limited or spec.timeout is not None:
+            raise RunError(
+                f"{', '.join(limited) or 'timeout'}: an evaluation that runs in the session's own "
+                "process cannot be stopped when its time runs out; evaluate with worker processes "
+                "(--workers 1, or more)"
+            )
+
     def verify_inputs(self) -> None:
         """Raise :class:`~k4opt.execution.RunError` if a file the stages read (named by the problem
         or supplied) is not the file it was when the session opened: other bytes, or now readable
@@ -463,6 +473,7 @@ class EvaluationSession:
         """
         if self._open is not None:
             raise RunError("the session is evaluating already; close that evaluation first")
+        self.check_limits()  # before anything is created
         evaluations = Evaluations(self, self._evaluations(iter(requests), activity))
         self._open = evaluations
         return evaluations

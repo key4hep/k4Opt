@@ -97,15 +97,47 @@ What the optional parts do:
   takes numbers with a unit of its dimension, a `float` numbers without a unit, an `int`
   integers, a `str` or a `bool` its own; a `list` or a `dict`, none ([problem](problem.md#parameters)).
   That is how an evaluator receives a candidate's values: under its own names, in its own units.
-  Override `check(request)` for rules beyond that and call `super().check(request)`; plain
-  evaluators can define `check` alone. Settings and collection resolution always run, even
-  without `check`, and so does the check of the settings against what the evaluator declares
-  (`check_settings`, which `Evaluator.check` calls): when a session opens, before any
-  candidate, since they need none. `check` itself runs once per candidate, with a request made
-  for that candidate, before materialization, and that request is reused during its execution.
-  `check` is for the settings and the contract: what it raises stops the evaluation before
-  anything is created, as a misuse. A candidate the evaluator finds scientifically unusable is not refused there:
-  `evaluate()` says so with `self.invalid("...")`, and the candidate is recorded as `invalid`.
+  Settings and collection resolution always run, and so does the check of the settings against
+  what the evaluator declares (`check_settings`): when a session opens, before any candidate,
+  since they need none.
+- `check`: a **classmethod**, `@classmethod def check(cls, request)`, asked about the request
+  each evaluation of a candidate would get, once, before anything of the candidate is created or
+  run. It is the evaluator's rules beyond its declared settings, and has two ways out:
+
+  ```python
+  from k4opt.evaluation import EvaluationContractError, Evaluator, Quantity
+
+
+  class EcalChannels(Evaluator):
+      name, version = "ecal.channels", "1"
+      settings = {"layers": int, "cell_size": Quantity("mm")}
+      metrics = {("geometry", "ecal_barrel.channels"): "1"}
+
+      @classmethod
+      def check(cls, request):
+          super().check(request)  # the declared settings
+          if request.settings["layers"] <= 0:  # the problem's mistake: every candidate has it
+              raise EvaluationContractError("layers must be positive")
+          if request.settings["cell_size"] > 20:  # this candidate's: it cannot be evaluated
+              cls.reject(f"cells of {request.settings['cell_size']} mm cannot be read out")
+  ```
+
+  `cls.reject("...")` (it raises `CandidateRejected`) **rejects the candidate**: nothing of it is
+  created or run, `k4opt evaluate` says so and exits 1, and an optimizer records the trial as
+  `rejected` and goes on with the next candidate. Use it for a requirement the evaluator states
+  on its own request that a candidate can break. Anything else `check` raises stops the
+  evaluation as a misuse (and stops a study): an `EvaluationContractError` for settings no
+  candidate could work with, say. `self.fail()` and `self.invalid()` have no place there, since
+  nothing has run that could fail or be unusable: in `check` they are a contract error saying so.
+  Raised from `__init__` or `evaluate()`, `CandidateRejected` is a contract error too: once a
+  candidate runs, an unusable result is `self.invalid("...")`, recorded as `invalid`.
+
+  `check` is called with no instance, in the session's own process, and **without a time
+  limit**, so keep it to inexpensive checks of the request alone (its settings, collections,
+  events, seed and sample properties): no files, no geometry, no physics, no network. Work that
+  needs any of that belongs in `evaluate()`, which runs isolated (with workers) and time-limited
+  ([Time limits](#time-limits)). A `check` that is not a classmethod is refused when the session
+  opens.
 - `metrics`: lets `k4opt evaluate` reject an unsupported objective before anything runs, and
   holds every returned measurement of those metrics to the declared unit, so one metric identity
   never carries two units. An objective names the binding that measures it, so two evaluators
@@ -199,7 +231,7 @@ Session opening checks wiring, cardinality, settings and declarations before cre
 does not exist yet. `evaluate(request)` runs only after every input succeeds; failed, invalid
 or blocked inputs block it. Independent evaluations still run. One upstream task may feed
 several roles or combined evaluators, and it executes only once. A fresh evaluator instance
-is created for every invocation and candidate. Candidate-level evaluators cannot be role
+is created for every evaluation of every candidate. Candidate-level evaluators cannot be role
 inputs yet, so combined evaluators cannot be chained.
 
 Records store each role's ordered input labels, and store upstream measurements and artifacts
@@ -451,18 +483,16 @@ ran and is `done`, [unhashed](#artifacts-and-the-files-of-a-run)) and `logs`, an
 on it. An
 evaluator's result holds only what it returned, so its artifact and provenance names cannot
 clash with the stages'. The stages take their conditions from their sample, never from an
-evaluator, except a time limit, which is the caller's: a stage that runs a program (ddsim)
-longer than the `timeout` of the session kills it and fails. An evaluator has no time limit: one
-that never returns holds its worker, or inline the session, until the session is stopped
-(Ctrl-C, SIGTERM). Stages are internal for now: what each stage type is in
+evaluator, its time limit included: a stage that runs a program (ddsim) longer than its
+`timeout` (or the problem's) has the program killed and fails, its logs kept. Stages are internal for now: what each stage type is in
 `k4opt.problem.stages`, how one runs in `k4opt.execution._stages`.
 
 ## Loading an evaluator
 
 `load_evaluator("path/to/file.py:Class")` (or `"package.module:Class"`) imports the file or
 module and returns the class, after checking that it is a class with an `evaluate` method;
-`EvaluatorLoadError` otherwise. It creates no instance: k4opt creates one for every candidate
-([Lifecycle](#lifecycle-a-class-and-an-instance-per-candidate)). This is what
+`EvaluatorLoadError` otherwise. It creates no instance: k4opt creates one for every evaluation
+([Lifecycle](#lifecycle-a-class-and-an-instance-per-evaluation)). This is what
 `k4opt evaluate --evaluator` uses. The file is executed as ordinary Python: name only evaluators you trust. Like `python file.py`, its
 directory is put on `sys.path` (and stays there), so an evaluator can import helper modules next
 to it, at the top of the file or inside a method. Python caches modules by name for the whole
@@ -525,39 +555,60 @@ that tracks the file, taken at the same time: an edited file of that checkout sh
 `dirty: true`. It is `null` for a file that no checkout tracks (outside one, or new or ignored
 in it).
 
-## Lifecycle: a class, and an instance per candidate
+## Lifecycle: a class, and an instance per evaluation
 
 k4opt is given evaluator classes, not instances: `EvaluationSession.open(problem, [CellCount])`,
 `optimize(problem, [CellCount], ...)` and `k4opt evaluate --evaluator FILE.py:CellCount` all
 take the class. A function that builds an instance, or an instance, is refused: it could set
 up the evaluator in ways its class's source, which the records identify as the code that ran,
-does not say. When a session opens, k4opt creates one instance of each to read what it
-declares and bind it to the entries of `evaluators` that name it; that instance is asked
-nothing else. Every candidate then gets a new instance for each binding, before anything of the
-candidate is created: k4opt calls its `check()` and later its `evaluate()`, then drops it. Nothing an
-evaluator keeps on `self` reaches another candidate.
+does not say. An evaluation goes through four steps, each where it belongs:
 
-Every instance must declare what the first did: the same class, `name`, `version`, `stage`,
-`settings`, `collections`, `metrics`, `artifacts` and `roles`. The records name the first one's class as the code that
-ran, its metrics decide what the objectives may name, and its settings and collections, defaults included,
-make the request, which must not change from one candidate to the next. What the first declared
-is copied all through when the session opens, so an evaluator that changes a nested default of
-its class (`self.settings["cuts"]["min"] = ...`) is caught at the next candidate. An instance
-that declares otherwise, or a constructor that raises, is an `EvaluationContractError` before
-anything of the candidate is created. Setup that is expensive and the same for every candidate
-(a model file, a lookup table) belongs in a module-level cache of the evaluator's own
-(`functools.cache`), not in `__init__`, which runs for every candidate.
+1. **Declarations, from the class.** When a session opens, k4opt reads what the class declares
+   (`name`, `version`, `stage`, `settings`, `collections`, `metrics`, `artifacts`, `roles`) and
+   binds it to the entries of `evaluators` that name it. Nothing is created and none of the
+   class's code runs: each declaration must be plain data on the class (a string, a mapping,
+   `None`); a property or another descriptor, whose value only code could give, is refused, as
+   is a `check` that is not a classmethod (`check_class`). What the class declares is copied all
+   through, and the records name it as the code that ran.
+2. **The candidate's request, checked.** For each evaluation of a candidate, k4opt makes the
+   request and calls the class's [`check`](#writing-an-evaluator) once with it, in the session's
+   own process, before anything of the candidate is created; `cls.reject(...)` there rejects the
+   candidate. It also checks that the class still declares what it did when the session bound
+   it: an evaluator that changed a nested default of its class (`self.settings["cuts"]["min"] =
+   ...`) is caught before the next candidate is created.
+3. **One instance, where the evaluation runs.** Right before `evaluate()`, k4opt creates **one**
+   new instance (`__init__` without arguments), in the process that evaluates: a worker process,
+   or the session's own. Its creation counts toward the evaluation's time, its peak memory and
+   its [time limit](#time-limits), and with workers what `__init__` prints goes to
+   `evaluator.log`. An instance that sets a declaration of its own (`self.metrics = ...`) is
+   refused: declare on the class. A constructor that raises is an `EvaluationContractError`.
+4. **Evaluate.** `evaluate()` is called once on that instance, which is then dropped. Nothing
+   an evaluator keeps on `self` reaches another sample, binding or candidate.
+
+So `__init__` runs once per evaluation and never in the session's process when workers
+evaluate. Setup that is expensive and the same for every candidate (a model file, a lookup
+table) belongs in a module-level cache of the evaluator's own (`functools.cache`): it lives as
+long as the process that evaluates, which with workers serves many evaluations.
 
 With workers ([execution](execution.md#execution-inline-or-in-worker-processes)), `evaluate()` runs
 in a worker process, which loads the evaluator again by its reference (`FILE.py:Class` or
 `module:Class`): give classes [`load_evaluator`](#loading-an-evaluator) loaded, not ones
-defined in the script that runs the session. The instance checked before anything of the
-candidate is created then only does that: the worker creates the instance that evaluates, calls
-its `check()` with the same request and then its `evaluate()`. So `check()` and `evaluate()`
-always reach one instance, and `check()` runs twice; keep it free of side effects. What
-`evaluate()` prints goes to `evaluator.log` in its own directory, which the summary names
-(`log`); it writes only in `request.workdir` and shares nothing with the process that started
-the session. A module-level cache lives as long as its worker, which serves many evaluations.
+defined in the script that runs the session. The worker checks that the class declares what the
+session's did. What `__init__` and `evaluate()` print goes to `evaluator.log` in the
+evaluation's own directory, which the summary names (`log`); the evaluator writes only in
+`request.workdir` and shares nothing with the process that started the session.
+
+## Time limits
+
+A problem may limit how long each evaluation takes (`timeout:` on its entry in `evaluators`, or
+the problem's `timeout:` for every evaluation and stage without one of its own;
+[problem](problem.md#time-limits)). An evaluation that takes longer, its instance's creation
+included, is stopped with the worker process that runs it (SIGTERM, then SIGKILL, and every
+process it started), fails with what it printed kept in `evaluator.log`, and its candidate is
+`failed`; the worker is replaced. Only a worker process can be stopped so: a session that
+evaluates inline refuses to evaluate a problem that limits its evaluations (it still checks
+candidates, `k4opt evaluate --dry-run`). `check` has no time limit (it runs in the session's
+own process), which is why it must stay an inexpensive check of the request.
 
 ## Problem, evaluator, record
 

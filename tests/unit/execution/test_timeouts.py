@@ -234,9 +234,14 @@ def test_the_problem_s_timeout_limits_every_stage_and_evaluation_without_one_of_
 
 
 @pytest.mark.parametrize("limit", ["evaluator", "default"])
-def test_a_problem_that_limits_its_evaluations_is_refused_inline(session: Any, limit: str) -> None:
+def test_a_problem_that_limits_its_evaluations_is_checked_but_not_evaluated_inline(
+    tmp_path: Path, session: Any, limit: str
+) -> None:
     # nothing stops an evaluation in the session's own process: no limit is claimed that is not
-    # kept; a stage's limit alone stops the program it runs, inline too
+    # kept; a candidate is still checked (a dry run), and a stage's limit alone stops its program
+    opened = session(workers="inline", **{limit: 5.0})
+    opened.check({RADIUS: 450.0})
     with pytest.raises(RunError, match=r"timeout: an evaluation .* cannot be stopped.*--workers"):
-        session(workers="inline", **{limit: 5.0})
-    session(workers="inline", simulation=5.0).close()
+        opened.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert not (tmp_path / "a").exists()
+    session(workers="inline", simulation=5.0).check_limits()

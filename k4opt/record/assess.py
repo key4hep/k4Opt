@@ -13,6 +13,7 @@ that represents its candidate is called feasible or not.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
@@ -80,10 +81,11 @@ class Limit:
     satisfies it, with margin 0. ``scale`` is the constraint's characteristic size of the metric
     (1 where it gives none), and ``normalized`` the margin in units of it, ``margin / scale``:
     dimensionless, what an optimizer is told, so that limits on metrics of different units add up
-    meaningfully. Both are computed exactly and rounded once, so their sign is always that of the
-    exact comparison; each is ``None`` if it does not fit in a float, while ``satisfied`` stays
-    exact. ``value``, its ``uncertainty`` (recorded, not used), ``margin``, ``normalized`` and
-    ``satisfied`` are ``None`` when the evaluation is not ``valid``.
+    meaningfully. Both are computed exactly and rounded once to the nearest float, so their sign
+    is always that of the exact comparison: a value nearer zero than any float is the smallest
+    float of its sign, never zero. Each is ``None`` if it does not fit in a float, while
+    ``satisfied`` stays exact. ``value``, its ``uncertainty`` (recorded, not used), ``margin``,
+    ``normalized`` and ``satisfied`` are ``None`` when the evaluation is not ``valid``.
     """
 
     evaluator: str
@@ -275,8 +277,13 @@ def _limit(constraint: Constraint, bound: Bound, measurement: Measurement | None
 
 
 def _float(exact: Fraction) -> float | None:
-    """``exact`` rounded once to the nearest float, ``None`` beyond the range of a float."""
+    """``exact`` rounded once to the nearest float, keeping its sign: a nonzero value nearer zero
+    than any float is the smallest float of its sign, never zero (a violation told as 0 would read
+    as satisfied); ``None`` beyond the range of a float."""
     try:
-        return float(exact)
+        rounded = float(exact)
     except OverflowError:
         return None
+    if rounded == 0 and exact != 0:
+        return math.copysign(math.ulp(0.0), exact)
+    return rounded

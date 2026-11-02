@@ -1031,3 +1031,84 @@ def test_a_study_whose_parameter_sets_the_geometry_and_a_stage_resumes_configure
             assert f"--physics.rangecut={radius!r}" in stage["argv"]
             assert stage["varies"] == [RADIUS]
         assert record["geometry"]["changes"][0]["new_value"] == repr(radius)
+
+
+# --- what a resume keeps of trials without a record ------------------------------------------
+
+
+def rejecting(write_problem: Callable[..., Path]) -> Path:
+    """A problem whose radius is 150 or 250, and whose evaluator rejects 250."""
+    return write_problem(
+        parameter={
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
+            "type": "categorical",
+            "choices": [150, 250],
+        },
+        evaluators=[{"name": "test.candidate_check", "version": "1", "settings": {"reject": 250}}],
+        objectives=[("analysis", "seen", "minimize")],
+    )
+
+
+def test_a_resumed_study_keeps_its_rejected_trials_rejected(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    from tests.support.evaluators import candidate_check
+
+    problem, output = rejecting(write_problem), tmp_path / "s"
+    first = run(problem, output, 6, seed=2, evaluators=[candidate_check()])
+    before = {t.number: t.status for t in first.trials}
+    assert "rejected" in before.values() and "valid" in before.values()
+    resumed = run(problem, output, 3, resume=True, evaluators=[candidate_check()])
+    after = {t.number: t.status for t in resumed.trials}
+    assert {n: after[n] for n in before} == before  # as they were, each read back strictly
+    assert len(after) == 9
+    rejected = [t for t in resumed.trials if t.status == "rejected"]
+    assert all(t.record is None and t.assessment is None for t in rejected)
+    assert not set(resumed.pareto) & {t.number for t in rejected}
+
+
+@pytest.mark.parametrize(
+    ("forge", "message"),
+    [
+        ({"k4opt.rejected_by": "nothing"}, "which is no evaluation of the problem"),
+        ({"k4opt.feasible": True}, "not what k4opt tells a rejected trial"),
+        ({"k4opt.record": {"id": "x"}}, "not what k4opt tells a rejected trial"),
+        ({"k4opt.message": 3}, "its message is 3"),
+        ({}, "trial-000000 exists, though nothing of a rejected candidate is created"),
+    ],
+)
+def test_a_rejected_trial_is_read_strictly(
+    tmp_path: Path, write_problem: Callable[..., Path], forge: dict[str, Any], message: str
+) -> None:
+    from k4opt.optimization._optuna.read import trial_result
+    from k4opt.optimization._results import recorded_problem
+    from k4opt.optimization._study import read_study
+
+    problem, output = rejecting(write_problem), tmp_path / "s"
+    run(problem, output, 1, seed=1, evaluators=[_checking()])
+    document = read_study(output)
+    attrs = {
+        "k4opt.dir": "trial-000000",
+        "k4opt.status": "rejected",
+        "k4opt.rejected_by": "test.candidate_check",
+        "k4opt.message": "cannot measure 250",
+    }
+    frozen = optuna.trial.create_trial(
+        state=TrialState.FAIL,
+        params={RADIUS: 250},
+        distributions=search_space(load_problem(problem)),
+        user_attrs=attrs | forge,
+    )
+    frozen.number = 0  # the study's first trial
+    shutil.rmtree(output / "trial-000000", ignore_errors=True)
+    if not forge:  # all as k4opt tells it, but a directory: a rejected trial has none
+        (output / "trial-000000").mkdir()
+    with pytest.raises(OptimizationError, match=message):
+        trial_result(output, document, recorded_problem(document), frozen, {})
+
+
+def _checking() -> Any:
+    """``test.candidate_check``, which accepts the first candidate it is asked about here."""
+    from tests.support.evaluators import candidate_check
+
+    return candidate_check()

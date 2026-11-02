@@ -681,3 +681,54 @@ def test_two_bindings_of_one_implementation_are_two_owners_in_a_record(
     change(data)
     with pytest.raises(RecordError, match=re.escape(message)):
         Assessment.from_summary(session.spec, data)
+
+
+# --- normalized margins: what an optimizer is told of each limit ------------------------------
+
+
+def limit_of(bound: str, value: float, unit: str = "mrad", **constraint: Any) -> Any:
+    """The limit ``bound`` of a constraint on ``analysis/a`` judged on ``value``."""
+    from k4opt.problem.models import Constraint
+    from k4opt.record.assess import _limit
+
+    measured = Measurement("analysis", "a", value, unit)
+    spec = Constraint("test.fixed", "analysis", "a", unit=unit, **constraint)
+    return _limit(spec, bound, measured)  # type: ignore[arg-type]
+
+
+def test_a_limit_in_another_unit_with_its_scale_in_that_unit_is_told_alike() -> None:
+    # 3 mrad against at most 2 mrad on a scale of 0.5 mrad, and the same in rad
+    mrad = limit_of("max", 3.0, max=2.0, scale=0.5)
+    rad = limit_of("max", 0.003, "rad", max=0.002, scale=0.0005)
+    assert (mrad.margin, rad.margin) == (1.0, pytest.approx(0.001))  # physical: in its own unit
+    assert mrad.normalized == 2.0 and rad.normalized == pytest.approx(2.0)  # dimensionless
+    assert mrad.satisfied is rad.satisfied is False
+    # and the verdict is the physical comparison's, whatever the scale
+    for scale in (1e-6, 1.0, 1e6):
+        assert limit_of("max", 3.0, max=2.0, scale=scale).satisfied is False
+        assert limit_of("max", 2.0, max=2.0, scale=scale).normalized == 0.0
+
+
+def test_a_limit_at_zero_and_both_bounds_of_one_constraint() -> None:
+    assert (limit_of("max", 0.0, max=0).normalized, limit_of("max", 0.0, max=0).satisfied) == (
+        0.0,
+        True,
+    )
+    assert limit_of("min", -1.0, min=0, scale=0.25).normalized == 4.0
+    below, above = (limit_of(b, 0.0, min=1, max=3, scale=2) for b in ("min", "max"))
+    assert (below.normalized, below.satisfied, above.normalized, above.satisfied) == (
+        0.5,
+        False,
+        -1.5,
+        True,
+    )
+
+
+def test_a_normalized_margin_beyond_a_float_is_none_and_near_zero_keeps_its_sign() -> None:
+    assert limit_of("max", 1e308, max=-1e308, scale=1e-10).normalized is None  # stops a study
+    # a violation of one part in 2**52 on a scale of 1e308 is nearer zero than any float: it is
+    # the smallest positive one, never 0.0, which would read as satisfied
+    violated = limit_of("max", 1.0 + 2**-52, max=1.0, scale=1e308)
+    assert violated.satisfied is False and violated.normalized == math.ulp(0.0) > 0
+    kept = limit_of("max", 1.0 - 2**-53, max=1.0, scale=1e308)
+    assert kept.satisfied is True and kept.normalized == -math.ulp(0.0) < 0

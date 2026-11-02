@@ -24,7 +24,7 @@ import yaml
 
 from k4opt.cli import main
 from k4opt.evaluation import load_evaluator
-from k4opt.execution import EvaluationSession
+from k4opt.execution import EvaluationSession, Rejected
 from k4opt.problem import parse_problem
 from k4opt.record import Assessment
 from tests.support.common import scientific
@@ -451,3 +451,38 @@ def test_the_example_of_every_destination_previews_on_the_installed_geometry(
         "    gamma_10gev, gamma_50gev: 70.0 keV",
     ]
     assert lines[-1] == "No simulation executed; no evaluation output created."
+
+
+def test_a_simulation_killed_at_its_time_limit_fails_its_sample_and_the_session_goes_on(
+    problem: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """The real ddsim, killed at the time limit the problem gives one sample's simulation (it
+    takes longer than 2 s only to start): that sample fails with its logs, the other sample of
+    the candidate is measured, and the next candidate runs in the same session's worker."""
+    doc = yaml.safe_load(problem.read_text())
+    unlimited = copy.deepcopy(doc["samples"][SAMPLE])
+    doc["samples"]["unlimited"] = unlimited
+    doc["samples"][SAMPLE]["simulation"]["timeout"] = 2
+    doc["evaluators"][0]["samples"] = [SAMPLE, "unlimited"]
+    objectives = doc["objectives"]
+    doc["objectives"] = [o | {"sample": s} for s in (SAMPLE, "unlimited") for o in objectives]
+    doc["constraints"][0]["sample"] = SAMPLE
+    path = problem.with_name("limited.yaml")
+    path.write_text(yaml.safe_dump(doc))
+    base = tmp_path_factory.mktemp("limited")
+    with EvaluationSession.open(path, [load_evaluator(CALO_PHOTON)], workers=1) as session:
+        runs = [session.evaluate({CELL: size}, base / str(size)) for size in (6.0, 7.0)]
+    for run in runs:
+        assert not isinstance(run, Rejected)
+        summary = json.loads(run.summary_path.read_text())
+        killed = summary["samples"][SAMPLE]["stages"]["simulation"]
+        assert killed["status"] == "failed" and killed["timeout"] == 2
+        assert "ddsim ran longer than 2 s and was killed" in killed["message"]
+        assert (run.run_dir / killed["logs"]["stderr"]).is_file()
+        measured = summary["samples"]["unlimited"]["evaluations"]["calo.photon"]
+        assert measured["status"] == "valid"
+        assert summary["status"] == "failed"  # an execution failure, recorded: no error
+        assessment = Assessment.from_summary(
+            parse_problem(summary["problem"]["definition"]), summary
+        )
+        assert assessment.feasible is None and assessment.objectives is None
