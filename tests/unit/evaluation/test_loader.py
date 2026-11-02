@@ -7,6 +7,7 @@ import importlib
 import os
 import py_compile
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -77,19 +78,17 @@ def test_loading_a_file_twice_shares_the_module(evaluator_file: Path) -> None:
     assert first.__module__ in sys.modules
 
 
-def test_cached_class_keeps_the_identity_of_the_executed_bytes(evaluator_file: Path) -> None:
+def test_a_loaded_class_keeps_the_identity_of_the_executed_bytes(evaluator_file: Path) -> None:
     data = evaluator_file.read_bytes()
     first = load_evaluator(f"{evaluator_file}:Good")
-    evaluator_file.write_text(GOOD.replace('"answer", 42', '"answer", 99'))
-    second = load_evaluator(f"{evaluator_file}:Good")
-    assert second().evaluate(None).measurements[0].value == 42  # type: ignore[arg-type]
     assert (
         evaluator_source(first)
-        == evaluator_source(second)
+        == evaluator_source(load_evaluator(f"{evaluator_file}:Good"))
         == {
             "path": str(evaluator_file),
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
+            "helpers": {},  # it imports no module beside it
             "executed": True,
             "revision": None,  # no git checkout tracks it
             "reference": f"{evaluator_file}:Good",  # what loads it again
@@ -97,6 +96,97 @@ def test_cached_class_keeps_the_identity_of_the_executed_bytes(evaluator_file: P
     )
     evaluator_file.unlink()
     assert evaluator_source(first)["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_a_file_edited_since_it_was_executed_is_not_loaded_again(evaluator_file: Path) -> None:
+    load_evaluator(f"{evaluator_file}:Good")
+    evaluator_file.write_text(GOOD.replace('"answer", 42', '"answer", 99'))
+    with pytest.raises(EvaluatorLoadError, match=r"its bytes changed.*load it in a new process"):
+        load_evaluator(f"{evaluator_file}:Good")
+
+
+IMPORTS = """
+import {helper}
+from {package} import tools
+
+from k4opt.evaluation import EvaluationResult, Measurement
+
+
+class Good:
+    name = "demo.good"
+    version = "3"
+
+    def evaluate(self, request):
+        import {late}  # run only when it evaluates, hashed all the same
+
+        value = {helper}.value + tools.value + {late}.value
+        return EvaluationResult.valid([Measurement("analysis", "answer", value)])
+"""
+
+
+@pytest.fixture
+def with_helpers(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[Path]:
+    """An evaluator file importing a module, a package whose module imports relatively, and a
+    module inside a method, all beside it; named for the test, and forgotten after it."""
+    tag = hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    helper, package, late = f"helper_{tag}", f"pkg_{tag}", f"late_{tag}"
+    (tmp_path / f"{helper}.py").write_text("value = 1\n")
+    (tmp_path / package).mkdir()
+    (tmp_path / package / "__init__.py").write_text("")
+    (tmp_path / package / "tools.py").write_text("from .constants import value\n")
+    (tmp_path / package / "constants.py").write_text("value = 10\n")
+    (tmp_path / f"{late}.py").write_text("value = 100\n")
+    path = tmp_path / "with_helpers.py"
+    path.write_text(IMPORTS.format(helper=helper, package=package, late=late))
+    yield path
+    for name in list(sys.modules):
+        if name.split(".")[0] in (helper, package, late):
+            del sys.modules[name]
+
+
+def test_the_modules_a_file_imports_beside_it_are_hashed(with_helpers: Path) -> None:
+    cls = load_evaluator(f"{with_helpers}:Good")
+    assert cls().evaluate(None).measurements[0].value == 111  # type: ignore[arg-type]
+    root = with_helpers.parent
+    expected = {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*.py"))
+        if path != with_helpers
+    }
+    assert len(expected) == 5  # the helper, the package's three files, the late import
+    assert evaluator_source(cls)["helpers"] == dict(sorted(expected.items()))
+
+
+def test_an_edited_helper_is_not_loaded_again(with_helpers: Path) -> None:
+    load_evaluator(f"{with_helpers}:Good")
+    constants = next(with_helpers.parent.glob("pkg_*/constants.py"))
+    constants.write_text("value = 20\n")
+    with pytest.raises(EvaluatorLoadError, match=r"the modules it imports changed: pkg_\w+/consta"):
+        load_evaluator(f"{with_helpers}:Good")
+
+
+def test_a_helper_of_the_same_name_from_another_directory_is_refused(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    name = "helper_" + hashlib.sha256(request.node.name.encode()).hexdigest()[:8]
+    files = []
+    for directory, value in (("a", 1), ("b", 2)):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / f"{name}.py").write_text(f"value = {value}\n")
+        files.append(tmp_path / directory / "evaluator.py")
+        files[-1].write_text(f"import {name}\n" + GOOD)
+    try:
+        load_evaluator(f"{files[0]}:Good")
+        # Python would give the second file the first one's module
+        with pytest.raises(
+            EvaluatorLoadError, match=rf"imports '{name}', which is .*/b/{name}\.py beside it"
+        ):
+            load_evaluator(f"{files[1]}:Good")
+        # evaluators in one directory share their helpers
+        (tmp_path / "a" / "other.py").write_text(f"import {name}\n" + GOOD)
+        assert load_evaluator(f"{tmp_path / 'a' / 'other.py'}:Good").name == "demo.good"
+    finally:
+        sys.modules.pop(name, None)
 
 
 def test_a_module_imported_by_the_loader_is_identified_right_after_the_import(
@@ -112,6 +202,7 @@ def test_a_module_imported_by_the_loader_is_identified_right_after_the_import(
             "path": str(evaluator_file),
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
+            "helpers": {},
             "executed": False,
             "revision": None,
             "reference": "my_evaluator:Good",
@@ -153,10 +244,34 @@ def test_a_class_re_exported_by_a_package_is_identified_by_its_own_file(
         source = evaluator_source(load_evaluator("study:Good"))
         assert source["path"] == str(package / "impl.py")
         assert source["sha256"] == hashlib.sha256(GOOD.encode()).hexdigest()
+        assert source["helpers"] == {}  # it imports no other module of its package
         assert source["reference"] == "study:Good"  # as it was loaded
     finally:
         for name in ("study", "study.impl"):
             sys.modules.pop(name, None)
+
+
+def test_a_module_is_identified_with_the_modules_of_its_package_it_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "campaign"
+    (package / "physics").mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "physics" / "__init__.py").write_text("")
+    (package / "physics" / "corrections.py").write_text("scale = 1.0\n")
+    (package / "impl.py").write_text("import json\nfrom .physics import corrections\n" + GOOD)
+    (tmp_path / "json.py").write_text("")  # beside the package, not of it: not its module
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        source = evaluator_source(load_evaluator("campaign.impl:Good"))
+        assert sorted(source["helpers"]) == [  # type: ignore[arg-type]
+            "campaign/__init__.py",
+            "campaign/physics/__init__.py",
+            "campaign/physics/corrections.py",
+        ]
+    finally:
+        for name in [n for n in sys.modules if n.partition(".")[0] == "campaign"]:
+            del sys.modules[name]
 
 
 def test_a_module_imported_before_does_not_claim_an_unverified_source_hash(

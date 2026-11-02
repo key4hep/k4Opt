@@ -456,10 +456,12 @@ module and returns the class, after checking that it is a class with an `evaluat
 `k4opt evaluate --evaluator` uses. The file is executed as ordinary Python: name only evaluators you trust. Like `python file.py`, its
 directory is put on `sys.path` (and stays there), so an evaluator can import helper modules next
 to it, at the top of the file or inside a method. Python caches modules by name for the whole
-process, so two evaluator files that each import a helper called `metrics` share whichever was
-imported first. For one study this is fine. When several studies run in one process, give the
-helpers unique names or, better, install the study as a package and use
-`package.module:Class`; the same holds for the several evaluators of one problem. It is not a
+process, so a second evaluator file that imports a helper `metrics` from its own directory would
+get the first one's: `load_evaluator` refuses it, naming both files. Evaluators in one directory
+share their helpers; evaluators in different directories need helpers of different names or,
+better, packages of their own (`package.module:Class`). A file is executed once per process:
+loading it again gives the same class, and raises `EvaluatorLoadError` if the file or a helper
+it imports changed since; load it in a new process then. It is not a
 registry; the `name` of each entry of `evaluators` stays a label that must equal the `name` of
 an evaluator that is loaded.
 
@@ -473,11 +475,16 @@ removed. A class whose module was imported before `load_evaluator`, or reloaded 
 (`importlib.reload`), carries only its path: hashing the current file would not establish which
 code Python executed. `reference` is what loads the class again: `FILE.py:Class` with the
 file's absolute path, or `package.module:Class` as given; `null` for a class `load_evaluator`
-did not load. It is provenance only: a study compares the SHA-256, not where the file is. Only the defining file is
-identified, not imported helpers. To label those, `revision` holds the commit and dirty flag of
-the git checkout that tracks the file, taken at the same time: an edited helper module of that
-checkout shows as `dirty: true`. It is `null` for a file that no checkout tracks (outside one,
-or new or ignored in it), and helpers outside a checkout are not tracked at all.
+did not load. It is provenance only: a study compares the SHA-256, not where the file is.
+`helpers` holds the SHA-256 of each module the file imports from beside it, directly or through
+one another, by its path relative to the file's directory (for `package.module:Class`, every
+module of the same top-level package it imports, relative to the directory that package is
+in). They are found in the source, so an import inside a method counts as one at the top; a
+module imported by name at run time (`importlib.import_module`) and a data file the evaluator
+reads are not. To label those, `revision` holds the commit and dirty flag of the git checkout
+that tracks the file, taken at the same time: an edited file of that checkout shows as
+`dirty: true`. It is `null` for a file that no checkout tracks (outside one, or new or ignored
+in it).
 
 ## Lifecycle: a class, and an instance per candidate
 

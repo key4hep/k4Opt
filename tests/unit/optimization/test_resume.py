@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -230,6 +231,32 @@ def test_a_study_does_not_resume_with_other_evaluator_code(
         run(problem, output, 1, resume=True, evaluators=[edited])
 
 
+def test_a_study_does_not_resume_with_another_module_its_evaluator_imports(
+    tmp_path: Path, write_problem: Callable[..., Path], request: pytest.FixtureRequest
+) -> None:
+    source = Path(TRADE_OFF.partition(":")[0])
+    helper = "corrections_of_resume_test"
+    request.addfinalizer(lambda: sys.modules.pop(helper, None))
+    (tmp_path / "evaluators").mkdir()
+    (tmp_path / "evaluators" / f"{helper}.py").write_text("scale = 1.0\n")
+    copy = tmp_path / "evaluators" / "trade_off.py"
+    copy.write_text(f"import {helper}\n" + source.read_text())
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1, evaluators=[load_evaluator(f"{copy}:TradeOff")])
+    (tmp_path / "evaluators" / f"{helper}.py").write_text("scale = 2.0\n")
+    # a new process loads it anew; here, a copy of it that Python has not imported yet
+    del sys.modules[helper]
+    again = tmp_path / "evaluators" / "trade_off_again.py"
+    again.write_bytes(copy.read_bytes())
+    edited = load_evaluator(f"{again}:TradeOff")
+    with pytest.raises(
+        OptimizationError,
+        match=rf"evaluator 'test\.trade_off': the modules .*trade_off_again\.py imports changed: "
+        rf"{helper}\.py",
+    ):
+        run(problem, output, 1, resume=True, evaluators=[edited])
+
+
 UNITS = """
     import os
     from k4opt.evaluation import Evaluator
@@ -418,7 +445,7 @@ def test_another_revision_of_an_evaluators_checkout_only_warns(
     evaluator = load_evaluator(f"{clone}/trade_off.py:TradeOff")
     report = run(problem, output, 1, resume=True, evaluators=[evaluator], **log.kwargs())
     assert len(report.trials) == 2
-    assert any("helper modules beside it may not be" in w for w in log.warnings)
+    assert any("other files beside them may not be" in w for w in log.warnings)
 
 
 # --- recovery --------------------------------------------------------------------------------

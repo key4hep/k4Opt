@@ -53,7 +53,8 @@ from k4opt.revision import code_fingerprint
 LOG_NAME = "evaluator.log"
 """The file in an evaluation's own directory that holds what its evaluator printed."""
 
-_IDENTITY = ("path", "bytes", "sha256")  # what tells an implementation's source apart
+# what tells an implementation's source apart
+_IDENTITY = ("path", "bytes", "sha256", "helpers")
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,8 +212,8 @@ class Session:
             then = {key: implementation.source.get(key) for key in _IDENTITY}
             if {key: loaded.get(key) for key in _IDENTITY} != then:
                 raise RunError(
-                    f"evaluator {implementation.reference}: {then['path']} changed after the "
-                    "session loaded it; open a new session"
+                    f"evaluator {implementation.reference}: {then['path']} or a module it "
+                    "imports changed after the session loaded it; open a new session"
                 )
         context, bound = pickle.loads(spec.payload)
         assert isinstance(context, SessionContext)

@@ -107,8 +107,9 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      not `valid`, or not made from the candidate);
    - `implementations`, each evaluator the problem binds once, by name, in the order it first
      binds them: version, the stage it reads, its source identity (`source`: path, size and
-     SHA-256 of the file defining its class, taken at import, whether they are the bytes
-     `executed`, and the `revision` of the git checkout that tracks it;
+     SHA-256 of the file defining its class, taken at import, the SHA-256 of each module it
+     imports from beside it (`helpers`), whether they are the bytes `executed`, and the
+     `revision` of the git checkout that tracks it;
      [details](evaluation.md#loading-an-evaluator)), the metrics it declares with their units
      (`metrics`, `null` if it declares none) and the names of the artifacts it declares
      (`artifacts`, `null` if it declares none), and its role declarations

@@ -966,17 +966,30 @@ def test_an_evaluator_given_as_it_is_evaluates_inline(
     assert stack.workers() == []
 
 
-@pytest.mark.parametrize("differs", ["evaluator file", "k4opt code", "KEY4HEP_STACK"])
+@pytest.mark.parametrize(
+    "differs", ["evaluator file", "evaluator helper", "k4opt code", "KEY4HEP_STACK"]
+)
 def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
-    tmp_path: Path, problem: Path, monkeypatch: pytest.MonkeyPatch, differs: str
+    tmp_path: Path,
+    problem: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    differs: str,
 ) -> None:
     source = REPO / "tests" / "support" / "cell_count.py"
     edited = tmp_path / "edited_count.py"
-    edited.write_bytes(source.read_bytes())
+    helper = tmp_path / "count_helper_of_worker_test.py"
+    helper.write_text("value = 1\n")
+    edited.write_text(f"import {helper.stem}\n" + source.read_text())
+    request.addfinalizer(lambda: sys.modules.pop(helper.stem, None))
     implementation = load_evaluator(f"{edited}:CellCount")
+    changed = rf"evaluator {edited}:CellCount: {edited} or a module it imports changed after the"
     if differs == "evaluator file":
-        edited.write_text(source.read_text() + "# edited after it was loaded\n")
-        message = rf"evaluator {edited}:CellCount: {edited} changed after the session loaded it"
+        edited.write_text(edited.read_text() + "# edited after it was loaded\n")
+        message = changed
+    elif differs == "evaluator helper":
+        helper.write_text("value = 2\n")
+        message = changed
     elif differs == "k4opt code":
         monkeypatch.setattr(_worker, "code_fingerprint", lambda: "another checkout")
         message = "a worker process runs other k4opt code than the session"

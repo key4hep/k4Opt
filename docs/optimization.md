@@ -296,7 +296,7 @@ directory itself is fine: a trial's record names the files of its run directory 
 | --- | --- | --- |
 | problem | its definition, but not its `name` | the path of the file |
 | files the problem names | size and SHA-256 of each | their paths |
-| evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash cannot make a study), the metrics it declares with their units and the artifacts it declares (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
+| evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash cannot make a study) and of the modules it imports from beside it (`helpers`), the metrics it declares with their units and the artifacts it declares (read from an instance, which may declare others than its class) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
 | k4opt | the SHA-256 of its code | version, git commit |
@@ -310,8 +310,8 @@ directory that holds no `study.json`; using a study directory without
 `--resume` is refused too. A changed Optuna version and changed k4opt code have no override:
 install the recorded Optuna version, and run a long campaign from a k4opt checkout of its own.
 A resume only warns when an evaluator's git checkout is at another commit or has other
-uncommitted changes: the evaluator's own file is unchanged, but helper modules beside it may
-not be. Helper modules outside a git checkout are not tracked at all.
+uncommitted changes: the evaluator's file and the modules it imports are unchanged (a change of
+either refuses the resume), but other files beside them, such as data it reads, may not be.
 
 Within a session, the files the problem names, the files the geometry's external references
 read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are checked before each candidate and again
