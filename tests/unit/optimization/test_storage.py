@@ -121,6 +121,35 @@ def test_a_wrong_url_makes_no_study_directory(
     assert not (tmp_path / "s").exists()
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "sqlite://",
+        "sqlite:///:memory:",
+        "sqlite:///file::memory:?uri=true",
+        "sqlite:///file:studies.db?mode=memory&uri=true",
+    ],
+)
+@pytest.mark.parametrize("resume", [False, True])
+def test_a_database_that_keeps_nothing_is_refused_and_nothing_is_made(
+    tmp_path: Path, write_problem: Callable[..., Path], url: str, resume: bool
+) -> None:
+    with pytest.raises(OptimizationError, match="keeps no trials once k4opt exits"):
+        optimize(
+            write_problem(), [trade_off()], tmp_path / "s", trials=1, storage=url, resume=resume
+        )
+    assert not (tmp_path / "s").exists()
+    assert list(tmp_path.iterdir()) == [tmp_path / "problem.yaml"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["sqlite:///studies.db", "sqlite:///studies.db?mode=memory", "postgresql://host/studies"],
+)
+def test_a_database_file_or_server_is_not_transient(url: str) -> None:
+    assert not storage.transient(url)
+
+
 @pytest.mark.parametrize("form", ["path", "uri"])
 def test_a_database_outside_the_directory_keeps_the_trials_and_no_journal_is_made(
     tmp_path: Path, write_problem: Callable[..., Path], form: str

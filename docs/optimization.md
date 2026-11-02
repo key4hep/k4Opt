@@ -381,7 +381,9 @@ PostgreSQL), while the trial directories stay in the study directory. A new stud
 directory first, so a directory in use leaves the database untouched; then the database is
 reached, and set up once, before the study directory is made, so a wrong URL creates nothing. A
 relative SQLite path is relative to the working directory, and the SQLite file of a new study
-must lie outside its directory, which holds only what k4opt makes. Its password and the
+must lie outside its directory, which holds only what k4opt makes. A SQLite database in memory
+or a temporary one (`sqlite://`, `sqlite:///:memory:`, `mode=memory`) is refused: it would lose
+the trials when k4opt exits. Its password and the
 values of its query parameters are never recorded or shown, also not in an error from the
 database, and every resume needs the same URL.
 

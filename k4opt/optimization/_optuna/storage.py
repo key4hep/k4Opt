@@ -171,6 +171,22 @@ def sqlite_file(url: str) -> Path | None:
     return _database_file(parsed.database, parsed.query)
 
 
+def transient(url: str) -> bool:
+    """Whether ``url`` names a SQLite database in memory or a temporary one, which keeps
+    nothing once the process that opened it exits; ``False`` for a URL that cannot be parsed
+    (opening it says why)."""
+    try:
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.exc import ArgumentError
+    except ImportError:
+        return False
+    try:
+        parsed = make_url(url)
+    except (ArgumentError, ValueError):
+        return False
+    return parsed.get_backend_name() == "sqlite" and sqlite_file(url) is None
+
+
 # the query parameters SQLAlchemy's pysqlite driver takes itself; with uri=true, it appends
 # every other one to the name it hands to SQLite
 _DRIVER = (
