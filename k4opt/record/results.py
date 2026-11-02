@@ -35,6 +35,16 @@ DONE = "done"
 
 _SUCCEEDED = frozenset({DONE, Status.VALID})
 
+DECLINED = "not run: its check() rejected the candidate"
+"""How the ``invalid`` result of a diagnostic whose evaluator's ``check()`` rejected the candidate
+begins, followed by the rejection in parentheses: it was never called, so it measured, made and
+printed nothing. (A required evaluation that rejects rejects the candidate, which has no record.)"""
+
+
+def declined(reason: str) -> str:
+    """The message of a diagnostic whose ``check()`` rejected the candidate for ``reason``."""
+    return f"{DECLINED} ({reason})"
+
 
 @dataclass(frozen=True, slots=True)
 class PeakMemory:

@@ -157,7 +157,10 @@ def test_a_study_of_two_bindings_of_one_implementation_resumes(
     run(problem, output, 2, seed=3)
     resumed = run(problem, output, 1, resume=True)
     assert len(resumed.trials) == 3
-    assert resumed.objectives == ("test.trade_off/analysis/a", "strict/analysis/a")
+    assert tuple(o.label for o in resumed.problem.objectives) == (
+        "test.trade_off/analysis/a",
+        "strict/analysis/a",
+    )
     study = json.loads((output / "study.json").read_text())
     assert list(study["implementations"]) == ["test.trade_off"]  # one code, bound twice
     record = summary(output, 0)
@@ -449,10 +452,11 @@ UNITS = """
     class Probe(Evaluator):
         name, version = "test.trade_off", "1"
         settings = {"x": float}  # the candidate's value, which it sets
-
-        def __init__(self):  # the same code, configured to report in another unit
-            unit = os.environ.get("K4OPT_TEST_UNIT", "mm")
-            self.metrics = {("analysis", "a"): unit, ("analysis", "b"): "1/mm"}
+        # the same code, configured where it is imported to report in another unit
+        metrics = {
+            ("analysis", "a"): os.environ.get("K4OPT_TEST_UNIT", "mm"),
+            ("analysis", "b"): "1/mm",
+        }
 
         def evaluate(self, request):
             x = request.settings["x"]
@@ -466,7 +470,7 @@ def test_a_study_does_not_resume_with_metrics_in_other_units(
     problem, output = write_problem(), tmp_path / "s"
     run(problem, output, 1, seed=1, evaluators=[evaluator_from(tmp_path / "e", "units", UNITS)])
     monkeypatch.setenv("K4OPT_TEST_UNIT", "cm")
-    other = evaluator_from(tmp_path / "e", "units", UNITS)  # the same bytes, another instance
+    other = evaluator_from(tmp_path / "f", "units", UNITS)  # the same bytes, imported again
     with pytest.raises(OptimizationError, match=r"declares other metrics or units: .*'cm'"):
         run(problem, output, 1, resume=True, evaluators=[other])
 
@@ -479,9 +483,8 @@ ARTIFACTS = """
         name, version = "test.trade_off", "1"
         settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
-
-        def __init__(self):  # the same code, configured to name its file otherwise
-            self.artifacts = {os.environ.get("K4OPT_TEST_ARTIFACT", "plot"): "a and b"}
+        # the same code, configured where it is imported to name its file otherwise
+        artifacts = {os.environ.get("K4OPT_TEST_ARTIFACT", "plot"): "a and b"}
 
         def evaluate(self, request):
             x = request.settings["x"]
@@ -502,7 +505,7 @@ def test_a_study_does_not_resume_with_other_artifacts_declared(
     run(problem, output, 1, seed=1, evaluators=[evaluator_from(tmp_path / "e", "named", source)])
     assert summary(output, 0)["implementations"]["test.trade_off"]["artifacts"] == ["plot"]
     monkeypatch.setenv("K4OPT_TEST_ARTIFACT", "figure")
-    other = evaluator_from(tmp_path / "e", "named", source)  # the same bytes, another instance
+    other = evaluator_from(tmp_path / "f", "named", source)  # the same bytes, imported again
     with pytest.raises(OptimizationError, match=r"declares other artifacts: \['figure'\]"):
         run(problem, output, 1, resume=True, evaluators=[other])
 
@@ -964,11 +967,9 @@ ROLES = """
         name, version = "test.toy_significance", "1"
         settings = {"luminosity_invab": float}
         metrics = {("analysis", "expected_significance"): "1"}
-
-        def __init__(self):  # the same code, configured to read another metric
-            metric = os.environ.get("K4OPT_TEST_METRIC", "selected.sum_weights")
-            role = Role(metrics=[("analysis", metric)])
-            self.roles = {"signal": role, "backgrounds": Role(many=True)}
+        # the same code, configured where it is imported to read another metric
+        metric = os.environ.get("K4OPT_TEST_METRIC", "selected.sum_weights")
+        roles = {"signal": Role(metrics=[("analysis", metric)]), "backgrounds": Role(many=True)}
 
         def evaluate(self, request):
             return {("analysis", "expected_significance"): 1.0}
@@ -1004,7 +1005,7 @@ def test_a_study_does_not_resume_with_other_roles_declared(
     declared = summary(output, 0)["implementations"]["test.toy_significance"]["roles"]
     assert declared["signal"]["metrics"] == [["analysis", "selected.sum_weights"]]
     monkeypatch.setenv("K4OPT_TEST_METRIC", "generated.sum_weights")
-    other = evaluator_from(tmp_path / "e", "roles", ROLES)  # the same bytes, other roles
+    other = evaluator_from(tmp_path / "f", "roles", ROLES)  # the same bytes, other roles
     with pytest.raises(OptimizationError, match=r"'test\.toy_significance' declares other roles"):
         run(combined_problem, output, 1, resume=True, evaluators=[other, yields()])
 
@@ -1030,3 +1031,84 @@ def test_a_study_whose_parameter_sets_the_geometry_and_a_stage_resumes_configure
             assert f"--physics.rangecut={radius!r}" in stage["argv"]
             assert stage["varies"] == [RADIUS]
         assert record["geometry"]["changes"][0]["new_value"] == repr(radius)
+
+
+# --- what a resume keeps of trials without a record ------------------------------------------
+
+
+def rejecting(write_problem: Callable[..., Path]) -> Path:
+    """A problem whose radius is 150 or 250, and whose evaluator rejects 250."""
+    return write_problem(
+        parameter={
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
+            "type": "categorical",
+            "choices": [150, 250],
+        },
+        evaluators=[{"name": "test.candidate_check", "version": "1", "settings": {"reject": 250}}],
+        objectives=[("analysis", "seen", "minimize")],
+    )
+
+
+def test_a_resumed_study_keeps_its_rejected_trials_rejected(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    from tests.support.evaluators import candidate_check
+
+    problem, output = rejecting(write_problem), tmp_path / "s"
+    first = run(problem, output, 6, seed=2, evaluators=[candidate_check()])
+    before = {t.number: t.status for t in first.trials}
+    assert "rejected" in before.values() and "valid" in before.values()
+    resumed = run(problem, output, 3, resume=True, evaluators=[candidate_check()])
+    after = {t.number: t.status for t in resumed.trials}
+    assert {n: after[n] for n in before} == before  # as they were, each read back strictly
+    assert len(after) == 9
+    rejected = [t for t in resumed.trials if t.status == "rejected"]
+    assert all(t.record is None and t.assessment is None for t in rejected)
+    assert not set(resumed.pareto) & {t.number for t in rejected}
+
+
+@pytest.mark.parametrize(
+    ("forge", "message"),
+    [
+        ({"k4opt.rejected_by": "nothing"}, "which is no evaluation of the problem"),
+        ({"k4opt.feasible": True}, "not what k4opt tells a rejected trial"),
+        ({"k4opt.record": {"id": "x"}}, "not what k4opt tells a rejected trial"),
+        ({"k4opt.message": 3}, "its message is 3"),
+        ({}, "trial-000000 exists, though nothing of a rejected candidate is created"),
+    ],
+)
+def test_a_rejected_trial_is_read_strictly(
+    tmp_path: Path, write_problem: Callable[..., Path], forge: dict[str, Any], message: str
+) -> None:
+    from k4opt.optimization._optuna.read import trial_result
+    from k4opt.optimization._results import recorded_problem
+    from k4opt.optimization._study import read_study
+
+    problem, output = rejecting(write_problem), tmp_path / "s"
+    run(problem, output, 1, seed=1, evaluators=[_checking()])
+    document = read_study(output)
+    attrs = {
+        "k4opt.dir": "trial-000000",
+        "k4opt.status": "rejected",
+        "k4opt.rejected_by": "test.candidate_check",
+        "k4opt.message": "cannot measure 250",
+    }
+    frozen = optuna.trial.create_trial(
+        state=TrialState.FAIL,
+        params={RADIUS: 250},
+        distributions=search_space(load_problem(problem)),
+        user_attrs=attrs | forge,
+    )
+    frozen.number = 0  # the study's first trial
+    shutil.rmtree(output / "trial-000000", ignore_errors=True)
+    if not forge:  # all as k4opt tells it, but a directory: a rejected trial has none
+        (output / "trial-000000").mkdir()
+    with pytest.raises(OptimizationError, match=message):
+        trial_result(output, document, recorded_problem(document), frozen, {})
+
+
+def _checking() -> Any:
+    """``test.candidate_check``, which accepts the first candidate it is asked about here."""
+    from tests.support.evaluators import candidate_check
+
+    return candidate_check()

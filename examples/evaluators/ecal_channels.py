@@ -8,7 +8,7 @@ omitted.
 
 import math
 
-from k4opt.evaluation import Evaluator, Quantity
+from k4opt.evaluation import EvaluationContractError, Evaluator, Quantity
 
 
 class EcalChannels(Evaluator):
@@ -21,9 +21,13 @@ class EcalChannels(Evaluator):
     }
     metrics = {("geometry", "ecal_barrel.channels"): "1"}
 
-    def check(self, request):
-        if any(request.settings[k] <= 0 for k in ("layers", "radius", "length", "cell_size")):
-            self.fail("layers, radius, length and cell_size must be positive")
+    @classmethod
+    def check(cls, request):
+        if any(request.settings[k] <= 0 for k in ("layers", "radius", "length")):
+            raise EvaluationContractError("layers, radius and length must be positive")
+        # set by a parameter: a candidate whose cell size is not positive has no channels
+        if request.settings["cell_size"] <= 0:
+            cls.reject(f"cell_size must be positive, got {request.settings['cell_size']} mm")
 
     def evaluate(self, request):
         size = request.settings["cell_size"]

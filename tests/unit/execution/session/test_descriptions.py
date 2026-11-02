@@ -112,7 +112,8 @@ def test_a_task_run_again_in_a_copied_workspace_leaves_the_same_portable_outcome
         {a.ref: stat_of(copy_dir / a.path) for a in spec.watched},
         Tree.of(copy_dir / "geometry").stats,
     )
-    again, observed_again = execute_task(session._context, spec, copy_dir, seen, yields()())
+    bound = dict(session._binding.evaluations)[spec.task.id]
+    again, observed_again = execute_task(session._context, spec, copy_dir, seen, bound)
     untimed = {"elapsed_seconds": None, "call_seconds": None, "memory": None}
     # its status, measurements, files by reference, bytes and hashes; never its times or the
     # peak memory of this process, which depends on what it held before

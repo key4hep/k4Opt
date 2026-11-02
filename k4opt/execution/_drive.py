@@ -5,7 +5,7 @@ geometry, every stage of each sample that their evaluators read, each once, and 
 once: an evaluator on one of its samples, or on the candidate, with the outputs of the tasks it
 reads). Each task that is ready, when the scheduler (:mod:`k4opt.execution._schedule`) gives it a
 slot, is described as plain data from the results of the tasks it reads
-(:class:`~k4opt.execution._work.TaskSpec`) and handed to a backend
+(:mod:`k4opt.execution._describe`) and handed to a backend
 (:mod:`k4opt.execution._backends`); what it left behind becomes its result. A task whose needs did
 not all succeed is ``blocked`` and not run. Each ``valid`` result must carry the metrics the
 objectives and constraints name of it, and the artifacts its evaluator declares; every artifact
@@ -28,111 +28,29 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from k4opt.evaluation import (
-    Artifact,
     CandidateKey,
     EvaluationRecord,
     EvaluationResult,
-    RoleInput,
     Scalar,
     Status,
 )
 from k4opt.execution._backends import Backend, Handle
-from k4opt.execution._binding import (
-    _Prepared,
-    task_cpus,
-)
-from k4opt.execution._files import (
-    NOTHING,
-    Made,
-    Observed,
-    Tree,
-    local,
-    local_artifact,
-    portable,
-    portable_artifact,
-)
+from k4opt.execution._binding import task_cpus
+from k4opt.execution._describe import describe, seen
+from k4opt.execution._files import Made, Observed, Tree, local, local_artifact
+from k4opt.execution._preflight import Rejected, _Prepared
 from k4opt.execution._schedule import Scheduler
-from k4opt.execution._tasks import GeometryWork, Observations, TaskOutcome, TaskSpec, Workspace
+from k4opt.execution._tasks import (
+    GeometryWork,
+    Observations,
+    TaskOutcome,
+    TaskSpec,
+    Workspace,
+)
 from k4opt.execution._work import asked
 from k4opt.frozen import FrozenMap
-from k4opt.problem.models import EvaluatorSpec, Reference
-from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, reference_task, represents_candidate
-from k4opt.problem.stages import stage_output
+from k4opt.problem.plan import Kind, Task, TaskId, represents_candidate
 from k4opt.record.results import CandidateRecord, TaskResult
-
-
-def _inputs(reads: Mapping[TaskId, TaskResult], root: Path | None) -> dict[str, Path]:
-    """What a task is given of the tasks it reads: the main output of each, by its name, named
-    in the candidate's workspace (:func:`~k4opt.execution._files.portable`)."""
-    return {
-        task.name: portable(result.output, root)
-        for task, result in reads.items()
-        if result.output is not None
-    }
-
-
-def _role_inputs(
-    prepared: _Prepared,
-    entry: EvaluatorSpec,
-    reads: Mapping[TaskId, TaskResult],
-    root: Path | None,
-) -> dict[str, tuple[RoleInput, ...]]:
-    """What each role of a combined evaluator reads, from the results of the tasks it reads, its
-    files named in the candidate's workspace."""
-    return {
-        role: tuple(
-            _role_input(prepared, item, reads[reference_task(item)], root) for item in items
-        )
-        for role, items in entry.roles.items()
-    }
-
-
-def _role_input(
-    prepared: _Prepared, item: Reference, result: TaskResult, root: Path | None
-) -> RoleInput:
-    """One item of a role, from the result of its task, which succeeded: an evaluation with what
-    it measured and made, or a stage with its file."""
-    properties = prepared.binding.properties[item.sample]
-    if item.evaluator is not None:
-        record = result.record
-        assert record is not None  # every evaluation has one
-        return RoleInput(
-            item.sample,
-            binding=item.evaluator,
-            measurements=record.result.measurements,
-            artifacts={
-                name: portable_artifact(artifact, root) for name, artifact in result.made.items()
-            },
-            events=record.request.events,
-            seed=record.request.seed,
-            properties=properties,
-            settings=record.request.settings,
-            provenance=record.result.provenance,
-        )
-    assert item.stage is not None
-    assert result.output is not None  # a stage that makes a file
-    name = stage_output(item.stage)
-    made = result.made.get(name)
-    if made is not None:  # made in its directory: never hashed
-        artifact = made
-    else:  # a file of the problem or the caller's, hashed when the session opened
-        size, sha256 = result.provenance.get("bytes"), result.provenance.get("sha256")
-        artifact = Artifact(
-            f"{result.id.label}#{name}",
-            result.output,
-            size if isinstance(size, int) else result.output.stat().st_size,
-            sha256 if isinstance(sha256, str) else None,
-        )
-    events, seed = prepared.contexts[item.sample].conditions(item.stage)
-    return RoleInput(
-        item.sample,
-        stage=item.stage,
-        artifacts={item.stage: portable_artifact(artifact, root)},
-        events=events,
-        seed=seed,
-        properties=properties,
-        provenance=result.provenance,
-    )
 
 
 @dataclass(slots=True)
@@ -144,8 +62,9 @@ class _Run:
     ``error`` what stopped it, if anything did. ``observed`` holds, by task, what is watched of
     the files each task that ran made, from when its result came until the candidate is
     published: what the tasks that read them check, and the candidate checks at its end; a task
-    that never ran (blocked) has none. ``request``, ``values`` and ``reference`` (what
-    its record says it was made for) are the caller's."""
+    that never ran (blocked) has none. ``rejected`` says why an evaluator rejected it, in which
+    case nothing of it was created and it has no ``prepared``. ``request``, ``values`` and
+    ``reference`` (what its record says it was made for) are the caller's."""
 
     workspace: Workspace
     prepared: _Prepared | None
@@ -157,55 +76,11 @@ class _Run:
     results: dict[TaskId, TaskResult] = field(default_factory=dict)
     observed: dict[TaskId, Observed] = field(default_factory=dict)
     error: Exception | None = None
+    rejected: Rejected | None = None
     own_refs: bool = False
     request: object = None
     values: Mapping[str, Scalar] = field(default_factory=dict)
     reference: object = None
-
-
-def _task_spec(run: _Run, task: Task, results: Mapping[TaskId, TaskResult]) -> TaskSpec:
-    """The description of ``task`` of ``run``, from the results of the tasks it reads and what
-    is watched of the files they made."""
-    prepared = run.prepared
-    assert prepared is not None
-    root = run.workspace.root
-    reads = {need: results[need] for need in task.needs}
-    observed = _observed(run, task)
-    watched = tuple(
-        portable_artifact(made.artifact, root) for each in observed for made in each.made.values()
-    )
-    trees = [each.tree for each in observed if each.tree is not None]
-    tree = None if not trees else portable(trees[0].root, root)
-    workspace = run.workspace.id
-    if task.id.kind is Kind.GEOMETRY:
-        return TaskSpec(workspace, task, watched=watched, tree=tree, geometry=run.geometry)
-    if task.id.kind is Kind.STAGE:
-        assert task.id.sample is not None
-        given, supplied = _inputs(reads, root), run.supplied.get(task.id)
-        stages = prepared.contexts[task.id.sample].stages  # as the candidate configures them
-        cpus = task_cpus(prepared.contexts, task)
-        return TaskSpec(workspace, task, given, watched, tree, stages, supplied=supplied, cpus=cpus)
-    entry = prepared.entries[task.id]
-    if task.id.sample is None:  # the geometry, and what its roles read: no stage of its own
-        given = _inputs({need: result for need, result in reads.items() if need == GEOMETRY}, root)
-        roles = _role_inputs(prepared, entry, reads, root)
-    else:
-        given, roles = _inputs(reads, root), {}
-    request = prepared.requests[task.id]
-    return TaskSpec(workspace, task, given, watched, tree, request=request, roles=roles)
-
-
-def _observed(run: _Run, task: Task) -> list[Observed]:
-    """What is watched of the files the tasks ``task`` reads made, in the order it reads them."""
-    return [run.observed.get(need, NOTHING) for need in task.needs]
-
-
-def _seen(run: _Run, task: Task) -> Observations:
-    """The stats taken of the files the tasks ``task`` reads made, where they were made."""
-    observed = _observed(run, task)
-    made = {m.artifact.ref: m.stat for each in observed for m in each.made.values()}
-    trees = [each.tree.stats for each in observed if each.tree is not None]
-    return Observations(FrozenMap(made), trees[0] if trees else None)
 
 
 def _result(run: _Run, task: Task, outcome: TaskOutcome, observed: Observations) -> TaskResult:
@@ -260,7 +135,9 @@ def _drive(
     scheduler is idle, after every candidate that ended was yielded, so with one slot the
     candidates run one after another, each in plan order. ``runs`` holds the candidates under
     way, by workspace. Leaving the loop early (``close()``, an exception) stops every task still
-    running. ``activity`` is told what runs whenever that changed.
+    running. ``activity`` is told what runs whenever that changed. Each task may run as long as
+    its description says (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`), which the backend
+    enforces.
     """
     pulling = True
     told: Activity | None = None
@@ -287,10 +164,18 @@ def _drive(
                 key, task = item
                 run = runs[str(key)]
                 try:
-                    results = scheduler.results(key)
-                    spec = _task_spec(run, task, results)
+                    assert run.prepared is not None
+                    spec = describe(
+                        task,
+                        run.prepared,
+                        run.workspace,
+                        scheduler.results(key),
+                        run.observed,
+                        supplied=run.supplied.get(task.id),
+                        geometry=run.geometry,
+                    )
                     run.specs[task.id] = spec
-                    backend.submit(spec, _seen(run, task))
+                    backend.submit(spec, seen(task, run.observed))
                 except Exception as exc:
                     stop(run, exc)
                     ended.append(run)
@@ -324,7 +209,7 @@ def _drive(
                 pulled = pull()
                 if pulled is None:
                     pulling = False
-                elif pulled.prepared is None:  # it failed before anything was created
+                elif pulled.prepared is None:  # rejected or failed before anything was created
                     yield pulled
                 else:
                     runs[pulled.workspace.id] = pulled

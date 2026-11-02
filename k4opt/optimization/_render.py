@@ -18,14 +18,13 @@ from types import TracebackType
 from typing import Any, TextIO
 
 from k4opt.execution import Activity
-from k4opt.optimization._study import StudyReport, TrialReport
+from k4opt.optimization._results import OUTCOMES, StudyResults, TrialResult, limit_names
 from k4opt.terminal import Style, printable, width
 
 BAR_WIDTH = 40
 MIN_BAR_WIDTH = 20
 BAR_PRIORITY = 5  # the parts above it are shown before the bar, the others where it leaves room
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-OUTCOMES = ("feasible", "infeasible", "invalid", "failed", "interrupted", "error")
 
 
 def _paint(style: Style, outcome: str, text: str) -> str:
@@ -41,19 +40,12 @@ def _value(value: Any) -> str:
     return f"{value:.6g}" if isinstance(value, float) else printable(value)
 
 
-def _outcome(trial: TrialReport) -> str:
-    """``feasible`` or ``infeasible`` for a valid trial, its status otherwise."""
-    if trial.status == "valid":
-        return "feasible" if trial.feasible else "infeasible"
-    return trial.status
-
-
-def trial_line(trial: TrialReport, *, color: bool = False) -> str:
+def trial_line(trial: TrialResult, *, color: bool = False) -> str:
     """One line for a trial: its status, and its candidate and objectives or what went wrong."""
     style = Style(color)
     head = f"trial {trial.number}:".ljust(11) + _paint(style, trial.status, trial.status.ljust(9))
     if trial.objectives is not None:
-        outcome = _outcome(trial)
+        outcome = trial.outcome
         candidate = "  ".join(
             style.dim(f"{printable(name)}=") + style.cyan(_value(value))
             for name, value in trial.candidate.items()
@@ -66,36 +58,42 @@ def trial_line(trial: TrialReport, *, color: bool = False) -> str:
     else:
         where = f"{trial.directory.name}/summary.json" if trial.record else trial.directory.name
         line = f"{head}{printable(trial.message or '')}  {style.dim(printable(where))}"
-    if trial.diagnostics:
-        noun = "diagnostic" if trial.diagnostics == 1 else "diagnostics"
-        line = f"{line}  {style.dim(f'({trial.diagnostics} {noun} did not succeed)')}"
+    if diagnostics := len(trial.diagnostics):
+        noun = "diagnostic" if diagnostics == 1 else "diagnostics"
+        line = f"{line}  {style.dim(f'({diagnostics} {noun} did not succeed)')}"
     return f"{line}  {style.dim('(recovered)')}" if trial.recovered else line
 
 
-def render_study(report: StudyReport, out: TextIO, *, color: bool = False) -> None:
-    """Print the study: its name, how many trials ended how, and its Pareto front."""
-    style = Style(color)
-    counts = Counter(_outcome(trial) for trial in report.trials)
-    valid = counts["feasible"] + counts["infeasible"]
+def _counts(results: StudyResults, style: Style) -> str:
+    outcomes = results.outcomes
+    if not results.trials:
+        return "none yet"
+    valid = outcomes["feasible"] + outcomes["infeasible"]
     parts = [
-        f"{style.green(str(valid))} valid "
-        f"({_paint(style, 'feasible', str(counts['feasible']))} feasible, "
-        f"{_paint(style, 'infeasible', str(counts['infeasible']))} infeasible)"
+        f"{style.green(str(valid))} valid ({_paint(style, 'feasible', str(outcomes['feasible']))} "
+        f"feasible, {_paint(style, 'infeasible', str(outcomes['infeasible']))} infeasible)"
     ]
     parts += [
-        _paint(style, outcome, f"{counts[outcome]} {outcome}")
-        for outcome in OUTCOMES[2:]
-        if counts[outcome]
+        _paint(style, outcome, f"{count} {outcome}")
+        for outcome, count in outcomes.items()
+        if outcome not in ("feasible", "infeasible") and count
     ]
+    return f"{len(results.trials)}: {', '.join(parts)}"
+
+
+def render_study(results: StudyResults, out: TextIO, *, color: bool = False) -> None:
+    """Print the study: its name, how many trials ended how, and its Pareto front."""
+    style = Style(color)
+    spec = results.problem
     print(
-        f"{style.dim('study:')}    {style.bold(printable(report.name))}, "
-        f"{len(report.objectives)} objective(s), {len(report.constraints)} limit(s), "
-        f"{printable(report.study_path)}",
+        f"{style.dim('study:')}    {style.bold(printable(results.name))}, "
+        f"{len(spec.objectives)} objective(s), {len(limit_names(spec))} limit(s), "
+        f"{printable(results.study_path)}",
         file=out,
     )
-    print(f"{style.dim('trials:')}   {len(report.trials)}: {', '.join(parts)}", file=out)
-    pareto = ", ".join(map(str, report.pareto)) if report.pareto else "none feasible yet"
-    print(f"{style.dim('pareto:')}   {style.green(pareto) if report.pareto else pareto}", file=out)
+    print(f"{style.dim('trials:')}   {_counts(results, style)}", file=out)
+    pareto = ", ".join(map(str, results.pareto)) if results.pareto else "none feasible yet"
+    print(f"{style.dim('pareto:')}   {style.green(pareto) if results.pareto else pareto}", file=out)
 
 
 def _duration(seconds: float) -> str:
@@ -176,12 +174,12 @@ class Progress:
                     self.out.write("\r\x1b[2K")
                 self.out.flush()
 
-    def trial(self, trial: TrialReport) -> None:
+    def trial(self, trial: TrialResult) -> None:
         """Print the line of a trial that ended."""
         with self._lock:
             now = self.clock()
             if not trial.recovered:
-                self.outcomes[_outcome(trial)] += 1
+                self.outcomes[trial.outcome] += 1
                 self.ended += 1
                 self._last = now
             self._print(trial_line(trial, color=self.color), self.out)

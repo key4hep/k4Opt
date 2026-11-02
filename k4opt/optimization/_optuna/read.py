@@ -9,7 +9,7 @@ by :func:`k4opt.optimization._results.recorded`, and must agree with what Optuna
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ from k4opt.optimization._results import (
 from k4opt.optimization._study import STUDY_NAME, read_study, trial_directories, trial_directory
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import ProblemSpec
+from k4opt.problem.plan import evaluations
 
 
 def _existing_study(document: Mapping[str, Any], storage: BaseStorage) -> optuna.Study:
@@ -89,9 +90,10 @@ def trial_result(
     disk: the optimizer has not taken it. A trial told a record shows that record, which must
     agree with the trial's state (COMPLETE for ``valid``, FAIL otherwise) and values, except
     that a FAIL trial with a ``valid`` record and ``k4opt.error`` is ``error``, without a
-    result: its values never reached the optimizer. A FAIL trial without a record is ``error``
-    with ``k4opt.error`` and ``interrupted`` without; any other trial was not made by k4opt.
-    A resume checks each trial with it, before it recovers or proposes any.
+    result: its values never reached the optimizer. A FAIL trial without a record is
+    ``rejected`` if k4opt told it so (:func:`_rejected`), ``error`` with ``k4opt.error`` and
+    ``interrupted`` without; any other trial was not made by k4opt. A resume checks each trial
+    with it, before it recovers or proposes any.
     """
     number, attrs = frozen.number, frozen.user_attrs
     references = [parameter.name for parameter in spec.parameters]
@@ -107,6 +109,8 @@ def trial_result(
     if frozen.state == TrialState.RUNNING:
         return TrialResult(number, "running", candidate, own, recovered=recovered), []
     told, error = attrs.get("k4opt.record"), attrs.get("k4opt.error")
+    if attrs.get("k4opt.status") == "rejected":
+        return _rejected(frozen, spec, candidate, own), []
     if told is None:
         ours = "k4opt.dir" in attrs or recovered
         if frozen.state != TrialState.FAIL or "k4opt.status" in attrs or not ours:
@@ -133,6 +137,81 @@ def trial_result(
     return replace(result, recovered=recovered), warnings
 
 
+_REJECTED = frozenset(
+    {"k4opt.status", "k4opt.rejected_by", "k4opt.message", "k4opt.dir", "k4opt.sampler_seed"}
+)
+"""What a rejected trial carries of k4opt's, and nothing else of it."""
+
+
+def _rejected(
+    frozen: FrozenTrial, spec: ProblemSpec, candidate: Mapping[str, Any], own: Path
+) -> TrialResult:
+    """Trial ``frozen``, which k4opt told was rejected, read strictly: a rejection has no record,
+    so all there is of it is what the optimizer holds, which must be exactly what
+    :func:`~k4opt.optimization._optuna.tell._reject` tells: FAIL, no values and no constraint
+    values, the evaluation of the problem that rejected it and its message, and no trial
+    directory, since nothing of its candidate was created."""
+    number, attrs = frozen.number, frozen.user_attrs
+    where = f"trial {number} is rejected, but"
+    if frozen.state != TrialState.FAIL or frozen.values is not None or frozen.constraints:
+        raise OptimizationError(f"{where} it is {frozen.state.name}, with values or constraints")
+    k4opt = {key for key in attrs if key.startswith("k4opt.")}
+    if k4opt - _REJECTED or not {"k4opt.rejected_by", "k4opt.message"} <= k4opt:
+        raise OptimizationError(
+            f"{where} it carries {', '.join(sorted(k4opt))}, not what k4opt tells a rejected trial"
+        )
+    by, message = attrs["k4opt.rejected_by"], attrs["k4opt.message"]
+    labels = [task.label for task, _ in evaluations(spec.samples, spec.evaluators)]
+    if by not in labels:
+        raise OptimizationError(f"{where} by {by!r}, which is no evaluation of the problem")
+    if not isinstance(message, str):
+        raise OptimizationError(f"{where} its message is {message!r}")
+    if own.exists() or own.is_symlink():
+        raise OptimizationError(
+            f"{where} {own.name} exists, though nothing of a rejected candidate is created"
+        )
+    return TrialResult(number, "rejected", candidate, own, message=f"{by}: {message}")
+
+
+def results_of(
+    directory: Path,
+    document: Mapping[str, Any],
+    spec: ProblemSpec,
+    study: optuna.Study,
+    warnings: Sequence[str] = (),
+) -> StudyResults:
+    """The study ``document`` describes, whose trials ``study`` holds, as its records hold it:
+    each trial read by :func:`trial_result`, as :func:`k4opt.optimization.load_study` reads it,
+    with ``warnings`` first."""
+    trials: list[TrialResult] = []
+    notes = list(warnings)
+    read: dict[str, tuple[int, object]] = {}
+    held = sorted(study.get_trials(deepcopy=False), key=lambda frozen: frozen.number)
+    for frozen in held:
+        result, found = trial_result(directory, document, spec, frozen, read)
+        trials.append(result)
+        notes += found
+    known = {frozen.user_attrs.get("k4opt.dir", trial_directory(frozen.number)) for frozen in held}
+    notes += [
+        f"{name} in {directory} belongs to no trial of the study, so it is not shown"
+        for name in trial_directories(directory)
+        if name not in known
+    ]
+    document_ = freeze(document, STUDY_NAME, OptimizationError)
+    assert isinstance(document_, Mapping)
+    return StudyResults(
+        name=document["optimizer"]["study"],
+        id=document["id"],
+        created=document["created"],
+        directory=directory,
+        problem=spec,
+        document=document_,
+        trials=tuple(trials),
+        pareto=pareto_front(trials, spec),
+        warnings=tuple(notes),
+    )
+
+
 def load(directory: str | os.PathLike[str], storage: str | None) -> StudyResults:
     """The study in ``directory`` as its records hold it, read without changing anything; see
     :func:`k4opt.optimization.load_study`."""
@@ -141,18 +220,10 @@ def load(directory: str | os.PathLike[str], storage: str | None) -> StudyResults
         raise OptimizationError(f"{path} is not a study directory: it holds no {STUDY_NAME}")
     document = read_study(path)
     spec = recorded_problem(document)
-    trials: list[TrialResult] = []
-    warnings: list[str] = []
     database: BaseStorage | None = None
     try:
         database = existing_storage(path, document, storage)
-        study = _existing_study(document, database)
-        read: dict[str, tuple[int, object]] = {}
-        held = sorted(study.get_trials(deepcopy=False), key=lambda frozen: frozen.number)
-        for frozen in held:
-            result, notes = trial_result(path, document, spec, frozen, read)
-            trials.append(result)
-            warnings += notes
+        return results_of(path, document, spec, _existing_study(document, database))
     except Exception as exc:
         replacement, secret = leaving(exc, storage, what="the study cannot be read")
         if replacement is None:
@@ -162,22 +233,3 @@ def load(directory: str | os.PathLike[str], storage: str | None) -> StudyResults
         raise replacement from exc
     finally:
         close(database)  # everything is read: the snapshot holds nothing of the storage
-    known = {frozen.user_attrs.get("k4opt.dir", trial_directory(frozen.number)) for frozen in held}
-    warnings += [
-        f"{name} in {path} belongs to no trial of the study, so it is not shown"
-        for name in trial_directories(path)
-        if name not in known
-    ]
-    document_ = freeze(document, STUDY_NAME, OptimizationError)
-    assert isinstance(document_, Mapping)
-    return StudyResults(
-        name=document["optimizer"]["study"],
-        id=document["id"],
-        created=document["created"],
-        directory=path,
-        problem=spec,
-        document=document_,
-        trials=tuple(trials),
-        pareto=pareto_front(trials, spec),
-        warnings=tuple(warnings),
-    )

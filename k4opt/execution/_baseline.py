@@ -23,7 +23,7 @@ from k4opt.evaluation.loader import changed_code, evaluator_source
 from k4opt.execution._binding import _Binding, _implementations
 from k4opt.execution._files import readable_identity
 from k4opt.execution._work import content
-from k4opt.execution.errors import RunError
+from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.problem.candidate import Configuration
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
@@ -32,9 +32,10 @@ from k4opt.revision import code_identity, code_unchanged
 
 
 def check_code() -> None:
-    """Raise :class:`RunError` if k4opt's files are no longer those this process identified."""
+    """Raise :class:`ProvenanceError` if k4opt's files are no longer those this process
+    identified."""
     if not code_unchanged():
-        raise RunError(
+        raise ProvenanceError(
             "k4opt's code changed on disk after this process first identified it, so its "
             "records could not say which code ran; start a new process"
         )
@@ -94,7 +95,7 @@ class Baseline:
         )
         check_code()
         assert isinstance(process, Mapping)
-        classes = {b.probe.declaration.name: b.probe.cls for b in binding.evaluators}
+        classes = {b.declared.declaration.name: b.implementation for b in binding.evaluators}
         return cls(problem, files, externals, _implementations(binding), process, classes)
 
     def identity(self) -> dict[str, object]:
@@ -139,7 +140,7 @@ class Baseline:
         ]
 
     def check_changes(self, geometry: TaskResult, configuration: Configuration) -> None:
-        """Raise :class:`RunError` unless the geometry task's ``changes`` are those of the
+        """Raise :class:`ProvenanceError` unless the geometry task's ``changes`` are those of the
         attributes the session resolved, each by its parameter, from its unmodified value to the
         text ``configuration`` gives it, in the problem's order."""
         expected = [
@@ -149,26 +150,26 @@ class Baseline:
         ]
         recorded = thaw(geometry.provenance.get("changes"))
         if recorded != expected:
-            raise RunError(
+            raise ProvenanceError(
                 f"geometry: it changed {recorded!r}, but the session resolved the candidate's "
                 f"changes as {expected!r}"
             )
 
     def verify_inputs(self) -> None:
-        """Raise :class:`RunError` if a file the stages read is not the file it was when the
+        """Raise :class:`ProvenanceError` if a file the stages read is not the file it was when the
         session opened: other bytes, or now readable or unreadable. A file is hashed again only
         when its size, times or inode changed."""
         for label, (file, opened) in self.files.items():
             now = readable_identity(file)
             if now != opened:
-                raise RunError(
+                raise ProvenanceError(
                     f"{label}: {file} changed after the session opened ({_described(opened)} "
                     f"then, {_described(now)} now); evaluate the candidates of a problem with the "
                     "same files"
                 )
 
     def verify(self) -> None:
-        """Raise :class:`RunError` if the environment, k4opt's code, a file the stages read,
+        """Raise :class:`ProvenanceError` if the environment, k4opt's code, a file the stages read,
         what the geometry's external references read, the identity of an implementation or a
         module it imports changed since the session opened."""
         self._verify_environment()
@@ -189,25 +190,25 @@ class Baseline:
             assert isinstance(source, Mapping)
             now = evaluator_source(implementation)
             if any(now.get(key) != source.get(key) for key in ("path", "sha256", "helpers")):
-                raise RunError(
+                raise ProvenanceError(
                     f"evaluator {name!r}: its class was loaded again in this process, through "
                     f"{now.get('reference')}, which may have changed it; open the session in a new "
                     "process"
                 )
             changed = changed_code(implementation)
             if changed:
-                raise RunError(
+                raise ProvenanceError(
                     f"evaluator {name!r}: {', '.join(changed)} changed after the session loaded "
                     "it; evaluate with the code it was loaded with, or open a new session in a new "
                     "process"
                 )
 
     def check_read(self, externals: Mapping[str, Mapping[str, Json]]) -> None:
-        """Raise :class:`RunError` if a reference only candidates name reads other files than
+        """Raise :class:`ProvenanceError` if a reference only candidates name reads other files than
         it did for a candidate recorded before."""
         for ref, entry in externals.items():
             if ref in self._read and self._read[ref] != content(entry):
-                raise RunError(
+                raise ProvenanceError(
                     f"geometry: {ref} does not read the files it read for an earlier candidate "
                     f"(now {entry.get('path') or 'no file'}); the candidates of a session start "
                     "from one geometry"
@@ -223,7 +224,7 @@ class Baseline:
         for ref, opened in self.externals.items():
             if now.get(ref) != thaw(opened):
                 path = (now.get(ref) or {}).get("path") or "no file"
-                raise RunError(
+                raise ProvenanceError(
                     f"geometry: {ref} does not read the files it read when the session opened "
                     f"(now {path}); the candidates of a session start from one geometry"
                 )
@@ -237,7 +238,7 @@ class Baseline:
         for name, then in opened.items():
             now = os.environ.get(name)
             if now != then:
-                raise RunError(
+                raise ProvenanceError(
                     f"{name} changed after the session opened ({then!r} then, {now!r} now); the "
                     "candidates of a session run in one environment"
                 )

@@ -28,8 +28,8 @@ from k4opt.evaluation import (
     edm4hep,
 )
 from k4opt.execution import _stages as stages_module
-from k4opt.execution._binding import _request
 from k4opt.execution._files import _sha256, file_identity
+from k4opt.execution._preflight import _request
 from k4opt.execution._stages import (
     StageContext,
     StageOutcome,
@@ -905,7 +905,8 @@ def test_the_declared_defaults_reach_check_and_evaluate(
         settings = {"collection": str, "threshold": 0.5}
         metrics = {"a.rms": "mm", "a.cells": "1"}
 
-        def check(self, request: EvaluationRequest) -> None:
+        @classmethod
+        def check(cls, request: EvaluationRequest) -> None:
             seen.append(request.settings)
             super().check(request)
 
@@ -928,7 +929,8 @@ def test_the_bridge_runs_check_before_any_stage(
     fake = simulation.install(monkeypatch)
 
     class Picky(Reader):
-        def check(self, request: EvaluationRequest) -> None:
+        @classmethod
+        def check(cls, request: EvaluationRequest) -> None:
             raise EvaluationContractError("unsupported settings")
 
     reader = Picky()
@@ -1166,14 +1168,16 @@ def test_a_file_is_hashed_once_until_it_changes(tmp_path: Path) -> None:
 
 
 class Checking(Reader):
-    """Records what ``check()`` and ``evaluate()`` each receive."""
+    """Records what ``check()`` and ``evaluate()`` each receive (watched: see
+    :func:`~tests.support.evaluators.implementations`)."""
 
     def __init__(self) -> None:
         super().__init__()
         self.checked: list[EvaluationRequest] = []
 
-    def check(self, request: EvaluationRequest) -> None:
-        self.checked.append(request)
+    @classmethod
+    def check(cls, request: EvaluationRequest) -> None:
+        cls.watched.checked.append(request)  # type: ignore[attr-defined]
 
 
 def test_check_and_evaluate_receive_the_same_request_fields(

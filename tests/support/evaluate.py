@@ -14,10 +14,17 @@ import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from k4opt.evaluation import CandidateKey, EvaluationContractError, EvaluatorProtocol, Scalar
+from k4opt.evaluation import (
+    CandidateKey,
+    CandidateRejected,
+    EvaluationContractError,
+    EvaluatorProtocol,
+    Scalar,
+)
 from k4opt.execution._backends import InlineBackend
-from k4opt.execution._binding import _bind_problem, _context, _preflight, _Prepared
+from k4opt.execution._binding import _bind_problem, _context
 from k4opt.execution._drive import _drive, _finish_plan, _Run
+from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._schedule import Scheduler
 from k4opt.execution._stages import check_run_inputs
 from k4opt.execution._tasks import GeometryWork, Workspace
@@ -81,6 +88,8 @@ def evaluate_candidate(
                 f"{task.sample}"
             )
     prepared = _preflight(binding, configure(spec, values))
+    if isinstance(prepared, Rejected):
+        raise CandidateRejected(str(prepared))
     checked = time.perf_counter() - started
     return _execute_plan(
         spec,
@@ -102,7 +111,6 @@ def _execute_plan(
     geometry: GeometryWork | None,
     workdir: Path | None,
     checked_seconds: float,
-    timeout: float | None = None,
 ) -> CandidateRecord:
     """Run the tasks of a prepared candidate, one after another in plan order, in this thread;
     evaluator checks and defaults are not repeated.
@@ -112,19 +120,20 @@ def _execute_plan(
     that need none). Each task writes below ``workdir``, in the directory the plan gives it.
     ``checked_seconds``, the time the candidate's validation and preflight took, counts towards
     ``elapsed_seconds``, which thus covers k4opt's checks too (not what the caller does between).
-    ``timeout`` limits each stage that runs a program
-    (:attr:`~k4opt.execution._stages.StageContext.timeout`).
     """
     started = time.perf_counter() - checked_seconds
     binding = prepared.binding
     stages = binding.plan.of(Kind.STAGE)
     check_run_inputs([t.id.name for t in stages if t.given is None], geometry is not None, workdir)
     run = _Run(Workspace("candidate", workdir), prepared, key, supplied, geometry, started)
-    backend = InlineBackend(
-        _context(spec, binding, timeout), lambda workspace, task: prepared.instances[task]
-    )
+    backend = InlineBackend(_context(spec, binding), dict(binding.evaluations))
     pulled = iter([run])
-    driven = _drive(Scheduler(backend.capacity), backend, {}, lambda: next(pulled, None))
+    driven = _drive(
+        Scheduler(backend.capacity),
+        backend,
+        {},
+        lambda: next(pulled, None),
+    )
     with contextlib.closing(driven):
         for ended in driven:
             if ended.error is not None:

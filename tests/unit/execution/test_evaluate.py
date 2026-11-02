@@ -222,8 +222,7 @@ def test_kind_is_part_of_the_key(doc: dict[str, Any]) -> None:
 def test_evaluator_mismatch_fails_before_evaluation(
     spec: ProblemSpec, attr: str, value: str
 ) -> None:
-    toy = Toy()
-    setattr(toy, attr, value)
+    toy = type("Other", (Toy,), {attr: value})()  # what the class declares decides
     with pytest.raises(EvaluationContractError, match=value):
         evaluate_one(spec, {CELL: 5.0}, toy)
     assert toy.calls == []

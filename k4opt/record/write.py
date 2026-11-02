@@ -15,17 +15,14 @@ from pathlib import Path
 
 from k4opt import __version__
 from k4opt.evaluation import Artifact, Scalar
-from k4opt.frozen import FrozenMap, Json, thaw
+from k4opt.frozen import Json, thaw
 from k4opt.problem.candidate import Configuration
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec, Stage
 from k4opt.problem.plan import GEOMETRY, Kind, Task, evaluations
 from k4opt.record.assess import Assessment
 from k4opt.record.errors import RecordError
 from k4opt.record.read import SUMMARY_SCHEMA, _measurement
-from k4opt.record.results import CandidateRecord, PeakMemory, TaskResult
-
-INLINE: Mapping[str, Json] = FrozenMap({"backend": "inline"})
-"""How a session executes its tasks by default: one after another, in its own process."""
+from k4opt.record.results import DONE, CandidateRecord, PeakMemory, TaskResult
 
 
 def _relative(path: Path, run_dir: Path) -> str:
@@ -131,7 +128,7 @@ def assemble(
     run: object,
     process: Mapping[str, Json],
     configuration: Configuration,
-    execution: Mapping[str, Json] = INLINE,
+    execution: Mapping[str, Json],
 ) -> dict[str, object]:
     """The summary of a candidate, made from its task results and nothing else that ran.
 
@@ -221,8 +218,9 @@ def assemble(
         # the evaluations of the candidate, of no sample
         "evaluations": measured(None),
         "elapsed_seconds": candidate.elapsed_seconds,
+        # what a geometry that was made changed and reads; one that was not, why
         "geometry": {"status": geometry.status}
-        | made
+        | (made if geometry.status == DONE else {"message": geometry.message})
         | {"varies": list(plan[GEOMETRY].varies), "elapsed_seconds": geometry.elapsed_seconds}
         | _memory(geometry),
         "environment": {

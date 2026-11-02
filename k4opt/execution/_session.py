@@ -1,22 +1,23 @@
-"""Candidates of a problem file, evaluated end to end (behind ``k4opt evaluate``).
+"""Candidates of a problem file, evaluated end to end.
 
-:class:`EvaluationSession` loads the problem once, binds and checks the evaluator
-implementations (:mod:`k4opt.execution._binding`) and takes what it evaluates with, the identity
-of every file the problem names included (:mod:`k4opt.execution._baseline`). For each candidate
-it then validates the candidate, creates a new instance of each evaluator and checks its request
-for the candidate, checks that none of that changed (nothing is created before this succeeds),
-admits it into a new run directory of its own and runs its tasks there
-(:mod:`k4opt.execution._drive`): the geometry task materializes the candidate's geometry into
-it, each pipeline stage of each sample runs once and each evaluation measures its sample, or the
-candidate, with its new instance. Its record is then checked and published
-(:mod:`k4opt.execution._publish`). :func:`run_candidate` evaluates one candidate given as
-``NAME=VALUE`` strings.
+:class:`EvaluationSession` loads the problem once, binds the evaluator classes by what they
+declare (:mod:`k4opt.execution._binding`) and takes what it evaluates with, the identity of every
+file the problem names included (:mod:`k4opt.execution._baseline`). For each candidate it then
+validates the candidate, makes the request of each evaluation and asks each evaluator class's
+``check`` about it (:mod:`k4opt.execution._preflight`), which may reject the candidate
+(:class:`~k4opt.execution.Rejected`), and checks that none of what it evaluates with changed;
+nothing is created before this succeeds. It then admits the candidate into a new run directory of
+its own and runs its tasks there (:mod:`k4opt.execution._drive`): the geometry task materializes
+the candidate's geometry into it, each pipeline stage of each sample runs once and each
+evaluation measures its sample, or the candidate, with a new instance of its evaluator created
+where it runs. Its record is then checked and published (:mod:`k4opt.execution._publish`).
+:mod:`k4opt.execution._command` evaluates one candidate given as ``NAME=VALUE`` strings
+(``k4opt evaluate``).
 """
 
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 import uuid
@@ -29,21 +30,16 @@ from typing import Literal
 
 from k4opt.evaluation import (
     CandidateKey,
+    CandidateRejected,
     EvaluatorProtocol,
     Scalar,
 )
 from k4opt.execution._backends import Backend, InlineBackend
 from k4opt.execution._baseline import Baseline, candidate_reads
-from k4opt.execution._binding import (
-    _bind_problem,
-    _Binding,
-    _context,
-    _preflight,
-    _Prepared,
-    task_cpus,
-)
+from k4opt.execution._binding import _bind_problem, _Binding, _context, task_cpus
 from k4opt.execution._cpus import AUTO, INLINE, usable_cpus
 from k4opt.execution._drive import Activity, _drive, _Run
+from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._process import ProcessBackend
 from k4opt.execution._publish import RunOutcome, publish
 from k4opt.execution._schedule import Scheduler
@@ -58,7 +54,6 @@ from k4opt.problem.candidate import (
     Configuration,
     configure,
     geometry_overrides,
-    parse_candidate,
     validate_candidate,
 )
 from k4opt.problem.config import resolve_problem
@@ -66,22 +61,8 @@ from k4opt.problem.models import ProblemSpec
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES, plan_stages
 from k4opt.record.read import SUMMARY_SCHEMA
-from k4opt.record.results import TaskResult
+from k4opt.record.results import DONE, TaskResult
 from k4opt.record.write import SUMMARY_NAME
-
-
-def _parse_inputs(assignments: Sequence[str]) -> dict[str, str]:
-    """``SAMPLE/STAGE=FILE`` strings as files by stage label; the session checks the samples,
-    stages and files."""
-    inputs: dict[str, str] = {}
-    for assignment in assignments:
-        label, separator, text = assignment.partition("=")
-        if not separator or not label or not text:
-            raise RunError(f"--input {assignment!r}: expected SAMPLE/STAGE=FILE")
-        if label in inputs:
-            raise RunError(f"--input {label} is given more than once")
-        inputs[label] = text
-    return inputs
 
 
 def _supplied(
@@ -107,15 +88,6 @@ def _supplied(
             raise RunError(f"input {label}={os.fspath(given)}: {path} is not a file")
         supplied[stage_task(stage, sample)] = path
     return supplied
-
-
-def _timeout(value: float | None) -> float | None:
-    """``value`` as a time limit in seconds; :class:`RunError` unless it is positive and finite."""
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < math.inf:
-        raise RunError(f"timeout must be a positive number of seconds, got {value!r}")
-    return float(value)
 
 
 def _run_reference(run: Mapping[str, Json] | None) -> object:
@@ -145,7 +117,7 @@ class Evaluations:
     def __init__(
         self,
         session: EvaluationSession,
-        generator: Generator[tuple[RunRequest, RunOutcome | Exception]],
+        generator: Generator[tuple[RunRequest, RunOutcome | Rejected | Exception]],
     ) -> None:
         self._session: EvaluationSession | None = session
         self._generator = generator
@@ -153,7 +125,7 @@ class Evaluations:
     def __iter__(self) -> Evaluations:
         return self
 
-    def __next__(self) -> tuple[RunRequest, RunOutcome | Exception]:
+    def __next__(self) -> tuple[RunRequest, RunOutcome | Rejected | Exception]:
         try:
             return next(self._generator)
         except BaseException:  # it ended: nothing of it runs any more
@@ -216,7 +188,6 @@ class EvaluationSession:
         "_execution",
         "_inputs",
         "_open",
-        "_timeout",
         "_warnings",
     )
 
@@ -226,7 +197,6 @@ class EvaluationSession:
         binding: _Binding,
         inputs: Mapping[TaskId, Path],
         warnings: tuple[str, ...],
-        timeout: float | None,
         workers: int | None = None,
     ) -> None:
         """Use :meth:`open`."""
@@ -234,11 +204,10 @@ class EvaluationSession:
         self._binding = binding
         self._inputs = FrozenMap(inputs)
         self._warnings = warnings
-        self._timeout = timeout
         # what every task needs, wherever it runs
         problem = baseline.problem
         self._context = _context(
-            problem.spec, binding, timeout, baseline.externals, problem.source, problem.catalog
+            problem.spec, binding, baseline.externals, problem.source, problem.catalog
         )
         execution: dict[str, Json] = {"backend": "inline"}
         if workers is not None:
@@ -265,43 +234,42 @@ class EvaluationSession:
         implementations: Sequence[type[EvaluatorProtocol]],
         *,
         inputs: Mapping[str, str | os.PathLike[str]] | None = None,
-        timeout: float | None = None,
         workers: int | Literal["auto", "inline"] = "inline",
     ) -> EvaluationSession:
         """Load the problem file ``problem_path`` to evaluate its candidates with
         ``implementations``.
 
         ``implementations`` (evaluator classes, as :func:`~k4opt.evaluation.load_evaluator`
-        returns them) implement the problem's ``evaluators``, in any order; one instance of each
-        is created now to bind it to the problem, and a new one for every evaluation of every
-        candidate. ``inputs`` maps a stage of a sample, ``SAMPLE/STAGE``, to a file that stands
-        in for it (``k4opt evaluate --input``): that stage does not run, nor do the stages of the
-        sample only it needs, and a supplied stage that the parameters change was not made from
-        the candidate, which every outcome says
-        (``represents_candidate``). ``timeout`` is how many seconds a stage that runs a program
-        (ddsim) may take: one that runs longer is killed, and its candidate fails with the logs
-        kept. ``workers`` says where the tasks (geometries, simulations, evaluations) run:
-        ``"inline"``, in this process, one after another, with the implementations as given
-        (classes defined in a script or a notebook included); or a number of worker processes,
-        each running one task at a time, of one candidate and of several
-        (:meth:`evaluate_each`), so that a crash or an OOM kill of an evaluator fails its task,
-        not the session. Workers load the implementations again by their references, so they
-        must be loaded by :func:`~k4opt.evaluation.load_evaluator` (a
-        :class:`~k4opt.execution.RunError` otherwise, never a fallback to ``"inline"``); one
-        worker is started and checked now. ``"auto"`` is as many workers as the processors this
-        process may use (its affinity, at most its cgroup's quota). A simulation on several
-        threads (``numberOfThreads``) holds as many workers while it runs. The new instance of
-        each evaluation is still created, and its ``check()`` called, in this process, before
-        anything of its candidate is created. Close a session (:meth:`close`, or ``with``) to
-        stop its workers.
+        returns them) implement the problem's ``evaluators``, in any order; each is bound to the
+        problem by what its class declares, without creating it, and every evaluation of every
+        candidate creates one new instance where it runs. ``inputs`` maps a stage of a sample,
+        ``SAMPLE/STAGE``, to a file that stands in for it (``k4opt evaluate --input``): that stage
+        does not run, nor do the stages of the sample only it needs, and a supplied stage that the
+        parameters change was not made from the candidate, which every outcome says
+        (``represents_candidate``). A stage or an evaluation that runs longer than the problem's
+        ``timeout`` for it is stopped and fails, its candidate with it, and its logs are kept.
+        ``workers`` says where the tasks (geometries, simulations, evaluations) run: ``"inline"``,
+        in this process, one after another, with the implementations as given (classes defined in a
+        script or a notebook included); or a number of worker processes, each running one task at a
+        time, of one candidate and of several (:meth:`evaluate_each`), so that a crash or an OOM
+        kill of an evaluator fails its task, not the session. Workers load the implementations again
+        by their references, so they must be loaded by :func:`~k4opt.evaluation.load_evaluator` (a
+        :class:`~k4opt.execution.RunError` otherwise, never a fallback to ``"inline"``); one worker
+        is started and checked now. ``"auto"`` is as many workers as the processors this process may
+        use (its affinity, at most its cgroup's quota). A simulation on several threads
+        (``numberOfThreads``) holds as many workers while it runs. Each evaluator class's ``check``
+        is still called in this process, without a time limit, before anything of its candidate is
+        created. Inline, nothing stops the Python of a task, so a problem that limits its
+        evaluations (its ``timeout``) needs workers to evaluate candidates, though not to check
+        them (:meth:`check_limits`); a stage's limit stops the program the stage runs. Close a
+        session (:meth:`close`, or ``with``) to stop its workers.
         Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
-        stage or input (an :class:`~k4opt.evaluation.EvaluationContractError` for an
-        implementation that cannot be created, too), and :class:`~k4opt.execution.RunError` if
-        k4opt's own files changed since this process first identified them
-        (:func:`k4opt.revision.code_unchanged`).
+        stage or input (an :class:`~k4opt.evaluation.EvaluationContractError` for an evaluator
+        class that declares anything but plain data, too), and
+        :class:`~k4opt.execution.ProvenanceError` if k4opt's own files changed since this process
+        first identified them (:func:`k4opt.revision.code_unchanged`).
         """
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
-        limit = _timeout(timeout)
         count, usable = _workers(workers), usable_cpus()
         problem = resolve_problem(path)
         spec = problem.spec
@@ -346,12 +314,19 @@ class EvaluationSession:
                 "identified (size and SHA-256), not verified to be the output of the stage the "
                 "problem defines; the records list it as supplied"
             )
-        return cls(baseline, binding, supplied, (*binding.warnings, *crowded), limit, count)
+        return cls(baseline, binding, supplied, (*binding.warnings, *crowded), count)
 
     @property
     def spec(self) -> ProblemSpec:
         """The problem, as loaded when the session was opened."""
         return self._baseline.spec
+
+    @property
+    def targets(self) -> tuple[GeometryParameter, ...]:
+        """The attribute each geometry destination of the parameters sets, with its value in the
+        unmodified geometry, in the order of
+        :attr:`~k4opt.problem.ProblemSpec.geometry_destinations`."""
+        return self._baseline.problem.targets
 
     @property
     def problem_path(self) -> Path:
@@ -406,6 +381,23 @@ class EvaluationSession:
         """
         return self._baseline.identity()
 
+    def check_limits(self) -> None:
+        """Raise :class:`~k4opt.execution.RunError` if this session could not keep the time
+        limits of the problem's evaluations: inline, nothing stops an evaluation that runs in
+        this process when its time runs out, and no limit is claimed that is not kept. Checking a
+        candidate (:meth:`check`) needs none of that; evaluating one does, so :meth:`evaluate`
+        and :meth:`evaluate_each` refuse such a session before they create anything."""
+        if self._backend is not None:
+            return
+        spec = self.spec
+        limited = [f"evaluators[{i}].timeout" for i, e in enumerate(spec.evaluators) if e.timeout]
+        if limited or spec.timeout is not None:
+            raise RunError(
+                f"{', '.join(limited) or 'timeout'}: an evaluation that runs in the session's own "
+                "process cannot be stopped when its time runs out; evaluate with worker processes "
+                "(--workers 1, or more)"
+            )
+
     def verify_inputs(self) -> None:
         """Raise :class:`~k4opt.execution.RunError` if a file the stages read (named by the problem
         or supplied) is not the file it was when the session opened: other bytes, or now readable
@@ -426,6 +418,8 @@ class EvaluationSession:
         environment or k4opt's code that changed since the session opened.
         """
         _, _, prepared, _ = self._prepare(candidate)
+        if isinstance(prepared, Rejected):
+            raise CandidateRejected(str(prepared))
         return prepared.configuration
 
     def evaluate(
@@ -434,8 +428,9 @@ class EvaluationSession:
         output: str | os.PathLike[str],
         *,
         run: Mapping[str, Json] | None = None,
-    ) -> RunOutcome:
-        """Evaluate ``candidate`` into the new directory ``output`` and write its summary there.
+    ) -> RunOutcome | Rejected:
+        """Evaluate ``candidate`` into the new directory ``output`` and write its summary there;
+        :class:`Rejected`, with nothing created, if an evaluator's ``check`` rejects it.
 
         ``candidate`` maps the name of each parameter to its value. ``run`` is recorded
         as the summary's ``run``: JSON-compatible data that says what the record was made for
@@ -462,8 +457,9 @@ class EvaluationSession:
         activity: Callable[[Activity], None] | None = None,
     ) -> Evaluations:
         """Evaluate the candidate of each of ``requests``, as :meth:`evaluate` does, and give
-        each ``(request, outcome)`` as its candidate ends; the outcome is the exception that
-        stopped it instead, if one did (nothing else is then written for it).
+        each ``(request, outcome)`` as its candidate ends: its :class:`RunOutcome`, the
+        :class:`Rejected` of a candidate an evaluator rejected (nothing of it was created), or the
+        exception that stopped it, if one did (nothing else is then written for it).
 
         The next request is taken from ``requests`` only once the candidates under way leave a
         slot idle (none of their tasks is ready to take it), and every candidate that ended was
@@ -477,6 +473,7 @@ class EvaluationSession:
         """
         if self._open is not None:
             raise RunError("the session is evaluating already; close that evaluation first")
+        self.check_limits()  # before anything is created
         evaluations = Evaluations(self, self._evaluations(iter(requests), activity))
         self._open = evaluations
         return evaluations
@@ -504,10 +501,10 @@ class EvaluationSession:
 
     def _evaluations(
         self, requests: Iterator[RunRequest], activity: Callable[[Activity], None] | None
-    ) -> Generator[tuple[RunRequest, RunOutcome | Exception]]:
+    ) -> Generator[tuple[RunRequest, RunOutcome | Rejected | Exception]]:
         runs: dict[str, _Run] = {}
         backend: Backend = self._backend or InlineBackend(
-            self._context, lambda workspace, task: _prepared(runs[workspace]).instances[task]
+            self._context, dict(self._binding.evaluations)
         )
 
         def pull() -> _Run | None:
@@ -521,13 +518,23 @@ class EvaluationSession:
             except Exception as exc:  # before anything was created
                 return _Run(Workspace("", None), None, error=exc, request=request)
 
-        driven = _drive(Scheduler(backend.capacity), backend, runs, pull, self._checked, activity)
+        driven = _drive(
+            Scheduler(backend.capacity),
+            backend,
+            runs,
+            pull,
+            self._checked,
+            activity,
+        )
         try:
             for run in driven:
                 request = run.request
                 assert isinstance(request, RunRequest)
                 if run.error is not None:
                     yield request, run.error
+                    continue
+                if run.rejected is not None:
+                    yield request, run.rejected
                     continue
                 try:
                     outcome = publish(run, self._baseline, self._execution)
@@ -542,13 +549,16 @@ class EvaluationSession:
 
     def _start(self, request: RunRequest, under_way: Collection[Path | None] = ()) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory
-        (not yet created) as its workspace (:func:`_check_output`)."""
+        (not yet created) as its workspace (:func:`_check_output`); one an evaluator rejected,
+        with no workspace."""
         reference = _run_reference(request.run)
         started = time.perf_counter()
         values, key, prepared, overrides = self._prepare(request.candidate)
+        if isinstance(prepared, Rejected):
+            return _Run(
+                Workspace("", None), None, key, rejected=prepared, request=request, values=values
+            )
         parameters = tuple(p.name for p, _ in self._baseline.spec.geometry_destinations)
-        if self._backend is not None:  # its workers check and evaluate instances of their own
-            prepared = prepared.released()
         run_dir = Path(os.path.abspath(request.output))
         _check_output(run_dir, [root for root in under_way if root is not None])
         return _Run(
@@ -567,28 +577,31 @@ class EvaluationSession:
         """What is checked of each result as it comes: that the geometry made changes the
         attributes the session resolved, to the values the candidate's configuration gives them,
         and that the references only the candidate's geometry names read what they read for the
-        candidates already recorded."""
-        if result.id != GEOMETRY:
+        candidates already recorded. A geometry that was not made (it ran out of time, its worker
+        died) has none to check."""
+        if result.id != GEOMETRY or result.status != DONE:
             return
         run.own_refs = outcome.own_refs
         assert run.prepared is not None
         try:
             self._baseline.check_changes(result, run.prepared.configuration)
             self._baseline.check_read(candidate_reads(result))
-        except RunError as exc:
+        except RunError as exc:  # of the kind it is: a ProvenanceError stays one
             run_dir = run.workspace.root
-            raise RunError(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
+            raise type(exc)(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
 
     def _prepare(
         self, candidate: Mapping[str, Scalar]
-    ) -> tuple[dict[str, Scalar], CandidateKey, _Prepared, list[Override]]:
-        """The checked candidate, its key, what its preflight prepared (its configuration, its
-        own evaluator instances and the requests made for it) and its overrides."""
+    ) -> tuple[dict[str, Scalar], CandidateKey, _Prepared | Rejected, list[Override]]:
+        """The checked candidate, its key, what its preflight prepared (its configuration and
+        the requests made for it, or why an evaluator rejected it) and its overrides."""
         spec = self._baseline.spec
         values, key = validate_candidate(spec, candidate)
         configuration = configure(spec, values)
         self._baseline.verify()  # first: a file that is gone changed, more than it is missing
         prepared = _preflight(self._binding, configuration)
+        if isinstance(prepared, Rejected):
+            return values, key, prepared, []
         overrides = geometry_overrides(self._baseline.problem, configuration)
         return values, key, prepared, overrides
 
@@ -634,11 +647,6 @@ def _is_run(path: Path) -> bool:
     return isinstance(data, Mapping) and data.get("schema") == SUMMARY_SCHEMA
 
 
-def _prepared(run: _Run) -> _Prepared:
-    assert run.prepared is not None
-    return run.prepared
-
-
 def _workers(value: int | Literal["auto", "inline"]) -> int | None:
     """The number of worker processes ``value`` says, ``None`` for none (``"inline"``): itself,
     or for ``"auto"`` the processors this process may use. :class:`RunError` unless it is a
@@ -650,77 +658,3 @@ def _workers(value: int | Literal["auto", "inline"]) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise RunError(f"workers must be a positive integer, 'auto' or 'inline', got {value!r}")
     return value
-
-
-@dataclass(frozen=True, slots=True)
-class Preview:
-    """A candidate checked as :func:`run_candidate` checks it, with nothing created or run: the
-    problem (``spec``), the candidate's ``values``, what it configures (``configuration``) and the
-    attribute each geometry destination sets, with its value now (``targets``, in the order of
-    :attr:`~k4opt.problem.ProblemSpec.geometry_destinations`)."""
-
-    spec: ProblemSpec
-    values: Mapping[str, Scalar]
-    configuration: Configuration
-    targets: tuple[GeometryParameter, ...]
-
-
-def preview_candidate(
-    problem_path: str | os.PathLike[str],
-    assignments: Sequence[str],
-    *,
-    implementations: Sequence[type[EvaluatorProtocol]],
-    inputs: Sequence[str] = (),
-    warn: Callable[[str], None] | None = None,
-) -> Preview:
-    """Check the candidate given as ``NAME=VALUE`` strings as :func:`run_candidate` does before it
-    creates anything (:meth:`EvaluationSession.check`), and stop there: ``k4opt evaluate
-    --dry-run``. ``warn`` is called with each of the session's warnings, as there."""
-    with EvaluationSession.open(
-        problem_path, implementations, inputs=_parse_inputs(inputs)
-    ) as session:
-        values = parse_candidate(session.spec, assignments)
-        checked, _ = validate_candidate(session.spec, values)
-        if warn is not None:
-            for warning in session.warnings:
-                warn(warning)
-        configuration = session.check(checked)
-        return Preview(session.spec, checked, configuration, session._baseline.problem.targets)
-
-
-def run_candidate(
-    problem_path: str | os.PathLike[str],
-    assignments: Sequence[str],
-    output: str | os.PathLike[str],
-    *,
-    implementations: Sequence[type[EvaluatorProtocol]],
-    inputs: Sequence[str] = (),
-    timeout: float | None = None,
-    workers: int | Literal["auto", "inline"] = "inline",
-    warn: Callable[[str], None] | None = None,
-) -> RunOutcome:
-    """Evaluate the candidate given as ``NAME=VALUE`` strings; ``output`` must not exist.
-
-    :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
-    ``SAMPLE/STAGE=FILE`` strings, ``timeout`` and ``workers`` those of
-    :meth:`EvaluationSession.open`. ``warn``
-    is called with each of the session's warnings once the candidate is known to be valid, before
-    anything is created, and with its :attr:`~EvaluationSession.notice` of diagnostics; the
-    warnings are also kept in the summary.
-    """
-    with EvaluationSession.open(
-        problem_path,
-        implementations,
-        inputs=_parse_inputs(inputs),
-        timeout=timeout,
-        workers=workers,
-    ) as session:
-        values = parse_candidate(session.spec, assignments)
-        # a wrong candidate is reported before the warnings
-        validate_candidate(session.spec, values)
-        if warn is not None:
-            for warning in session.warnings:
-                warn(warning)
-            if session.notice is not None:
-                warn(session.notice)
-        return session.evaluate(values, output)

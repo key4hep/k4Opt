@@ -19,10 +19,10 @@ The two talk by request and response, each message a tuple whose first item says
   which the coordinator kills if the worker dies, and ends with ``("done", outcome, observed)``
   or ``("failed", Failure)``.
 
-An evaluation gets a new instance of its implementation, whose ``check()`` is called with the
-request the preflight made before its ``evaluate()`` (both on that instance); what the evaluator
-prints while it is called goes to ``evaluator.log`` in its own directory. The worker ends when
-the coordinator closes its end.
+An evaluation creates its one instance of its implementation and calls its ``evaluate()`` with the
+request the coordinator's preflight made, whose ``check`` it already passed; what the evaluator
+prints while it is created and called goes to ``evaluator.log`` in its own directory. The worker
+ends when the coordinator closes its end.
 """
 
 from __future__ import annotations
@@ -41,11 +41,11 @@ from pathlib import Path
 from types import FrameType
 
 from k4opt.errors import K4OptError
-from k4opt.evaluation import EvaluatorProtocol, evaluator_source, load_evaluator
-from k4opt.execution._instances import _Bound, _instance
+from k4opt.evaluation import evaluator_source, load_evaluator
+from k4opt.execution._instances import _Bound
 from k4opt.execution._tasks import Observations, SessionContext, TaskSpec
 from k4opt.execution._work import execute_task
-from k4opt.execution.errors import RunError
+from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json
 from k4opt.problem.plan import Kind, TaskId
 from k4opt.revision import code_fingerprint
@@ -203,17 +203,17 @@ class Session:
     def of(cls, spec: SessionSpec, started: Callable[[int], None] | None = None) -> Session:
         """Set up the session ``spec`` in this process; ``started`` is told the process group of
         each program a stage starts, which dies with this process. Raises
-        :class:`~k4opt.execution.RunError` if k4opt's code, the environment or an implementation
-        is not the session's."""
+        :class:`~k4opt.execution.ProvenanceError` if k4opt's code, the environment or an
+        implementation is not the session's."""
         if code_fingerprint() != spec.code:
-            raise RunError(
+            raise ProvenanceError(
                 "a worker process runs other k4opt code than the session (another checkout "
                 "first on the path, or the files changed since the session opened)"
             )
         for name, value in spec.environment.items():
             now = os.environ.get(name)
             if now != value:
-                raise RunError(
+                raise ProvenanceError(
                     f"{name} is {now!r} in a worker process, not {value!r} as in the session"
                 )
         sys.path[:] = list(dict.fromkeys([*spec.path, *sys.path]))
@@ -221,7 +221,7 @@ class Session:
             loaded = evaluator_source(load_evaluator(implementation.reference))
             then = {key: implementation.source.get(key) for key in _IDENTITY}
             if {key: loaded.get(key) for key in _IDENTITY} != then:
-                raise RunError(
+                raise ProvenanceError(
                     f"evaluator {implementation.reference}: {then['path']} or a module it "
                     "imports changed after the session loaded it; open a new session"
                 )
@@ -236,22 +236,10 @@ class Session:
     def run(self, spec: TaskSpec, root: Path | None, seen: Observations) -> Message:
         """Do the task ``spec`` in the workspace ``root``: the answer to send."""
         task = spec.task.id
-
-        def checked() -> EvaluatorProtocol:
-            """A new instance, checked as in the preflight; it is the one that evaluates."""
-            assert spec.request is not None
-            instance = _instance(self.bound[task])
-            check = getattr(instance, "check", None)
-            if check is not None:
-                check(spec.request)
-            return instance
-
         try:
-            # made within the task, so that its peak memory counts what that took
-            make = checked if task.kind is Kind.EVALUATOR else None
-            outcome, observed = execute_task(
-                self.context, spec, root, seen, output=_logged, make=make
-            )
+            # the instance is made within the task, so that its time and memory count
+            bound = self.bound.get(task) if task.kind is Kind.EVALUATOR else None
+            outcome, observed = execute_task(self.context, spec, root, seen, bound, _logged)
         except Exception as exc:
             return ("failed", Failure.of(exc))
         if task.kind is Kind.EVALUATOR and outcome.workdir is not None:

@@ -14,18 +14,18 @@ from __future__ import annotations
 
 import contextlib
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
 from k4opt.evaluation import (
     Artifact,
+    CandidateRejected,
     EvaluationContractError,
     EvaluationFailed,
     EvaluationInvalid,
     EvaluationRequest,
     EvaluationResult,
-    EvaluatorProtocol,
     RoleInput,
     Status,
     available_collections,
@@ -44,6 +44,7 @@ from k4opt.execution._files import (
     portable_artifact,
     stat_of,
 )
+from k4opt.execution._instances import _Bound, _instance
 from k4opt.execution._stages import make_stage
 from k4opt.execution._tasks import (
     Measuring,
@@ -59,7 +60,7 @@ from k4opt.geometry import GeometryError, GeometrySource
 from k4opt.problem.contract import check_result
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId
 from k4opt.problem.stages import stage_output
-from k4opt.record.results import DONE, PeakMemory
+from k4opt.record.results import DONE, PeakMemory, declined
 from k4opt.record.write import SUMMARY_NAME
 
 
@@ -93,30 +94,26 @@ def execute_task(
     spec: TaskSpec,
     root: Path | None,
     seen: Observations,
-    instance: EvaluatorProtocol | None = None,
+    bound: _Bound | None = None,
     output: Output | None = None,
-    *,
-    make: Callable[[], EvaluatorProtocol] | None = None,
 ) -> tuple[TaskOutcome, Observations]:
     """Do the work of the task ``spec`` in the workspace whose directory is ``root`` here
     (``None``: the candidate has no directory, so no task of it writes).
 
     ``seen`` holds the stats taken of the files the task's reads made, which it checks before and
-    after it runs. An evaluation calls ``instance``, within ``output`` of its own directory if
-    given (a worker process points the evaluator's output at a log there), or the instance
-    ``make`` returns, which the task makes first (a worker: a new instance, checked), so that
-    making it counts as the task's work. Returns what the task left behind and the
-    stats of what it made. Raises what the work of the task raises: a geometry that cannot be
-    made, an :class:`~k4opt.evaluation.EvaluationContractError` for a result that breaks the
-    evaluation contract, or any exception of an evaluator other than
+    after it runs. An evaluation creates its one instance of the implementation ``bound`` to it
+    and calls it, both within ``output`` of its own directory if given (a worker process points
+    the evaluator's output at a log there), so that creating it counts as the task's work.
+    Returns what the task left behind and the stats of what it made. Raises what the work of the
+    task raises: a geometry that cannot be made, an
+    :class:`~k4opt.evaluation.EvaluationContractError` for an instance that cannot be created or
+    a result that breaks the evaluation contract, or any exception of an evaluator other than
     :class:`~k4opt.evaluation.EvaluationFailed` and :class:`~k4opt.evaluation.EvaluationInvalid`.
     The outcome holds the time and the peak memory of this process while it did the task, the
-    making of its instance included, and the peak memory of the program a stage ran.
+    creation of its instance included, and the peak memory of the program a stage ran.
     """
     began, measuring = time.perf_counter(), _reset_peak()
-    if make is not None:
-        instance = make()
-    outcome, observed = _run_task(context, spec, root, seen, instance, output, began)
+    outcome, observed = _run_task(context, spec, root, seen, bound, output, began)
     program = None if outcome.memory is None else outcome.memory.program
     process = _process_peak() if measuring else None
     return replace(outcome, memory=PeakMemory(process, program)), observed
@@ -154,7 +151,7 @@ def _run_task(
     spec: TaskSpec,
     root: Path | None,
     seen: Observations,
-    instance: EvaluatorProtocol | None,
+    bound: _Bound | None,
     output: Output | None,
     began: float,
 ) -> tuple[TaskOutcome, Observations]:
@@ -163,8 +160,8 @@ def _run_task(
         return _geometry(context, spec, root, began)
     if kind is Kind.STAGE:
         return _stage(context, spec, root, seen, began)
-    assert instance is not None
-    return _evaluation(context, spec, root, seen, instance, began, output)
+    assert bound is not None
+    return _evaluation(context, spec, root, seen, bound, began, output)
 
 
 def _since(started: float) -> float:
@@ -273,8 +270,10 @@ def _stage(
     changed = changed_reads(spec, root, seen)
     if changed:
         return TaskOutcome(task, Status.FAILED, _changed_before(changed)), Observations()
+    # as its candidate configures them, the program it runs stopped at the task's time limit
+    stages = replace(context.contexts[task.sample].configured(spec.stages), timeout=spec.timeout)
     outcome, main = make_stage(
-        context.contexts[task.sample].configured(spec.stages),  # as its candidate configures them
+        stages,
         task.name,
         inputs=_inputs(spec, root),
         workdir=own,
@@ -313,18 +312,21 @@ def _evaluation(
     spec: TaskSpec,
     root: Path | None,
     seen: Observations,
-    evaluator: EvaluatorProtocol,
+    bound: _Bound,
     began: float,
     output: Output | None = None,
 ) -> tuple[TaskOutcome, Observations]:
-    """An evaluator called once on the files the task reads, which all succeeded, and the
-    artifacts it made, hashed once, when it returns.
+    """An evaluator created and called once on the files the task reads, which all succeeded,
+    and the artifacts it made, hashed once, when it returns.
 
-    An evaluator whose stage's file lacks a collection it declares (or holds it with another
-    type), or reads a file that changed since its task made it, gets a ``failed`` result saying
-    so and is not called. Its own directory is created just before the call; ``call_seconds``
-    is the time of the call alone. A file it reads that changes during the call fails it too:
-    the record could not say what it read.
+    An evaluator whose stage's file lacks a collection it declares (or holds it with another type),
+    or reads a file that changed since its task made it, gets a ``failed`` result saying so and is
+    neither created nor called; a diagnostic whose ``check`` rejected the candidate
+    (``spec.declined``) gets an ``invalid`` one. Its own directory is created first, then its
+    instance within ``output``, then it is called; ``call_seconds`` is the time of the call alone. A
+    file it reads that changes during the call fails it too: the record could not say what it read.
+    A :class:`~k4opt.evaluation.CandidateRejected` it raises breaks the contract: a candidate is
+    rejected in ``check`` alone, before anything of it runs.
     """
     task = spec.task.id
     measuring = context.evaluations[task]
@@ -337,10 +339,12 @@ def _evaluation(
             task, result.status, result.message, elapsed_seconds=_since(began), result=result
         ), Observations()
 
+    if spec.declined is not None:  # a diagnostic whose check() rejected the candidate
+        return ended(EvaluationResult.invalid(declined(spec.declined)))
     changed = changed_reads(spec, root, seen)
     if changed:
         return ended(EvaluationResult.failed(_changed_before(changed)))
-    error = collection_error(evaluator, request, context.listed)
+    error = collection_error(bound.implementation, request, context.listed)
     if error is not None:
         return ended(EvaluationResult.failed(error))
     workdir = _own(spec, root)
@@ -352,15 +356,24 @@ def _evaluation(
                 EvaluationResult.failed(f"cannot create evaluator directory {workdir}: {exc}")
             )
     request = replace(request, workdir=workdir)
-    started = time.perf_counter()
     surrounding = contextlib.nullcontext() if output is None or workdir is None else output(workdir)
+    started = None
     try:
-        with surrounding:
+        with surrounding:  # what its __init__ prints goes where its evaluate() prints
+            evaluator = _instance(bound)
+            started = time.perf_counter()
             result = result_from(evaluator, evaluator.evaluate(request))
     except EvaluationFailed as exc:
         result = EvaluationResult.failed(str(exc))
     except EvaluationInvalid as exc:
         result = EvaluationResult.invalid(str(exc))
+    except CandidateRejected as exc:
+        raise EvaluationContractError(
+            f"evaluator {bound.entry.binding!r}: evaluate() rejected the candidate ({exc}); a "
+            "candidate is rejected in check() alone, before anything of it runs: end an "
+            "evaluation that found it unusable with self.invalid('...')"
+        ) from exc
+    assert started is not None  # an instance that cannot be created raises
     elapsed = time.perf_counter() - started
     _check_result(context, task, measuring, result)
     made = artifacts(task, result, workdir)
@@ -428,7 +441,7 @@ def _roles(spec: TaskSpec, root: Path | None) -> dict[str, tuple[RoleInput, ...]
 
 
 def collection_error(
-    evaluator: EvaluatorProtocol,
+    evaluator: object,
     request: EvaluationRequest,
     listed: dict[tuple[Path, Stat | None], tuple[str, ...] | str],
 ) -> str | None:

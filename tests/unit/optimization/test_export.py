@@ -64,6 +64,7 @@ def test_the_csv_holds_one_row_per_trial_with_every_value_as_recorded(
         "objective:test.trade_off/analysis/b:uncertainty",
         "limit:test.trade_off/analysis/a:max:value",
         "limit:test.trade_off/analysis/a:max:margin",
+        "limit:test.trade_off/analysis/a:max:normalized",
         "limit:test.trade_off/analysis/a:max:satisfied",
         "elapsed_seconds",
         "record",
@@ -101,6 +102,8 @@ def test_the_csv_holds_one_row_per_trial_with_every_value_as_recorded(
             )
             (limit,) = record["assessment"]["limits"]
             assert float(row["limit:test.trade_off/analysis/a:max:margin"]) == limit["margin"]
+            normalized = float(row["limit:test.trade_off/analysis/a:max:normalized"])
+            assert normalized == limit["normalized"] == limit["margin"]  # one metric: scale 1
             assert row["feasible"] == row["limit:test.trade_off/analysis/a:max:satisfied"]
             assert row["feasible"] == ("true" if record["assessment"]["feasible"] else "false")
         else:  # missing, never 0
@@ -132,6 +135,7 @@ def test_two_bindings_of_one_metric_are_two_columns_and_two_lines_of_show(
         "objective:strict/analysis/a:uncertainty",
         "limit:strict/analysis/b:max:value",
         "limit:strict/analysis/b:max:margin",
+        "limit:strict/analysis/b:max:normalized",
         "limit:strict/analysis/b:max:satisfied",
     ]
     rows = list(csv.DictReader(io.StringIO(to_csv(study))))

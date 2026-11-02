@@ -50,6 +50,7 @@ from k4opt.problem.plan import (
 from k4opt.problem.stages import STAGE_TYPES, stage_output
 from k4opt.record.errors import RecordError
 from k4opt.record.results import (
+    DECLINED,
     DONE,
     TaskResult,
     blocked,
@@ -292,10 +293,17 @@ def _evaluations(
         workdir = entry.get("workdir")
         if workdir not in (None, directory):
             raise RecordError(f"{where}: workdir {workdir!r}, but its directory is {directory!r}")
-        if workdir is None and fragment.status in (Status.VALID, Status.INVALID):
+        # a valid or invalid evaluation was called, in its directory, but for a diagnostic whose
+        # check() rejected the candidate: invalid, and not run (a required one rejects it)
+        called = fragment.status == Status.VALID or (
+            fragment.status == Status.INVALID and plan[task].required
+        )
+        if workdir is None and called:
             raise RecordError(
                 f"{where}: it is {fragment.status}, so it was called, yet has no workdir"
             )
+        if workdir is None and fragment.status == Status.INVALID:
+            _check_declined(entry, fragment, where)
         files = _files(entry.get("artifacts"), task, workdir, f"{where}: artifacts", hashed=True)
         if fragment.status == Status.BLOCKED and workdir is not None:
             raise RecordError(f"{where}: it is blocked, so it was never called, yet has a workdir")
@@ -326,6 +334,25 @@ def _evaluations(
             )
         evaluators[task] = _Evaluator(status, fragment.message, own, fragment)
     return evaluators
+
+
+def _check_declined(entry: Mapping[str, object], fragment: _Fragment, where: str) -> None:
+    """A diagnostic that is ``invalid`` without a directory is one whose ``check()`` rejected the
+    candidate (:data:`~k4opt.record.results.DECLINED`): it was never called, so it holds that
+    message and measured, made, printed and took nothing; :class:`RecordError` otherwise."""
+    message = fragment.message or ""
+    if not message.startswith(f"{DECLINED} (") or not message.endswith(")"):
+        raise RecordError(
+            f"{where}: it is invalid without a workdir, which only a diagnostic whose check() "
+            f"rejected the candidate is, but its message is {message!r}"
+        )
+    ran = [key for key in ("measurements", "artifacts", "provenance") if entry.get(key)]
+    ran += [key for key in ("log", "elapsed_seconds") if entry.get(key) is not None]
+    if ran:
+        raise RecordError(
+            f"{where}: its check() rejected the candidate, so it was never called, yet it holds "
+            f"{', '.join(ran)}"
+        )
 
 
 def _supplied(spec: ProblemSpec, record: Mapping[str, object]) -> list[TaskId]:
@@ -403,18 +430,32 @@ def _results(
             for role, path in _mapping(part.get("logs"), f"{at}: logs").items():
                 _in_run(path, directory, f"{at}: logs.{role}")
     geometry = _mapping(record.get("geometry"), "geometry")
-    if geometry.get("status") != DONE:
-        raise RecordError(f"geometry: status {geometry.get('status')!r}, but it is always done")
-    for key in ("compact", "manifest"):
-        _in_run(geometry.get(key), GEOMETRY.name, f"geometry: {key}")
     if geometry.get("varies") != list(plan[GEOMETRY].varies):
         raise RecordError(
             f"geometry: varies {geometry.get('varies')!r}, but the parameters that set it are "
             f"{list(plan[GEOMETRY].varies)!r}"
         )
-    _check_changes(spec, configuration, geometry.get("changes"))
+    status = geometry.get("status")
+    if status == DONE:
+        for key in ("compact", "manifest"):
+            _in_run(geometry.get(key), GEOMETRY.name, f"geometry: {key}")
+        _check_changes(spec, configuration, geometry.get("changes"))
+        geometry_result = TaskResult(GEOMETRY, DONE)
+    elif status == Status.FAILED:  # it ran out of time, or its worker died: nothing was made
+        message = geometry.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise RecordError(f"geometry: failed, but its message is {message!r}")
+        named = [key for key in _MADE if key in geometry]
+        if named:
+            raise RecordError(
+                f"geometry: failed, but it names {', '.join(named)}, which only a geometry that "
+                "was made has"
+            )
+        geometry_result = TaskResult(GEOMETRY, Status.FAILED, message)
+    else:
+        raise RecordError(f"geometry: status {status!r}, but a geometry is done or failed")
     fragments |= {task: e.fragment for task, e in evaluators.items()}
-    results: dict[TaskId, TaskResult] = {GEOMETRY: TaskResult(GEOMETRY, DONE)}
+    results: dict[TaskId, TaskResult] = {GEOMETRY: geometry_result}
     for task in plan.tasks:
         if task.id == GEOMETRY:
             continue
@@ -449,6 +490,18 @@ def _results(
             )
         results[task.id] = expected
     return results
+
+
+_MADE = (
+    "compact",
+    "manifest",
+    "fingerprint",
+    "source_root",
+    "changes",
+    "externals",
+    "candidate_externals",
+)
+"""What the record of a geometry that was made holds, of what it made and reads."""
 
 
 def _check_changes(spec: ProblemSpec, configuration: Configuration, value: object) -> None:

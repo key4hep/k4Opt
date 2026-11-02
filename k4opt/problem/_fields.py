@@ -76,6 +76,18 @@ def _number(value: object, path: str) -> Number:
     return value
 
 
+def _seconds(value: object, path: str) -> Number:
+    """A time limit: a positive number of seconds that a float holds."""
+    number = _number(value, path)
+    try:
+        held = 0 < float(number) < math.inf
+    except OverflowError:
+        held = False
+    if not held:
+        raise _fail(path, f"must be a positive number of seconds, got {_show(value)}")
+    return number
+
+
 def _integer(value: object, path: str, *, minimum: int | None = None) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise _fail(path, f"must be an integer, got {type(value).__name__} {_show(value)}")

@@ -34,3 +34,14 @@ class EvaluationInvalid(K4OptError):  # noqa: N818 - names the status ``invalid`
 
     ``k4opt`` turns it into an ``invalid`` result whose message is the text of the exception.
     """
+
+
+class CandidateRejected(K4OptError):  # noqa: N818 - names the outcome ``rejected``
+    """Raised by an evaluator's ``check()`` to reject the candidate of the request.
+
+    The candidate breaks a requirement the evaluator states on its own request (a cell size its
+    readout cannot have, say): it cannot be evaluated, so nothing of it is created or run, and
+    whatever proposed it (an optimizer) is told it was rejected and goes on. Raised anywhere
+    else (``evaluate()``, an evaluator's ``__init__``), it breaks the contract: a candidate is
+    rejected before anything of it runs, or not at all.
+    """

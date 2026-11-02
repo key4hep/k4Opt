@@ -21,6 +21,7 @@ from k4opt.problem._fields import (
     _fail,
     _integer,
     _mapping,
+    _seconds,
     _show,
     _text,
 )
@@ -37,7 +38,8 @@ from k4opt.problem.models import (
 from k4opt.problem.plan import TaskId, stage_task, varied
 from k4opt.problem.stages import STAGE_TYPES, executors, stage_reads
 
-_STAGE_KEYS = ("executor", "file", "events", "seed")  # the rest of a stage are executor options
+# the rest of a stage are executor options
+_STAGE_KEYS = ("executor", "file", "events", "seed", "timeout")
 
 
 # lowercase, so that no two names differ only in case (run directories are named after them)
@@ -209,13 +211,16 @@ def _stage(where: str, place: _Place, m: Mapping[str, Any]) -> Stage:
                     place.key(key),
                     f"{executor} runs inside {inside}, which sets the {key}; set {instead} instead",
                 )
+    timeout = _seconds(m["timeout"], place.key("timeout")) if "timeout" in m else None
     raw = {key: value for key, value in m.items() if key not in _STAGE_KEYS}
     try:
         options = freeze(raw, path)
     except ProblemConfigError as exc:  # its message starts with the stage: samples.g.simulation...
         raise ProblemConfigError(_relocated(str(exc), place, raw)) from exc
     assert isinstance(options, Mapping)
-    return Stage(name, executor=executor, events=events, seed=seed, options=options)
+    return Stage(
+        name, executor=executor, events=events, seed=seed, options=options, timeout=timeout
+    )
 
 
 def _relocated(message: str, place: _Place, options: Mapping[str, object]) -> str:

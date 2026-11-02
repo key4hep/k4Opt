@@ -9,9 +9,10 @@ candidate becomes a COMPLETE trial with its objective values and one constraint 
 (:func:`~k4opt.optimization._optuna.space.constraint_values`); an invalid or failed one a FAIL
 trial, and the study goes on. A trial that breaks the evaluation contract, or whose record does
 not hold up, is FAIL and stops the study, and the trials still running are closed as
-interrupted. With more than one worker the session runs several trials at once: the optimizer
-is asked for the next candidate only when a slot would be idle, and told each trial as it ends
-(:func:`_run_trials`).
+interrupted. A candidate an evaluator rejects before anything of it is created is a FAIL trial
+marked ``rejected``, and the study goes on. With more than one worker the session runs several
+trials at once: the optimizer is asked for the next candidate only when a slot would be idle, and
+told each trial as it ends (:func:`_run_trials`).
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ from optuna.trial import Trial
 
 from k4opt.evaluation import EvaluatorProtocol
 from k4opt.execution import Activity, EvaluationSession, RunRequest
+from k4opt.optimization._identity import dirty_checkouts, unhashed
+from k4opt.optimization._lock import Lock
 from k4opt.optimization._optuna.optimizer import (
     CONSTANT_LIAR,
     STARTUP_TRIALS,
@@ -40,6 +43,7 @@ from k4opt.optimization._optuna.optimizer import (
     new_document,
     open_optuna,
 )
+from k4opt.optimization._optuna.read import results_of
 from k4opt.optimization._optuna.space import search_space
 from k4opt.optimization._optuna.storage import (
     close,
@@ -56,19 +60,14 @@ from k4opt.optimization._optuna.tell import (
     _recover,
     _settle,
     _Study,
-    _trial_report,
 )
-from k4opt.optimization._results import limit_names
+from k4opt.optimization._results import StudyResults, limit_names
 from k4opt.optimization._study import (
     JOURNAL_NAME,
     LOCK_NAME,
-    Lock,
-    StudyReport,
-    dirty_checkouts,
     read_study,
     session_seed,
     trial_directory,
-    unhashed,
     write_study,
 )
 from k4opt.optimization.errors import OptimizationError
@@ -150,24 +149,11 @@ def _run_trials(
                 number = request.run["trial"]
                 assert isinstance(number, int)
                 trial, output = in_flight.pop(number)  # settled by _settle, whatever it raises
-                progress(_trial_report(run, _settle(run, trial, output, result)))
+                progress(_settle(run, trial, output, result))
     finally:  # nothing runs any more
         for number in sorted(in_flight):
             with contextlib.suppress(Exception):  # one that cannot be told: --resume
                 _close_interrupted(run, *in_flight[number])
-
-
-def _study_report(run: _Study) -> StudyReport:
-    trials = tuple(_trial_report(run, t) for t in run.study.get_trials(deepcopy=False))
-    return StudyReport(
-        name=run.study.study_name,
-        directory=run.directory,
-        id=run.document["id"],
-        trials=trials,
-        pareto=tuple(sorted(t.number for t in run.study.best_trials)),
-        objectives=tuple(o.label for o in run.spec.objectives),
-        constraints=tuple(limit_names(run.spec)),
-    )
 
 
 def optimize(
@@ -179,12 +165,11 @@ def optimize(
     seed: int | None,
     resume: bool,
     storage: str | None,
-    timeout: float | None,
     workers: int | Literal["auto", "inline"],
     warn: Warn,
     progress: Progress,
     activity: Watch | None = None,
-) -> StudyReport:
+) -> StudyResults:
     if isinstance(trials, bool) or not isinstance(trials, int) or trials < 1:
         raise OptimizationError(f"trials must be a positive integer, got {trials!r}")
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
@@ -202,9 +187,7 @@ def optimize(
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
     # its workers stop with the study however it ends
-    with EvaluationSession.open(
-        problem, implementations, timeout=timeout, workers=workers
-    ) as session:
+    with EvaluationSession.open(problem, implementations, workers=workers) as session:
         return _run_study(
             session,
             directory,
@@ -229,8 +212,9 @@ def _run_study(
     warn: Warn,
     progress: Progress,
     activity: Watch | None,
-) -> StudyReport:
+) -> StudyResults:
     # everything that can be checked before a file is created
+    session.check_limits()  # the problem's time limits can be kept where the trials run
     spec = session.spec
     space = search_space(spec)  # the evaluators' settings were checked when the session opened
     identity: dict[str, Any] = session.identity()
@@ -245,13 +229,6 @@ def _run_study(
     if not resume:
         for warning in dirty_checkouts(identity["implementations"]):
             warn(warning)
-    metrics = {c.ref for c in spec.constraints}
-    if len(metrics) > 1:
-        warn(
-            f"constraints on {len(metrics)} metrics: while feasible trials are scarce, the sampler "
-            "ranks infeasible ones by the sum of their violations, which adds values in different "
-            "units (docs/optimization.md)"
-        )
     if resume:
         document = read_study(directory)
     else:
@@ -288,7 +265,8 @@ def _run_study(
                 seed=seed_now, n_startup_trials=STARTUP_TRIALS, constant_liar=CONSTANT_LIAR
             )
             _run_trials(run, session, space, seed_now, trials, progress, activity)
-            return _study_report(run)
+            # read back as load_study reads it, from the study still open
+            return results_of(directory, document, spec, study)
     except Exception as exc:
         replacement, secret = leaving(exc, storage)
         if replacement is None:

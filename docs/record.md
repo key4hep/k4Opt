@@ -40,9 +40,9 @@ Each outcome carries an `Assessment` of the candidate, also written to the summa
 | Evaluation | `objectives` | `limits` | `feasible` |
 | --- | --- | --- | --- |
 | `valid`, no constraints | the measurement of each objective, in the problem's order | none | `true` |
-| `valid`, every limit satisfied | as above | each with `value`, `margin`, `satisfied` | `true` |
+| `valid`, every limit satisfied | as above | each with `value`, `margin`, `scale`, `normalized`, `satisfied` | `true` |
 | `valid`, a limit violated | as above | as above | `false` |
-| `invalid` or `failed` | `null`, never a partial vector | each listed, `value`, `margin` and `satisfied` `null` | `null`: not assessed |
+| `invalid` or `failed` | `null`, never a partial vector | each listed with its `scale`, `value`, `margin`, `normalized` and `satisfied` `null` | `null`: not assessed |
 | a required supplied stage (`--input`) that a parameter reaches | as measured | as measured | `null` |
 
 Each objective value (`ObjectiveValue`) and each limit names its metric: `evaluator`, `sample`
@@ -52,9 +52,12 @@ Each objective value (`ObjectiveValue`) and each limit names its metric: `evalua
 the central value of the measurement: `max` is satisfied when the value is at most the limit,
 `min` when it is at least the limit, and equality satisfies both. The uncertainty is recorded
 next to the value but does not decide. `margin` is `value - max` or `min - value` in the
-metric's unit, zero or below when the limit is satisfied; it is computed exactly and rounded
-once, so its sign is always that of the comparison, and it is `null` if it does not fit in a
-float (the verdict stays exact). An infeasible candidate is a complete evaluation with real
+metric's unit, zero or below when the limit is satisfied. `scale` is the constraint's
+characteristic size of the metric ([problem](problem.md#constraints); 1 where it gives none),
+and `normalized` the margin in units of it, `margin / scale`: dimensionless, what an optimizer
+is told. Both are computed exactly and rounded once to the nearest float, so their sign is
+always that of the comparison (a value nearer zero than any float is the smallest float of its
+sign, never zero), and each is `null` if it does not fit in a float (the verdict stays exact). An infeasible candidate is a complete evaluation with real
 objective values; it is only outside the limits.
 
 `Assessment.from_summary(spec, summary)` recomputes the assessment of a `summary.json` as read
@@ -68,13 +71,17 @@ problem gives it. What the candidate configures follows from the problem and the
 alone, so the record is checked against it: each stage's `definition` (the stage as the
 candidate configures it, with the options its parameters set), each evaluation's
 `settings.declared` (the problem's settings with what the parameters set), and the geometry's
-`changes`, one per geometry target, in the problem's order, each naming its `parameter`,
+`changes`, one per geometry target, in the problem's order (for a geometry that was made), each
+naming its `parameter`,
 the canonical `target` it names and the `new_value` the candidate gives it, each of
 an attribute (`file`, `locator`, `attribute`) of its own. Where that attribute is and its
 `old_value` need the geometry, which a record is read without: a session checks them as each
 geometry is made, and a study against the attributes it resolved when it started. Each task
 holds `varies`, the parameters whose values reach it (those that set it, and those that reach
-what it reads), which must be those the problem gives. It checks again what a live evaluation enforces: the candidate is in the
+what it reads), which must be those the problem gives. The geometry is `done`, with its
+`compact`, `manifest`, `changes` and what its external references read, or `failed` with a
+`message` and none of those, when its worker died or ran out of time before it was made: every
+task that reads it is then `blocked` by it, and the candidate is `failed`. It checks again what a live evaluation enforces: the candidate is in the
 problem's domains and `candidate_key` is its key, an `invalid` or `failed` evaluator gives a
 message, each measurement of a metric its evaluator declares carries the declared unit, a
 binding whose evaluator declares metrics declares those named of it, and a constraint that

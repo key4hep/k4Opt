@@ -14,12 +14,14 @@ class EvaluatorProtocol(Protocol):
 
     There is one calling convention for every scientific procedure: a simulation, a
     reconstruction, an analysis or a cost model are all evaluators. No base class is
-    needed; a class with these members, or an object built by a function, is one.
+    needed; a class with these members is one.
 
     ``name`` and ``version`` identify the evaluator's measurement contract, the
     counterparts of ``name`` and ``version`` of an entry of ``evaluators`` in the problem file.
     They are plain labels: the protocol does not look evaluators up by them. An optional
-    ``stage`` attribute names the pipeline stage it reads.
+    ``stage`` attribute names the pipeline stage it reads. Each is plain data on the class, as
+    everything an evaluator declares (:func:`~k4opt.evaluation.check_class`), and an optional
+    ``check`` is a classmethod (:meth:`~k4opt.evaluation.Evaluator.check`).
     """
 
     @property

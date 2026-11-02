@@ -85,7 +85,7 @@ def _columns(results: StudyResults, stages: list[str]) -> list[str]:
             for c in spec.constraints  # in the order of limit_names
             for bound in ("min", "max")
             if getattr(c, bound) is not None
-            for part in ("value", "margin", "satisfied")
+            for part in ("value", "margin", "normalized", "satisfied")
         ),
         "elapsed_seconds",
         *(f"stage:{_label(*stage.split('/', 1))}:elapsed_seconds" for stage in stages),
@@ -143,7 +143,11 @@ def to_csv(results: StudyResults) -> str:
             row += [None, None, None] if m is None else [m.value, m.unit, m.uncertainty]
         for name in names:
             limit = limits.get(name)
-            row += [None] * 3 if limit is None else [limit.value, limit.margin, limit.satisfied]
+            row += (
+                [None] * 4
+                if limit is None
+                else [limit.value, limit.margin, limit.normalized, limit.satisfied]
+            )
         row.append(trial.elapsed_seconds)
         row += [trial.stage_seconds.get(stage) for stage in stages]
         path = None if trial.record is None else f"{trial_directory(trial.number)}/{SUMMARY_NAME}"

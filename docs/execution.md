@@ -72,15 +72,19 @@ No simulation executed; no evaluation output created.
 ```
 
 A candidate it refuses is refused with the message an evaluation would give, and the exit status
-is 1. `--workers` and `--timeout` say how a candidate runs, so `--dry-run` refuses them rather
-than ignore them.
+is 1; so is one an evaluator [rejects](#what-ends-a-candidate-and-what-stops-a-session), with
+nothing created. `--workers` says how a candidate runs, so `--dry-run` refuses it rather than
+ignore it. A dry run evaluates nothing, so it checks a problem whose evaluations have time limits
+inline too.
 
-`--timeout SECONDS` kills `ddsim` if it runs longer than that, for a geometry on which Geant4
-stalls: the simulation stage fails with the tail of ddsim's standard error, its logs stay in
-`samples/<sample>/simulation/`, and the candidate is `failed`. The limit applies to each
-simulation on its own and is recorded with it (`samples.<sample>.stages.simulation.timeout`,
-`null` without one). It is not part of the problem: how long a
-simulation takes depends on the machine as much as on the candidate.
+**Time limits** are part of the problem ([problem](problem.md#time-limits)): a stage or an
+evaluation that runs longer than its `timeout` is stopped and fails, its logs kept, and the
+candidate is `failed`. A simulation's limit kills `ddsim` (for a geometry on which Geant4
+stalls): the stage fails with the tail of ddsim's standard error, its logs stay in
+`samples/<sample>/simulation/`, and the limit is recorded with it
+(`samples.<sample>.stages.simulation.timeout`, `null` without one). An evaluation's limit needs
+worker processes, which can be stopped: inline, `k4opt evaluate` refuses to evaluate a problem
+that limits its evaluations (`--workers 1` evaluates it in one worker).
 
 `--workers N` runs the tasks in N worker processes, up to N at once: the simulations of
 different samples, the evaluations of a simulation
@@ -91,8 +95,8 @@ the memory each task takes: the command prints an estimate of what a task needs 
 (`memory:`), and each task's peak is in the summary. Memory goes with the tasks running at once
 (at most N, fewer when simulations hold several slots), so choose N for the memory as much as
 for the processors. The default, `inline`, runs them one after another in the command's own
-process, the easiest to debug. Like `--timeout`, it is not part of the problem, and
-`summary.json` records it as provenance only (`environment.observed.execution`).
+process, the easiest to debug. It is not part of the problem, and `summary.json` records it as
+provenance only (`environment.observed.execution`).
 
 One problem, one candidate, in an active Key4hep environment (`ddsim`, `podio`, `$K4GEO`); from
 Python, an [`EvaluationSession`](#evaluating-candidates-evaluationsession)
@@ -272,29 +276,33 @@ script and an optimization library call it the same way, with candidates given a
 
 ```python
 from k4opt.evaluation import load_evaluator
-from k4opt.execution import EvaluationSession
+from k4opt.execution import EvaluationSession, Rejected
 
 session = EvaluationSession.open(
     "examples/problem/cld-ecal-granularity.yaml",
     [load_evaluator("examples/evaluators/calo_photon.py:CaloPhoton")],
-    timeout=3600,  # seconds ddsim may take per candidate; no limit without it
 )
 for size in (5.0, 7.0, 10.0):
     outcome = session.evaluate({"ecal_cell_size": size}, f"runs/scan/{size}mm")
+    if isinstance(outcome, Rejected):  # an evaluator's check() rejected it: nothing was created
+        print(size, outcome)
+        continue
     print(size, outcome.candidate.status, outcome.assessment.feasible)
 ```
 
 | Once, when the session opens | For every candidate, in `check()` and `evaluate()` |
 | --- | --- |
 | load the problem file (later edits to it do not reach the session) and discover the geometry | check the candidate against the parameter domains |
-| bind the evaluator classes through one instance of each, check the stages of each sample they read and their settings and collections, decide who measures each metric | create a new instance of the evaluator of each evaluation, which must declare what the first did, build its request for this candidate and call its `check()` |
+| bind the evaluator classes by what each class declares, without creating any; check the stages of each sample they read and their settings and collections; decide who measures each metric | build the request of each evaluation for this candidate and call its class's `check` with it, which may reject the candidate; check that each class still declares what it did |
 | collect the warnings about collections ddsim is not expected to write, and about what is measured or simulated twice (`session.warnings`); list the diagnostics (`session.diagnostics`, and `session.notice` to tell whoever starts it) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened |
-| record the size and SHA-256 of every file the stages read, by where the problem names it (a stage `file`, `samples.gamma_10gev.generation.file`; a file a ddsim option names; a file supplied with `inputs`, `supplied.gamma_10gev.simulation`; a file two samples read is hashed once and named for each), what the geometry's external references read ([`external_files`](geometry.md#fingerprint)), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, call the evaluators, check again what the previous row checks, assess, write the summary |
+| record the size and SHA-256 of every file the stages read, by where the problem names it (a stage `file`, `samples.gamma_10gev.generation.file`; a file a ddsim option names; a file supplied with `inputs`, `supplied.gamma_10gev.simulation`; a file two samples read is hashed once and named for each), what the geometry's external references read ([`external_files`](geometry.md#fingerprint)), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, create one instance of each evaluation's evaluator where it runs and call it, check again what the previous row checks, assess, write the summary |
 
-No request or evaluator instance outlives the candidate it was made for, so an evaluator's
+No request or evaluator instance outlives the evaluation it was made for, so an evaluator's
 `check()` and `evaluate()` always see that candidate's values, and nothing an instance keeps
-reaches another candidate. `check(candidate)` creates and runs nothing: it raises for
-what `evaluate()` would refuse before creating anything. A file the stages read (named by the
+reaches another candidate ([lifecycle](evaluation.md#lifecycle-a-class-and-an-instance-per-evaluation)).
+`check(candidate)` creates and runs nothing: it raises for what `evaluate()` would refuse
+before creating anything, and `CandidateRejected` for a candidate an evaluator rejects, where
+`evaluate()` returns a [`Rejected`](#what-ends-a-candidate-and-what-stops-a-session). A file the stages read (named by the
 problem or supplied) that changes during a session (other bytes under the same path, or removed)
 stops the next candidate with a `RunError` before anything is created; `verify_inputs()` checks
 it on its own. So does a change of what the geometry's external references read, of
@@ -328,7 +336,7 @@ from k4opt.execution import RunRequest
 
 requests = (RunRequest({"ecal_cell_size": v}, f"runs/{v}mm") for v in (5.0, 7.0))
 with session.evaluate_each(requests) as evaluations:
-    for request, outcome in evaluations:  # outcome: a RunOutcome, or the exception that stopped it
+    for request, outcome in evaluations:  # a RunOutcome, a Rejected, or what stopped it
         ...
 ```
 
@@ -354,10 +362,11 @@ with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # sto
 ```
 
 - **`"inline"`** (the default of the library and of `k4opt evaluate`): every task runs in the
-  session's own thread, one at a time, in plan order, with the evaluator instances the
-  candidate's preflight checked; nothing else is started. The evaluators are used as they are
-  given, so a class defined in a script, a notebook or a test works. An evaluator that crashes
-  the process (a segfault in native code, the kernel's OOM killer) takes the session with it.
+  session's own thread, one at a time, in plan order; nothing else is started. The evaluators
+  are used as they are given, so a class defined in a script, a notebook or a test works. An
+  evaluator that crashes the process (a segfault in native code, the kernel's OOM killer) takes
+  the session with it, and nothing can stop one that never returns: a problem that limits its
+  evaluations (`timeout`) is checked inline but not evaluated (`RunError`; `check_limits()`).
 - **N workers** (`k4opt optimize` runs one by default): each task runs in a worker process of
   this machine, up to N at once, of one candidate (the simulations of its samples, the
   evaluations of a simulation) and of several (`evaluate_each`), the oldest candidate's first.
@@ -373,10 +382,20 @@ with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # sto
   alone writes them. Even one worker isolates the session from its evaluators: a worker that
   dies fails only its task, until the same task has killed N + 1 workers in a row (below); with
   the one worker of `k4opt optimize`, a second death in a row stops the study.
-- **What isolation does not cover.** The new instance of each evaluation is still created, and
-  its `check()` called, in the session's process, for every candidate, before anything of the
-  candidate is created: that is what refuses a candidate early. Keep `__init__` and `check()`
-  light and free of native code; `evaluate()` and the stages are what runs in the workers. A
+- **Time limits** ([problem](problem.md#time-limits)): a worker whose task runs longer than its
+  `timeout` is stopped (SIGTERM, then SIGKILL after a grace period, then the process groups of
+  every program it started and its own) and replaced; the task fails, naming its limit, with its
+  logs (`evaluator.log`, ddsim's) kept, and its slots are free again. A stage stops its own
+  program at its limit, and its worker 30 s later if k4opt's own work around the program hangs.
+  The geometry, k4opt's own work on files, has a fixed limit of 10 minutes; one that runs longer
+  is a `failed` geometry (its candidate `failed`, recorded). A time limit reached is never
+  counted as a worker's death: a candidate that runs out of time is the candidate's outcome.
+  A process an evaluator starts in a session of its own (`setsid`) escapes the process groups
+  that are killed.
+- **What isolation does not cover.** Each evaluator class's `check` runs in the session's
+  process, for every candidate, before anything of the candidate is created, without a time
+  limit: that is what rejects a candidate early, and why `check` must stay an inexpensive check
+  of the request. `__init__` and `evaluate()` and the stages are what runs in the workers. A
   kill of the session's own process (its OOM, `kill -9`) is not survived either:
   `k4opt optimize --resume` continues the study.
 - **A worker is a processor.** A simulation that ddsim runs on several threads
@@ -452,6 +471,24 @@ problem, the evaluators or the records. Nothing of that exists yet. It would sti
 files moved to where the tasks run and back, the stack and the evaluators' code provided there
 and checked, credentials on the batch nodes, and its own memory and processor requests.
 
+## What ends a candidate, and what stops a session
+
+Everything that can go wrong with a candidate is one of four kinds, and each is reported the
+same way by `EvaluationSession`, `k4opt evaluate` and `k4opt optimize`:
+
+| Kind | What produces it | `EvaluationSession` | `k4opt evaluate` | A study |
+| --- | --- | --- | --- | --- |
+| **rejected** | the `check` of a required evaluation calls `cls.reject("...")` (`CandidateRejected`); a diagnostic's only keeps that diagnostic from running (`invalid`) | `evaluate()` returns `Rejected(evaluation, message)`; nothing is created | exit 1, nothing created | a FAIL trial marked `rejected`; it goes on |
+| **failed** or **invalid** | a stage that fails or runs out of time; a worker that dies (an OOM kill, a crash), its geometry's included; an evaluation that runs out of time, ends with `self.fail()`/`self.invalid()`, or lacks a collection | a `RunOutcome` with that status and a `summary.json` | exit 1 | a FAIL trial with its record; it goes on |
+| **contract or framework error** | an evaluator that raises anything else, a `check` that raises anything but `CandidateRejected`, `CandidateRejected` outside `check`, a result that breaks the contract, an `__init__` that raises, a geometry that cannot be materialized, the same task killing N + 1 workers in a row | the exception; no `summary.json` | exit 2 | the trial is FAIL with `k4opt.error`; the study **stops** |
+| **provenance** | a file, the environment, k4opt's or an evaluator's code that changed since the session opened, a file a task made that changed, a geometry that is not the one the session resolved (`ProvenanceError`, a `RunError`) | the exception; no `summary.json` | exit 2 | the study **stops** |
+
+A rejected candidate was not evaluated, so it has no record, no measurement and no status of an
+evaluation. A failed or invalid one has its record, whose status says why, and never an
+invented objective. An error or a provenance change means a bug, or a record that could not say
+what was evaluated: nothing is recorded for that candidate, and an optimizer stops rather than
+go on with what it cannot trust.
+
 ## How a candidate is evaluated
 
 Evaluating a candidate ([`EvaluationSession`](#evaluating-candidates-evaluationsession)), k4opt
@@ -465,18 +502,20 @@ in order:
    geometry's attributes as overrides, each sample's stages, each entry's settings), as a new
    configuration of this candidate alone, which nothing shared holds. A number a text
    target would round is refused here;
-2. matches the evaluator classes to `evaluators` by the `name` of an instance of each, in any
-   order: each evaluator the problem names must be given exactly once, however many entries
-   bind it, with the declared `version` and reading the declared `stage`, and no other
-   (`EvaluationContractError` otherwise, and for a class that cannot be created). Each entry is
+2. matches the evaluator classes to `evaluators` by the `name` each class declares, in any
+   order, without creating any: each evaluator the problem names must be given exactly once,
+   however many entries bind it, with the declared `version` and reading the declared `stage`,
+   and no other (`EvaluationContractError` otherwise, and for a class whose declarations are not
+   plain data or whose `check` is not a classmethod). Each entry is
    a binding, identified by its binding name (`as`, its `name` when not given), and each
    evaluation by the binding and the sample it measures (`gamma_10gev/calo.photon`); tasks,
    records, run directories and the objectives and constraints use that identity;
 3. before anything runs, checks the stages of each sample the evaluators read and that each
    objective and constraint names a metric its evaluation's evaluator declares, in the declared
    unit (see [problem](problem.md#evaluators); `EvaluationContractError` otherwise), then
-   creates a new instance of the evaluator of each evaluation for the candidate, resolves its
-   settings and collections and calls its `check()`. A collection ddsim is not expected to
+   makes the request of each evaluation for the candidate (its settings and collections
+   resolved) and calls its evaluator class's `check` with it, which may reject the candidate
+   (nothing is then created, and the session gives a `Rejected`). A collection ddsim is not expected to
    write, two bindings that measure the same twice on a sample and two samples written alike are
    warnings, kept with the candidate;
 4. runs the candidate's [tasks](evaluation.md#stages), each after the tasks it reads, in this order: the
@@ -553,9 +592,9 @@ that did not run):
   process, or the session's own inline) while it did it, all it held included (Python,
   podio, ROOT, the evaluator). It is measured per task: the process's high-water mark is reset
   before each task (`/proc/self/clear_refs`, Linux), so a worker that is reused does not carry
-  one task's peak into the next. A worker resets it before it creates the evaluator's instance,
-  so the instance's creation and its `check()` count too; inline they ran in the preflight,
-  before the task, and do not. `null` where the system cannot reset it.
+  one task's peak into the next. It is reset before the evaluator's instance is created, so the
+  instance's creation counts too, inline and in a worker alike. `null` where the system cannot
+  reset it.
 - `program`: for a stage that ran a program (ddsim), that program's peak, as the kernel kept it
   when it ended (`wait4`): the largest of ddsim's own and of each process it started and waited
   for (a wrapper script's child), each on its own, never their sum. `null` for every other task,

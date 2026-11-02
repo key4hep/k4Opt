@@ -412,7 +412,8 @@ def load_evaluator(reference: str) -> type[EvaluatorProtocol]:
         raise EvaluatorLoadError(f"{where} has no {attribute!r}")
     if not isinstance(cls, type):
         raise EvaluatorLoadError(f"{attribute} is not a class: name the class of an evaluator")
-    if not callable(getattr(cls, "evaluate", None)):
+    evaluate = getattr(cls, "evaluate", None)
+    if not callable(evaluate) or getattr(evaluate, "__isabstractmethod__", False):
         raise EvaluatorLoadError(f"{attribute} is not an evaluator: it has no evaluate() method")
     if path is not None:  # what the file executed, also for a class it imports and may change
         identity, local = _EXECUTED[module.__name__]

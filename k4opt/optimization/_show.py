@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TextIO
 
-from k4opt.optimization._render import _paint, _value
+from k4opt.optimization._render import _counts, _paint, _value
 from k4opt.optimization._results import StudyResults, TrialResult
 from k4opt.problem import MetricRef, Parameter, ProblemSpec
 from k4opt.terminal import Style, printable
@@ -91,23 +91,6 @@ def _roles(spec: ProblemSpec, out: TextIO, style: Style) -> None:
     ]
     if lines:
         _print(out, style, "roles", lines)
-
-
-def _counts(results: StudyResults, style: Style) -> str:
-    outcomes = results.outcomes
-    if not results.trials:
-        return "none yet"
-    valid = outcomes["feasible"] + outcomes["infeasible"]
-    parts = [
-        f"{style.green(str(valid))} valid ({_paint(style, 'feasible', str(outcomes['feasible']))} "
-        f"feasible, {_paint(style, 'infeasible', str(outcomes['infeasible']))} infeasible)"
-    ]
-    parts += [
-        _paint(style, outcome, f"{count} {outcome}")
-        for outcome, count in outcomes.items()
-        if outcome not in ("feasible", "infeasible") and count
-    ]
-    return f"{len(results.trials)}: {', '.join(parts)}"
 
 
 def _front_line(trial: TrialResult, results: StudyResults, style: Style) -> str:
@@ -215,7 +198,7 @@ def render_trial(
             painted = _paint(style, "feasible" if limit.satisfied else "infeasible", verdict)
             limits.append(
                 f"{printable(limit.name)}  {value} {sign} {bound}: {painted}, "
-                f"margin {limit.margin!r}"
+                f"margin {limit.margin!r} ({limit.normalized!r} of scale {limit.scale!r})"
             )
         _print(out, style, "limits", limits)
     elif spec.constraints:

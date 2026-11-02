@@ -1,13 +1,13 @@
 """Command-line interface of the problem component: ``k4opt evaluate``.
 
     k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] [--param NAME=VALUE ...]
-        [--input SAMPLE/STAGE=FILE ...] [--timeout SECONDS] [--workers N|auto|inline]
-        (--output DIR | --dry-run)
+        [--input SAMPLE/STAGE=FILE ...] [--workers N|auto|inline] (--output DIR | --dry-run)
 
-A thin wrapper over :func:`k4opt.execution._session.run_candidate`, or with ``--dry-run``
-:func:`~k4opt.execution._session.preview_candidate`; :func:`register` plugs it into the top-level
+A thin wrapper over :func:`k4opt.execution._command.run_candidate`, or with ``--dry-run``
+:func:`~k4opt.execution._command.preview_candidate`; :func:`register` plugs it into the top-level
 ``k4opt`` command (:mod:`k4opt.cli`). Exit code 0 only for a ``valid`` candidate, feasible or not,
-whatever its diagnostics gave, or one ``--dry-run`` checked.
+whatever its diagnostics gave, or one ``--dry-run`` checked; 1 for a candidate that is not valid
+or that an evaluator rejected (nothing is created for it).
 """
 
 from __future__ import annotations
@@ -16,9 +16,10 @@ import argparse
 from collections.abc import Mapping
 from typing import TextIO
 
-from k4opt.evaluation import Status, load_evaluator
+from k4opt.evaluation import CandidateRejected, Status, load_evaluator
+from k4opt.execution._command import Preview, preview_candidate, run_candidate
+from k4opt.execution._preflight import Rejected
 from k4opt.execution._publish import RunOutcome
-from k4opt.execution._session import Preview, preview_candidate, run_candidate
 from k4opt.frozen import Json
 from k4opt.problem.models import GeometryDestination, StageDestination
 from k4opt.problem.plan import Kind
@@ -71,12 +72,6 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
             "A simulation supplied this way was not made with this candidate's geometry, and the "
             "summary says so"
         ),
-    )
-    evaluate.add_argument(
-        "--timeout",
-        type=float,
-        metavar="SECONDS",
-        help="kill ddsim if it runs longer than this; the candidate fails (no limit without it)",
     )
     evaluate.add_argument(
         "--workers",
@@ -227,7 +222,7 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
             "from them; this is no evaluation of the candidate",
             file=out,
         )
-    print(f"geometry:    {outcome.geometry_fingerprint}", file=out)
+    print(f"geometry:    {outcome.geometry_fingerprint or 'none (not made)'}", file=out)
     measured = [(m.per_task, label, m) for label, m in peak_memory(outcome.summary).items()]
     if needed := [entry for entry in measured if entry[0] is not None]:
         most, label, memory = max(needed, key=lambda entry: entry[0] or 0)
@@ -251,25 +246,26 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     if (args.output is None) != args.dry_run:
         print("k4opt evaluate: give exactly one of --output DIR and --dry-run", file=err)
         return 2
-    if args.dry_run and (
-        ignored := [o for o in ("workers", "timeout") if getattr(args, o) is not None]
-    ):
-        options = " and ".join(f"--{option}" for option in ignored)
+    if args.dry_run and args.workers is not None:
         print(
-            f"k4opt evaluate: {options} say how a candidate runs, and --dry-run runs none; "
-            "leave them out",
+            "k4opt evaluate: --workers says how a candidate runs, and --dry-run runs none; "
+            "leave it out",
             file=err,
         )
         return 2
     implementations = [load_evaluator(reference) for reference in args.evaluator]
     if args.dry_run:
-        preview = preview_candidate(
-            args.problem,
-            args.param,
-            implementations=implementations,
-            inputs=args.input,
-            warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
-        )
+        try:
+            preview = preview_candidate(
+                args.problem,
+                args.param,
+                implementations=implementations,
+                inputs=args.input,
+                warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
+            )
+        except CandidateRejected as exc:
+            print(f"k4opt: candidate {exc}; nothing would be created", file=err)
+            return 1
         _preview(preview, out)
         return 0
     outcome = run_candidate(
@@ -278,10 +274,12 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         args.output,
         implementations=implementations,
         inputs=args.input,
-        timeout=args.timeout,
         workers="inline" if args.workers is None else args.workers,
         warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
     )
+    if isinstance(outcome, Rejected):
+        print(f"k4opt: candidate {outcome}; nothing was created", file=err)
+        return 1
     _report(outcome, out)
     candidate = outcome.candidate
     for result in candidate.diagnostics:  # the candidate's status leaves them out
