@@ -44,7 +44,9 @@ the geometry, from its value now to the candidate's, each stage option in each s
 evaluator setting in each entry of its binding (by the samples the entry measures). No simulation
 runs and no output is written, so it is the quick way to see what a parameter changes before an
 expensive simulation. It does load the evaluators and calls their `check()`, and it does not show
-that the simulation or the evaluation will succeed. For
+that the simulation or the evaluation will succeed. In particular, k4opt checks how a ddsim option
+is written, not that the installed ddsim knows it: a misspelt `physics.rangecuut` passes the dry
+run, and ddsim refuses it when it starts, which fails the simulation. For
 [`cld-ecal-bindings.yaml`](../examples/problem/cld-ecal-bindings.yaml), a target of each kind on
 two samples:
 
