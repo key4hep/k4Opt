@@ -451,6 +451,30 @@ def test_samples_with_identical_stages_are_a_warning(
     assert outcome.candidate.status == "valid"
 
 
+def test_samples_alike_but_for_the_parameter_that_sets_an_option_are_no_warning(
+    problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    # one parameter the range cut of gamma, another that of pion: simulated alike for no candidate
+    doc = yaml.safe_load(problem_file.read_text())
+    two_samples(problem_file, **doc["samples"]["gamma"])
+    doc = yaml.safe_load(problem_file.read_text())
+    cut = {"type": "continuous", "bounds": [0.1, 1.0], "unit": "mm"}
+    for name, sample in (("cut_a", "gamma"), ("cut_b", "pion")):
+        target = {"option": "physics.rangecut", "samples": [sample]}
+        doc["parameters"][name] = cut | {"targets": {"simulation": target}}
+    problem_file.write_text(yaml.safe_dump(doc))
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    assert not [w for w in session.warnings if "identical stages" in w]
+    # one parameter that sets the option of both: alike for every candidate
+    del doc["parameters"]["cut_b"]
+    doc["parameters"]["cut_a"]["targets"]["simulation"]["samples"] = ["gamma", "pion"]
+    problem_file.write_text(yaml.safe_dump(doc))
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    assert "samples gamma and pion have identical stages; each is simulated separately" in (
+        session.warnings
+    )
+
+
 # --- combined evaluators: the evaluations of several samples, read by role -------------------
 
 

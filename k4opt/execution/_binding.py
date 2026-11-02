@@ -57,7 +57,13 @@ from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Catalog, GeometrySource
 from k4opt.problem.candidate import Configuration
 from k4opt.problem.contract import MetricKey, check_bindings, check_entries
-from k4opt.problem.models import EvaluatorSpec, Parameter, ProblemSpec, SettingDestination
+from k4opt.problem.models import (
+    EvaluatorSpec,
+    Parameter,
+    ProblemSpec,
+    SettingDestination,
+    StageDestination,
+)
 from k4opt.problem.plan import (
     Kind,
     Plan,
@@ -142,7 +148,14 @@ def _identical(
         warnings[warning] = None
     first: dict[object, str] = {}
     for name, sample in spec.samples.items():
-        stages = (tuple(sample.stages.items()), tuple(sorted(spec.pending(name).items())))
+        # with the parameter that sets each option: two samples alike but for which parameter
+        # sets an option are simulated alike for no candidate
+        set_by = sorted(
+            (destination.stage, destination.option, parameter.name)
+            for parameter, destination in spec.destinations
+            if isinstance(destination, StageDestination) and name in destination.samples
+        )
+        stages = (tuple(sample.stages.items()), tuple(set_by))
         if stages in first:
             warnings[
                 f"samples {first[stages]} and {name} have identical stages; each is simulated "
