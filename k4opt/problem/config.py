@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -49,6 +48,7 @@ from k4opt.problem.models import (
     Parameter,
     ParameterKind,
     ProblemSpec,
+    ResolvedProblem,
 )
 from k4opt.yamlio import UniqueKeyLoader
 
@@ -85,8 +85,14 @@ def load_problem(path: str | os.PathLike[str]) -> ProblemSpec:
     discovered once; every ``parameters[*].geometry`` must then select exactly one attribute
     of it. Raises :class:`ProblemConfigError` for an invalid document or an unresolvable
     target and :class:`~k4opt.geometry.GeometryError` when the geometry itself cannot be
-    located or read. The result keeps the discovered geometry for later use.
+    located or read.
     """
+    return resolve_problem(path).spec
+
+
+def resolve_problem(path: str | os.PathLike[str]) -> ResolvedProblem:
+    """:func:`load_problem`, keeping what it resolved: the discovered geometry and the attribute
+    each parameter sets."""
     problem_path = Path(path).expanduser()
     if not problem_path.is_file():
         raise ProblemConfigError(f"{problem_path}: problem file not found")
@@ -121,8 +127,8 @@ def parse_problem(data: object, *, source: str | os.PathLike[str] | None = None)
         raise ProblemConfigError(f"{where}document is nested too deeply") from exc
 
 
-def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ProblemSpec:
-    """Return ``spec`` with its geometry discovered once and every parameter target resolved."""
+def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ResolvedProblem:
+    """``spec`` with its geometry discovered once and every parameter target resolved."""
     source = GeometrySource(spec.geometry)
     catalog = source.discover()
     targets = []
@@ -144,13 +150,7 @@ def _resolve_geometry(spec: ProblemSpec, problem_path: Path) -> ProblemSpec:
             raise ProblemConfigError(
                 f"{where} cannot be resolved in {source.compact}: {exc}"
             ) from exc
-    return replace(
-        spec,
-        _source=source,
-        _catalog=catalog,
-        _targets=tuple(targets),
-        _directory=problem_path.parent.absolute(),
-    )
+    return ResolvedProblem(spec, problem_path.absolute(), source, catalog, tuple(targets))
 
 
 # --- helpers ---------------------------------------------------------------------------

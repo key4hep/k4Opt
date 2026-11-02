@@ -13,7 +13,8 @@ import pytest
 import yaml
 
 from k4opt.geometry import GeometryError, GeometrySource, IncludeError, SourceError
-from k4opt.problem import ProblemConfigError, ProblemSpec, load_problem, parse_problem
+from k4opt.problem import ProblemConfigError, load_problem, parse_problem
+from k4opt.problem.config import resolve_problem
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 
 pytestmark = pytest.mark.usefixtures("mini_k4geo")
@@ -37,18 +38,16 @@ def write_problem(tmp_path: Path, doc: dict[str, Any]) -> Path:
     return path
 
 
-def targets(problem: ProblemSpec) -> tuple[Any, ...]:
-    return problem._targets
-
-
 def test_load_resolves_a_constant(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
-    problem = load_problem(write_problem(tmp_path, problem_doc))
-    (target,) = targets(problem)
+    problem = resolve_problem(write_problem(tmp_path, problem_doc))
+    (target,) = problem.targets
     assert target.target == "constants.InnerTracker_Barrel_radius_1"
     assert target.value == "400*mm"  # raw text, neither evaluated nor converted
     assert target.file == "compact/det_v1/tracker.xml"
     assert target.line is not None
-    assert problem._source == GeometrySource(MINI_COMPACT)
+    assert problem.source == GeometrySource(MINI_COMPACT)
+    assert problem.path == tmp_path / "problem.yaml"
+    assert problem.directory == tmp_path
 
 
 def test_load_resolves_a_structured_target(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
@@ -58,7 +57,7 @@ def test_load_resolves_a_structured_target(tmp_path: Path, problem_doc: dict[str
         "type": "integer",
         "bounds": [10, 100],
     }
-    (target,) = targets(load_problem(write_problem(tmp_path, problem_doc)))
+    (target,) = resolve_problem(write_problem(tmp_path, problem_doc)).targets
     assert (target.target, target.attribute, target.value) == (ref, "nphi", "43*2")
 
 
@@ -76,14 +75,13 @@ def test_parameters_resolve_in_order_with_one_discovery(
         return discover(self)
 
     monkeypatch.setattr(GeometrySource, "discover", counting)
-    problem = load_problem(write_problem(tmp_path, problem_doc))
+    problem = resolve_problem(write_problem(tmp_path, problem_doc))
     assert len(calls) == 1
-    assert [t.target for t in targets(problem)] == [
+    assert [t.target for t in problem.targets] == [
         "constants.InnerTracker_Barrel_radius_1",
         "constants.world_side",
     ]
-    assert problem._catalog is not None
-    assert problem._catalog.root == problem._source.root  # type: ignore[union-attr]
+    assert problem.catalog.root == problem.source.root
 
 
 @pytest.mark.parametrize(
@@ -147,20 +145,16 @@ def test_parse_problem_needs_no_geometry(
 ) -> None:
     monkeypatch.delenv("K4GEO")
     problem_doc["geometry"] = "does/not/exist.xml"
-    problem = parse_problem(problem_doc)
-    assert (problem._source, problem._catalog, problem._targets) == (None, None, ())
+    assert parse_problem(problem_doc).geometry == "does/not/exist.xml"
 
 
-def test_runtime_state_is_not_part_of_the_problem(
-    tmp_path: Path, problem_doc: dict[str, Any]
-) -> None:
+def test_a_loaded_problem_is_the_parsed_one(tmp_path: Path, problem_doc: dict[str, Any]) -> None:
     loaded = load_problem(write_problem(tmp_path, problem_doc))
     parsed = parse_problem(problem_doc, source=tmp_path / "problem.yaml")
     assert loaded == parsed
     assert hash(loaded) == hash(parsed)
     assert loaded.to_dict() == parsed.to_dict()
     assert parse_problem(loaded.to_dict()) == loaded
-    assert "_catalog" not in repr(loaded)
 
 
 def _tree_hash(root: Path) -> dict[str, str]:

@@ -183,13 +183,20 @@ class Spy:
         return self.inner.evaluate(request)
 
 
-def evaluate(spec: ProblemSpec, evaluators: list[Any], tmp_path: Path, geometry: Path) -> Any:
+def evaluate(
+    spec: ProblemSpec,
+    evaluators: list[Any],
+    tmp_path: Path,
+    geometry: Path,
+    directory: Path | None = None,
+) -> Any:
     return evaluate_candidate(
         spec,
         {CELL: 6},
         implementations(*evaluators),
         inputs={"geometry": geometry},
         workdir=tmp_path / "run",
+        directory=directory,
     )
 
 
@@ -279,10 +286,6 @@ def hepmc_doc(doc: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     return doc
 
 
-def in_directory(spec: ProblemSpec, tmp_path: Path) -> ProblemSpec:
-    return dataclasses.replace(spec, _directory=tmp_path)
-
-
 def test_each_evaluator_reads_the_files_of_the_stages_it_needs_and_no_others(
     hepmc_doc: dict[str, Any], tmp_path: Path, geometry: Path, log: list[str]
 ) -> None:
@@ -294,7 +297,7 @@ def test_each_evaluator_reads_the_files_of_the_stages_it_needs_and_no_others(
         generation_file="zh.hepmc",
     )
     cells, size = Spy(cell_count(), log), FileSize()
-    candidate = evaluate(in_directory(spec, tmp_path), [cells, size], tmp_path, geometry)
+    candidate = evaluate(spec, [cells, size], tmp_path, geometry, tmp_path)
     assert log.count("ddsim") == 1
     # simulation needs generation, so its reader gets both files; the generation reader only its own
     assert set(cells.evaluated[0].inputs) == {"geometry", "generation", "simulation"}
@@ -337,11 +340,12 @@ def test_supplied_stage_files_only_reach_the_evaluators_that_read_them(
     events_file.write_bytes(b"fake")
     cells, size, echo = Spy(cell_count(), log), FileSize(), Spy(parameter_echo(), log)
     result = evaluate_candidate(
-        in_directory(spec, tmp_path),
+        spec,
         {CELL: 6},
         implementations(cells, size, echo),
         inputs={"geometry": geometry, "gamma/simulation": events_file},
         workdir=tmp_path / "run",
+        directory=tmp_path,
     )
     assert result.status is Status.VALID and "ddsim" not in log
     assert set(cells.evaluated[0].inputs) == {"geometry", "simulation"}
@@ -390,7 +394,7 @@ def test_a_generation_reader_keeps_its_result_when_the_simulation_fails(
         generation_file="zh.hepmc",
     )
     size = FileSize()
-    candidate = evaluate(in_directory(spec, tmp_path), [cell_count(), size], tmp_path, geometry)
+    candidate = evaluate(spec, [cell_count(), size], tmp_path, geometry, tmp_path)
     cells, sized = candidate.records
     assert cells.result.status is Status.BLOCKED
     assert sized.result.status is Status.VALID and set(size.seen[0].inputs) == {
@@ -429,10 +433,11 @@ def test_a_supplied_simulation_does_not_depend_on_the_generation_another_evaluat
         monkeypatch.setattr(Path, "open", unreadable)
     cells = Spy(cell_count(), log)
     candidate = evaluate_candidate(
-        in_directory(spec, tmp_path),
+        spec,
         {CELL: 6},
         implementations(cells, FileSize()),
         inputs={"gamma/simulation": events_file},
+        directory=tmp_path,
     )
     assert "ddsim" not in log
     assert set(cells.evaluated[0].inputs) == {"simulation"}
@@ -886,7 +891,7 @@ def test_collections_of_an_edm4hep_generation_file_are_read(
         objectives=(CELLS, TRUTH),
         generation_file="zh.edm4hep.root",
     )
-    candidate = evaluate(in_directory(spec, tmp_path), [cell_count(), Truth()], tmp_path, geometry)
+    candidate = evaluate(spec, [cell_count(), Truth()], tmp_path, geometry, tmp_path)
     assert candidate.status is Status.VALID and measured(candidate, TRUTH).value == 1
 
 
@@ -913,11 +918,12 @@ def test_collections_of_a_file_podio_cannot_read_are_refused_before_anything_run
         r"zh\.hepmc is no EDM4hep file that podio reads \(\.root or \.sio\)",
     ):
         evaluate_candidate(
-            in_directory(spec, tmp_path),
+            spec,
             {CELL: 6},
             implementations(cell_count(), Truth()),
             inputs=inputs,
             workdir=tmp_path / "run",
+            directory=tmp_path,
         )
     assert log == [] and not (tmp_path / "run").exists()
 

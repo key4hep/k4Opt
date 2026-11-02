@@ -71,8 +71,8 @@ def spec(doc: dict[str, Any]) -> ProblemSpec:
     return parse_problem(doc)
 
 
-def context(spec: ProblemSpec) -> StageContext:
-    return StageContext.of(spec, "gamma")
+def context(spec: ProblemSpec, directory: Path | None = None) -> StageContext:
+    return StageContext.of(spec, "gamma", directory)
 
 
 def with_stages(spec: ProblemSpec, **stages: Stage) -> StageContext:
@@ -439,14 +439,16 @@ def file_spec(doc: dict[str, Any], tmp_path: Path) -> ProblemSpec:
     (tmp_path / "events").mkdir()
     (tmp_path / "events" / "zh.hepmc").write_bytes(b"HepMC::Version 3\nevents\n")
     doc["samples"]["gamma"]["generation"] = {"file": "events/zh.hepmc"}
-    # a loaded problem remembers the directory of its file; relative files are read from there
-    return dataclasses.replace(parse_problem(doc), _directory=tmp_path)
+    # relative files are read from the directory of the problem file, tmp_path in these tests
+    return parse_problem(doc)
 
 
 def test_a_generation_file_is_given_hashed_and_resolved_from_the_problem_directory(
     file_spec: ProblemSpec, tmp_path: Path
 ) -> None:
-    outcome, events = make_stage(context(file_spec), "generation", inputs={}, workdir=None)
+    outcome, events = make_stage(
+        context(file_spec, tmp_path), "generation", inputs={}, workdir=None
+    )
     path = tmp_path / "events" / "zh.hepmc"
     assert outcome.error is None and events == path
     assert outcome.outputs == {"events": path}
@@ -469,7 +471,7 @@ def test_a_missing_generation_file_is_refused_before_anything_runs(
     with pytest.raises(
         EvaluationContractError, match=r"samples\.gamma\.generation\.file: .* is not a file"
     ):
-        check_stages(context(file_spec), "simulation")
+        check_stages(context(file_spec, tmp_path), "simulation")
     assert fake.calls == []
 
 
@@ -487,7 +489,7 @@ def test_simulation_reads_the_generation_file_instead_of_a_gun(
     fake = simulation.install(monkeypatch)
     hepmc = tmp_path / "events" / "zh.hepmc"
     outcome = run_stage(
-        context(file_spec),
+        context(file_spec, tmp_path),
         "simulation",
         inputs={"geometry": geometry, "generation": hepmc},
         workdir=tmp_path / "run" / "simulation",
@@ -1001,7 +1003,12 @@ def test_a_generation_file_problem_runs_generation_then_simulation_and_records_t
     fake = simulation.install(monkeypatch)
     reader = Reader()
     candidate = evaluate(
-        file_spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        file_spec,
+        {CELL: 6},
+        reader,
+        inputs={"geometry": geometry},
+        workdir=tmp_path / "run",
+        directory=tmp_path,
     )
     hepmc = tmp_path / "events" / "zh.hepmc"
     ((argv, _),) = fake.calls
@@ -1029,7 +1036,12 @@ def test_a_failed_generation_stops_before_simulation(
     monkeypatch.setattr(Path, "open", unreadable)
     reader = Reader()
     candidate = evaluate(
-        file_spec, {CELL: 6}, reader, inputs={"geometry": geometry}, workdir=tmp_path / "run"
+        file_spec,
+        {CELL: 6},
+        reader,
+        inputs={"geometry": geometry},
+        workdir=tmp_path / "run",
+        directory=tmp_path,
     )
     (record,) = candidate.records
     assert record.result.status is Status.BLOCKED
@@ -1125,14 +1137,14 @@ def test_an_evaluator_may_read_only_generation(
     (tmp_path / "events").mkdir()
     (tmp_path / "events" / "zh.hepmc").write_bytes(b"HepMC::Version 3\nevents\n")
     doc["samples"]["gamma"]["generation"] = {"file": "events/zh.hepmc"}
-    file_spec = dataclasses.replace(without_stages(doc, reads="generation"), _directory=tmp_path)
+    file_spec = without_stages(doc, reads="generation")
 
     class NeedsGeneration(OwnWorkflow):
         stage = "generation"
 
     own = NeedsGeneration()
     # a file only has to be found and hashed: no geometry and no workdir are needed
-    candidate = evaluate(file_spec, {CELL: 6}, own)
+    candidate = evaluate(file_spec, {CELL: 6}, own, directory=tmp_path)
     assert fake.calls == []  # no simulation
     assert list(provenance(candidate)) == ["generation"]
     assert own.seen is not None

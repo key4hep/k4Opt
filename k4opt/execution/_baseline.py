@@ -24,7 +24,7 @@ from k4opt.execution._files import readable_identity
 from k4opt.execution._work import content
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
-from k4opt.problem.models import ProblemSpec
+from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.record.results import TaskResult
 from k4opt.revision import code_identity, code_unchanged
 
@@ -39,25 +39,23 @@ def check_code() -> None:
 
 
 class Baseline:
-    """What a session evaluates with: the problem at ``path`` as loaded (``spec``), the files
+    """What a session evaluates with: the problem as loaded (``problem``), the files
     the stages read with their identities by where they are named (``files``), what the
     geometry's external references read (``externals``), what a record says of each
     implementation (``taken``) and of the process (``process``: k4opt's code and the
     environment)."""
 
-    __slots__ = ("_read", "externals", "files", "path", "process", "spec", "taken")
+    __slots__ = ("_read", "externals", "files", "problem", "process", "taken")
 
     def __init__(
         self,
-        path: Path,
-        spec: ProblemSpec,
+        problem: ResolvedProblem,
         files: Mapping[str, tuple[Path, Mapping[str, Json] | None]],
         externals: Mapping[str, Json],
         taken: Mapping[str, Mapping[str, Json]],
         process: Mapping[str, Json],
     ) -> None:
-        self.path = path
-        self.spec = spec
+        self.problem = problem
         self.files = FrozenMap(files)
         self.externals = externals
         self.taken = FrozenMap(taken)
@@ -65,18 +63,24 @@ class Baseline:
         # what the external references only candidates have read, by reference, without the path
         self._read: dict[str, Json] = {}
 
+    @property
+    def spec(self) -> ProblemSpec:
+        return self.problem.spec
+
+    @property
+    def path(self) -> Path:
+        return self.problem.path
+
     @classmethod
     def take(
-        cls, path: Path, spec: ProblemSpec, binding: _Binding, named: Mapping[str, Path]
+        cls, problem: ResolvedProblem, binding: _Binding, named: Mapping[str, Path]
     ) -> Baseline:
-        """What a session of the problem ``spec`` loaded from ``path``, bound as ``binding``,
-        evaluates with, taken now; ``named`` are the files its stages read, by where they are
-        named. Raises :class:`RunError` if k4opt's code changed since this process identified
-        it."""
+        """What a session of ``problem``, bound as ``binding``, evaluates with, taken now;
+        ``named`` are the files its stages read, by where they are named. Raises
+        :class:`RunError` if k4opt's code changed since this process identified it."""
         # an unreadable file has no identity: its stage reports it, and a record still names it
         files = {label: (file, readable_identity(file)) for label, file in named.items()}
-        assert spec._source is not None
-        externals = freeze(spec._source.external_files(spec._catalog), "geometry", RunError)
+        externals = freeze(problem.source.external_files(problem.catalog), "geometry", RunError)
         assert isinstance(externals, Mapping)
         # before anything runs, so that an edit to the checkout during a long run is not
         # recorded as the code that ran, nor a later change of the environment as the session's
@@ -86,14 +90,12 @@ class Baseline:
         )
         check_code()
         assert isinstance(process, Mapping)
-        return cls(path, spec, files, externals, _implementations(binding), process)
+        return cls(problem, files, externals, _implementations(binding), process)
 
     def identity(self) -> dict[str, object]:
         """What the session evaluates with, as plain JSON-compatible data
         (:meth:`~k4opt.execution.EvaluationSession.identity`). A fresh copy on every call."""
-        source, catalog = self.spec._source, self.spec._catalog
-        assert source is not None
-        assert catalog is not None
+        source, catalog = self.problem.source, self.problem.catalog
         process = thaw(self.process)
         assert isinstance(process, dict)
         return {
@@ -151,9 +153,7 @@ class Baseline:
         self._read |= {ref: content(entry) for ref, entry in externals.items()}
 
     def _verify_externals(self) -> None:
-        source = self.spec._source
-        assert source is not None
-        now = source.external_files(self.spec._catalog)
+        now = self.problem.source.external_files(self.problem.catalog)
         for ref, opened in self.externals.items():
             if now.get(ref) != thaw(opened):
                 path = (now.get(ref) or {}).get("path") or "no file"

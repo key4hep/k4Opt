@@ -1,9 +1,10 @@
 """Immutable domain models of a parsed optimization problem.
 
 The models describe the draft ``k4opt.problem/v1alpha1`` format of ``docs/problem.md``.
-They hold declarative data only: nothing here looks up an evaluator or metric or touches
-the Key4hep stack; :func:`k4opt.problem.load_problem` attaches the resolved geometry targets
-to the :class:`ProblemSpec` as private runtime state. Executor- and evaluator-owned content
+:class:`ProblemSpec` and its parts hold declarative data only: nothing here looks up an
+evaluator or metric or touches the Key4hep stack. A problem loaded from its file, with its
+geometry discovered and every parameter target resolved, is a :class:`ResolvedProblem`
+(:func:`k4opt.problem.config.resolve_problem`). Executor- and evaluator-owned content
 (each stage's options, each evaluator's ``settings``) is stored as an immutable copy, so
 neither the caller's YAML data nor the object handed out by :meth:`ProblemSpec.to_dict`
 aliases the stored state.
@@ -391,8 +392,8 @@ class Constraint:
 class ProblemSpec:
     """A validated problem definition (``k4opt.problem/v1alpha1``).
 
-    Built by :func:`k4opt.problem.load_problem`, which also resolves the geometry targets,
-    or by :func:`k4opt.problem.parse_problem`, which only validates the document. Nothing
+    Built by :func:`k4opt.problem.load_problem`, which also checks that its geometry targets
+    resolve, or by :func:`k4opt.problem.parse_problem`, which only validates the document. Nothing
     here claims that an evaluator or metric is defined, or that the ranges make scientific
     sense.
     """
@@ -406,16 +407,6 @@ class ProblemSpec:
     samples: Mapping[str, Sample] = field(default_factory=lambda: FrozenMap({}))
     constraints: tuple[Constraint, ...] = ()
     name: str | None = None
-    # Runtime state of a loaded problem (see load_problem): the geometry discovered once and
-    # the attribute each parameter targets, in the order of ``parameters``. Private, left out
-    # of equality, hashing, repr and to_dict(); empty for a problem from parse_problem.
-    _source: GeometrySource | None = field(default=None, kw_only=True, repr=False, compare=False)
-    _catalog: Catalog | None = field(default=None, kw_only=True, repr=False, compare=False)
-    _targets: tuple[GeometryParameter, ...] = field(
-        default=(), kw_only=True, repr=False, compare=False
-    )
-    # the directory of the problem file, against which a relative stage ``file`` is read
-    _directory: Path | None = field(default=None, kw_only=True, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "evaluators", tuple(self.evaluators))
@@ -449,3 +440,22 @@ class ProblemSpec:
         if self.constraints:
             data["constraints"] = [constraint.to_dict() for constraint in self.constraints]
         return data
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedProblem:
+    """A problem as loaded from its file: its definition (``spec``), the file (``path``,
+    absolute), the geometry it starts from, discovered once (``source``, ``catalog``), and the
+    attribute each parameter sets, in the order of ``spec.parameters`` (``targets``)."""
+
+    spec: ProblemSpec
+    path: Path
+    source: GeometrySource
+    catalog: Catalog
+    targets: tuple[GeometryParameter, ...]
+
+    @property
+    def directory(self) -> Path:
+        """The directory of the problem file, against which a relative stage ``file`` is
+        read."""
+        return self.path.parent

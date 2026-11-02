@@ -48,6 +48,7 @@ from k4opt.execution._stages import StageContext, check_stages, no_edm4hep_file
 from k4opt.execution._tasks import Measuring, SessionContext
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
+from k4opt.geometry import Catalog, GeometrySource
 from k4opt.problem.contract import MetricKey, check_bindings, check_entries
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec
 from k4opt.problem.plan import (
@@ -150,19 +151,21 @@ def _canonical(settings: Mapping[str, Json]) -> str:
 
 def _unexpected_collections(
     spec: ProblemSpec,
+    catalog: Catalog | None,
     evaluators: Sequence[tuple[EvaluatorSpec, EvaluatorProtocol]],
     provided: Collection[TaskId],
 ) -> tuple[str, ...]:
     """A warning for each collection an evaluator reads from the simulation of a sample that
-    ddsim is not expected to write for the problem's geometry, with the closest expected name;
-    once per binding, however many of its samples ddsim simulates.
+    ddsim is not expected to write for the problem's geometry (``catalog``, none without one),
+    with the closest expected name; once per binding, however many of its samples ddsim
+    simulates.
 
     Only a warning: the prediction comes from the unmodified geometry's readouts, and custom
     sensitive actions can name collections of their own. The simulation's output decides.
     """
-    if spec._catalog is None:
+    if catalog is None:
         return ()
-    expected = sorted(output_collections(spec._catalog.readouts))
+    expected = sorted(output_collections(catalog.readouts))
     warnings: dict[str, None] = {}
     for entry, evaluator in evaluators:
         if _stage(evaluator) != "simulation":
@@ -231,8 +234,14 @@ def _bind_problem(
     spec: ProblemSpec,
     implementations: Sequence[type[EvaluatorProtocol]],
     provided: Mapping[TaskId, Path] | None = None,
+    *,
+    directory: Path | None = None,
+    catalog: Catalog | None = None,
 ) -> _Binding:
     """Check what does not depend on a candidate, before a file is created or a stage runs.
+
+    ``directory`` is the problem file's, against which a relative stage ``file`` is read;
+    ``catalog`` the problem's geometry, from which the collections ddsim writes are predicted.
 
     Binds ``implementations`` to the problem through a probe instance of each, which is then
     dropped: checks the stages of each sample they read (those in ``provided``, the files the
@@ -244,7 +253,7 @@ def _bind_problem(
     what is measured or simulated twice, are only warnings.
     """
     provided = provided or {}
-    contexts = {name: StageContext.of(spec, name) for name in spec.samples}
+    contexts = {name: StageContext.of(spec, name, directory) for name in spec.samples}
     targets = {sample: read_stages(sample, spec.evaluators) for sample in spec.samples}
     probed = _bind(spec, implementations)
     probes: dict[type, _Probe] = {}  # one per implementation
@@ -273,7 +282,7 @@ def _bind_problem(
         check_settings(evaluator, with_defaults(evaluator, entry.settings))
         collection_names(evaluator, entry.collections)
     demands = check_bindings(spec, declarations, EvaluationContractError)
-    warnings = _unexpected_collections(spec, bound, provided) + _identical(spec, bound)
+    warnings = _unexpected_collections(spec, catalog, bound, provided) + _identical(spec, bound)
     evaluators = tuple(
         _Bound(entry, implementation, probes[implementation]) for entry, implementation, _ in probed
     )
@@ -357,9 +366,12 @@ def _context(
     binding: _Binding,
     timeout: float | None = None,
     externals: Mapping[str, Json] | None = None,
+    source: GeometrySource | None = None,
+    catalog: Catalog | None = None,
 ) -> SessionContext:
     """What every task of the candidates of ``binding`` needs (:class:`SessionContext`), with
-    ``timeout`` for every stage that runs a program and the session geometry's ``externals``."""
+    ``timeout`` for every stage that runs a program, the session geometry's ``externals`` and
+    the geometry candidates start from (``source``, discovered as ``catalog``)."""
     return SessionContext(
         spec,
         FrozenMap({name: replace(c, timeout=timeout) for name, c in binding.contexts.items()}),
@@ -370,6 +382,8 @@ def _context(
             }
         ),
         FrozenMap(externals or {}),
+        source,
+        catalog,
     )
 
 

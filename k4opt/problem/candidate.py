@@ -20,7 +20,7 @@ from k4opt.evaluation import (
 )
 from k4opt.geometry import Override
 from k4opt.problem.errors import CandidateError
-from k4opt.problem.models import Parameter, ProblemSpec
+from k4opt.problem.models import Parameter, ProblemSpec, ResolvedProblem
 
 
 def _is_number(value: object) -> bool:
@@ -212,11 +212,9 @@ def _xml_value(parameter: Parameter, value: Scalar) -> str:
     return f"{value!r}*{parameter.unit}"
 
 
-def geometry_overrides(spec: ProblemSpec, values: Mapping[str, Scalar]) -> list[Override]:
-    assert spec._source is not None
-    assert len(spec._targets) == len(spec.parameters)
+def geometry_overrides(problem: ResolvedProblem, values: Mapping[str, Scalar]) -> list[Override]:
     overrides = []
-    for parameter, target in zip(spec.parameters, spec._targets, strict=True):
+    for parameter, target in zip(problem.spec.parameters, problem.targets, strict=True):
         value = values[parameter.geometry.canonical_target]
         overrides.append(
             Override(target=target.target, value=_xml_value(parameter, value), file=target.file)

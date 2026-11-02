@@ -54,7 +54,7 @@ from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.problem.candidate import geometry_overrides, parse_candidate, validate_candidate
-from k4opt.problem.config import load_problem
+from k4opt.problem.config import resolve_problem
 from k4opt.problem.models import ProblemSpec
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES, plan_stages
@@ -229,7 +229,10 @@ class EvaluationSession:
         self._warnings = warnings
         self._timeout = timeout
         # what every task needs, wherever it runs
-        self._context = _context(baseline.spec, binding, timeout, baseline.externals)
+        problem = baseline.problem
+        self._context = _context(
+            problem.spec, binding, timeout, baseline.externals, problem.source, problem.catalog
+        )
         execution: dict[str, Json] = {"backend": "inline"}
         if workers is not None:
             execution = {"backend": "process", "workers": workers}
@@ -293,9 +296,12 @@ class EvaluationSession:
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         limit = _timeout(timeout)
         count, usable = _workers(workers), usable_cpus()
-        spec = load_problem(path)
+        problem = resolve_problem(path)
+        spec = problem.spec
         supplied = _supplied(spec, inputs or {})
-        binding = _bind_problem(spec, implementations, supplied)
+        binding = _bind_problem(
+            spec, implementations, supplied, directory=problem.directory, catalog=problem.catalog
+        )
         named: dict[str, Path] = {}
         for sample, context in binding.contexts.items():
             given = {task.name for task in supplied if task.sample == sample}
@@ -308,7 +314,7 @@ class EvaluationSession:
                     )
             named |= input_files(context, *targets, provided=given)
         named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
-        baseline = Baseline.take(path.absolute(), spec, binding, named)
+        baseline = Baseline.take(problem, binding, named)
         crowded = []
         slots = 1 if count is None else count
         for task in binding.plan.tasks:
@@ -561,7 +567,7 @@ class EvaluationSession:
         values, key = validate_candidate(spec, candidate)
         self._baseline.verify()  # first: a file that is gone changed, more than it is missing
         prepared = _preflight(self._binding, values)
-        overrides = geometry_overrides(spec, values)
+        overrides = geometry_overrides(self._baseline.problem, values)
         return values, key, prepared, overrides
 
 

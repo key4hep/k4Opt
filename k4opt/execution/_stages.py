@@ -73,9 +73,9 @@ class StageContext:
     die_with_parent: bool = field(default=False, compare=False, repr=False)
 
     @classmethod
-    def of(cls, spec: ProblemSpec, sample: str) -> StageContext:
-        """The stages of the sample ``sample`` of ``spec``."""
-        return cls(spec.samples[sample].stages, spec._directory, sample=sample)
+    def of(cls, spec: ProblemSpec, sample: str, directory: Path | None = None) -> StageContext:
+        """The stages of the sample ``sample`` of ``spec``, whose file is in ``directory``."""
+        return cls(spec.samples[sample].stages, directory, sample=sample)
 
     def where(self, stage: str) -> str:
         """Where the problem defines ``stage``: ``samples.<sample>.<stage>``."""
