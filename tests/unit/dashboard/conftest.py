@@ -22,8 +22,9 @@ def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def fresh_caches() -> None:
     """Nothing a test read is kept for the next: Streamlit's caches are the process's."""
-    pytest.importorskip("streamlit")
-    import streamlit as st
-
-    st.cache_resource.clear()
     sys.modules.pop("data", None)
+    try:
+        import streamlit as st
+    except ModuleNotFoundError:  # the tables need no Streamlit
+        return
+    st.cache_resource.clear()

@@ -55,7 +55,10 @@ def main(found: data.Source) -> None:
     entries = {entry.id: entry for entry in _newest_first(catalog.studies)}
     requested = st.query_params.get(STUDY)
     if requested is not None and requested not in entries:
-        st.warning(f"The catalog of {found.location} has no study `{requested}`; choose one.")
+        st.warning(
+            f"The catalog of {data.plain(found.location)} has no study "
+            f"{data.plain(requested)}; choose one."
+        )
     names = {study: entry.name for study, entry in entries.items()}
     chosen = _chosen(
         "Study",
@@ -72,11 +75,12 @@ def main(found: data.Source) -> None:
         results = data.study(found.location, entry)
     except PublicationUnavailableError as exc:
         st.warning(
-            f"The study cannot be read just now ({exc}); it is read again on your next interaction."
+            f"The study cannot be read just now ({data.plain(exc)}); it is read again on your "
+            "next interaction."
         )
         return
     except K4OptError as exc:
-        st.error(f"The study's snapshot does not hold up: {exc}")
+        st.error(f"The study's snapshot does not hold up: {data.plain(exc)}")
         return
     _render(entry, results)
 
@@ -86,10 +90,11 @@ def _newest_first(entries: tuple[CatalogEntry, ...]) -> list[CatalogEntry]:
 
 
 def _render(entry: CatalogEntry, results: StudyResults) -> None:
-    st.title(entry.name)
-    st.caption(
-        f"Problem **{entry.problem or 'unnamed'}** · created {entry.created} · published "
-        f"{entry.published} · study `{entry.id}` · snapshot `{entry.snapshot.sha256[:16]}`"
+    st.title(data.plain(entry.name), anchor=False)
+    st.caption(  # an id is a UUID and a SHA-256 hex digits, checked: nothing in them formats
+        f"Problem **{data.plain(entry.problem or 'unnamed')}** · created "
+        f"{data.plain(entry.created)} · published {data.plain(entry.published)} · study "
+        f"`{entry.id}` · snapshot `{entry.snapshot.sha256[:16]}`"
     )
     outcomes = entry.outcomes
     if outcomes["running"]:
@@ -129,7 +134,7 @@ def _render(entry: CatalogEntry, results: StudyResults) -> None:
     try:
         figure = trials_figure(results, x, y, dark=st.context.theme.type == "dark")
     except K4OptError as exc:
-        st.warning(str(exc))
+        st.warning(data.plain(exc))
     else:
         figure.update_layout(title=None)  # the page names the study
         st.plotly_chart(figure, theme="streamlit", key="trials")

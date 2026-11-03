@@ -113,7 +113,7 @@ def test_a_link_to_a_study_the_catalog_lacks_says_so(
     at.query_params["study"] = "00000000-0000-4000-8000-000000000000"
     at.run()
     assert not at.exception
-    assert "has no study `00000000-0000-4000-8000-000000000000`" in at.warning[0].value
+    assert "has no study 00000000-0000-4000-8000-000000000000; choose" in at.warning[0].value
     assert not at.metric  # nothing shown as if it were that study
 
 
@@ -149,3 +149,33 @@ def test_refresh_reads_a_newly_published_study_and_a_failed_read_is_not_kept(
         server.faults.clear()
         at.run()  # no Refresh: the failure was not kept
         assert not at.warning and len(at.dataframe[0].value) == 2
+
+
+def test_text_from_a_link_or_a_catalog_is_shown_as_it_is_never_as_markdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published(tmp_path)
+    at = app(monkeypatch, tmp_path / "pub").run()
+    at.switch_page("study.py")
+    at.query_params["study"] = "`[sign in](https://example.org)`"
+    at.run()
+    (warning,) = at.warning
+    assert r"\`\[sign in\](https://example.org)\`" in warning.value  # escaped: no link
+
+
+def test_a_catalog_entry_is_checked_against_its_snapshot_on_every_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    results = published(tmp_path)
+    at = app(monkeypatch, tmp_path / "pub").run()
+    at.switch_page("study.py")
+    at.query_params["study"] = results.id
+    at.run()
+    assert at.title[0].value == results.name  # read, and kept by its snapshot
+    catalog = json.loads((tmp_path / "pub" / CATALOG_NAME).read_text())
+    catalog["studies"][0]["name"] = "renamed"  # the same snapshot, another entry
+    (tmp_path / "pub" / CATALOG_NAME).write_text(json.dumps(catalog))
+    at.sidebar.button[0].click().run()
+    assert "not the study its catalog entry describes: its name" in at.error[0].value

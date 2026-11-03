@@ -52,7 +52,12 @@ _ENTRY = (
 
 
 def snapshot_path(study: str, sha256: str) -> str:
-    """Where the snapshot of ``study`` with this SHA-256 is, relative to the publication."""
+    """Where the snapshot of ``study`` with this SHA-256 is, relative to the publication; only a
+    study's own id, a UUID, names a directory, so that no id leads out of the publication."""
+    if not _ID.fullmatch(study):
+        raise PublicationError(f"{study!r} is not the id of a study (a UUID)")
+    if not _SHA256.fullmatch(sha256):
+        raise PublicationError(f"{sha256!r} is not a SHA-256")
     return f"studies/{study}/snapshots/{sha256[:16]}.json"
 
 

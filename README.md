@@ -6,8 +6,8 @@ k4opt is being built to let detector experts define, evaluate, compare and share
 detector optimization problems for the Key4hep chain (generation, simulation,
 reconstruction, analysis), starting from the detector descriptions in
 [k4geo](https://github.com/key4hep/k4geo). It is in early development: **geometry handling, a first end-to-end evaluation (a
-candidate, simulated with `ddsim` once and measured by one or more evaluators) and a first
-optimization with Optuna exist.**
+candidate, simulated with `ddsim` once and measured by one or more evaluators), a first
+optimization with Optuna, and publishing its results for a first dashboard exist.**
 
 ## Components
 

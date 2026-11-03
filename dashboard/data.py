@@ -21,6 +21,7 @@ the next interaction reads again.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -103,16 +104,19 @@ def source() -> Source:
     try:
         return Source(where, _catalog(where))
     except NothingPublishedError as exc:
-        return Source(where, problem=f"Nothing is published here yet: {exc}.")
+        return Source(where, problem=f"Nothing is published here yet: {plain(exc)}.")
     except PublicationUnavailableError as exc:
         return Source(
             where,
-            problem=f"The publication cannot be read just now ({exc}); it is read again on your "
+            problem=f"The publication cannot be read just now ({plain(exc)}); it is read again on "
+            "your "
             "next interaction, or with Refresh.",
             level="warning",
         )
     except K4OptError as exc:
-        return Source(where, problem=f"The publication does not hold up: {exc}", level="error")
+        return Source(
+            where, problem=f"The publication does not hold up: {plain(exc)}", level="error"
+        )
 
 
 _SOURCE = "k4opt.source"
@@ -132,9 +136,21 @@ def current() -> Source:
 
 
 def study(where: str, entry: CatalogEntry) -> StudyResults:
-    """The study ``entry`` names, as its snapshot holds it (:meth:`Publication.study`); raises
-    what that raises, and nothing of a failed read is kept."""
-    return _study(where, entry.snapshot.path, entry.snapshot.sha256, entry)
+    """The study ``entry`` names, as its snapshot holds it (:meth:`Publication.study`), checked
+    against ``entry`` on every run, also when it was read before for another entry naming the
+    same snapshot; raises what that raises, and nothing of a failed read is kept."""
+    results = _study(where, entry.snapshot.path, entry.snapshot.sha256, entry)
+    entry.check(results)
+    return results
+
+
+_MARKDOWN = re.compile(r"([\\`*_\[\]<>~$|])")  # what formats, links or embeds within a line
+
+
+def plain(text: object) -> str:
+    """``text`` as Streamlit's Markdown shows it, as it is: no character of it formats or links
+    anything (a study's name, a message, a parameter of the URL)."""
+    return _MARKDOWN.sub(r"\\\1", str(text))
 
 
 def show(found: Source) -> None:
@@ -142,4 +158,4 @@ def show(found: Source) -> None:
     if found.problem is not None:
         {"info": st.info, "warning": st.warning, "error": st.error}[found.level](found.problem)
     elif found.catalog is not None and not found.catalog.studies:
-        st.info(f"The catalog of {found.location} names no study yet.")
+        st.info(f"The catalog of {plain(found.location)} names no study yet.")

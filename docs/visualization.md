@@ -29,7 +29,7 @@ trials_figure(study, "parameter:ecal_cell_size", axis_choices(study)[0])  # x, t
 
 Each axis is an objective or a parameter, named as the columns of the
 [CSV export](optimization.md#export-formats) name them. By default the figure shows the first two
-objectives, or, for a study of one objective, the first parameter against it. Each trial with a
+objectives, or, for a study of one objective, the first parameter against it (`default_axes`). Each trial with a
 value on both axes is one point:
 
 | Shown as | The trial |

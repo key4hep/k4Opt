@@ -209,3 +209,13 @@ def test_k4opt_publish_says_what_it_published_and_reads_the_study_as_k4opt_study
     err = io.StringIO()
     assert main(command, stdout=io.StringIO(), stderr=err) == 1
     assert err.getvalue().startswith("k4opt: error: ")
+
+
+def test_a_study_whose_id_is_no_uuid_is_never_written_anywhere(tmp_path: Path) -> None:
+    import dataclasses
+
+    results = load_study(mixed_study(tmp_path / "s", trials=2))
+    crafted = dataclasses.replace(results, id="../../outside")  # a study.json made to escape
+    with pytest.raises(PublicationError, match="is not the id of a study"):
+        publish(crafted, tmp_path / "pub")
+    assert not (tmp_path / "outside").exists() and not (tmp_path / "pub").exists()
