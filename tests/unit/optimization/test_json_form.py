@@ -125,9 +125,7 @@ REFUSED: dict[str, tuple[Callable[[dict[str, Any]], object], str]] = {
         "is not the objective",
     ),
     "an objective value of a failed trial": (
-        lambda d: _failed(d)["assessment"].update(
-            objectives=_valid(d)["assessment"]["objectives"]
-        ),
+        lambda d: _failed(d)["assessment"].update(objectives=_valid(d)["assessment"]["objectives"]),
         "are given, but the trial is failed",
     ),
     "a limit less": (lambda d: _valid(d)["assessment"]["limits"].clear(), "one of each"),

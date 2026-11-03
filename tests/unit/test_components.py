@@ -11,7 +11,17 @@ import pytest
 
 PACKAGE = Path(__file__).resolve().parents[2] / "k4opt"
 # each component may use only those before it
-ORDER = ("geometry", "ddsim", "evaluation", "problem", "record", "execution", "optimization")
+ORDER = (
+    "geometry",
+    "ddsim",
+    "evaluation",
+    "problem",
+    "record",
+    "execution",
+    "optimization",
+    "publication",
+    "visualization",
+)
 
 
 def imports(path: Path) -> list[str]:

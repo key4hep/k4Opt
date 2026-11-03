@@ -35,11 +35,12 @@ from typing import Literal
 
 from k4opt.evaluation import EvaluatorProtocol
 from k4opt.execution import Activity
-from k4opt.optimization._results import StudyResults, TrialResult
+from k4opt.optimization._results import OUTCOMES, StudyResults, TrialResult
 from k4opt.optimization._study import STUDY_NAME
 from k4opt.optimization.errors import OptimizationError
 
 __all__ = [
+    "OUTCOMES",
     "STUDY_NAME",
     "OptimizationError",
     "StudyResults",

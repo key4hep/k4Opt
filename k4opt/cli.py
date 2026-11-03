@@ -17,6 +17,7 @@ from k4opt.errors import K4OptError
 from k4opt.execution import cli as execution_cli
 from k4opt.geometry import cli as geometry_cli
 from k4opt.optimization import cli as optimization_cli
+from k4opt.publication import cli as publication_cli
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     geometry_cli.register(commands)
     execution_cli.register(commands)
     optimization_cli.register(commands)
+    publication_cli.register(commands)
     return parser
 
 
