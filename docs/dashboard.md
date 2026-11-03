@@ -65,7 +65,7 @@ up each have their own message, and *Refresh* in the sidebar reads the catalog a
   running when it was published (a study in progress is published as far as it got). Selecting
   one opens it.
 - **Study** (`/study?study=<id>`): one study, by its id, so that the link can be shared, with its
-  outcome counts and four tabs; the tab open, the figure's axes and colors and the trial shown
+  outcome counts and five tabs; the tab open, the figure's axes and colors and the trial shown
   are in the URL too (`&view=Trials&trial=12`, `&x=objective:...&y=parameter:...&color=trial`).
   Only the open tab runs.
   - **Overview**: [`trials_figure`](visualization.md) with its axes and what colors it, the
@@ -74,6 +74,11 @@ up each have their own message, and *Refresh* in the sidebar reads the catalog a
   - **Trials**: every trial (values, uncertainties, limit margins, times, record ids, messages),
     filtered by outcome; selecting one shows all it recorded: its objectives, candidate, limits
     with their margins, stage times, diagnostics that did not succeed, and its record.
+  - **Analysis**: for the objective chosen (`&objective=objective:...`), the
+    [analysis figures](visualization.md#how-the-parameters-act-on-an-objective-the-analysis-figures):
+    parallel coordinates, a slice per parameter, the rank over each pair of parameters (with two
+    at least), and the distribution of each objective. Clicking a trial in the slice or the rank
+    opens it.
   - **Pipeline**: how a candidate is evaluated
     ([`pipeline_figure`](visualization.md#how-a-candidate-is-evaluated-pipeline_figure): drag to
     pan, scroll to zoom; click a stack of samples alike to draw each, *Draw each sample* and
