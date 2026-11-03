@@ -31,6 +31,15 @@ GRAPHVIZ = pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz is n
 SAMPLES = ("gamma_50gev", "pi0_50gev")
 
 
+# a Graphviz built without fonts, as the Key4hep stack's, estimates text widths and says so
+FONTLESS = ("no hard-coded metrics for", "no value for width of non-ASCII character")
+
+
+def complaints(stderr: str) -> list[str]:
+    """What Graphviz wrote to stderr, but that it lays out without fonts."""
+    return [line for line in stderr.splitlines() if not any(f in line for f in FONTLESS)]
+
+
 def example(name: str = "cld-ecal-pi0-rejection") -> dict[str, Any]:
     document: dict[str, Any] = yaml.safe_load((EXAMPLES / f"{name}.yaml").read_text())
     return document
@@ -166,7 +175,7 @@ def test_dot_shows_what_a_problem_names_as_it_is_but_a_backslash_in_a_tooltip() 
     if shutil.which("dot") is None:
         pytest.skip("Graphviz is not installed")
     shown = subprocess.run(["dot", "-Tsvg"], input=dot, capture_output=True, text=True, check=True)
-    assert not shown.stderr
+    assert not complaints(shown.stderr)
     assert label in shown.stdout and f"{tooltip}&#10;then" in shown.stdout
 
 
@@ -184,7 +193,7 @@ def test_graphviz_lays_out_every_example_and_the_figure_draws_each_node(name: st
     shown = subprocess.run(
         ["dot", "-Tsvg"], input=pipeline_graph(spec), capture_output=True, text=True, check=True
     )
-    assert not shown.stderr and "<svg" in shown.stdout
+    assert not complaints(shown.stderr) and "<svg" in shown.stdout
     graph = task_graph(spec)
     figure = pipeline_figure(spec)
     clickable = sorted(row[0] for row in figure.data[-1].customdata)
