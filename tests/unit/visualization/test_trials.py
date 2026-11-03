@@ -3,6 +3,7 @@ infeasible, on its Pareto front), with its units, and what it cannot show said, 
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -235,7 +236,7 @@ def test_a_real_study_is_drawn_from_its_published_snapshot_without_optuna(tmp_pa
 
     results = load_study(mixed_study(tmp_path / "s"))
     publish(results, tmp_path / "pub")
-    expected = trials_figure(results).to_json()
+    expected = without_template(trials_figure(results).to_json())
     code = f"""
 import sys
 sys.modules["optuna"] = None  # importing it fails
@@ -255,4 +256,12 @@ assert not [m for m, held in sys.modules.items() if m.startswith("optuna") and h
         env=os.environ | {"PYTHONPATH": path},
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == expected  # the same figure as from the study itself
+    assert without_template(result.stdout) == expected  # the figure of the study itself
+
+
+def without_template(figure: str) -> dict[str, Any]:
+    """A figure's data and layout, without the template a process makes the default (Streamlit
+    sets its own when it is imported)."""
+    data: dict[str, Any] = json.loads(figure)
+    data["layout"].pop("template", None)
+    return data
