@@ -18,6 +18,6 @@ Typical use::
 """
 
 from k4opt.visualization.errors import VisualizationError
-from k4opt.visualization.trials import axis_choices, trials_figure
+from k4opt.visualization.trials import axis_choices, default_axes, trials_figure
 
-__all__ = ["VisualizationError", "axis_choices", "trials_figure"]
+__all__ = ["VisualizationError", "axis_choices", "default_axes", "trials_figure"]

@@ -106,8 +106,9 @@ def _axis(results: StudyResults, key: str) -> _Axis:
     )
 
 
-def _defaults(results: StudyResults) -> tuple[str, str]:
-    """The first two objectives, or, with one, the first parameter against it."""
+def default_axes(results: StudyResults) -> tuple[str, str]:
+    """The axes :func:`trials_figure` shows unless told others: the first two objectives, or, for
+    one objective, the first parameter against it."""
     choices = axis_choices(results)
     objectives = len(results.problem.objectives)
     return (choices[0], choices[1]) if objectives >= 2 else (choices[1], choices[0])
@@ -121,7 +122,7 @@ def trials_figure(
     stepped for a dark background. Raises :class:`VisualizationError` for an axis the study does
     not have, and for values of one objective recorded in different units: they are never drawn
     on one scale."""
-    default_x, default_y = _defaults(results)
+    default_x, default_y = default_axes(results)
     horizontal, vertical = _axis(results, x or default_x), _axis(results, y or default_y)
     colors = _COLORS[dark]
     front = set(results.pareto)

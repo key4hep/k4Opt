@@ -128,5 +128,9 @@ select = [
 ]
 ignore = ["RUF012"]
 
+[tool.ruff.lint.isort]
+# the dashboard's own modules, which Streamlit imports from dashboard/ as top-level modules
+known-local-folder = ["data", "tables"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011", "PT018"]  # compound asserts are deliberate in tests
