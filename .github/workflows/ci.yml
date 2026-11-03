@@ -92,3 +92,55 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: junit-unit.xml,junit-integration.xml
           report_type: test_results
+
+  # The publication, visualization and dashboard outside the Key4hep stack, as the dashboard's
+  # container runs them, and the container itself: built, started as an arbitrary user, probed.
+  # No CERN credentials: the deployment is .github/workflows/deploy-dashboard.yml.
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install the dashboard's packages, k4opt and the test tools
+        run: |
+          python -m pip install -r dashboard/requirements.txt
+          python -m pip install --no-deps .
+          # Optuna makes the studies the tests publish; the dashboard itself never imports it
+          python -m pip install pytest==9.2.0 pytest-xdist==3.8.0 execnet==2.1.2 pytest-cov==7.1.0 \
+            coverage==7.17.0 optuna==5.0.0 colorlog tqdm mypy==2.4.0
+
+      - name: Run the tests of what reads studies (on every available core)
+        run: |
+          python -m pytest -p xdist -n auto tests/unit/publication tests/unit/visualization \
+            tests/unit/dashboard tests/unit/test_components.py tests/unit/test_deployment.py
+
+      - name: Type-check the dashboard
+        working-directory: dashboard
+        run: |
+          MYPYPATH=.. mypy --strict --follow-imports=silent --config-file ../pyproject.toml \
+            app.py data.py overview.py study.py tables.py
+
+      - name: Build the image
+        run: docker build --build-arg "REVISION=${GITHUB_SHA}" -t k4opt-dashboard:ci -f dashboard/Dockerfile .
+
+      - name: Start it as an arbitrary user of group 0, as OpenShift does, and probe it
+        run: |
+          docker run -d --name dashboard --user 123456:0 -p 8080:8080 k4opt-dashboard:ci
+          for _ in $(seq 1 60); do
+            if [ "$(curl -s http://127.0.0.1:8080/_stcore/health)" = ok ]; then break; fi
+            sleep 1
+          done
+          test "$(curl -s http://127.0.0.1:8080/_stcore/health)" = ok
+          curl -sf -o /dev/null http://127.0.0.1:8080/
+          docker exec dashboard python -c "import importlib.util as u; assert u.find_spec('optuna') is None; import k4opt.publication, k4opt.visualization"
+          docker logs dashboard
+
+      - name: Validate the OpenShift manifests (the Route's kind has no public schema)
+        run: |
+          docker run --rm --mount "type=bind,source=${PWD}/openshift,target=/openshift,readonly" ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary -ignore-missing-schemas /openshift

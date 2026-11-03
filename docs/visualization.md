@@ -23,7 +23,7 @@ axis_choices(study)
 #  'objective:gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells',
 #  'parameter:ecal_cell_size')
 figure = trials_figure(study)  # a plotly.graph_objects.Figure
-figure.show()                  # in a notebook; or figure.write_html("trials.html")
+figure.show()  # in a notebook; or figure.write_html("trials.html")
 trials_figure(study, "parameter:ecal_cell_size", axis_choices(study)[0])  # x, then y
 ```
 

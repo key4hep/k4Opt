@@ -3,19 +3,23 @@
 k4opt is a detector optimization framework for Key4hep. It is organized by
 **component**: each component is a subpackage with its own public API, errors,
 CLI command group, docs page and tests: `geometry`, `ddsim`, `evaluation`, `problem`,
-`record`, `execution` and `optimization`, each depending only on those before it
-(`problem` <- `record` <- `execution` <- `optimization`).
+`record`, `execution`, `optimization`, `publication` and `visualization`, each depending only on
+those before it (`problem` <- `record` <- `execution` <- `optimization` <- `publication`,
+`visualization`). The Streamlit dashboard is no component: it lives in `dashboard/` and uses
+`publication` and `visualization` like any user.
 
     k4opt/
       __init__.py      version + K4OptError, nothing else
       errors.py        error base classes shared by all components
       frozen.py        immutable copies of JSON-like data, shared by components that store it
       yamlio.py        strict YAML loading, shared by components that read YAML files
-      jsonio.py        atomic publication of complete files (JSON records, exports) without overwriting
+      jsonio.py        atomic publication of complete files: never over another, or replacing one whole
       revision.py      git revisions and the identity of k4opt's own code, for provenance
       terminal.py      colors and widths of terminal output, shared by the command lines
       cli.py           the `k4opt` command; each component adds a command group
       <component>/     public API in __init__.py; errors.py, cli.py (register()), ...
+    dashboard/         the Streamlit app, its container and pinned requirements
+    openshift/         the dashboard's deployment on CERN OpenShift
     tests/
       unit/<component>/          no Key4hep stack needed
       integration/<component>/   need the stack ($K4GEO) and are skipped without it
@@ -46,4 +50,13 @@ Rules of thumb:
 source setup.sh                     # Key4hep stack, venv, editable install, git hooks
 pre-commit run --all-files          # ruff, mypy (strict), codespell, shellcheck, actionlint, ...
 python -m pytest -p xdist -n auto tests/unit   # every core; add tests/integration with $K4GEO
+```
+
+The visualization and dashboard tests need Plotly and Streamlit (and Optuna, to make the studies
+they show), which the Key4hep stack lacks, and are skipped without them; CI runs them in its `dashboard` job, which
+also type-checks `dashboard/` and builds and probes its container (see `docs/dashboard.md`):
+
+```bash
+pip install -r dashboard/requirements.txt && pip install --no-deps -e . && pip install optuna
+python -m pytest -p xdist -n auto tests/unit/publication tests/unit/visualization tests/unit/dashboard
 ```

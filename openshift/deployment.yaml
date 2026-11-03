@@ -1,0 +1,70 @@
+# The k4opt dashboard on CERN OpenShift (paas.cern.ch), project k4opt; see docs/dashboard.md.
+# The deploy workflow (.github/workflows/deploy-dashboard.yml) applies this file with the image
+# replaced by the exact digest it built, so one rollout runs exactly that image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k4opt-dashboard
+  namespace: k4opt
+  labels:
+    app: k4opt-dashboard
+spec:
+  # Streamlit keeps each viewer's session in its process: one replica, no state to share
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k4opt-dashboard
+  template:
+    metadata:
+      labels:
+        app: k4opt-dashboard
+    spec:
+      # OpenShift assigns an arbitrary user (of group 0); the image runs as any
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: ghcr.io/key4hep/k4opt-dashboard:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            # The publication the dashboard reads: a directory or an https:// URL (k4opt
+            # publish). Empty: it shows that nothing is configured. Whatever it names is read by
+            # every viewer, so name only studies meant to be public (docs/dashboard.md).
+            - name: K4OPT_DASHBOARD_DATA
+              value: ""
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          # /_stcore/health is answered by the process that runs the pages, so a burst of them
+          # can delay it past the 1 s default. Readiness only takes the pod out of the router and
+          # is kept tight; liveness restarts it, losing its caches, so only a sustained outage
+          # (~2 min) does (the timings k4Bench's dashboard settled on).
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 4

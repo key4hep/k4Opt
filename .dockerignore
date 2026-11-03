@@ -1,0 +1,9 @@
+# Only what the dashboard's image needs is sent to the build (dashboard/Dockerfile)
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!k4opt/
+!dashboard/
+**/__pycache__
+**/*.pyc
