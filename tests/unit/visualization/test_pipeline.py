@@ -28,7 +28,7 @@ from k4opt.visualization import (
 
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
 GRAPHVIZ = pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz is not installed")
-SAMPLES = ("gamma_20gev", "pi0_20gev")
+SAMPLES = ("gamma_50gev", "pi0_50gev")
 
 
 def example(name: str = "cld-ecal-pi0-rejection") -> dict[str, Any]:
@@ -48,14 +48,25 @@ def trial(number: int, **fields: Any) -> TrialResult:
     return TrialResult(number, "valid", {"ecal_cell_size": 5.0}, record="r", **fields)
 
 
+def with_constraint() -> ProblemSpec:
+    """The example with its channel count a constraint, not an objective."""
+    document = example()
+    document["objectives"] = document["objectives"][:1]
+    document["constraints"] = [
+        {"evaluator": "readout", "stage": "geometry", "metric": "ecal_barrel.channels"}
+        | {"max": 5.0e7, "unit": "1"}
+    ]
+    return parse_problem(document)
+
+
 def without_constraint() -> ProblemSpec:
     document = example()
-    del document["constraints"]  # nothing needs the readout any more: a diagnostic
+    document["objectives"] = document["objectives"][:1]  # nothing needs the readout: a diagnostic
     return parse_problem(document)
 
 
 def test_each_task_parameter_objective_and_constraint_is_one_node_in_order() -> None:
-    graph = task_graph(parse_problem(example()))
+    graph = task_graph(with_constraint())
     assert [node.id for node in graph.nodes] == [
         "parameter:ecal_cell_size",
         "geometry",
@@ -69,7 +80,7 @@ def test_each_task_parameter_objective_and_constraint_is_one_node_in_order() -> 
     assert (objective.title, objective.details) == ("background_rejection", ("▲ maximize",))
     assert (constraint.title, constraint.details) == ("ecal_barrel.channels", ("≤ 5e+07",))
     assert set(graph.samples) == set(SAMPLES)  # read in other roles: not alike, not stacked
-    assert graph.node("gamma_20gev/simulation").group == "stage:simulation"
+    assert graph.node("gamma_50gev/simulation").group == "stage:simulation"
     assert graph.node("pi0_rejection").group is None  # it measures the candidate
     with pytest.raises(VisualizationError, match="no node 'nothing'"):
         graph.node("nothing")
@@ -77,17 +88,17 @@ def test_each_task_parameter_objective_and_constraint_is_one_node_in_order() -> 
 
 def test_only_the_reads_no_other_path_implies_are_edges() -> None:
     reads = edges(task_graph(parse_problem(example())), "reads")
-    assert ("geometry", "gamma_20gev/simulation") in reads
-    assert ("gamma_20gev/generation", "gamma_20gev/simulation") in reads
-    assert ("gamma_20gev/simulation", "gamma_20gev/calo.shower_shape") in reads
+    assert ("geometry", "gamma_50gev/simulation") in reads
+    assert ("gamma_50gev/generation", "gamma_50gev/simulation") in reads
+    assert ("gamma_50gev/simulation", "gamma_50gev/calo.shower_shape") in reads
     assert ("geometry", "readout") in reads  # it reads the geometry alone
     # implied through the simulation, and through the evaluations of the samples
-    assert ("geometry", "gamma_20gev/calo.shower_shape") not in reads
-    assert ("gamma_20gev/generation", "gamma_20gev/calo.shower_shape") not in reads
+    assert ("geometry", "gamma_50gev/calo.shower_shape") not in reads
+    assert ("gamma_50gev/generation", "gamma_50gev/calo.shower_shape") not in reads
     assert ("geometry", "pi0_rejection") not in reads
-    assert reads[("gamma_20gev/calo.shower_shape", "pi0_rejection")] == "signal"
-    assert reads[("pi0_20gev/calo.shower_shape", "pi0_rejection")] == "background"
-    measures = edges(task_graph(parse_problem(example())), "measures")
+    assert reads[("gamma_50gev/calo.shower_shape", "pi0_rejection")] == "signal"
+    assert reads[("pi0_50gev/calo.shower_shape", "pi0_rejection")] == "background"
+    measures = edges(task_graph(with_constraint()), "measures")
     assert set(measures) == {
         ("pi0_rejection", "objective:pi0_rejection/analysis/background_rejection"),
         ("readout", "constraint:readout/geometry/ecal_barrel.channels"),
@@ -110,11 +121,11 @@ def test_a_parameter_reaches_what_it_sets_and_the_task_names_it() -> None:
 
 def test_a_stage_shows_how_it_is_made_and_what_tells_the_samples_apart() -> None:
     graph = task_graph(parse_problem(example()))
-    generation = graph.node("pi0_20gev/generation")
+    generation = graph.node("pi0_50gev/generation")
     assert generation.details == ("gun, run by ddsim", "particle: pi0")  # not the same energy
-    assert ("option energy", "20 GeV") in generation.facts  # all of it in the facts
-    assert graph.node("pi0_20gev/simulation").details[0] == "ddsim · 1000 events"
-    assert ("seed", "2") in graph.node("pi0_20gev/simulation").facts
+    assert ("option energy", "50 GeV") in generation.facts  # all of it in the facts
+    assert graph.node("pi0_50gev/simulation").details[0] == "ddsim · 500 events"
+    assert ("seed", "2") in graph.node("pi0_50gev/simulation").facts
 
 
 def test_a_diagnostic_is_not_required() -> None:
@@ -127,16 +138,16 @@ def test_a_diagnostic_is_not_required() -> None:
 def test_a_study_holds_the_times_of_each_stage_and_the_trials_a_diagnostic_failed_in() -> None:
     failed = ({"task": "readout", "status": "failed", "message": "no channels"},)
     trials = [
-        trial(0, stage_seconds={"gamma_20gev/simulation": 30.0}, diagnostics=failed),
-        trial(1, stage_seconds={"gamma_20gev/simulation": 90.0}),
-        trial(2, stage_seconds={"gamma_20gev/simulation": 600.0}, diagnostics=failed),
+        trial(0, stage_seconds={"gamma_50gev/simulation": 30.0}, diagnostics=failed),
+        trial(1, stage_seconds={"gamma_50gev/simulation": 90.0}),
+        trial(2, stage_seconds={"gamma_50gev/simulation": 600.0}, diagnostics=failed),
         TrialResult(3, "interrupted", {}),  # no record: says nothing of its diagnostics
     ]
     graph = task_graph(study(without_constraint(), trials))
-    simulation = graph.node("gamma_20gev/simulation")
+    simulation = graph.node("gamma_50gev/simulation")
     assert dict(simulation.seconds or {}) == {0: 30.0, 1: 90.0, 2: 600.0}
     assert simulation.median_seconds == 90.0
-    assert graph.node("pi0_20gev/simulation").median_seconds is None
+    assert graph.node("pi0_50gev/simulation").median_seconds is None
     assert graph.node("readout").failed == (0, 2) and graph.recorded == 3
     dot = pipeline_graph(study(without_constraint(), trials))
     assert "median 1.5 min · 3 trials" in dot
@@ -146,7 +157,7 @@ def test_a_study_holds_the_times_of_each_stage_and_the_trials_a_diagnostic_faile
 
 def test_dot_shows_what_a_problem_names_as_it_is_but_a_backslash_in_a_tooltip() -> None:
     document = example()
-    document["samples"]["gamma_20gev"]["properties"] = {"note": '<b>"x" & \\N</b>'}
+    document["samples"]["gamma_50gev"]["properties"] = {"note": '<b>"x" & \\N</b>'}
     document["evaluators"][2]["settings"]["note"] = 'say "\\G" &amp;\nthen'
     dot = pipeline_graph(parse_problem(document))
     label = "note: &lt;b&gt;&quot;x&quot; &amp; \\N&lt;/b&gt;"  # an HTML-like label expands nothing
@@ -232,10 +243,10 @@ def test_a_stack_holds_each_trials_mean_time_over_its_samples() -> None:
 
 
 def test_a_stage_run_by_another_has_no_time_of_its_own() -> None:
-    times = {"gamma_20gev/generation": 0.0003, "gamma_20gev/simulation": 60.0}
+    times = {"gamma_50gev/generation": 0.0003, "gamma_50gev/simulation": 60.0}
     graph = task_graph(study(parse_problem(example()), [trial(0, stage_seconds=times)]))
-    assert graph.node("gamma_20gev/generation").seconds is None  # the gun, fired by ddsim
-    assert graph.node("gamma_20gev/simulation").median_seconds == 60.0
+    assert graph.node("gamma_50gev/generation").seconds is None  # the gun, fired by ddsim
+    assert graph.node("gamma_50gev/simulation").median_seconds == 60.0
 
 
 def test_each_kind_has_its_own_color() -> None:
@@ -246,6 +257,6 @@ def test_each_kind_has_its_own_color() -> None:
         if f'tooltip="task: {id}' in text or f"<b>{id}</b>" in text
     )
     assert 'color="#2a78d6"' in line("ecal_cell_size")  # parameter: blue
-    assert 'color="#6250d6"' in line("gamma_20gev/simulation")  # a sample's stage: violet
+    assert 'color="#6250d6"' in line("gamma_50gev/simulation")  # a sample's stage: violet
     assert 'color="#1baf7a"' in line("pi0_rejection")  # evaluation: aqua
     assert 'color="#eb6834"' in line("background_rejection")  # objective: orange
