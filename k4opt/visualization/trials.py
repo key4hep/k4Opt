@@ -100,7 +100,7 @@ class _Axis:
         return -value if self.objective.direction == "maximize" else value
 
     def title(self, unit: str | None) -> str:
-        shown = f" [{html.escape(unit)}]" if unit else ""
+        shown = f" [{html.escape(unit)}]" if unit is not None and _shown(unit) else ""
         if self.parameter is not None:
             return f"{html.escape(self.parameter.name)}{shown}<br><sup>parameter</sup>"
         objective = self.objective
@@ -508,7 +508,12 @@ def _number(value: Scalar, unit: str | None, uncertainty: float | None = None) -
     text = f"{value:.6g}" if isinstance(value, float) else html.escape(str(value))
     if uncertainty is not None:
         text += f" ± {uncertainty:.3g}"
-    return f"{text} {html.escape(unit)}" if unit else text
+    return f"{text} {html.escape(unit)}" if unit is not None and _shown(unit) else text
+
+
+def _shown(unit: str | None) -> bool:
+    """Whether ``unit`` is shown: ``1`` is a number of no unit."""
+    return unit not in (None, "", "1")
 
 
 def _hover(results: StudyResults, trial: TrialResult, front: set[int]) -> str:

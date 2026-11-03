@@ -1,20 +1,24 @@
 """The rows of the dashboard's tables, from a catalog and a study alone: no Streamlit here.
 
 Each function returns a list of rows, one ``dict`` each, column by column, with every value as the
-study records it (``None`` where it has none: an empty cell, never 0). What a value means is the
-study's to say: outcomes, feasibility and the Pareto front are read, never judged again.
+study records it (``None`` where it has none: an empty cell, never 0), headed by the names
+:func:`labels.names` gives (each column's whole label is in :func:`helps`). What a value means is
+the study's to say: outcomes, feasibility and the Pareto front are read, never judged again; a
+best value is the best the study's feasible trials reached of one objective, by its direction.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from k4opt.optimization import StudyResults, TradeOffs, TrialResult
 from k4opt.problem import Parameter
-from k4opt.publication import Catalog
 from k4opt.record import Limit, ObjectiveValue
 from k4opt.visualization import GraphNode
+
+import labels
 
 type Row = dict[str, object]
 
@@ -22,49 +26,13 @@ WITHOUT_RESULT = ("invalid", "failed", "rejected", "interrupted", "error")
 """The outcomes of trials without objective values, but for the running ones."""
 
 
-def studies(catalog: Catalog) -> list[Row]:
-    """A row for each study of ``catalog``, the latest published first."""
-    entries = sorted(catalog.studies, key=lambda entry: entry.published, reverse=True)
-    return [
-        {
-            "Study": entry.name,
-            "Problem": entry.problem,
-            "Created": entry.created,
-            "Published": entry.published,
-            "Trials": entry.trials,
-            "Feasible share": entry.outcomes["feasible"] / entry.trials if entry.trials else None,
-            "Feasible": entry.outcomes["feasible"],
-            "Infeasible": entry.outcomes["infeasible"],
-            "Without a result": sum(entry.outcomes[o] for o in WITHOUT_RESULT),
-            "Running at publication": entry.outcomes["running"],
-            "Parameters": entry.parameters,
-            "Objectives": entry.objectives,
-            "Constraints": entry.constraints,
-            "Id": entry.id,
-        }
-        for entry in entries
-    ]
-
-
-def _domain(parameter: Parameter) -> str:
+def domain(parameter: Parameter) -> str:
+    """The values ``parameter`` may take: its choices, or its bounds."""
     if parameter.choices is not None:
         return ", ".join(map(str, parameter.choices))
     assert parameter.bounds is not None
     low, high = parameter.bounds
     return f"[{low}, {high}]"
-
-
-def parameters(results: StudyResults) -> list[Row]:
-    return [
-        {
-            "Parameter": p.name,
-            "Type": p.kind,
-            "Domain": _domain(p),
-            "Unit": p.unit,
-            "Sets": "; ".join(destination.label for destination in p.targets),
-        }
-        for p in results.problem.parameters
-    ]
 
 
 def units(results: StudyResults) -> dict[str, str | None]:
@@ -83,37 +51,51 @@ def units(results: StudyResults) -> dict[str, str | None]:
     return found
 
 
-def objectives(results: StudyResults) -> list[Row]:
-    shown = units(results)
-    return [
-        {"Objective": o.label, "Direction": o.direction, "Unit": shown.get(o.label)}
-        for o in results.problem.objectives
-    ]
-
-
-def constraints(results: StudyResults) -> list[Row]:
-    shown = units(results)
-    return [
-        {
-            "Constraint": c.label,
-            "Min": c.min,
-            "Max": c.max,
-            "Unit": c.unit or shown.get(c.label),
-            "Scale": c.scale,
-        }
-        for c in results.problem.constraints
-    ]
-
-
 def _heading(name: str, unit: str | None) -> str:
-    return f"{name} [{unit}]" if unit else name
+    shown = labels.unit(unit)
+    return f"{name} [{shown}]" if shown else name
+
+
+def _columns(results: StudyResults) -> list[tuple[str, str, str]]:
+    """Each column of a trial's measurements: its heading, the whole label it shows (``± `` for
+    an uncertainty, ``margin `` for a limit's margin) and what it is."""
+    shown, named = units(results), labels.names(results)
+    uncertain = {
+        value.label
+        for trial in results.trials
+        if trial.assessment is not None
+        for value in trial.assessment.objectives or ()
+        if value.uncertainty is not None
+    }
+    columns = []
+    for o in results.problem.objectives:
+        heading = _heading(named[o.label], shown.get(o.label))
+        columns.append((heading, o.label, "objective"))
+        if o.label in uncertain:
+            columns.append((f"{heading} ±", o.label, "uncertainty"))
+    for c in results.problem.constraints:
+        for bound in ("min", "max"):
+            if getattr(c, bound) is not None:
+                heading = _heading(f"margin {named[c.label]} {bound}", c.unit or shown.get(c.label))
+                columns.append((heading, f"{c.label}:{bound}", "margin"))
+    return columns
+
+
+def helps(results: StudyResults) -> dict[str, str]:
+    """What each measurement column of :func:`trials` shows, by heading, in whole."""
+    said = {
+        "objective": "{}",
+        "uncertainty": "the uncertainty of {}",
+        "margin": "the margin of the limit {}: zero or below when satisfied",
+    }
+    return {heading: said[kind].format(label) for heading, label, kind in _columns(results)}
 
 
 def trials(results: StudyResults, numbers: Iterable[int] | None = None) -> list[Row]:
     """A row for each trial, or for those numbered ``numbers``: its outcome, its candidate, each
-    objective's value and uncertainty, each limit's margin (zero or below when satisfied), its
-    time, record and message."""
-    shown = units(results)
+    objective's value (and its uncertainty, if any trial recorded one), each limit's margin (zero
+    or below when satisfied), its time and message."""
+    columns = _columns(results)
     chosen = None if numbers is None else set(numbers)
     front = set(results.pareto)
     rows = []
@@ -127,35 +109,74 @@ def trials(results: StudyResults, numbers: Iterable[int] | None = None) -> list[
         }
         for p in results.problem.parameters:
             row[_heading(p.name, p.unit)] = trial.candidate.get(p.name)
-        row |= _measured(results, trial, shown)
+        row |= _measured(trial, columns)
         row["Time [s]"] = trial.elapsed_seconds
-        row["Record"] = trial.record
-        row["Record SHA-256"] = trial.sha256
         row["Message"] = trial.message
         rows.append(row)
     return rows
 
 
-def _measured(results: StudyResults, trial: TrialResult, shown: Mapping[str, Any]) -> Row:
-    row: Row = {}
+def _measured(trial: TrialResult, columns: list[tuple[str, str, str]]) -> Row:
     assessment = trial.assessment
     measured = {} if assessment is None else {o.label: o for o in assessment.objectives or ()}
-    for objective in results.problem.objectives:
-        value = measured.get(objective.label)
-        heading = _heading(objective.label, shown.get(objective.label))
-        row[heading] = None if value is None else value.value
-        row[f"{heading} ±"] = None if value is None else value.uncertainty
     limits = {} if assessment is None else {limit.name: limit for limit in assessment.limits}
-    for constraint in results.problem.constraints:
-        for bound in ("min", "max"):
-            if getattr(constraint, bound) is None:
-                continue
-            name = f"{constraint.label}:{bound}"
-            limit = limits.get(name)
-            row[_heading(f"margin {name}", constraint.unit or shown.get(constraint.label))] = (
-                None if limit is None else limit.margin
-            )
+    row: Row = {}
+    for heading, label, kind in columns:
+        if kind == "margin":
+            limit = limits.get(label)
+            row[heading] = None if limit is None else limit.margin
+            continue
+        value = measured.get(label)
+        if value is None:
+            row[heading] = None
+        else:
+            row[heading] = value.value if kind == "objective" else value.uncertainty
     return row
+
+
+@dataclass(frozen=True, slots=True)
+class Best:
+    """The best value the feasible trials reached of one objective, and by which trial: the first
+    to reach it."""
+
+    label: str
+    name: str
+    direction: str
+    value: float
+    uncertainty: float | None
+    unit: str | None
+    trial: int
+
+
+def bests(results: StudyResults) -> list[Best]:
+    """The best of each objective that a feasible trial measured; none of one that none did."""
+    named = labels.names(results)
+    found = []
+    for index, objective in enumerate(results.problem.objectives):
+        sign = -1 if objective.direction == "maximize" else 1
+        best: ObjectiveValue | None = None
+        number = -1
+        for trial in results.trials:
+            if trial.outcome != "feasible":
+                continue
+            assert trial.assessment is not None
+            assert trial.assessment.objectives is not None
+            value = trial.assessment.objectives[index]
+            if best is None or sign * value.value < sign * best.value:
+                best, number = value, trial.number
+        if best is not None:
+            found.append(
+                Best(
+                    objective.label,
+                    named[objective.label],
+                    objective.direction,
+                    best.value,
+                    best.uncertainty,
+                    best.unit,
+                    number,
+                )
+            )
+    return found
 
 
 def provenance(results: StudyResults) -> list[Row]:
@@ -232,54 +253,24 @@ def task_trials(results: StudyResults, node: GraphNode) -> list[Row]:
     return rows if any(len(row) > 2 for row in rows) else []
 
 
-def trial_facts(results: StudyResults, trial: TrialResult) -> list[Row]:
-    """How ``trial`` ended and where its record is, a row per fact."""
-    rows: list[tuple[str, object]] = [
-        ("Outcome", trial.outcome),
-        ("On the Pareto front", trial.number in results.pareto),
-        ("Time [s]", None if trial.elapsed_seconds is None else round(trial.elapsed_seconds, 1)),
-        ("Finished by a resume", trial.recovered),
-        ("Record", trial.record),
-        ("Record SHA-256", trial.sha256),
-        ("Message", trial.message),
-    ]
+def trial_record(trial: TrialResult) -> list[Row]:
+    """Where ``trial``'s record is, a row per fact."""
+    rows = [("Record", trial.record), ("Record SHA-256", trial.sha256)]
     return [{"": name, "Value": value} for name, value in rows]
 
 
-def trial_candidate(results: StudyResults, trial: TrialResult) -> list[Row]:
-    """Each parameter's value in ``trial``, ``None`` for one it was not proposed (yet)."""
-    return [
-        {"Parameter": p.name, "Value": trial.candidate.get(p.name), "Unit": p.unit}
-        for p in results.problem.parameters
-    ]
-
-
-def trial_objectives(trial: TrialResult) -> list[Row]:
-    """Each objective ``trial`` measured, with its uncertainty and unit; none without a record."""
-    assessment = trial.assessment
-    return [
-        {
-            "Objective": o.label,
-            "Direction": o.direction,
-            "Value": o.value,
-            "±": o.uncertainty,
-            "Unit": o.unit,
-        }
-        for o in (() if assessment is None else assessment.objectives or ())
-    ]
-
-
-def trial_limits(trial: TrialResult) -> list[Row]:
+def trial_limits(results: StudyResults, trial: TrialResult) -> list[Row]:
     """Each limit of ``trial``: the value, the bound, its margin (zero or below when satisfied)."""
     assessment = trial.assessment
+    named = labels.names(results)
     return [
         {
-            "Constraint": limit.label,
+            "Constraint": named.get(limit.label, limit.label),
             "Bound": limit.bound,
             "Limit": limit.limit,
             "Value": limit.value,
             "Margin": limit.margin,
-            "Unit": limit.unit,
+            "Unit": labels.unit(limit.unit),
             "Satisfied": limit.satisfied,
         }
         for limit in (() if assessment is None else assessment.limits)
@@ -287,8 +278,12 @@ def trial_limits(trial: TrialResult) -> list[Row]:
 
 
 def trial_stages(trial: TrialResult) -> list[Row]:
-    """How long each stage of ``trial`` took, as its record holds it."""
-    return [{"Stage": stage, "Time [s]": seconds} for stage, seconds in trial.stage_seconds.items()]
+    """How long each stage of ``trial`` took, as its record holds it, longest first."""
+    ordered = sorted(trial.stage_seconds.items(), key=lambda item: -item[1])
+    return [
+        {"Stage": stage, "Time": labels.duration(seconds), "Seconds": seconds}
+        for stage, seconds in ordered
+    ]
 
 
 def trial_diagnostics(trial: TrialResult) -> list[Row]:
@@ -303,7 +298,7 @@ def trade_offs(results: StudyResults, found: TradeOffs) -> list[Row]:
     """A row for the reference and each trial that meets the trade-off: its candidate, each
     objective's value and how it changed against the reference, in percent of the reference's
     value (``None`` where that is zero)."""
-    shown = units(results)
+    shown, named = units(results), labels.names(results)
     front = set(results.pareto)
     reference = found.reference
     assert reference.objectives is not None
@@ -319,9 +314,9 @@ def trade_offs(results: StudyResults, found: TradeOffs) -> list[Row]:
         for p in results.problem.parameters:
             row[_heading(p.name, p.unit)] = trial.candidate.get(p.name)
         for o in results.problem.objectives:
-            row[_heading(o.label, shown.get(o.label))] = trial.objectives[o.label]
+            row[_heading(named[o.label], shown.get(o.label))] = trial.objectives[o.label]
             base = reference.objectives[o.label]
             change = 0.0 if number == reference.number else found.change[number][o.label]
-            row[f"Δ {o.metric} [%]"] = None if base == 0 else 100 * change / abs(base)
+            row[f"Δ {named[o.label]} [%]"] = None if base == 0 else 100 * change / abs(base)
         rows.append(row)
     return rows

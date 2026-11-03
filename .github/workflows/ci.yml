@@ -126,7 +126,7 @@ jobs:
         working-directory: dashboard
         run: |
           MYPYPATH=.. mypy --strict --follow-imports=silent --config-file ../pyproject.toml \
-            app.py data.py overview.py study.py tables.py
+            ./*.py views/*.py
 
       - name: Build the image
         run: docker build --build-arg "REVISION=${GITHUB_SHA}" -t k4opt-dashboard:ci -f dashboard/Dockerfile .

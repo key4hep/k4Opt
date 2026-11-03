@@ -21,7 +21,6 @@ the next interaction reads again.
 from __future__ import annotations
 
 import os
-import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -39,6 +38,8 @@ from k4opt.publication import (
     PublicationUnavailableError,
     open_publication,
 )
+
+from labels import plain
 
 ENVIRONMENT = "K4OPT_DASHBOARD_DATA"
 CATALOG_TTL = 60
@@ -143,6 +144,8 @@ def source() -> Source:
 
 
 _SOURCE = "k4opt.source"
+KEPT = "k4opt.kept"
+"""The ids of the studies the sidebar keeps this run, for the Studies page."""
 
 
 def resolve() -> Source:
@@ -172,13 +175,9 @@ def study(where: str, entry: CatalogEntry) -> StudyResults:
     return results
 
 
-_MARKDOWN = re.compile(r"([\\`*_\[\]<>~$|])")  # what formats, links or embeds within a line
-
-
-def plain(text: object) -> str:
-    """``text`` as Streamlit's Markdown shows it, as it is: no character of it formats or links
-    anything (a study's name, a message, a parameter of the URL)."""
-    return _MARKDOWN.sub(r"\\\1", str(text))
+def newest_first(catalog: Catalog) -> list[CatalogEntry]:
+    """The studies of ``catalog``, the latest published first."""
+    return sorted(catalog.studies, key=lambda entry: entry.published, reverse=True)
 
 
 def show(found: Source) -> None:

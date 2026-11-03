@@ -1,4 +1,5 @@
-"""The dashboard's tables: every value as the study records it, an empty cell where it has none."""
+"""The dashboard's tables: every value as the study records it, an empty cell where it has none,
+headed by the names a reader knows the values by."""
 
 from __future__ import annotations
 
@@ -9,7 +10,6 @@ import pytest
 pytest.importorskip("optuna")
 
 from k4opt.optimization import Rule, load_study, trade_offs
-from k4opt.publication import Catalog, CatalogEntry, Snapshot
 from tests.support.studies import mixed_study
 
 
@@ -19,78 +19,47 @@ def test_a_trial_row_holds_its_values_and_nothing_made_up(tmp_path: Path) -> Non
     results = load_study(mixed_study(tmp_path / "s"))
     rows = tables.trials(results)
     assert [row["Trial"] for row in rows] == [t.number for t in results.trials]
-    a = "test.trade_off/analysis/a [mm]"
+    a, margin = "a [mm]", "margin a max [mm]"  # the metric's name; its label is the column's help
+    assert tables.helps(results)[a] == "test.trade_off/analysis/a"
+    assert "test.trade_off/analysis/a:max" in tables.helps(results)[margin]
+    uncertain = any(
+        o.uncertainty is not None
+        for t in results.trials
+        if t.assessment is not None
+        for o in t.assessment.objectives or ()
+    )
     for row, trial in zip(rows, results.trials, strict=True):
         assert (row["Outcome"], row["Pareto"]) == (trial.outcome, trial.number in results.pareto)
         assert row["radius"] == trial.candidate["radius"]
+        assert ("a [mm] ±" in row) == uncertain  # a column of uncertainties only if there are any
         if trial.objectives is None:  # invalid, failed: no value, no margin, never 0
-            assert row[a] is None and row["margin test.trade_off/analysis/a:max [mm]"] is None
+            assert row[a] is None and row[margin] is None
         else:
             assert row[a] == trial.objectives["test.trade_off/analysis/a"]
-            margin = row["margin test.trade_off/analysis/a:max [mm]"]
-            assert margin == trial.assessment.limits[0].margin
-            assert (margin <= 0) == (trial.outcome == "feasible")
-        assert (row["Record"], row["Message"]) == (trial.record, trial.message)
+            assert row[margin] == trial.assessment.limits[0].margin
+            assert (row[margin] <= 0) == (trial.outcome == "feasible")
+        assert row["Message"] == trial.message and "Record" not in row  # the record: in its sheet
     assert [row["Trial"] for row in tables.trials(results, results.pareto)] == list(results.pareto)
-    assert tables.objectives(results)[1] == {
-        "Objective": "test.trade_off/analysis/b",
-        "Direction": "minimize",
-        "Unit": "1/mm",
-    }
-    assert tables.constraints(results) == [
-        {
-            "Constraint": "test.trade_off/analysis/a",
-            "Min": None,
-            "Max": 400,
-            "Unit": "mm",
-            "Scale": None,
-        }
-    ]
     made = {row[""]: row["Value"] for row in tables.provenance(results)}
     assert made["KEY4HEP_STACK"] == "/stack/2026-10-20" and made["Study id"] == results.id
     assert [row["Evaluator"] for row in tables.evaluators(results)] == ["test.trade_off"]
 
 
-def test_the_latest_published_study_comes_first() -> None:
+def test_the_best_of_each_objective_is_the_first_feasible_trial_to_reach_it(
+    tmp_path: Path,
+) -> None:
     import tables
 
-    def entry(study: str, published: str) -> CatalogEntry:
-        outcomes = dict.fromkeys(
-            (
-                "feasible",
-                "infeasible",
-                "invalid",
-                "failed",
-                "rejected",
-                "interrupted",
-                "error",
-                "running",
-            ),
-            0,
-        )
-        return CatalogEntry(
-            study,
-            f"name-{study[0]}",
-            None,
-            "then",
-            published,
-            0,
-            outcomes,
-            1,
-            1,
-            0,
-            Snapshot("p", "0" * 64, 1),
-        )
-
-    catalog = Catalog(
-        (
-            entry("a" * 8 + "-0000-4000-8000-" + "0" * 12, "2026-11-01"),
-            entry("b" * 8 + "-0000-4000-8000-" + "0" * 12, "2026-11-02"),
-        )
-    )
-    rows = tables.studies(catalog)
-    assert [row["Study"] for row in rows] == ["name-b", "name-a"]
-    assert rows[0]["Feasible share"] is None  # of no trials: no share, never 0
+    results = load_study(mixed_study(tmp_path / "s"))
+    feasible = [t for t in results.trials if t.outcome == "feasible"]
+    bests = tables.bests(results)
+    assert [best.name for best in bests] == ["a", "b"]
+    for best in bests:  # both minimized
+        values = [t.objectives[best.label] for t in feasible]
+        assert best.value == min(values) and best.direction == "minimize"
+        first = next(t for t in feasible if t.objectives[best.label] == best.value)
+        assert best.trial == first.number
+    assert bests[0].unit == "mm" and bests[1].unit == "1/mm"
 
 
 def test_a_trial_is_shown_with_all_it_recorded(tmp_path: Path) -> None:
@@ -98,26 +67,17 @@ def test_a_trial_is_shown_with_all_it_recorded(tmp_path: Path) -> None:
 
     results = load_study(mixed_study(tmp_path / "s"))
     trial = next(t for t in results.trials if t.outcome == "infeasible")
-    facts = {row[""]: row["Value"] for row in tables.trial_facts(results, trial)}
-    assert facts["Outcome"] == "infeasible" and facts["On the Pareto front"] is False
-    assert (facts["Record"], facts["Time [s]"]) == (trial.record, round(trial.elapsed_seconds, 1))
-    assert tables.trial_candidate(results, trial) == [
-        {"Parameter": "radius", "Value": trial.candidate["radius"], "Unit": None}
-    ]
-    a, b = tables.trial_objectives(trial)
-    assert (a["Objective"], a["Unit"], b["Direction"]) == (
-        "test.trade_off/analysis/a",
-        "mm",
-        "minimize",
-    )
-    (limit,) = tables.trial_limits(trial)
-    assert (limit["Bound"], limit["Limit"], limit["Satisfied"]) == ("max", 400, False)
-    assert limit["Margin"] == trial.assessment.limits[0].margin > 0
-    assert [row["Stage"] for row in tables.trial_stages(trial)] == list(trial.stage_seconds)
+    record = {row[""]: row["Value"] for row in tables.trial_record(trial)}
+    assert record == {"Record": trial.record, "Record SHA-256": trial.sha256}
+    (limit,) = tables.trial_limits(results, trial)
+    assert (limit["Constraint"], limit["Bound"], limit["Limit"]) == ("a", "max", 400)
+    assert limit["Satisfied"] is False and limit["Margin"] == trial.assessment.limits[0].margin > 0
+    stages = tables.trial_stages(trial)
+    assert sorted(row["Stage"] for row in stages) == sorted(trial.stage_seconds)
+    assert [row["Seconds"] for row in stages] == sorted(trial.stage_seconds.values(), reverse=True)
     assert tables.trial_diagnostics(trial) == []
     failed = next(t for t in results.trials if t.outcome == "failed")
-    assert tables.trial_objectives(failed) == []
-    assert [(row["Value"], row["Satisfied"]) for row in tables.trial_limits(failed)] == [
+    assert [(row["Value"], row["Satisfied"]) for row in tables.trial_limits(results, failed)] == [
         (None, None)
     ]
 

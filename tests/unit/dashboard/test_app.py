@@ -3,8 +3,7 @@ study, and what it says when there is nothing to show, from a directory and over
 
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -15,7 +14,8 @@ pytest.importorskip("optuna")
 from streamlit.testing.v1 import AppTest
 
 from k4opt.optimization import StudyResults, load_study
-from k4opt.publication import CATALOG_NAME, publish
+from k4opt.publication import CATALOG_NAME, Catalog, CatalogEntry, Snapshot, publish
+from k4opt.visualization import task_graph
 from tests.support.serve import served
 from tests.support.studies import mixed_study
 from tests.unit.dashboard.conftest import DASHBOARD
@@ -57,7 +57,8 @@ def test_without_a_publication_it_starts_and_says_how_to_name_one(
     at = app(monkeypatch, None).run()
     assert not at.exception
     assert "No publication is configured. Set `K4OPT_DASHBOARD_DATA`" in texts(at)
-    assert at.sidebar.code[0].value == "not configured"
+    source = "\n".join(m.value for m in at.sidebar.markdown)
+    assert "not configured" in source and "set K4OPT_DASHBOARD_DATA" in source
     assert at.sidebar.button[0].disabled
     at.switch_page("study.py").run()
     assert not at.exception and "No publication is configured" in texts(at)
@@ -97,28 +98,79 @@ def test_the_studies_of_a_publication_are_listed_and_one_is_shown_by_its_id(
     assert not at.exception and at.title[0].value == "Studies"
     (listed,) = at.dataframe[0].value.to_dict("records")
     assert (listed["Study"], listed["Problem"], listed["Trials"]) == (results.name, "trade", 8)
+    assert listed["Detector"] == PurePosixPath(results.problem.geometry).stem
+    assert listed["Key4hep"] == "nightly 2026-10-20"
     assert listed["Feasible"] == results.outcomes["feasible"]
-    assert listed["Feasible share"] == results.outcomes["feasible"] / 8
-    assert "1 study; catalog read" in "\n".join(c.value for c in at.sidebar.caption)
-    at.switch_page("study.py")
-    at.query_params["study"] = results.id
-    at.run()
-    assert not at.exception
-    assert at.title[0].value == results.name
-    metrics = {m.label: m.value for m in at.metric}
-    assert metrics["Trials"] == "8"
-    assert metrics["Infeasible"] == str(results.outcomes["infeasible"])
-    assert metrics["Pareto front"] == str(len(results.pareto))
-    # the Overview: the trials in the plane of two axes, each objective's history, the front
-    assert [chart.key for chart in at.get("plotly_chart")] == [
-        "trials-0",
-        "history-0-0",
-        "history-1-0",
+    picker = {box.label: box for box in at.sidebar.selectbox}
+    assert picker["Detector"].value == "*" and picker["Key4hep"].options == [
+        "Every release",
+        "nightly 2026-10-20",
     ]
+    picker["Key4hep"].select("nightly 2026-10-20").run()  # narrows the table
+    assert not at.exception and len(at.dataframe[0].value) == 1
+    picker = {box.label: box for box in at.sidebar.selectbox}
+    picker["Study"].select(results.id).run()  # chosen in the sidebar: it opens
+    assert not at.exception and at.query_params["study"] == results.id
+    assert f"**{results.name}** · problem trade" in texts(at)  # under the tabs, what is shown
+    # the Overview: how far it got, what it optimizes, how a candidate is evaluated
+    assert [chart.key for chart in at.get("plotly_chart")] == ["tasks-0"]
+    metrics = {m.label: m for m in at.metric}
+    assert metrics["Trials"].value == "8"
+    assert metrics["Pareto front"].value == str(len(results.pareto))
+    feasible = [t for t in results.trials if t.outcome == "feasible"]
+    best = min(feasible, key=lambda t: t.objectives["test.trade_off/analysis/a"])
+    assert metrics["Best a"].value == f"{best.objectives['test.trade_off/analysis/a']:.4g} mm"
+    assert metrics["Best a"].proto.delta == f"trial {best.number}"
+    # the Results: the trials in the plane of two axes, and the front
+    at = study_page(monkeypatch, tmp_path, results, view="Results")
+    assert [chart.key for chart in at.get("plotly_chart")] == ["trials-0"]
     (front,) = [frame.value for frame in at.dataframe]
     assert list(front["Trial"]) == list(results.pareto)
     assert at.query_params["x"].startswith("objective:")  # a link reopens the same view
     assert at.query_params["color"] == "outcome"
+
+
+def test_the_study_page_without_a_study_shows_the_latest_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    studies = {s.id: s for s in (published(tmp_path, "one", 2), published(tmp_path, "two", 2))}
+    at = app(monkeypatch, tmp_path / "pub")
+    at.switch_page("study.py").run()
+    assert not at.exception
+    import data
+
+    latest = data.newest_first(data.current().catalog)[0]  # the sidebar's first
+    assert at.query_params["study"] == latest.id
+    assert f"**{studies[latest.id].name}**" in texts(at)
+
+
+def test_the_latest_published_study_comes_first() -> None:
+    import data
+
+    def entry(study: str, published: str) -> CatalogEntry:
+        outcomes = dict.fromkeys(
+            ("feasible", "infeasible", "invalid", "failed", "rejected", "interrupted", "error"),
+            0,
+        )
+        return CatalogEntry(
+            study,
+            f"name-{study[0]}",
+            None,
+            "Ring/compact/Ring.xml",
+            "nightly 2026-10-20",
+            "then",
+            published,
+            0,
+            outcomes | {"running": 0},
+            1,
+            1,
+            0,
+            Snapshot("p", "0" * 64, 1),
+        )
+
+    first, second = (f"{c * 8}-0000-4000-8000-{'0' * 12}" for c in "ab")
+    catalog = Catalog((entry(first, "2026-11-01"), entry(second, "2026-11-02")))
+    assert [e.name for e in data.newest_first(catalog)] == ["name-b", "name-a"]
 
 
 def test_the_trials_tab_lists_every_trial_and_shows_the_one_a_link_names(
@@ -126,45 +178,50 @@ def test_the_trials_tab_lists_every_trial_and_shows_the_one_a_link_names(
 ) -> None:
     results = published(tmp_path)
     at = study_page(monkeypatch, tmp_path, results, view="Trials")
-    assert not at.exception and not at.get("plotly_chart")  # the Overview does not run
+    assert not at.exception and not at.get("plotly_chart")  # the Results do not run
     (every,) = [frame.value for frame in at.dataframe]
     assert list(every["Outcome"]) == [t.outcome for t in results.trials]
-    assert "Select a trial for all it recorded" in texts(at)
+    assert "select one to open all it recorded" in texts(at)
     trial = next(t for t in results.trials if t.outcome == "infeasible")
-    at = study_page(monkeypatch, tmp_path, results, view="Trials", trial=str(trial.number))
-    assert not at.exception
-    assert f"#### Trial {trial.number}" in texts(at) and ":orange-badge[infeasible]" in texts(at)
-    tiles = {m.label: m.value for m in at.metric}
-    assert tiles["a"] == f"{trial.objectives['test.trade_off/analysis/a']:.4g} mm"
-    frames = [frame.value for frame in at.dataframe]
-    (limits,) = [f for f in frames if "Margin" in f.columns]
-    assert list(limits["Satisfied"]) == [False]
-    candidate = next(f for f in frames if "Parameter" in f.columns)
-    assert candidate.to_dict("records")[0]["Value"] == trial.candidate["radius"]
-    for missing in ("999", "x"):  # a trial the study lacks names none
+    for view in ("Trials", "Results"):  # a link opens its sheet over any tab
+        at = study_page(monkeypatch, tmp_path, results, view=view, trial=str(trial.number))
+        assert not at.exception and ":orange-badge[infeasible]" in texts(at)
+        tiles = {m.label: m.value for m in at.metric}
+        assert tiles["▼ a"] == f"{trial.objectives['test.trade_off/analysis/a']:.4g} mm"
+        assert tiles["radius"] == f"{trial.candidate['radius']:.4g}"
+        frames = [frame.value for frame in at.dataframe]
+        (limits,) = [f for f in frames if "Margin" in f.columns]
+        assert list(limits["Satisfied"]) == [False]
+        assert any(trial.record in list(f.iloc[:, 1]) for f in frames)  # its record, by its id
+    for missing in ("999", "x"):  # a trial the study lacks names none, and is dropped
         at = study_page(monkeypatch, tmp_path, results, view="Trials", trial=missing)
-        assert not at.exception and "Select a trial" in texts(at)
+        assert not at.exception and "trial" not in at.query_params
+        assert not any(m.label == "radius" for m in at.metric)
 
 
 def test_the_problem_tab_says_what_the_study_optimizes_and_what_it_was_made_with(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     results = published(tmp_path)
-    at = study_page(monkeypatch, tmp_path, results, view="Problem")
+    at = study_page(monkeypatch, tmp_path, results, view="Overview")
     assert not at.exception
+    said = texts(at)
+    assert "**radius**" in said and "**b**" in said and ":red-badge[▼ minimize]" in said
+    assert ":gray-badge[1/mm]" in said and "test.trade\\_off/analysis/b" in said
+    assert "**a**" in said and ":red-badge[≤ 400 mm]" in said  # the constraint, by its bound
     frames = [frame.value for frame in at.dataframe]
-    assert list(frames[0]["Parameter"]) == ["radius"]
-    assert "test.trade_off/analysis/b" in list(frames[1]["Objective"])
-    assert any("KEY4HEP_STACK" in list(f.iloc[:, 0]) for f in frames)
+    assert any("KEY4HEP_STACK" in list(f.iloc[:, 0]) for f in frames)  # its provenance
 
 
 def test_the_trials_are_colored_by_what_a_link_names(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     results = published(tmp_path)
-    at = study_page(monkeypatch, tmp_path, results, color="trial")
+    at = study_page(monkeypatch, tmp_path, results, view="Results", color="trial")
     assert not at.exception and at.query_params["color"] == "trial"
-    at = study_page(monkeypatch, tmp_path, results, color="parameter:radius")  # categorical
+    at = study_page(
+        monkeypatch, tmp_path, results, view="Results", color="parameter:radius"
+    )  # categorical
     assert not at.exception and at.query_params["color"] == "outcome"
 
 
@@ -172,14 +229,14 @@ def test_the_tasks_of_a_candidate_are_drawn_and_one_sample_has_no_stack_to_expan
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     results = published(tmp_path)
-    at = study_page(monkeypatch, tmp_path, results, view="Pipeline")
+    at = study_page(monkeypatch, tmp_path, results, view="Overview")
     assert not at.exception
-    if shutil.which("dot") is None:  # the page says what it needs, and shows the rest
-        assert "needs Graphviz's dot program" in texts(at)
-    else:
-        assert "Click a task for what it is" in texts(at)
-    buttons = {button.label: button for button in at.button}
-    assert buttons["Draw each sample"].disabled and buttons["Stack alike samples"].disabled
+    assert [chart.key for chart in at.get("plotly_chart")] == ["tasks-0"]
+    assert not at.toggle and not task_graph(results).samples  # nothing to stack or fold
+    (full,) = [button for button in at.button if button.label == "Full screen"]
+    full.click().run()  # the model across the screen, the wheel zooming it
+    assert not at.exception
+    assert [chart.key for chart in at.get("plotly_chart")] == ["tasks-0", "tasks-full-chart"]
 
 
 def test_a_link_to_a_study_the_catalog_lacks_says_so(
@@ -204,7 +261,7 @@ def test_the_same_studies_are_shown_over_http(
         at.switch_page("study.py")
         at.query_params["study"] = results.id
         at.run()
-        assert not at.exception and at.title[0].value == results.name
+        assert not at.exception and f"**{results.name}**" in texts(at)
         assert server.requests[0] == CATALOG_NAME
         assert server.requests[1].startswith(f"studies/{results.id}/snapshots/")
 
@@ -251,7 +308,7 @@ def test_a_catalog_entry_is_checked_against_its_snapshot_on_every_run(
     at.switch_page("study.py")
     at.query_params["study"] = results.id
     at.run()
-    assert at.title[0].value == results.name  # read, and kept by its snapshot
+    assert f"**{results.name}**" in texts(at)  # read, and kept by its snapshot
     catalog = json.loads((tmp_path / "pub" / CATALOG_NAME).read_text())
     catalog["studies"][0]["name"] = "renamed"  # the same snapshot, another entry
     (tmp_path / "pub" / CATALOG_NAME).write_text(json.dumps(catalog))
@@ -265,9 +322,9 @@ def test_the_analysis_tab_shows_how_the_parameters_act_on_the_chosen_objective(
     results = published(tmp_path)
     at = study_page(monkeypatch, tmp_path, results, view="Analysis")
     assert not at.exception
-    charts = at.get("plotly_chart")
-    assert len(charts) == 3 and charts[1].key == "slice-0"  # parallel, slice, distribution
-    assert "needs two parameters at least" in texts(at)  # one parameter: no rank
+    shown = at.segmented_control(key="analysis")  # one view at a time; one parameter: no rank
+    assert shown.options == ["History", "Parallel coordinates", "Slice", "Distribution"]
+    assert [chart.key for chart in at.get("plotly_chart")] == ["history-0"]
     assert at.query_params["objective"] == "objective:test.trade_off/analysis/a"
     at = study_page(
         monkeypatch,
@@ -275,8 +332,10 @@ def test_the_analysis_tab_shows_how_the_parameters_act_on_the_chosen_objective(
         results,
         view="Analysis",
         objective="objective:test.trade_off/analysis/b",
+        analysis="Slice",
     )
     assert not at.exception and at.query_params["objective"].endswith("/b")
+    assert [chart.key for chart in at.get("plotly_chart")] == ["slice-0"]
 
 
 def test_a_trade_off_in_the_url_highlights_the_trials_that_meet_it(

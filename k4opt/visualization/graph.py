@@ -574,3 +574,67 @@ def _differences(
         for name, values in lines.items()
         if len(values) == len(members) and len(set(values)) > 1
     ]
+
+
+# --- collapsed samples -------------------------------------------------------------------------
+
+
+COLLAPSED = "sample:"
+"""The prefix of the id of a sample's box drawn as one node (``sample:<key>``)."""
+
+
+def collapsed(graph: TaskGraph, keys: Collection[str]) -> TaskGraph:
+    """``graph`` with the box of each sample (or stack) in ``keys`` drawn as one node, so that a
+    large graph shows what joins what before what each sample does.
+
+    The node (``sample:<key>``, a stage) is titled as the box, lists its tasks in order and the
+    box's lines, holds each trial's time summed over the box's stages and every trial a
+    diagnostic in it did not succeed in, and is joined to whatever the box's tasks were joined to
+    outside it, once each way and kind."""
+    folded = {key: graph.samples[key] for key in keys if key in graph.samples}
+    if not folded:
+        return graph
+    into = {
+        node.id: f"{COLLAPSED}{node.sample}"
+        for node in graph.nodes
+        if node.sample in folded and node.kind not in _MEASURED
+    }
+    nodes: list[GraphNode] = []
+    for node in graph.nodes:
+        target = into.get(node.id)
+        if target is None:
+            nodes.append(node)
+            continue
+        if any(n.id == target for n in nodes):
+            continue
+        key = target.removeprefix(COLLAPSED)
+        box = folded[key]
+        members = [n for n in graph.nodes if into.get(n.id) == target]
+        seconds: dict[int, float] = {}
+        for member in members:
+            for number, each in (member.seconds or {}).items():
+                seconds[number] = seconds.get(number, 0.0) + each
+        tasks = " → ".join(member.title for member in members)
+        nodes.append(
+            GraphNode(
+                id=target,
+                kind="stage",
+                title=box.title,
+                details=(tasks, *box.lines),
+                facts=(("tasks", tasks), *(("sample", line) for line in box.lines)),
+                required=any(member.required for member in members),
+                seconds=seconds or None,
+                failed=tuple(sorted({n for member in members for n in member.failed})),
+                samples=box.members if box.is_stack else (),
+            )
+        )
+    edges: list[GraphEdge] = []
+    seen: set[tuple[str, str, str]] = set()
+    for edge in graph.edges:
+        source, target = into.get(edge.source, edge.source), into.get(edge.target, edge.target)
+        if source == target or (source, target, edge.kind) in seen:
+            continue
+        seen.add((source, target, edge.kind))
+        edges.append(replace(edge, source=source, target=target))
+    samples = {key: box for key, box in graph.samples.items() if key not in folded}
+    return TaskGraph(tuple(nodes), tuple(edges), samples, graph.recorded)
