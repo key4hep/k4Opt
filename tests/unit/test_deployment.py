@@ -13,6 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 NAME, NAMESPACE, PORT, HEALTH = "k4opt-dashboard", "k4opt", 8080, "/_stcore/health"
 IMAGE = "ghcr.io/key4hep/k4opt-dashboard"
+DATA = "https://k4opt-data.web.cern.ch"
 
 
 def manifest(name: str) -> dict[str, Any]:
@@ -44,7 +45,7 @@ def test_the_manifests_name_one_service_on_one_port_with_its_health_probes() -> 
         "capabilities": {"drop": ["ALL"]},
     }
     assert set(container["resources"]) == {"requests", "limits"}
-    assert {e["name"]: e["value"] for e in container["env"]} == {"K4OPT_DASHBOARD_DATA": ""}
+    assert {e["name"]: e["value"] for e in container["env"]} == {"K4OPT_DASHBOARD_DATA": DATA}
     assert deployment["spec"]["selector"]["matchLabels"] == service["spec"]["selector"]
     assert service["spec"]["ports"][0]["targetPort"] == PORT == route["spec"]["port"]["targetPort"]
     assert route["spec"]["to"] == {"kind": "Service", "name": NAME}

@@ -33,10 +33,11 @@ spec:
               protocol: TCP
           env:
             # The publication the dashboard reads: a directory or an https:// URL (k4opt
-            # publish). Empty: it shows that nothing is configured. Whatever it names is read by
-            # every viewer, so name only studies meant to be public (docs/dashboard.md).
+            # publish), here the WebEOS site that serves it from EOS. Empty: it shows that nothing
+            # is configured. Whatever it names is read by every viewer, so name only studies meant
+            # to be public (docs/dashboard.md).
             - name: K4OPT_DASHBOARD_DATA
-              value: ""
+              value: "https://k4opt-data.web.cern.ch"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
