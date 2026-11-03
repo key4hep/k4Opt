@@ -306,3 +306,19 @@ def test_a_categorical_parameter_or_an_unknown_value_shades_nothing() -> None:
     for key in ("parameter:radius", "objective:nothing"):
         with pytest.raises(VisualizationError, match="cannot be colored by"):
             trials_figure(study, color=key)
+
+
+def test_a_highlight_leaves_the_other_trials_faint_and_rings_the_reference() -> None:
+    study = study_of(
+        ("minimize", "minimize"),
+        [("feasible", [1, 9]), ("feasible", [9, 1]), ("feasible", [9, 9]), ("infeasible", [0, 0])],
+        constraint=8,
+    )
+    figure = trials_figure(study, highlight=[1], reference=0)
+    shown = traces(figure)
+    assert list(shown["on the Pareto front"].marker.opacity) == [1.0, 1.0]  # 0 the reference
+    assert list(shown["feasible"].marker.opacity) == [0.18]
+    ring = shown["reference: trial 0"]
+    assert numbers(ring) == [0] and ring.marker.symbol == "circle-open"
+    assert ring.marker.color == "#0b0b0b"  # the ink: an open symbol takes the marker's color
+    assert traces(trials_figure(study))["feasible"].marker.opacity is None

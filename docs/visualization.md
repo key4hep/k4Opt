@@ -68,6 +68,11 @@ color bar; the front is then drawn as diamonds, so it stays told apart, and its 
 trials were proposed in), each objective, and each parameter that is not categorical. Infeasible
 trials and those without a result keep their own marks.
 
+**Highlighting trials.** `trials_figure(study, highlight=[37, 41], reference=12)` leaves every
+other trial faint and rings trial 12: what a
+[trade-off](optimization.md#trade-offs-against-a-reference-trial-trade_offs) found, and against
+what.
+
 ## The history of an objective: `history_figure`
 
 ```python

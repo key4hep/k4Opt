@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import html
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,9 +44,22 @@ TRIAL = "trial"
 # the reference palette's categorical slots 1 and 2 and its muted ink, light and dark steps; the
 # groups also differ by symbol, so that none is told by color alone
 _COLORS = {
-    False: {"front": "#2a78d6", "infeasible": "#eb6834", "muted": "#898781", "ring": "#fcfcfb"},
-    True: {"front": "#3987e5", "infeasible": "#d95926", "muted": "#898781", "ring": "#1a1a19"},
+    False: {
+        "front": "#2a78d6",
+        "infeasible": "#eb6834",
+        "muted": "#898781",
+        "ring": "#fcfcfb",
+        "ink": "#0b0b0b",
+    },
+    True: {
+        "front": "#3987e5",
+        "infeasible": "#d95926",
+        "muted": "#898781",
+        "ring": "#1a1a19",
+        "ink": "#f0efec",
+    },
 }
+_FAINT = 0.18  # the opacity of a trial a highlight leaves out
 # the reference palette's sequential blue, from near the surface to far from it, for marks: from
 # step 250 to 700 on the light surface, from step 600 to 100 on the dark one
 _RAMPS = {
@@ -146,15 +159,19 @@ def trials_figure(
     y: str | None = None,
     *,
     color: str | None = None,
+    highlight: Collection[int] | None = None,
+    reference: int | None = None,
     dark: bool = False,
 ) -> go.Figure:
     """The trials of ``results`` with ``x`` and ``y`` (:func:`axis_choices`; by default the first
     two objectives, or the first parameter and the only objective). ``color`` (one of
     :func:`color_choices`) shades the feasible trials by its value, the front set apart by its
-    symbol; by default they are told apart by group alone. ``dark`` takes the colors stepped for
-    a dark background. Raises :class:`VisualizationError` for an axis the study does not have,
-    and for values of one objective recorded in different units: they are never drawn on one
-    scale."""
+    symbol; by default they are told apart by group alone. ``highlight`` (trial numbers) leaves
+    every other trial faint, and the trial numbered ``reference`` is ringed: what a trade-off
+    (:func:`~k4opt.optimization.trade_offs`) found, and against what. ``dark`` takes the colors
+    stepped for a dark background. Raises :class:`VisualizationError` for an axis the study does
+    not have, and for values of one objective recorded in different units: they are never drawn
+    on one scale."""
     default_x, default_y = default_axes(results)
     horizontal, vertical = _axis(results, x or default_x), _axis(results, y or default_y)
     shade = None if color is None else _shade(results, color)
@@ -164,7 +181,35 @@ def trials_figure(
     drawn = [trial for group in groups.values() for trial in group]
     units = (_unit(horizontal, drawn), _unit(vertical, drawn))
     figure = go.Figure()
-    _mark(figure, results, groups, horizontal.value, vertical.value, shade, dark=dark)
+    _mark(
+        figure,
+        results,
+        groups,
+        horizontal.value,
+        vertical.value,
+        shade,
+        dark=dark,
+        highlight=None if highlight is None else set(highlight) | {reference},
+    )
+    if reference is not None and reference in {t.number for t in drawn}:
+        chosen = results.trial(reference)
+        figure.add_trace(
+            go.Scatter(
+                x=[horizontal.value(chosen)],
+                y=[vertical.value(chosen)],
+                mode="markers",
+                name=f"reference: trial {reference}",
+                marker={  # an open symbol is drawn in the marker's color
+                    "symbol": "circle-open",
+                    "size": 20,
+                    "color": _COLORS[dark]["ink"],
+                    "line": {"width": 2.5},
+                },
+                customdata=[reference],
+                hovertext=[_hover(results, chosen, set(results.pareto))],
+                hoverinfo="text",
+            )
+        )
     objectives = results.problem.objectives
     exact = (
         len(objectives) == 2
@@ -328,9 +373,11 @@ def _mark(
     *,
     dark: bool,
     front: str = "on the Pareto front",
+    highlight: Collection[int | None] | None = None,
 ) -> None:
     """A trace of markers for each group of trials, each point's ``customdata`` its trial's
-    number; the front and the feasible trials shaded by ``shade``, if any."""
+    number; the front and the feasible trials shaded by ``shade``, if any; every trial not in
+    ``highlight``, if given, faint."""
     colors = _COLORS[dark]
     numbers = set(results.pareto)
     styles = {
@@ -355,6 +402,8 @@ def _mark(
         }
         if shade is not None and group in ("front", "feasible"):
             marker |= {"color": [shade.value(t) for t in trials], "coloraxis": "coloraxis"}
+        if highlight is not None:
+            marker["opacity"] = [1.0 if t.number in highlight else _FAINT for t in trials]
         figure.add_trace(
             go.Scatter(
                 x=[x(t) for t in trials],

@@ -651,6 +651,45 @@ for a study read from its JSON form, whose `directory` is `None`). `optimize` re
 same. `load_study` raises `OptimizationError` for anything it cannot read or does not trust (above), and needs
 Optuna, which holds the trials; the rest of k4opt does not.
 
+### Trade-offs against a reference trial: `trade_offs`
+
+Of the trials on a front, which to choose is a matter of what one gives for what. `trade_offs`
+asks the feasible trials of a study which meet a rule for each objective against a reference
+trial:
+
+```python
+from k4opt.optimization import Rule, trade_offs
+
+found = trade_offs(
+    study,
+    12,  # the reference trial: one with objective values
+    [
+        Rule("gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual", "worsen", 0.05),
+        Rule("gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells", "improve", 0.10),
+    ],
+)
+found.matches  # the feasible trials (but trial 12) at most 5 % worse and at least 10 % better
+found.change[37]  # each objective of trial 37 less the reference's, in its unit
+found.excludes  # how many trials each rule excludes: which is the hardest to meet
+```
+
+| Rule | Asks |
+| --- | --- |
+| `Rule(label, "improve", amount)` | better than the reference by at least `amount` |
+| `Rule(label, "worsen", amount)` | worse by at most `amount` |
+| `Rule(label, "keep")` | not worse |
+| no rule | anything |
+
+Better and worse follow each objective's direction. An amount is a share of the reference's
+value (`0.05`: 5 %), or with `relative=False` in the objective's unit, which a reference value
+of zero needs. By default a difference within the uncertainty of the two values (each trial's,
+added in quadrature) counts as none: a trial must improve beyond its uncertainty to improve at
+all, and worsening within it is no worsening, so that a trade-off is never decided by noise;
+`within_uncertainty=False` compares the values as they are. It refuses (`OptimizationError`) a
+reference without objective values, an objective the study does not have, two rules on one, and
+a negative amount. It decides nothing of the study: it is a question asked of its results, which
+the [dashboard](dashboard.md) asks in its Trade-offs tab.
+
 ## Not done
 
 Retrying interrupted trials, reusing the record of a candidate proposed twice, a warm start from
