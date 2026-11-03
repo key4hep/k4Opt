@@ -1,4 +1,4 @@
-"""The task graph of a candidate laid out by Graphviz: as DOT text, and drawn with Plotly.
+"""The task graph of a candidate laid out and drawn by Graphviz: as DOT text, in a Plotly figure.
 
 :func:`pipeline_graph` writes the graph (:func:`~k4opt.visualization.task_graph`) as Graphviz DOT,
 read left to right: the parameters, the geometry, each sample as a box of its own holding its
@@ -10,20 +10,25 @@ what it sets (``ECal_cell_size ← ecal_cell_size``); a diagnostic is dotted; of
 shows the median of its recorded times, and each diagnostic that did not succeed in some trials in
 how many, in red.
 
-:func:`pipeline_figure` has Graphviz (its ``dot`` program) lay the same graph out, and draws it
-with Plotly: drag to pan, scroll to zoom, hover a task or an edge for what it is, click a task to
-select it, or a stack to expand it. The last trace holds what can be clicked, each
+:func:`pipeline_figure` has Graphviz (its ``dot`` program) lay the same graph out and draw it as
+SVG, and shows that drawing as one image in the plane of a Plotly figure, so that its text zooms
+with its boxes: drag to pan, scroll to zoom, hover a task or an edge for what it is, click a task
+to select it, or a stack to expand it. The last trace holds what can be clicked, each
 ``customdata[0]`` the id of a node or the key of a box (:attr:`TaskGraph.samples`).
 """
 
 from __future__ import annotations
 
+import base64
 import html
 import json
+import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import plotly.graph_objects as go
@@ -76,7 +81,6 @@ _COLORS = {
 }
 _FONT = "Helvetica,Arial,sans-serif"  # Graphviz measures text in Helvetica's widths
 _POINTS = 72  # Graphviz's points per inch
-_WIDEST = 880  # pixels the figure is drawn in at most; a wider graph is drawn smaller
 _TIMEOUT = 30  # seconds Graphviz may take to lay a graph out
 
 
@@ -180,7 +184,9 @@ def _node(node: GraphNode, ids: Mapping[str, str], colors: Mapping[str, str], re
     hue = _hue(node)
     wash = {"sample": "stage-wash"}.get(hue, f"{hue}-wash")
     attributes: dict[str, str | _Html] = {
-        "label": _label(node.title, details, colors, muted=not node.required),
+        "label": _label(
+            node.title, details, colors, muted=not node.required, failing=bool(node.failed)
+        ),
         "tooltip": "\n".join(f"{name}: {value}" for name, value in node.facts),
         "color": colors[hue],
         "fillcolor": colors.get(wash, colors["surface"]),
@@ -204,15 +210,20 @@ class _Html(str):
 
 
 def _label(
-    title: str, details: Iterable[str], colors: Mapping[str, str], *, muted: bool = False
+    title: str,
+    details: Iterable[str],
+    colors: Mapping[str, str],
+    *,
+    muted: bool = False,
+    failing: bool = False,
 ) -> _Html:
-    """An HTML-like label: the title in bold, each detail on a line of its own, smaller."""
+    """An HTML-like label: the title in bold, each detail on a line of its own, smaller; a
+    warning (``⚠ ...``) of a ``failing`` node in the failing color."""
     ink = colors["secondary"] if muted else colors["ink"]
     parts = [f'<font color="{ink}"><b>{html.escape(title)}</b></font>']
-    parts += [
-        f'<font point-size="9" color="{colors["secondary"]}">{html.escape(detail)}</font>'
-        for detail in details
-    ]
+    for detail in details:
+        color = colors["failing"] if failing and detail.startswith("⚠") else colors["secondary"]
+        parts.append(f'<font point-size="9" color="{color}">{html.escape(detail)}</font>')
     return _Html("<" + "<br/>".join(parts) + ">")
 
 
@@ -254,27 +265,27 @@ class _Box:
 
 @dataclass(frozen=True, slots=True)
 class _Spline:
-    """An edge as Graphviz drew it: its cubic Bézier points, the tip of its arrow, and where its
-    label goes."""
+    """An edge as Graphviz drew it: its cubic Bézier points."""
 
     tail: str
     head: str
     points: tuple[tuple[float, float], ...]
-    tip: tuple[float, float] | None
-    label: tuple[float, float] | None
 
 
 @dataclass(frozen=True, slots=True)
 class _Layout:
-    width: float
-    height: float
+    """Where Graphviz put each node, sample and edge, and its drawing: an SVG image of ``extent``,
+    the graph with its pad."""
+
     nodes: Mapping[str, _Box]  # by DOT id
     samples: Mapping[str, _Box]  # by DOT id of the cluster
     edges: tuple[_Spline, ...]
+    svg: str
+    extent: _Box
 
 
-# what each kind is drawn with in the figure: a translucent wash of its color, which reads on a
-# light and a dark background alike, and its color for the border
+# what the legend and the mark of the selected node show each kind with: its color for the
+# border, and a translucent wash of it, which reads on a light and a dark background alike
 _STYLES = {
     "parameter": (_draw.PARAMETER, _draw.wash(_draw.PARAMETER, 0.16)),
     "sample": (_draw.SAMPLE, _draw.wash(_draw.SAMPLE, 0.16)),
@@ -289,6 +300,10 @@ _LEGEND = (
     ("evaluator", "evaluation"),
     ("measured", "objective or constraint"),
 )
+_PAGE = 1200  # pixels wide the figure is sized for: as wide as the dashboard's page
+_DENSEST = 1.6  # pixels per point at most, so that a small graph is not drawn huge
+_HEIGHTS = (220, 720)  # pixels the graph is drawn in, at least and at most, before zooming
+_STEP = 12.0  # points between the transparent markers that make a task clickable
 
 
 def pipeline_figure(
@@ -298,75 +313,54 @@ def pipeline_figure(
     expanded: Collection[str] = (),
     selected: str | None = None,
 ) -> go.Figure:
-    """The tasks of a candidate of ``source`` laid out by Graphviz and drawn with Plotly, samples
-    alike stacked as :func:`pipeline_graph` says, the node ``selected`` (by id) marked; of a
-    study, with what :func:`pipeline_graph` shows of it. The figure sets no color of text, so that
-    it reads on a light and a dark background alike. Raises :class:`VisualizationError` if
-    Graphviz's ``dot`` cannot be run."""
+    """The tasks of a candidate of ``source`` laid out and drawn by Graphviz, shown with Plotly,
+    samples alike stacked as :func:`pipeline_graph` says, the node ``selected`` (by id) marked; of
+    a study, with what :func:`pipeline_graph` shows of it. Graphviz's drawing is one image in the
+    plane of the figure, so that its text zooms with its boxes; it takes the dark colors where
+    the viewer prefers a dark scheme. Raises :class:`VisualizationError` if Graphviz's ``dot``
+    cannot be run."""
     graph = task_graph(source, stack=stack, expanded=expanded)
     ids = _ids(graph)
     layout = _layout(_dot(graph, _COLORS[False]))
-    scale = min(96 / _POINTS, _WIDEST / layout.width)  # pixels per point
-    font = 10.5 * scale  # Graphviz's 11 points, a little smaller: the page's font is not its
+    extent = layout.extent
+    width, height = extent.x1 - extent.x0, extent.y1 - extent.y0
+    scale = min(_PAGE / width, _DENSEST)  # pixels per point, as first drawn
     by_dot = {ids[node.id]: node for node in graph.nodes}
     boxes = {ids[key]: key for key in graph.samples}
     figure = go.Figure()
-    shapes: list[dict[str, Any]] = []
-    annotations: list[dict[str, Any]] = []
-    clickable: list[tuple[float, float, float, str, str]] = []  # x, y, size, id, hover
+    clickable: list[tuple[float, float, str, str]] = []  # x, y, id, hover
     for cluster, box in layout.samples.items():
         sample = graph.samples[boxes[cluster]]
-        border = {"color": _draw.SAMPLE, "width": 2.2 if sample.is_stack else 1.2}
-        if sample.is_stack:
-            border["dash"] = "longdash"
-        shapes.append(_rounded(box, 8, fillcolor=_draw.wash(_draw.SAMPLE, 0.06), line=border))
-        assert box.label is not None
-        title = sample.title + (" · click to draw each" if sample.is_stack else "")
-        annotations.append(
-            {
-                "x": box.x0 + 8,
-                "y": box.label[1],
-                "xanchor": "left",
-                "text": _draw.label(title, sample.lines, font),
-                "showarrow": False,
-                "align": "left",
-                "font": {"size": font},
-            }
+        if not sample.is_stack or box.label is None:
+            continue
+        hover = f"<b>{html.escape(sample.title)}</b><br>" + "<br>".join(
+            html.escape(line) for line in sample.lines
         )
-        if sample.is_stack:
-            hover = f"<b>{html.escape(sample.title)}</b><br>" + "<br>".join(
-                html.escape(line) for line in sample.lines
-            )
-            clickable.append(
-                (box.x0 + 40, box.label[1], 18, boxes[cluster], hover + "<br>click to draw each")
-            )
+        title = _Box(box.x0, 2 * box.label[1] - box.y1, box.x1, box.y1)  # its label, at its top
+        clickable += [
+            (x, y, boxes[cluster], hover + "<br>click to draw each") for x, y in _grid(title)
+        ]
     for dot_id, box in layout.nodes.items():
         node = by_dot[dot_id]
-        color, fill = _STYLES[_hue(node)]
-        line: dict[str, Any] = {"color": color, "width": 2 if node.kind in _MEASURED else 1.4}
-        if not node.required:
-            line["dash"] = "dot"
-        if node.failed:
-            line = {"color": _draw.FAILING, "width": 2.2}
-        if node.id == selected:
-            line, fill = {"color": color, "width": 3.5}, _draw.wash(color, 0.34)
-        shapes.append(_rounded(box, 5, fillcolor=fill, line=line))
-        details = [*node.details, *status_lines(node, graph.recorded)]
-        annotations.append(
-            {
-                "x": (box.x0 + box.x1) / 2,
-                "y": (box.y0 + box.y1) / 2,
-                "text": _draw.label(node.title, details, font, failing=bool(node.failed)),
-                "showarrow": False,
-                "font": {"size": font},
-                "opacity": 1 if node.required else 0.75,
-            }
-        )
-        size = max(min(box.y1 - box.y0, box.x1 - box.x0) * scale, 10)
         hover = _draw.hover(node, graph)
         if node.samples:
             hover += "<br>click to draw each sample"
-        clickable.append(((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2, size, node.id, hover))
+        clickable += [(x, y, node.id, hover) for x, y in _grid(box)]
+    shapes = []
+    chosen = next((d for d, node in by_dot.items() if node.id == selected), None)
+    if chosen is not None and chosen in layout.nodes:
+        color = _STYLES[_hue(by_dot[chosen])][0]
+        box = layout.nodes[chosen]
+        ring = _Box(box.x0 - 3, box.y0 - 3, box.x1 + 3, box.y1 + 3)
+        shapes.append(
+            _rounded(
+                ring,
+                8,
+                fillcolor=_draw.wash(color, 0.14),
+                line={"color": color, "width": 3},
+                layer="above",
+            )
+        )
     edges: dict[tuple[str, str], list[GraphEdge]] = {}
     for each in graph.edges:
         edges.setdefault((ids[each.source], ids[each.target]), []).append(each)
@@ -375,34 +369,7 @@ def pipeline_figure(
     hover_text: list[str] = []
     for spline in layout.edges:
         carried = edges[(spline.tail, spline.head)]
-        kind = carried[0].kind
-        color = {"sets": _draw.PARAMETER, "measures": _draw.MEASURED}.get(kind, _draw.EDGE)
         points = _draw.bezier(spline.points)
-        if spline.tip is not None:  # the arrow's line, from the spline's end to its tip
-            points.append(spline.tip)
-        figure.add_trace(
-            go.Scatter(
-                x=[p[0] for p in points],
-                y=[p[1] for p in points],
-                mode="lines",
-                hoverinfo="skip",
-                showlegend=False,
-                line={"color": color, "width": 1.3, "dash": "dash" if kind == "sets" else "solid"},
-            )
-        )
-        if spline.tip is not None:
-            annotations.append(_arrow(points[-2], spline.tip, color))
-        label = carried[0].label
-        if spline.label is not None and label is not None and kind == "reads":
-            annotations.append(
-                {
-                    "x": spline.label[0],
-                    "y": spline.label[1],
-                    "text": f"<i>{html.escape(label)}</i>",
-                    "showarrow": False,
-                    "font": {"size": font * 0.85, "color": _draw.MUTED},
-                }
-            )
         text = _draw.edge_text(carried, by_dot[spline.tail].title, by_dot[spline.head].title)
         inner = points[len(points) // 6 : len(points) - len(points) // 6] or points
         hover_x += [p[0] for p in inner]
@@ -436,32 +403,42 @@ def pipeline_figure(
                 hoverinfo="skip",
             )
         )
-    # what can be clicked, last: transparent markers over each node and each stack's title
+    # what can be clicked, last: transparent markers covering each node and each stack's title
     figure.add_trace(
         go.Scatter(
             x=[c[0] for c in clickable],
             y=[c[1] for c in clickable],
             mode="markers",
             showlegend=False,
-            customdata=[[c[3]] for c in clickable],
-            text=[c[4] for c in clickable],
+            customdata=[[c[2]] for c in clickable],
+            text=[c[3] for c in clickable],
             hovertemplate="%{text}<extra></extra>",
-            marker={
-                "symbol": "square",
-                "size": [c[2] for c in clickable],
-                "color": "rgba(0, 0, 0, 0)",
-            },
+            marker={"symbol": "square", "size": _STEP * scale, "color": "rgba(0, 0, 0, 0)"},
             selected={"marker": {"color": "rgba(0, 0, 0, 0)"}},
             unselected={"marker": {"color": "rgba(0, 0, 0, 0)"}},
         )
     )
+    low, high = _HEIGHTS
+    figure.add_layout_image(
+        source="data:image/svg+xml;base64,"
+        + base64.b64encode(_themed(layout.svg).encode()).decode("ascii"),
+        xref="x",
+        yref="y",
+        x=extent.x0,
+        y=extent.y1,
+        sizex=width,
+        sizey=height,
+        sizing="stretch",
+        xanchor="left",
+        yanchor="top",
+        layer="below",
+    )
     figure.update_layout(
-        height=int(layout.height * scale) + 56,
-        margin={"l": 4, "r": 4, "t": 40, "b": 8},
-        xaxis={"visible": False, "range": [0, layout.width]},
-        yaxis={"visible": False, "range": [0, layout.height], "scaleanchor": "x"},
+        height=round(min(max(height * scale, low), high)) + 44,
+        margin={"l": 4, "r": 4, "t": 36, "b": 8},
+        xaxis={"visible": False, "range": [extent.x0, extent.x1]},
+        yaxis={"visible": False, "range": [extent.y0, extent.y1], "scaleanchor": "x"},
         shapes=shapes,
-        annotations=annotations,
         showlegend=True,
         legend={
             "orientation": "h",
@@ -482,29 +459,67 @@ def pipeline_figure(
     return figure
 
 
+def _grid(box: _Box) -> list[tuple[float, float]]:
+    """Points covering ``box``, :data:`_STEP` apart at most, a little inside its border."""
+    x0, y0, x1, y1 = box.x0 + 3, box.y0 + 3, box.x1 - 3, box.y1 - 3
+    columns = max(int((x1 - x0) // _STEP) + 1, 1)
+    rows = max(int((y1 - y0) // _STEP) + 1, 1)
+    return [
+        (
+            x0 + (x1 - x0) * (column + 0.5) / columns,
+            y0 + (y1 - y0) * (row + 0.5) / rows,
+        )
+        for row in range(rows)
+        for column in range(columns)
+    ]
+
+
+def _themed(svg: str) -> str:
+    """``svg``, drawn in the light colors, with a style that takes the dark ones where the viewer
+    prefers a dark scheme: an image keeps its colors whatever the page around it does, so it
+    follows the preference itself."""
+    light, dark = _COLORS[False], _COLORS[True]
+    rules = " ".join(
+        f'[{attribute}="{light[key]}"] {{ {attribute}: {dark[key]} }}'
+        for key in light
+        if light[key] != dark[key]
+        for attribute in ("fill", "stroke")
+    )
+    style = f"<style>@media (prefers-color-scheme: dark) {{ {rules} }}</style>"
+    opened = svg.index(">", svg.index("<svg")) + 1
+    return svg[:opened] + style + svg[opened:]
+
+
+_VIEW = re.compile(r'viewBox="([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+)"')
+_SHIFT = re.compile(r'class="graph" transform="[^"]*translate\(([-\d.]+)[ ,]([-\d.]+)\)"')
+
+
 def _layout(dot: str) -> _Layout:
-    """Where Graphviz puts each node, sample and edge of ``dot``."""
+    """Where Graphviz puts each node, sample and edge of ``dot``, and how it draws them: one run
+    of ``dot`` writes both, so that they are of one layout."""
     program = shutil.which("dot")
     if program is None:
         raise VisualizationError(
             "laying the graph out needs Graphviz's dot program, which is not on PATH "
             "(install Graphviz: apt install graphviz, dnf install graphviz, brew install graphviz)"
         )
-    try:
-        done = subprocess.run(
-            [program, "-Tjson"],
-            input=dot,
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise VisualizationError(f"Graphviz could not lay the graph out: {exc}") from None
-    if done.returncode != 0:
-        raise VisualizationError(f"Graphviz could not lay the graph out: {done.stderr.strip()}")
-    data = json.loads(done.stdout)
-    _, _, width, height = _numbers(data["bb"])
+    with tempfile.TemporaryDirectory(prefix="k4opt-graph-") as scratch:
+        placed, drawn = Path(scratch, "graph.json"), Path(scratch, "graph.svg")
+        try:
+            done = subprocess.run(
+                [program, "-Tjson", "-o", str(placed), "-Tsvg", "-o", str(drawn)],
+                input=dot,
+                capture_output=True,
+                text=True,
+                timeout=_TIMEOUT,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise VisualizationError(f"Graphviz could not lay the graph out: {exc}") from None
+        if done.returncode != 0:
+            raise VisualizationError(f"Graphviz could not lay the graph out: {done.stderr.strip()}")
+        data = json.loads(placed.read_text(encoding="utf-8"))
+        svg = drawn.read_text(encoding="utf-8")
     names = {item["_gvid"]: item["name"] for item in data.get("objects", ())}
     nodes, samples = {}, {}
     for item in data.get("objects", ()):
@@ -518,20 +533,24 @@ def _layout(dot: str) -> _Layout:
     edges = []
     for item in data.get("edges", ()):
         points: list[tuple[float, float]] = []
-        tip = None
         for token in item["pos"].split():
-            if token.startswith("e,"):
-                tip = _point(token[2:])
-            elif not token.startswith("s,"):
+            if not token.startswith(("s,", "e,")):
                 found = _point(token)
                 assert found is not None
                 points.append(found)
-        edges.append(
-            _Spline(
-                names[item["tail"]], names[item["head"]], tuple(points), tip, _point(item.get("lp"))
-            )
-        )
-    return _Layout(width, height, nodes, samples, tuple(edges))
+        edges.append(_Spline(names[item["tail"]], names[item["head"]], tuple(points)))
+    return _Layout(nodes, samples, tuple(edges), svg, _extent(svg))
+
+
+def _extent(svg: str) -> _Box:
+    """What Graphviz's SVG shows, in the points of its layout, ``y`` up: its view box, shifted by
+    the translation that takes the layout into it (and flips ``y``)."""
+    view, shift = _VIEW.search(svg), _SHIFT.search(svg)
+    if view is None or shift is None:
+        raise VisualizationError("Graphviz drew the graph in an SVG without its view box")
+    left, top, width, height = map(float, view.groups())
+    dx, dy = map(float, shift.groups())
+    return _Box(left - dx, dy - top - height, left - dx + width, dy - top)
 
 
 def _numbers(text: str) -> list[float]:
@@ -555,24 +574,3 @@ def _rounded(box: _Box, radius: float, **style: Any) -> dict[str, Any]:
         f"L {x0},{y0 + r} Q {x0},{y0} {x0 + r},{y0} Z"
     )
     return {"type": "path", "path": path, "xref": "x", "yref": "y", "layer": "below", **style}
-
-
-def _arrow(start: tuple[float, float], tip: tuple[float, float], color: str) -> dict[str, Any]:
-    """An arrowhead at ``tip``, pointing away from ``start``."""
-    return {
-        "x": tip[0],
-        "y": tip[1],
-        "ax": start[0],
-        "ay": start[1],
-        "xref": "x",
-        "yref": "y",
-        "axref": "x",
-        "ayref": "y",
-        "text": "",
-        "showarrow": True,
-        "arrowhead": 2,
-        "arrowsize": 1,
-        "arrowwidth": 1.2,
-        "arrowcolor": color,
-        "standoff": 0,
-    }

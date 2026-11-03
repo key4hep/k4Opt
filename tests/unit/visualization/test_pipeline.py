@@ -5,6 +5,7 @@ Graphviz in a Plotly figure, samples alike stacked into one box until expanded."
 
 from __future__ import annotations
 
+import base64
 import shutil
 import subprocess
 from pathlib import Path
@@ -160,7 +161,7 @@ def test_a_study_holds_the_times_of_each_stage_and_the_trials_a_diagnostic_faile
     assert graph.node("readout").failed == (0, 2) and graph.recorded == 3
     dot = pipeline_graph(study(without_constraint(), trials))
     assert "median 1.5 min · 3 trials" in dot
-    assert "⚠ did not succeed in 2 of 3 trials" in dot
+    assert '<font point-size="9" color="#d03b3b">⚠ did not succeed in 2 of 3 trials</font>' in dot
     assert "did not succeed" not in pipeline_graph(without_constraint())
 
 
@@ -196,18 +197,35 @@ def test_graphviz_lays_out_every_example_and_the_figure_draws_each_node(name: st
     assert not complaints(shown.stderr) and "<svg" in shown.stdout
     graph = task_graph(spec)
     figure = pipeline_figure(spec)
-    clickable = sorted(row[0] for row in figure.data[-1].customdata)
+    clickable = {row[0] for row in figure.data[-1].customdata}
     stacks = [key for key, box in graph.samples.items() if box.is_stack]
-    assert clickable == sorted([n.id for n in graph.nodes] + stacks)
-    assert len(figure.layout.shapes) == len(graph.nodes) + len(graph.samples)
+    assert clickable == {n.id for n in graph.nodes} | set(stacks)
+    (image,) = figure.layout.images  # Graphviz's drawing: no box or label of the figure's own
+    assert image.source.startswith("data:image/svg+xml;base64,")
+    assert not figure.layout.shapes and not figure.layout.annotations
+
+
+@GRAPHVIZ
+def test_the_drawing_covers_the_layout_and_takes_the_dark_colors_where_preferred() -> None:
+    figure = pipeline_figure(parse_problem(example()))
+    (image,) = figure.layout.images
+    svg = base64.b64decode(image.source.split(",", 1)[1]).decode()
+    assert '[fill="#fcfcfb"] { fill: #1a1a19 }' in svg and "prefers-color-scheme: dark" in svg
+    assert '[stroke="#2a78d6"] { stroke: #3987e5 }' in svg
+    (x0, x1), (y0, y1) = figure.layout.xaxis.range, figure.layout.yaxis.range
+    assert (image.x, image.x + image.sizex, image.y - image.sizey, image.y) == pytest.approx(
+        (x0, x1, y0, y1)
+    )
+    clickable = figure.data[-1]  # a task is clicked anywhere in its box: many markers cover it
+    assert sum(row[0] == "readout" for row in clickable.customdata) > 4
 
 
 @GRAPHVIZ
 def test_the_figure_marks_the_selected_node() -> None:
     spec = parse_problem(example())
     plain, chosen = pipeline_figure(spec), pipeline_figure(spec, selected="readout")
-    widths = lambda figure: sorted(shape.line.width for shape in figure.layout.shapes)  # noqa: E731
-    assert 3.5 not in widths(plain) and widths(chosen).count(3.5) == 1
+    (ring,) = chosen.layout.shapes
+    assert not plain.layout.shapes and ring.line.width == 3 and ring.layer == "above"
 
 
 def test_the_figure_says_when_graphviz_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:

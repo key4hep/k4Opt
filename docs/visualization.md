@@ -66,7 +66,7 @@ well. No Plotly template is forced: a notebook shows its default, and the
 ```python
 from k4opt.visualization import pipeline_figure, pipeline_graph, task_graph
 
-pipeline_figure(study).show()  # laid out by Graphviz, drawn with Plotly
+pipeline_figure(study).show()  # laid out and drawn by Graphviz, shown with Plotly
 pipeline_figure(study, stack=False)  # every sample in a box of its own
 pipeline_graph(study)  # the same graph as Graphviz DOT text
 task_graph(study).node("gamma_10gev/simulation").median_seconds
@@ -77,6 +77,10 @@ right. It works for a problem too (`pipeline_figure(load_problem("problem.yaml")
 study exists. Laying it out needs Graphviz's `dot` program (`apt install graphviz`,
 `dnf install graphviz`, `brew install graphviz`); without it the figure raises
 `VisualizationError` and says so, and `pipeline_graph` still writes the DOT text.
+
+Graphviz both lays the graph out and draws it, as SVG; the figure shows that drawing as one image
+in its own plane, under Plotly's hover and click. Its text is part of the drawing, so it zooms
+with its boxes and never runs over them, and the figure fills the width it is given.
 
 | Drawn as | What it is |
 | --- | --- |
@@ -110,10 +114,11 @@ node. The dashboard expands a stack when one of its tasks is clicked, and lists 
 says of any other task and how it went in each trial.
 
 The colors are the reference palette's categorical slots (blue, violet, aqua, orange) and its
-status red, each kind also told apart by its place, its box and its label. The figure sets no
-color of text and fills with translucent washes, so it reads on a light and a dark background
-alike without being told which. `pipeline_graph(study, dark=True)` takes the colors stepped for a
-dark background for the DOT text, whose labels carry their own colors.
+status red, each kind also told apart by its place, its box and its label. The drawing takes the
+colors stepped for a dark background wherever the viewer's system prefers a dark scheme (a style
+in the SVG, since an image keeps its own colors whatever the page around it does); in the
+dashboard, a theme chosen against the system's in Streamlit's menu leaves the drawing in the
+system's. `pipeline_graph(study, dark=True)` writes the DOT text in the dark colors.
 
 ## Adding a figure
 
