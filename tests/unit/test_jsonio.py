@@ -94,3 +94,43 @@ def test_a_concurrently_created_destination_is_preserved(
         jsonio.write_json(path, {"ours": True})
     assert path.read_text() == "someone else's result"
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_a_replacement_is_whole_on_disk_before_it_takes_the_place_of_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "catalog.json"
+    jsonio.replace(path, "old\n")  # also where there is none yet
+    events: list[str] = []
+    fsync, rename = jsonio.os.fsync, jsonio.os.replace
+
+    def syncing(descriptor: int) -> None:
+        events.append("fsync")
+        fsync(descriptor)
+
+    def renaming(source: Path, destination: Path) -> None:
+        events.append(f"replace {Path(source).parent == tmp_path} {path.read_text().strip()}")
+        rename(source, destination)
+
+    monkeypatch.setattr(jsonio.os, "fsync", syncing)
+    monkeypatch.setattr(jsonio.os, "replace", renaming)
+    jsonio.replace(path, "new\n")
+    assert events == ["fsync", "replace True old"]  # staged beside it, the old one until then
+    assert path.read_text() == "new\n"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_a_failed_replacement_leaves_the_file_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "catalog.json"
+    jsonio.replace(path, "old\n")
+
+    def failing(descriptor: int) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(jsonio.os, "fsync", failing)
+    with pytest.raises(OSError, match="disk full"):
+        jsonio.replace(path, "new\n")
+    assert path.read_text() == "old\n"
+    assert list(tmp_path.iterdir()) == [path]
