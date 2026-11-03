@@ -66,8 +66,9 @@ def _check_number(value: object, name: str) -> int | float:
     return value
 
 
-def _validate_value(parameter: Parameter, value: object) -> tuple[str, str]:
-    """Return ``(tag, canonical value)`` of ``value`` for ``parameter`` or raise."""
+def validate_value(parameter: Parameter, value: object) -> tuple[str, str]:
+    """Return ``(tag, canonical value)`` of ``value`` for ``parameter``: its type and domain
+    checked, as :func:`validate_candidate` checks each; :class:`CandidateError` otherwise."""
     name = parameter.name
     if parameter.kind == "continuous":
         number = _check_number(value, name)
@@ -116,7 +117,7 @@ def validate_candidate(
     key: list[tuple[str, str, str, str]] = []
     for parameter, name in zip(spec.parameters, declared, strict=True):
         value = candidate[name]
-        tag, canonical = _validate_value(parameter, value)
+        tag, canonical = validate_value(parameter, value)
         values[name] = value
         key.append((name, parameter.kind, tag, canonical))
     return values, tuple(key)

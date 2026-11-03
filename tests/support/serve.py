@@ -17,7 +17,8 @@ from pathlib import Path
 class Server:
     """Where the publication is served, and the fault to answer each path with, by path relative
     to it: ``missing``, ``error``, ``redirect``, ``cut`` (a ``Content-Length`` the body does not
-    reach), ``short`` (fewer bytes, no ``Content-Length``) or ``stall`` (no answer for 2 s)."""
+    reach), ``short`` (fewer bytes, no ``Content-Length``), ``stall`` (no answer for 2 s) or
+    ``trickle`` (a byte every 0.1 s, each in time, the whole never)."""
 
     url: str
     faults: dict[str, str] = field(default_factory=dict)
@@ -53,6 +54,12 @@ def served(root: Path) -> Iterator[Server]:
             if fault != "short":
                 self.send_header("Content-Length", str(len(data)))
             self.end_headers()
+            if fault == "trickle":
+                for byte in data[:30]:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(0.1)
+                return
             self.wfile.write(data[: len(data) // 2] if fault in ("cut", "short") else data)
 
         def log_message(self, *args: object) -> None:

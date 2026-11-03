@@ -31,8 +31,10 @@ CATALOG_NAME = "catalog.json"
 CATALOG_FORMAT = "k4opt.catalog/1"
 MAX_CATALOG_BYTES = 16 * 2**20
 """The largest catalog read: some ten thousand studies."""
-MAX_SNAPSHOT_BYTES = 512 * 2**20
-"""The largest snapshot a catalog may name: a study of a few hundred thousand trials."""
+MAX_SNAPSHOT_BYTES = 32 * 2**20
+"""The largest snapshot published or read: some 20000 trials of one parameter and two objectives
+(1.5 kB each). A study read back holds about 1.5 times its snapshot's size, and reading it takes
+about 5 times at its peak (measured), so a reader with 1 GiB holds a few of them."""
 
 _ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")

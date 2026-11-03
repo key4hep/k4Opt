@@ -109,6 +109,11 @@ def test_a_server_that_does_not_answer_is_told_apart(
             publication.study(entry)
     server.faults.clear()
     assert publication.study(entry).id == entry.id  # nothing of a failed read was kept
+    monkeypatch.setattr(read_module, "DEADLINE", 0.5)
+    server.faults[CATALOG_NAME] = "trickle"  # every byte in time, the whole not
+    with pytest.raises(PublicationUnavailableError, match=r"did not arrive within 0\.5 s"):
+        publication.catalog()
+    server.faults.clear()
     with pytest.raises(PublicationUnavailableError, match="just now"):
         open_publication(closed_port()).catalog()
 

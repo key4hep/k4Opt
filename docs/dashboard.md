@@ -71,8 +71,10 @@ up each have their own message, and *Refresh* in the sidebar reads the catalog a
 
 **Caching.** The catalog changes when a study is published: it is kept 60 s for all viewers, and
 *Refresh* drops it. A snapshot never changes, since its name is its content: a study is kept by
-its snapshot's path and SHA-256, so it is never stale, and the 16 latest at most, so memory stays
-bounded. What is kept is immutable, so viewers share it safely. A read that fails or arrives short
+its snapshot's path and SHA-256, so it is never stale, and the latest read are kept while their
+snapshots add up to 96 MiB (`STUDY_BYTES` in `dashboard/data.py`), some 150 MB in memory, so
+that the cache stays bounded by size, not by a number of studies, within the deployment's 1 GiB.
+Each is still checked against its catalog entry on every page. What is kept is immutable, so viewers share it safely. A read that fails or arrives short
 raises, and Streamlit keeps no exception: nothing of it is kept, and the next interaction reads
 again.
 

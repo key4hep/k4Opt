@@ -132,7 +132,14 @@ study.problem, study.trials, study.pareto
 A directory and its URL give the same studies: each file is read by the path its catalog gives,
 never by listing a directory. Over HTTP(S) the server's certificate is verified, a redirect is
 refused (a login page is no catalog, so serve the publication without one), and every read is
-bounded in time (30 s) and size. `Cache-Control: no-cache` asks caches between for the current
+bounded in size and in time: 30 s to connect and between two parts of an answer, 120 s for the
+whole of it, however steadily it trickles in.
+
+**Size.** A snapshot holds about 1.5 kB per trial of a study of one parameter and two
+objectives, and is at most 32 MiB (`MAX_SNAPSHOT_BYTES`), some 20000 such trials: a study read
+back takes about 1.5 times its snapshot's size in memory, and reading it about 5 times at its
+peak. `k4opt publish` refuses a larger one before writing anything, and a reader refuses one a
+catalog names as larger. `Cache-Control: no-cache` asks caches between for the current
 catalog; a snapshot never changes.
 
 **What is checked, and where.** `k4opt publish` publishes only what `load_study` has read and
@@ -147,9 +154,10 @@ records are not published:
   is never read as a study);
 - the study: its JSON form reads back
   ([`StudyResults.from_dict`](optimization.md#export-formats)): the identity digest of its
-  `study.json` part, each trial's status, outcome, candidate, assessment and record against the
-  problem and each other, feasibility against its limits, and the outcome counts and the Pareto
-  front, recomputed;
+  `study.json` part, each trial's status, outcome, candidate (in its parameters' domains),
+  assessment and record against the problem and each other, every limit judged again on its
+  recorded value (margin, normalized margin and verdict, so feasibility too), and the outcome
+  counts and the Pareto front, recomputed;
 - and it is the study its catalog entry describes (id, name, counts).
 
 | Raised | When | What to do |

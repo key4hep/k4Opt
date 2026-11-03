@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +39,10 @@ from k4opt.publication.errors import (
 
 TIMEOUT = 30.0
 """Seconds a server may take to connect, and between two parts of an answer."""
+DEADLINE = 120.0
+"""Seconds a whole answer may take to arrive, however steadily it trickles in (at most one
+:data:`TIMEOUT` more, while the last part is awaited)."""
+_CHUNK = 2**16
 
 
 class _MissingFileError(Exception):
@@ -173,8 +178,21 @@ class _Http:
             },
         )
         try:
+            deadline = time.monotonic() + DEADLINE
             with _OPENER.open(request, timeout=TIMEOUT) as response:
-                data: bytes = response.read(limit + 1)
+                parts: list[bytes] = []
+                size = 0
+                while size <= limit:
+                    if time.monotonic() > deadline:
+                        raise PublicationUnavailableError(
+                            f"{url} did not arrive within {DEADLINE:g} s ({size} bytes so far)"
+                        )
+                    part: bytes = response.read(min(_CHUNK, limit + 1 - size))
+                    if not part:
+                        break
+                    parts.append(part)
+                    size += len(part)
+                data = b"".join(parts)
         except urllib.error.HTTPError as exc:
             exc.close()  # an error answer holds its connection too
             if exc.code in (404, 410):

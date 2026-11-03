@@ -585,9 +585,11 @@ study = StudyResults.from_dict(json.loads(Path("results.json").read_text()))
 ```
 
 It checks the form, not the measurements, whose records it does not hold: the identity digest of
-`study` (so its problem definition is the study's), each trial's status, outcome, candidate,
-assessment and record against the problem and each other (objectives, limits and feasibility
-among them), and the outcome counts and the Pareto front, recomputed. What does not hold up
+`study` (so its problem definition is the study's), each trial's status, outcome, candidate
+(each value in its parameter's domain, as a live evaluation checks it), assessment and record
+against the problem and each other, every limit judged again on the value it records (its
+margin, normalized margin and verdict must be exactly those, and the trial's feasibility theirs),
+and the outcome counts and the Pareto front, recomputed. What does not hold up
 raises `OptimizationError`. `load_study` checks each record in full before any of it is exported.
 
 ## Python API

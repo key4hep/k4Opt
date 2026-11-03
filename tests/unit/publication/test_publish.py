@@ -219,3 +219,13 @@ def test_a_study_whose_id_is_no_uuid_is_never_written_anywhere(tmp_path: Path) -
     with pytest.raises(PublicationError, match="is not the id of a study"):
         publish(crafted, tmp_path / "pub")
     assert not (tmp_path / "outside").exists() and not (tmp_path / "pub").exists()
+
+
+def test_a_snapshot_larger_than_a_reader_reads_is_never_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = load_study(mixed_study(tmp_path / "s", trials=2))
+    monkeypatch.setattr("k4opt.publication.write.MAX_SNAPSHOT_BYTES", 1000)
+    with pytest.raises(PublicationError, match=r"would be \d+ bytes, more than the 1000"):
+        publish(results, tmp_path / "pub")
+    assert not (tmp_path / "pub").exists()

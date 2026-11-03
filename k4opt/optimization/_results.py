@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal, NoReturn
 
-from k4opt.evaluation import Scalar
+from k4opt.evaluation import EvaluationContractError, Measurement, Scalar
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.optimization._identity import digest
 from k4opt.optimization._study import (
@@ -31,8 +31,17 @@ from k4opt.optimization._study import (
     trial_directory,
 )
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import Constraint, Objective, ProblemConfigError, ProblemSpec, parse_problem
+from k4opt.problem import (
+    CandidateError,
+    Constraint,
+    Objective,
+    ProblemConfigError,
+    ProblemSpec,
+    parse_problem,
+)
+from k4opt.problem.candidate import validate_value
 from k4opt.record import SUMMARY_NAME, Assessment, Limit, ObjectiveValue, RecordError
+from k4opt.record.assess import judge_limit
 
 RESULTS_FORMAT = "k4opt.study-results/1"
 OUTCOMES = (
@@ -432,7 +441,6 @@ _UNRECORDED = ("rejected", "interrupted", "running")  # never
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _OBJECTIVE = tuple(f.name for f in fields(ObjectiveValue))
 _LIMIT = tuple(f.name for f in fields(Limit))
-_JUDGED = ("value", "uncertainty", "margin", "normalized", "satisfied")  # of a valid result only
 _BOUNDS: tuple[Literal["min", "max"], ...] = ("min", "max")  # in the order of limit_names
 
 
@@ -593,9 +601,12 @@ def _candidate(value: object, spec: ProblemSpec, held: bool, where: str) -> dict
     expected = names if held else [name for name in names if name in candidate]
     if list(candidate) != expected:
         _refuse(f"{where}'s candidate", f"names {list(candidate)}, not the parameters {expected}")
+    parameters = {parameter.name: parameter for parameter in spec.parameters}
     for name, item in candidate.items():
-        if item is None or isinstance(item, (Mapping, tuple)):
-            _refuse(f"{where}'s candidate.{name}", f"is {item!r}, not a value")
+        try:  # its type and domain, as a live evaluation checks them
+            validate_value(parameters[name], item)
+        except CandidateError as exc:
+            _refuse(f"{where}'s candidate", f"does not hold up: {exc}")
     return dict(candidate)  # type: ignore[arg-type]  # scalars, checked above
 
 
@@ -666,44 +677,28 @@ def _objective(entry: object, objective: Objective, where: str) -> ObjectiveValu
 def _limit(
     entry: object, constraint: Constraint, bound: Literal["min", "max"], valid: bool, where: str
 ) -> Limit:
+    """A limit as it is judged (:func:`~k4opt.record.assess.judge_limit`) on the value, unit and
+    uncertainty recorded: its margin, normalized margin and verdict must be exactly those."""
     data = _mapping(entry, where, _LIMIT)
-    scale = 1 if constraint.scale is None else constraint.scale
-    named = (data["evaluator"], data["sample"], data["stage"], data["metric"], data["bound"])
-    expected = (constraint.evaluator, constraint.sample, constraint.stage, constraint.metric, bound)
-    if named != expected or (data["limit"], data["scale"]) != (getattr(constraint, bound), scale):
-        _refuse(where, f"is not the limit {constraint.label}:{bound} of the problem")
-    unit = _text(data["unit"], f"{where}.unit", optional=True)
-    limit = getattr(constraint, bound)
-    if not valid:
-        if any(data[key] is not None for key in _JUDGED):
-            _refuse(where, "judges a value, but the trial has no valid result")
-        return Limit(
-            constraint.evaluator,
-            constraint.stage,
-            constraint.metric,
-            bound,
-            limit,
-            unit,
-            sample=constraint.sample,
-            scale=scale,
-        )
-    if not isinstance(data["satisfied"], bool):
-        _refuse(f"{where}.satisfied", f"is {data['satisfied']!r}, not true or false")
-    value = _number(data["value"], f"{where}.value")
-    margin = _number(data["margin"], f"{where}.margin", optional=True)
-    normalized = _number(data["normalized"], f"{where}.normalized", optional=True)
-    return Limit(
-        constraint.evaluator,
-        constraint.stage,
-        constraint.metric,
-        bound,
-        limit,
-        unit,
-        value,
-        _number(data["uncertainty"], f"{where}.uncertainty", optional=True),
-        None if margin is None else float(margin),
-        data["satisfied"],
-        constraint.sample,
-        scale,
-        None if normalized is None else float(normalized),
-    )
+    measurement = None
+    if valid:
+        value = _number(data["value"], f"{where}.value")
+        assert value is not None
+        try:
+            measurement = Measurement(
+                constraint.stage,
+                constraint.metric,
+                value,
+                _text(data["unit"], f"{where}.unit", optional=True),
+                _number(data["uncertainty"], f"{where}.uncertainty", optional=True),
+            )
+        except EvaluationContractError as exc:
+            _refuse(where, f"is no measurement: {exc}")
+    judged = judge_limit(constraint, bound, measurement)
+    expected = judged.to_dict()
+    differ = [key for key in _LIMIT if data[key] != expected[key]]
+    if differ:
+        found = ", ".join(f"{key} {data[key]!r}" for key in differ)
+        wanted = ", ".join(f"{key} {expected[key]!r}" for key in differ)
+        _refuse(where, f"has {found}, but the limit {constraint.label}:{bound} judges {wanted}")
+    return judged

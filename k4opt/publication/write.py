@@ -21,6 +21,7 @@ from k4opt import jsonio
 from k4opt.optimization import StudyResults
 from k4opt.publication.catalog import (
     CATALOG_NAME,
+    MAX_SNAPSHOT_BYTES,
     Catalog,
     CatalogEntry,
     Snapshot,
@@ -67,6 +68,11 @@ def publish(
         (warn or (lambda message: None))(f"{where} holds the local path {path}; it is published")
     text = results.to_json()
     data = text.encode()
+    if len(data) > MAX_SNAPSHOT_BYTES:  # a reader refuses it: none is written
+        raise PublicationError(
+            f"the snapshot of study {results.name} would be {len(data)} bytes, more than the "
+            f"{MAX_SNAPSHOT_BYTES} a publication holds ({len(results.trials)} trials)"
+        )
     sha256 = hashlib.sha256(data).hexdigest()
     snapshot = Snapshot(snapshot_path(results.id, sha256), sha256, len(data))
     _write_snapshot(directory / snapshot.path, text, data)

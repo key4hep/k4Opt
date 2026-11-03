@@ -131,7 +131,7 @@ REFUSED: dict[str, tuple[Callable[[dict[str, Any]], object], str]] = {
     "a limit less": (lambda d: _valid(d)["assessment"]["limits"].clear(), "one of each"),
     "another limit": (
         lambda d: _valid(d)["assessment"]["limits"][0].update(limit=1),
-        "is not the limit",
+        "has limit 1, but the limit test.trade_off/analysis/a:max judges limit 400",
     ),
     "a verdict its limits do not give": (
         lambda d: _valid(d)["assessment"].update(feasible=not _valid(d)["assessment"]["feasible"]),
@@ -148,7 +148,40 @@ REFUSED: dict[str, tuple[Callable[[dict[str, Any]], object], str]] = {
     ),
     "other counts": (lambda d: d["outcomes"].update(feasible=99), "outcomes"),
     "a negative time": (lambda d: _valid(d).update(elapsed_seconds=-1), "not a time"),
+    "a value outside the bounds": (
+        lambda d: _valid(d)["candidate"].update(radius=99999),
+        "is not one of",
+    ),
+    "a text for a number": (
+        lambda d: _valid(d)["candidate"].update(radius="banana"),
+        "expected a number, got 'banana'",
+    ),
+    "a boolean for a number": (
+        lambda d: _valid(d)["candidate"].update(radius=True),
+        "expected a number, got True",
+    ),
+    "a verdict its value does not give": (
+        lambda d: _limits(_valid(d)).update(satisfied=not _limits(_valid(d))["satisfied"]),
+        "judges satisfied",
+    ),
+    "a margin its value does not give": (
+        lambda d: _limits(_valid(d)).update(margin=-_limits(_valid(d))["margin"] - 1),
+        "judges margin",
+    ),
+    "a value beyond the limit called satisfied": (
+        lambda d: _limits(_valid(d)).update(value=1500.0),
+        "judges",
+    ),
+    "a judged value of a failed trial": (
+        lambda d: _limits(_failed(d)).update(value=1.0, satisfied=True),
+        "judges value None",
+    ),
 }
+
+
+def _limits(trial: dict[str, Any]) -> dict[str, Any]:
+    limit: dict[str, Any] = trial["assessment"]["limits"][0]
+    return limit
 
 
 @pytest.mark.parametrize("case", list(REFUSED))
