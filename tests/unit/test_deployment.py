@@ -53,7 +53,8 @@ def test_the_manifests_name_one_service_on_one_port_with_its_health_probes() -> 
         "termination": "edge",
         "insecureEdgeTerminationPolicy": "Redirect",
     }
-    assert not route["metadata"].get("annotations")  # no claim about who can reach it
+    # reachable from outside CERN: an empty whitelist admits every address
+    assert route["metadata"]["annotations"] == {"haproxy.router.openshift.io/ip_whitelist": ""}
 
 
 def test_the_image_serves_the_port_with_graphviz_without_optuna_and_as_any_user() -> None:

@@ -105,7 +105,9 @@ project `k4opt`: one replica (each viewer's session lives in its process), 100m/
 and 500m/1Gi at most, readiness and liveness probes on `/_stcore/health` with k4Bench's timings,
 no root, no privilege escalation, no capabilities, and `K4OPT_DASHBOARD_DATA` naming the
 publication at `https://k4opt-data.web.cern.ch`. The route serves
-`https://k4opt-dashboard.app.cern.ch` with TLS ended at the router.
+`https://k4opt-dashboard.app.cern.ch` with TLS ended at the router, to the whole Internet: the
+CERN routers admit only CERN's networks unless a route empties its IP whitelist
+(`haproxy.router.openshift.io/ip_whitelist: ""`), as this one does.
 
 **What is provisioned once, by hand.** All of it is in place; it is what a new deployment needs.
 
@@ -167,10 +169,9 @@ and validates the manifests (kubeconform; the Route has no public schema, and
 
 **Access.** Treat everything the deployed dashboard reads as public. A data site with anonymous
 access serves its files to anyone, whatever the dashboard's route does, so restricting the route
-would not restrict the data. The route itself carries no visibility setting; whether it is
-reachable from outside CERN depends on the cluster's routers, and is to be checked from outside
-CERN before any data location is named. Only studies meant to be public belong in its
-publication (see what a snapshot holds in [publication](publication.md#what-a-publication-holds)).
+would not restrict the data, and the route is open to the Internet. Only studies meant to be
+public belong in its publication (see what a snapshot holds in
+[publication](publication.md#what-a-publication-holds)).
 Non-public studies need access control on both the data and the app, such as CERN SSO in front of
 the route and an authenticated data source; that is not built.
 
