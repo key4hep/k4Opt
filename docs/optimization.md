@@ -688,7 +688,7 @@ all, and worsening within it is no worsening, so that a trade-off is never decid
 `within_uncertainty=False` compares the values as they are. It refuses (`OptimizationError`) a
 reference without objective values, an objective the study does not have, two rules on one, and
 a negative amount. It decides nothing of the study: it is a question asked of its results, which
-the [dashboard](dashboard.md) asks on its Overview.
+the [dashboard](dashboard.md) asks in its Trade-offs tab.
 
 ## Not done
 

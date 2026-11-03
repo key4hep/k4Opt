@@ -1,6 +1,7 @@
 """The Study page: one study, chosen by its id in the URL (``/study?study=<id>``), so that a link
 names it, in tabs, the one open in the URL too (``&view=Trials``): *Overview*, its trials in the
-plane of two axes and in the order they were proposed; *Trials*, each trial and all it recorded;
+plane of two axes and in the order they were proposed; *Trade-offs*, which trials give up at
+most so much for at least so much against a reference; *Trials*, each trial and all it recorded;
 *Analysis*, how its parameters act on an objective; *Pipeline*, how a candidate is evaluated;
 *Problem*, what it optimizes and what it was made with."""
 
@@ -39,7 +40,7 @@ import tables
 # module's)
 STUDY, VIEW, X, Y, COLOR, SHOWN = "study", "view", "x", "y", "color", "trial"
 ANALYZED = "objective"  # the URL's parameter of the objective the Analysis tab shows
-TABS = ("Overview", "Trials", "Analysis", "Pipeline", "Problem")
+TABS = ("Overview", "Trade-offs", "Trials", "Analysis", "Pipeline", "Problem")
 BY_OUTCOME = "outcome"  # the figure's colors unless chosen: each trial by its outcome
 # the trial a click on a figure opened, and counters bumped after each click on a figure and each
 # closing of a trial, so that the chart or table comes back without a selection
@@ -166,7 +167,7 @@ def _render(entry: CatalogEntry, results: StudyResults) -> None:
         column.metric(label, value, border=True)
     # only the open tab runs (the graph needs Graphviz), and the URL says which it is
     views = st.tabs(TABS, key=VIEW, bind="query-params")
-    pages = (_overview, _trials, _analysis, _tasks, _problem)
+    pages = (_overview, _trade_tab, _trials, _analysis, _tasks, _problem)
     for view, page in zip(views, pages, strict=True):
         if view.open is not False:
             with view:
@@ -185,25 +186,14 @@ def _overview(results: StudyResults) -> None:
         shades = [BY_OUTCOME, *color_choices(results)]
         color = _chosen("Color", shades, COLOR, BY_OUTCOME, format_func=_axis_name)
     dark = st.context.theme.type == "dark"
-    found = _trade_offs(results)
     try:
         shade = None if color == BY_OUTCOME else color
-        figure = trials_figure(
-            results,
-            x,
-            y,
-            color=shade,
-            highlight=None if found is None else found.matches,
-            reference=None if found is None else found.reference.number,
-            dark=dark,
-        )
+        figure = trials_figure(results, x, y, color=shade, dark=dark)
     except K4OptError as exc:
         st.warning(data.plain(exc))
     else:
         figure.update_layout(title=None)  # the page names the study
         _pickable(figure, "trials")
-    if found is not None:
-        _matches(results, found, noisy=st.query_params.get(NOISE) != "0")
     if results.pareto:
         st.markdown(f"**On the Pareto front** ({len(results.pareto)} trials)")
         st.dataframe(tables.trials(results, results.pareto), hide_index=True, height=300)
@@ -224,9 +214,41 @@ def _overview(results: StudyResults) -> None:
         _dialog(results, opened)
 
 
+def _trade_tab(results: StudyResults) -> None:
+    """A trade-off against a reference trial: its rules, the trials that meet it in the plane of
+    two axes (those of the Overview), and each with how it changed."""
+    found = _trade_offs(results)
+    choices = list(axis_choices(results))
+    default_x, default_y = default_axes(results)
+    left, right = st.columns(2)
+    with left:
+        x = _chosen("Horizontal axis", choices, X, default_x, format_func=_axis_name)
+    with right:
+        y = _chosen("Vertical axis", choices, Y, default_y, format_func=_axis_name)
+    try:
+        figure = trials_figure(
+            results,
+            x,
+            y,
+            highlight=None if found is None else found.matches,
+            reference=None if found is None else found.reference.number,
+            dark=st.context.theme.type == "dark",
+        )
+    except K4OptError as exc:
+        st.warning(data.plain(exc))
+    else:
+        figure.update_layout(title=None)  # the page names the study
+        _pickable(figure, "trade")
+    if found is not None:
+        _matches(results, found, noisy=st.query_params.get(NOISE) != "0")
+    opened = st.session_state.pop(OPENED, None)
+    if opened is not None:
+        _dialog(results, opened)
+
+
 def _trade_offs(results: StudyResults) -> TradeOffs | None:
-    """The trade-off asked against a reference trial, its controls in an expander, open once a
-    reference is chosen; ``None`` until a reference and a rule are."""
+    """The trade-off asked against a reference trial, from its controls; ``None`` until a
+    reference and a rule are chosen."""
     valued = [t.number for t in results.trials if t.objectives is not None]
     held = st.query_params.get(REFERENCE, "")
     linked = int(held) if held.isdigit() and int(held) in valued else None
@@ -235,11 +257,7 @@ def _trade_offs(results: StudyResults) -> TradeOffs | None:
     if key not in state:
         state[key] = linked
     outcome = {t.number: t.outcome for t in results.trials}
-    with st.expander(
-        "Trade-offs against a reference trial",
-        expanded=state[key] is not None,
-        icon=":material/balance:",
-    ):
+    with st.container(border=True):
         st.caption(
             "Ask what each objective must give or may give up against a reference trial: the "
             "feasible trials that meet every rule are highlighted, with how each objective "
@@ -413,9 +431,9 @@ def _dialog(results: StudyResults, number: int) -> None:
 
 
 def _compare(results: StudyResults, number: int) -> None:
-    """Make trial ``number`` the reference of the trade-off, and open the Overview to show it."""
+    """Make trial ``number`` the reference of the trade-off, and open its tab to show it."""
     st.session_state[f"trade-reference-{results.id}"] = number
-    st.session_state[VIEW] = TABS[0]
+    st.session_state[VIEW] = "Trade-offs"
 
 
 def _trials(results: StudyResults) -> None:
@@ -479,7 +497,7 @@ def _trial(results: StudyResults, trial: TrialResult, *, closable: bool = False)
         key=f"trial-compare-{trial.number}",
         on_click=_compare,
         args=(results, trial.number),
-        help="Make it the reference of a trade-off, on the Overview",
+        help="Make it the reference of a trade-off, in the Trade-offs tab",
     ):
         st.rerun()  # from a dialog too: the whole page shows the new reference
     objectives = tables.trial_objectives(trial)

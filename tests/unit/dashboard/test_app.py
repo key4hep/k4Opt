@@ -285,17 +285,30 @@ def test_a_trade_off_in_the_url_highlights_the_trials_that_meet_it(
     results = published(tmp_path)
     reference = next(t for t in results.trials if t.outcome == "feasible")
     at = study_page(
-        monkeypatch, tmp_path, results, ref=str(reference.number), rules="0:worsen:1000:%"
+        monkeypatch,
+        tmp_path,
+        results,
+        view="Trade-offs",
+        ref=str(reference.number),
+        rules="0:worsen:1000:%",
     )
     assert not at.exception
-    (expander,) = at.expander
-    assert expander.label == "Trade-offs against a reference trial"
+    assert [chart.key for chart in at.get("plotly_chart")] == ["trade-0"]
     others = results.outcomes["feasible"] - 1
     assert f"**{others} of {others} feasible trials** meet this" in texts(at)
     table = next(f.value for f in at.dataframe if "Reference" in f.value.columns)
     assert table["Trial"].iloc[0] == reference.number and table["Reference"].iloc[0]
     assert at.query_params["rules"] == "0:worsen:1000:%"
-    at = study_page(monkeypatch, tmp_path, results, ref=str(reference.number), rules="1:keep:0:%,x")
+    at = study_page(
+        monkeypatch,
+        tmp_path,
+        results,
+        view="Trade-offs",
+        ref=str(reference.number),
+        rules="1:keep:0:%,x",
+    )
     assert not at.exception and at.query_params["rules"] == "1:keep:0:%"  # the rest dropped
-    at = study_page(monkeypatch, tmp_path, results, ref="999", rules="0:keep:0:%")
+    at = study_page(
+        monkeypatch, tmp_path, results, view="Trade-offs", ref="999", rules="0:keep:0:%"
+    )
     assert not at.exception and "ref" not in at.query_params  # a trial the study lacks: none
