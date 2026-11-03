@@ -16,9 +16,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Graphviz's dot lays out the graph of a study's tasks (k4opt.visualization.pipeline_figure)
+# Graphviz's dot lays out and draws the graph of a study's tasks
+# (k4opt.visualization.pipeline_figure), measuring its text in Liberation Sans, as wide as the
+# Helvetica and Arial a browser draws it in
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends graphviz \
+    && apt-get install -y --no-install-recommends graphviz fonts-liberation2 \
     && rm -rf /var/lib/apt/lists/*
 
 # the packages first, the code last: what changes most often is rebuilt alone

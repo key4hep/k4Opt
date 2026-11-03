@@ -1,5 +1,5 @@
 """What the figures of a task graph share: colors that read on a light and a dark background
-alike, and the text shown on hover.
+alike, the text shown on hover, and the points along an edge that hovering finds.
 
 The figures set no color of text: it is the theme's (Plotly's, or Streamlit's when it draws them),
 so that they read on either background without being told which; fills are translucent washes.
@@ -13,16 +13,13 @@ from collections.abc import Sequence
 from k4opt.visualization.graph import GraphEdge, GraphNode, TaskGraph, status_lines
 
 # the reference palette's muted ink, categorical slots 1 (blue: parameters), 7 (violet: samples),
-# 3 (aqua: evaluations) and 2 (orange: objectives and constraints), and status "critical" (a
-# diagnostic that did not always succeed, also said in words): the steps for the dark surface,
-# which read on the light one as well
+# 3 (aqua: evaluations) and 2 (orange: objectives and constraints): the steps for the dark
+# surface, which read on the light one as well
 MUTED = "#898781"
 PARAMETER = "#3987e5"
 SAMPLE = "#9085e9"
 EVALUATOR = "#199e70"
 MEASURED = "#eb6834"
-FAILING = "#d03b3b"
-EDGE = "rgba(137, 135, 129, 0.75)"
 
 
 def wash(color: str, alpha: float) -> str:
@@ -49,17 +46,6 @@ def edge_text(edges: Sequence[GraphEdge], source: str, target: str) -> str:
         joined = ", ".join(html.escape(label) for label in dict.fromkeys(labels))
         text += f"<br>{'sets' if kind == 'sets' else 'as'} {joined}"
     return text
-
-
-def label(title: str, details: Sequence[str], size: float, *, failing: bool = False) -> str:
-    """A node's label: the title in bold, each detail on a line of its own, smaller and muted; a
-    warning (``⚠ ...``) of a ``failing`` node in the failing color."""
-    small = f"font-size:{max(size * 0.84, 7):.1f}px"
-    lines = [f"<b>{html.escape(title)}</b>"]
-    for detail in details:
-        color = FAILING if failing and detail.startswith("⚠") else MUTED
-        lines.append(f"<span style='{small};color:{color}'>{html.escape(detail)}</span>")
-    return "<br>".join(lines)
 
 
 def bezier(points: Sequence[tuple[float, float]], steps: int = 12) -> list[tuple[float, float]]:

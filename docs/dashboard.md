@@ -90,9 +90,10 @@ docker build -f dashboard/Dockerfile -t k4opt-dashboard .     # from the reposit
 docker run -p 8080:8080 -e K4OPT_DASHBOARD_DATA=https://... k4opt-dashboard
 ```
 
-`python:3.13-slim` (pinned by digest), Graphviz from Debian (its `dot` lays out the graph of a
-study's tasks), the packages of `dashboard/requirements.txt` (every one pinned; Streamlit, Plotly,
-lxml, PyYAML and what they need, no Optuna), k4opt without its optional dependencies, and
+`python:3.13-slim` (pinned by digest), Graphviz from Debian with Liberation Sans (its `dot` lays
+out and draws the graph of a study's tasks, measuring text as wide as a browser's Helvetica or
+Arial), the packages of `dashboard/requirements.txt` (every one pinned; Streamlit, Plotly, lxml,
+PyYAML and what they need, no Optuna), k4opt without its optional dependencies, and
 `dashboard/`. It holds no study: the data is read where it is published,
 so publishing a study needs no new image. Streamlit listens on 8080 and answers
 `/_stcore/health`. It runs as any user of group 0, as OpenShift assigns one (and as 1001
