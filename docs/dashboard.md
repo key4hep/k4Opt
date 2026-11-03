@@ -97,10 +97,11 @@ elsewhere); `HOME` is `/tmp`, where Streamlit keeps its settings.
 `openshift/` holds the deployment, the service and the route, all named `k4opt-dashboard` in the
 project `k4opt`: one replica (each viewer's session lives in its process), 100m/256Mi requested
 and 500m/1Gi at most, readiness and liveness probes on `/_stcore/health` with k4Bench's timings,
-no root, no privilege escalation, no capabilities, and `K4OPT_DASHBOARD_DATA` empty. The route
-serves `https://k4opt-dashboard.app.cern.ch` with TLS ended at the router.
+no root, no privilege escalation, no capabilities, and `K4OPT_DASHBOARD_DATA` naming the
+publication at `https://k4opt-data.web.cern.ch`. The route serves
+`https://k4opt-dashboard.app.cern.ch` with TLS ended at the router.
 
-**What to provision once, by hand.** None of it exists yet.
+**What is provisioned once, by hand.** All of it is in place; it is what a new deployment needs.
 
 1. The OpenShift project `k4opt` at [paas.cern.ch](https://paas.cern.ch), owned by the
    maintainers' e-group.
@@ -127,14 +128,18 @@ serves `https://k4opt-dashboard.app.cern.ch` with TLS ended at the router.
    (`https://api.paas.okd.cern.ch`) and `OC_TOKEN` (the token above), and the repository variable
    `DASHBOARD_DEPLOY` set to `true` once all of this is in place.
 4. Runners that reach CERN's OpenShift API: the deploy job runs on `[self-hosted, fcc-ironic]`,
-   as k4Bench's does. Those runners are registered to key4hep/k4Bench today; they need to be made
-   available to k4Opt too (an organization runner group, or runners registered for it).
+   as k4Bench's does. k4Bench's runners are registered to key4hep/k4Bench, so one more is
+   registered for key4hep/k4Opt on the same machines, supervised as theirs are. The repository
+   is public: fork pull requests of all outside contributors wait for approval before any
+   workflow runs, since one could otherwise run on these runners.
 5. After the first image is pushed, the package `ghcr.io/key4hep/k4opt-dashboard` made public in
    the organization's package settings, so OpenShift pulls it without credentials (or an image
    pull secret in the project).
-6. A data site, once there are studies to show: for instance an EOS directory served by a WebEOS
-   site (a `UserProvidedDirectory` with anonymous access, as k4Bench's data is served), named in
-   `K4OPT_DASHBOARD_DATA` in `openshift/deployment.yaml`.
+6. The data site: an EOS directory served by the WebEOS site `https://k4opt-data.web.cern.ch`
+   (a `UserProvidedDirectory`, as k4Bench's data is served), named in `K4OPT_DASHBOARD_DATA` in
+   `openshift/deployment.yaml`. It needs anonymous access: a site behind CERN SSO answers with a
+   login page, which the dashboard refuses. Studies are published straight into the directory
+   (`k4opt publish DIR --output <the EOS directory>`); that needs no deployment.
 
 **Deploying.** `.github/workflows/deploy-dashboard.yml` runs on every push to `main` that changes
 `dashboard/`, `k4opt/`, `pyproject.toml`, `openshift/` or itself, and on demand
