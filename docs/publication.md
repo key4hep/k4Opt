@@ -59,7 +59,8 @@ Publish into a staging directory first if a study may hold what should not be pu
 what it says, and serve or copy the directory only then. Nothing is published automatically: a
 publication holds only what someone ran `k4opt publish` for.
 
-**The catalog** names each study once, by its id, with what a list of studies shows and the
+**The catalog** names each study once, by its id, with what a list of studies shows and sorts
+by (its problem, the compact file of the detector it starts from, the Key4hep stack) and the
 snapshot it is published at:
 
 ```json
@@ -70,6 +71,8 @@ snapshot it is published at:
       "id": "3f9c2a1b-5d0e-4f43-9a52-77c1d2e0b6a4",
       "name": "cld-ecal-granularity-3f9c2a1b",
       "problem": "cld-ecal-granularity",
+      "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
+      "key4hep": "nightly 2026-10-20",
       "created": "2026-10-30T12:00:00+00:00",
       "published": "2026-11-03T10:00:00+00:00",
       "trials": 30,

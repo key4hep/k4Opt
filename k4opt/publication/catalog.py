@@ -7,9 +7,10 @@ A publication is a directory, served as static files or copied anywhere::
 
 A snapshot is the JSON form of a study (:meth:`~k4opt.optimization.StudyResults.to_json`), named
 by its content, so a name stands for one content forever. The catalog has an entry for each study,
-by the study's own id, with what a list of studies shows (its name, when it was created and
-published, how many trials ended how, how many parameters, objectives and constraints) and the
-snapshot it is published at: its path, SHA-256 and size. Reading one is strict: every entry must
+by the study's own id, with what a list of studies shows and sorts by (its name, its problem, the
+detector it starts from and the Key4hep stack, when it was created and published, how many
+trials ended how, how many parameters, objectives and constraints) and the snapshot it is
+published at: its path, SHA-256 and size. Reading one is strict: every entry must
 be well formed, its path must be the one its id and SHA-256 give (so it names no other file and
 no URL), and a malformed entry refuses the whole catalog, so that no study goes missing
 unnoticed.
@@ -42,6 +43,8 @@ _ENTRY = (
     "id",
     "name",
     "problem",
+    "geometry",
+    "key4hep",
     "created",
     "published",
     "trials",
@@ -81,15 +84,19 @@ class CatalogEntry:
     """A study of the catalog, as its latest published snapshot holds it.
 
     ``id``, ``name`` and ``created`` are the study's; ``problem`` the name of its problem (``None``
-    if it has none); ``published`` when this snapshot was published (UTC, ISO 8601). ``trials``
-    is how many trials the study had, ``outcomes`` how many ended how, every outcome a key: a
-    ``running`` trial was running when it was published. ``parameters``, ``objectives`` and
-    ``constraints`` count those of its problem.
+    if it has none), ``geometry`` the compact file it starts from (relative to the k4geo tree,
+    ``FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml``) and ``key4hep`` the Key4hep stack it names
+    (``nightly 2026-10-20``); ``published`` when this snapshot was published (UTC, ISO 8601).
+    ``trials`` is how many trials the study had, ``outcomes`` how many ended how, every outcome a
+    key: a ``running`` trial was running when it was published. ``parameters``, ``objectives``
+    and ``constraints`` count those of its problem.
     """
 
     id: str
     name: str
     problem: str | None
+    geometry: str
+    key4hep: str
     created: str
     published: str
     trials: int
@@ -115,6 +122,8 @@ class CatalogEntry:
             id=results.id,
             name=results.name,
             problem=spec.name,
+            geometry=spec.geometry,
+            key4hep=f"{spec.environment.key4hep.channel} {spec.environment.key4hep.version}",
             created=results.created,
             published=published,
             trials=len(results.trials),
@@ -141,6 +150,8 @@ class CatalogEntry:
             "id": self.id,
             "name": self.name,
             "problem": self.problem,
+            "geometry": self.geometry,
+            "key4hep": self.key4hep,
             "created": self.created,
             "published": self.published,
             "trials": self.trials,
@@ -181,7 +192,7 @@ class CatalogEntry:
                 f"is {snapshot['path']!r}, not {snapshot_path(study, sha256)!r}, the path its id "
                 "and SHA-256 give",
             )
-        for key in ("name", "created", "published"):
+        for key in ("name", "geometry", "key4hep", "created", "published"):
             _text(entry[key], f"{where}: {key}")
         if entry["problem"] is not None:
             _text(entry["problem"], f"{where}: problem")
@@ -189,6 +200,8 @@ class CatalogEntry:
             id=study,
             name=entry["name"],
             problem=entry["problem"],
+            geometry=entry["geometry"],
+            key4hep=entry["key4hep"],
             created=entry["created"],
             published=entry["published"],
             outcomes=tally,

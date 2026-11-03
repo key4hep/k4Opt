@@ -26,7 +26,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,46 +37,59 @@ from k4opt.optimization import StudyResults
 from k4opt.problem import ProblemSpec
 from k4opt.visualization import _draw
 from k4opt.visualization.errors import VisualizationError
-from k4opt.visualization.graph import GraphEdge, GraphNode, TaskGraph, status_lines, task_graph
+from k4opt.visualization.graph import (
+    COLLAPSED,
+    GraphEdge,
+    GraphNode,
+    TaskGraph,
+    collapsed,
+    status_lines,
+    task_graph,
+)
 
 _MEASURED = ("objective", "constraint")
-# the reference palette's categorical slots 1 (blue: parameters), 7 (violet: samples), 3 (aqua:
-# evaluations) and 2 (orange: objectives and constraints), its inks and hairlines, and status
-# "critical" (a diagnostic that did not always succeed, also said in words), light and dark steps
+# as modern node editors draw one: white cards on the page's own ground, each framed by a
+# soft neutral hairline, a small dot before its title in its kind's color its only color (blue
+# parameters, violet samples and stages, teal evaluations, orange objectives and constraints,
+# slate geometry), its details in a quiet gray, an objective's direction in green (up, to
+# maximize) or red (down, to minimize); each sample a slightly darker gray panel, quiet gray
+# edges. A diagnostic that did not always succeed is framed in ``failing`` (and says so in
+# words). A light color stands for one dark color, so that a drawing in the light ones can be
+# told to take the dark ones (:func:`_themed`).
 _COLORS = {
     False: {
-        "surface": "#fcfcfb",
-        "ink": "#0b0b0b",
-        "secondary": "#52514e",
-        "muted": "#898781",
-        "border": "#c3c2b7",
-        "parameter": "#2a78d6",
-        "parameter-wash": "#e6effa",
-        "sample": "#6250d6",
-        "sample-wash": "#f1effb",
-        "stage-wash": "#e4e0f8",
-        "evaluator": "#1baf7a",
-        "evaluator-wash": "#ddf3ea",
-        "measured": "#eb6834",
-        "measured-wash": "#fce8df",
-        "failing": "#d03b3b",
+        "surface": "#ffffff",
+        "ink": "#0f172a",
+        "secondary": "#64748b",
+        "muted": "#b8c2cf",
+        "border": "#dfe4ec",
+        "failing": "#e11d48",
+        "sample-wash": "#ebeff5",
+        "sample-frame": "#dde3ec",
+        "parameter-accent": "#3b82f6",
+        "sample-accent": "#8b5cf6",
+        "evaluator-accent": "#14b8a6",
+        "measured-accent": "#f97316",
+        "muted-accent": "#94a3b8",
+        "up": "#16a34a",
+        "down": "#dc2626",
     },
     True: {
-        "surface": "#1a1a19",
-        "ink": "#f0efec",
-        "secondary": "#c3c2b7",
-        "muted": "#898781",
-        "border": "#52514e",
-        "parameter": "#3987e5",
-        "parameter-wash": "#1b2a3d",
-        "sample": "#9085e9",
-        "sample-wash": "#211f2c",
-        "stage-wash": "#2b2840",
-        "evaluator": "#199e70",
-        "evaluator-wash": "#16302a",
-        "measured": "#d95926",
-        "measured-wash": "#3a2219",
-        "failing": "#d03b3b",
+        "surface": "#161b22",
+        "ink": "#e6edf3",
+        "secondary": "#8b949e",
+        "muted": "#3d4652",
+        "border": "#2a313c",
+        "failing": "#f87171",
+        "sample-wash": "#11161d",
+        "sample-frame": "#222a35",
+        "parameter-accent": "#58a6ff",
+        "sample-accent": "#a78bfa",
+        "evaluator-accent": "#2dd4bf",
+        "measured-accent": "#fb923c",
+        "muted-accent": "#6e7781",
+        "up": "#3fb950",
+        "down": "#f85149",
     },
 }
 _FONT = "Helvetica,Arial,sans-serif"  # Graphviz measures text in Helvetica's widths
@@ -90,12 +103,15 @@ def pipeline_graph(
     stack: bool = True,
     expanded: Collection[str] = (),
     dark: bool = False,
+    folded: Collection[str] = (),
 ) -> str:
     """The tasks of a candidate of ``source`` as Graphviz DOT text; of a study, with the median
     time of each stage and how often each diagnostic did not succeed. Samples alike are stacked
     unless ``stack`` is false or the stack's key is in ``expanded``. ``dark`` takes the colors
-    stepped for a dark background; the graph's own background is transparent."""
-    return _dot(task_graph(source, stack=stack, expanded=expanded), _COLORS[dark])
+    stepped for a dark background; the graph's own background is transparent. The boxes of the
+    samples (or stacks) in ``folded``, by key, are each one node (:func:`collapsed`)."""
+    graph = collapsed(task_graph(source, stack=stack, expanded=expanded), folded)
+    return _dot(graph, _COLORS[dark])
 
 
 def _ids(graph: TaskGraph) -> dict[str, str]:
@@ -115,12 +131,13 @@ def _dot(graph: TaskGraph, colors: Mapping[str, str]) -> str:
     lines = [
         "digraph pipeline {",
         f'  graph [rankdir=LR, newrank=true, bgcolor="transparent", fontname="{_FONT}", '
-        f'fontsize=11, fontcolor="{colors["ink"]}", nodesep=0.22, ranksep=0.42, pad=0.1]',
+        f'fontsize=12, fontcolor="{colors["ink"]}", nodesep=0.28, ranksep=0.4, pad=0.15, '
+        f"splines=true]",
         f'  node [shape=box, style="rounded,filled", fillcolor="{colors["surface"]}", '
-        f'color="{colors["border"]}", fontname="{_FONT}", fontsize=11, '
-        f'fontcolor="{colors["ink"]}", margin="0.2,0.07"]',
-        f'  edge [color="{colors["muted"]}", arrowsize=0.6, fontname="{_FONT}", fontsize=9, '
-        f'fontcolor="{colors["secondary"]}"]',
+        f'color="{colors["border"]}", fontname="{_FONT}", fontsize=12, penwidth=1.3, '
+        f'fontcolor="{colors["ink"]}", margin="0.18,0.08"]',
+        f'  edge [color="{colors["muted"]}", penwidth=1.2, arrowhead=normal, arrowsize=0.6, '
+        f'fontname="{_FONT}", fontsize=10, fontcolor="{colors["secondary"]}"]',
     ]
     lines += [
         "  " + _node(node, ids, colors, graph.recorded) for node in graph.nodes if not _boxed(node)
@@ -130,11 +147,13 @@ def _dot(graph: TaskGraph, colors: Mapping[str, str]) -> str:
             f"  subgraph {ids[key]} {{",
             "    "
             + _attributes(
-                label=_label(box.title, box.lines, colors),
+                label=_label(box.title, box.lines, colors, dot=colors["sample-accent"], left=True),
                 style="rounded,filled" + (",bold" if box.is_stack else ""),
                 fillcolor=colors["sample-wash"],
-                color=colors["sample"],
+                color=colors["sample-frame"],
                 labeljust="l",
+                margin="14",
+                penwidth="1",
                 separator="; ",
             )
             + ";",
@@ -156,9 +175,9 @@ def _dot(graph: TaskGraph, colors: Mapping[str, str]) -> str:
             continue
         drawn.add(pair)
         if edge.kind == "sets":
-            style = " [" + _attributes(style="dashed", color=colors["parameter"]) + "]"
+            style = " [" + _attributes(style="dashed") + "]"
         elif edge.kind == "measures":
-            style = " [" + _attributes(color=colors["measured"]) + "]"
+            style = ""
         elif edge.label is not None:
             style = f" [label=<{html.escape(edge.label)}>]"
         else:
@@ -181,18 +200,19 @@ def _hue(node: GraphNode) -> str:
 def _node(node: GraphNode, ids: Mapping[str, str], colors: Mapping[str, str], recorded: int) -> str:
     """One node: its title and details, and what a study says of it."""
     details = [*node.details, *status_lines(node, recorded)]
-    hue = _hue(node)
-    wash = {"sample": "stage-wash"}.get(hue, f"{hue}-wash")
     attributes: dict[str, str | _Html] = {
         "label": _label(
-            node.title, details, colors, muted=not node.required, failing=bool(node.failed)
+            node.title,
+            details,
+            colors,
+            dot=colors[f"{_hue(node)}-accent"],
+            failing=bool(node.failed),
         ),
         "tooltip": "\n".join(f"{name}: {value}" for name, value in node.facts),
-        "color": colors[hue],
-        "fillcolor": colors.get(wash, colors["surface"]),
+        "color": colors["border"],
+        "fillcolor": colors["surface"],
+        "penwidth": "1",
     }
-    if node.kind in _MEASURED:
-        attributes["penwidth"] = "1.6"
     if node.given:
         attributes["shape"] = "note"
         attributes["style"] = "filled"
@@ -211,19 +231,32 @@ class _Html(str):
 
 def _label(
     title: str,
-    details: Iterable[str],
+    details: Sequence[str],
     colors: Mapping[str, str],
     *,
-    muted: bool = False,
+    dot: str | None = None,
     failing: bool = False,
+    left: bool = False,
 ) -> _Html:
-    """An HTML-like label: the title in bold, each detail on a line of its own, smaller; a
-    warning (``⚠ ...``) of a ``failing`` node in the failing color."""
-    ink = colors["secondary"] if muted else colors["ink"]
-    parts = [f'<font color="{ink}"><b>{html.escape(title)}</b></font>']
-    for detail in details:
-        color = colors["failing"] if failing and detail.startswith("⚠") else colors["secondary"]
-        parts.append(f'<font point-size="9" color="{color}">{html.escape(detail)}</font>')
+    """An HTML-like label: the title in bold, after a small ``dot`` of that color if given, each
+    detail on a line of its own, smaller and quieter; a direction in green (``▲ maximize``) or
+    red (``▼ minimize``), a warning (``⚠ ...``) of a ``failing`` node in the failing color; every
+    line flush ``left`` if asked, else centered."""
+    head = "" if dot is None else f'<font color="{dot}" point-size="10">●</font>  '
+    parts = [f'{head}<font color="{colors["ink"]}"><b>{html.escape(title)}</b></font>']
+    if details:  # a little air between the title and what is said under it
+        parts.append('<font point-size="4"> </font>')
+    for line in details:
+        color = colors["secondary"]
+        if line.startswith("▲"):
+            color = colors["up"]
+        elif line.startswith("▼"):
+            color = colors["down"]
+        elif failing and line.startswith("⚠"):
+            color = colors["failing"]
+        parts.append(f'<font point-size="10" color="{color}">{html.escape(line)}</font>')
+    if left:
+        return _Html("<" + "".join(f'{part}<br align="left"/>' for part in parts) + ">")
     return _Html("<" + "<br/>".join(parts) + ">")
 
 
@@ -300,7 +333,7 @@ _LEGEND = (
     ("evaluator", "evaluation"),
     ("measured", "objective or constraint"),
 )
-_PAGE = 1200  # pixels wide the figure is sized for: as wide as the dashboard's page
+_PAGE = 980  # pixels wide the figure is sized for: as wide as the dashboard's page
 _DENSEST = 1.6  # pixels per point at most, so that a small graph is not drawn huge
 _HEIGHTS = (220, 720)  # pixels the graph is drawn in, at least and at most, before zooming
 _STEP = 12.0  # points between the transparent markers that make a task clickable
@@ -312,16 +345,19 @@ def pipeline_figure(
     stack: bool = True,
     expanded: Collection[str] = (),
     selected: str | None = None,
+    folded: Collection[str] = (),
+    dark: bool | None = None,
 ) -> go.Figure:
     """The tasks of a candidate of ``source`` laid out and drawn by Graphviz, shown with Plotly,
     samples alike stacked as :func:`pipeline_graph` says, the node ``selected`` (by id) marked; of
     a study, with what :func:`pipeline_graph` shows of it. Graphviz's drawing is one image in the
-    plane of the figure, so that its text zooms with its boxes; it takes the dark colors where
-    the viewer prefers a dark scheme. Raises :class:`VisualizationError` if Graphviz's ``dot``
-    cannot be run."""
-    graph = task_graph(source, stack=stack, expanded=expanded)
+    plane of the figure, so that its text zooms with its boxes; it takes the dark colors if
+    ``dark``, the light ones if not, and, unless told, where the viewer prefers a dark scheme.
+    The boxes of the samples in ``folded`` are each one node (:func:`collapsed`). Raises
+    :class:`VisualizationError` if Graphviz's ``dot`` cannot be run."""
+    graph = collapsed(task_graph(source, stack=stack, expanded=expanded), folded)
     ids = _ids(graph)
-    layout = _layout(_dot(graph, _COLORS[False]))
+    layout = _layout(_dot(graph, _COLORS[bool(dark)]))  # in the colors it is told, if told
     extent = layout.extent
     width, height = extent.x1 - extent.x0, extent.y1 - extent.y0
     scale = min(_PAGE / width, _DENSEST)  # pixels per point, as first drawn
@@ -343,7 +379,9 @@ def pipeline_figure(
     for dot_id, box in layout.nodes.items():
         node = by_dot[dot_id]
         hover = _draw.hover(node, graph)
-        if node.samples:
+        if node.id.startswith(COLLAPSED):
+            hover += "<br>click to draw its tasks"
+        elif node.samples:
             hover += "<br>click to draw each sample"
         clickable += [(x, y, node.id, hover) for x, y in _grid(box)]
     shapes = []
@@ -421,7 +459,9 @@ def pipeline_figure(
     low, high = _HEIGHTS
     figure.add_layout_image(
         source="data:image/svg+xml;base64,"
-        + base64.b64encode(_themed(layout.svg).encode()).decode("ascii"),
+        + base64.b64encode(
+            (layout.svg if dark is not None else _themed(layout.svg)).encode()
+        ).decode("ascii"),
         xref="x",
         yref="y",
         x=extent.x0,
@@ -476,14 +516,17 @@ def _grid(box: _Box) -> list[tuple[float, float]]:
 
 def _themed(svg: str) -> str:
     """``svg``, drawn in the light colors, with a style that takes the dark ones where the viewer
-    prefers a dark scheme: an image keeps its colors whatever the page around it does, so it
-    follows the preference itself."""
+    prefers a dark scheme, its gradients too: an image keeps its colors whatever the page around
+    it does, so it follows the preference itself."""
     light, dark = _COLORS[False], _COLORS[True]
+    changed = [key for key in light if light[key] != dark[key]]
     rules = " ".join(
         f'[{attribute}="{light[key]}"] {{ {attribute}: {dark[key]} }}'
-        for key in light
-        if light[key] != dark[key]
+        for key in changed
         for attribute in ("fill", "stroke")
+    ) + " ".join(  # a gradient's stops are colored by their style
+        f'[style*="stop-color:{light[key]}"] {{ stop-color: {dark[key]} !important }}'
+        for key in changed
     )
     style = f"<style>@media (prefers-color-scheme: dark) {{ {rules} }}</style>"
     opened = svg.index(">", svg.index("<svg")) + 1

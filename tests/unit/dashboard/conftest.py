@@ -21,8 +21,11 @@ def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def fresh_caches() -> None:
-    """Nothing a test read is kept for the next: Streamlit's caches are the process's."""
-    sys.modules.pop("data", None)
+    """Nothing a test read is kept for the next: Streamlit's caches are the process's, and so are
+    the dashboard's modules, which Streamlit imports once (``data`` keeps the studies read)."""
+    for name, module in list(sys.modules.items()):
+        if Path(getattr(module, "__file__", None) or "/").is_relative_to(DASHBOARD):
+            del sys.modules[name]
     try:
         import streamlit as st
     except ModuleNotFoundError:  # the tables need no Streamlit

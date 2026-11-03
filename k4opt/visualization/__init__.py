@@ -31,7 +31,15 @@ Typical use::
 
 from k4opt.visualization.analysis import edf_figure, parallel_figure, rank_figure, slice_figure
 from k4opt.visualization.errors import VisualizationError
-from k4opt.visualization.graph import GraphEdge, GraphNode, SampleBox, TaskGraph, task_graph
+from k4opt.visualization.graph import (
+    COLLAPSED,
+    GraphEdge,
+    GraphNode,
+    SampleBox,
+    TaskGraph,
+    collapsed,
+    task_graph,
+)
 from k4opt.visualization.pipeline import pipeline_figure, pipeline_graph
 from k4opt.visualization.trials import (
     TRIAL,
@@ -43,6 +51,7 @@ from k4opt.visualization.trials import (
 )
 
 __all__ = [
+    "COLLAPSED",
     "TRIAL",
     "GraphEdge",
     "GraphNode",
@@ -50,6 +59,7 @@ __all__ = [
     "TaskGraph",
     "VisualizationError",
     "axis_choices",
+    "collapsed",
     "color_choices",
     "default_axes",
     "edf_figure",

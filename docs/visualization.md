@@ -120,6 +120,7 @@ from k4opt.visualization import pipeline_figure, pipeline_graph, task_graph
 
 pipeline_figure(study).show()  # laid out and drawn by Graphviz, shown with Plotly
 pipeline_figure(study, stack=False)  # every sample in a box of its own
+pipeline_figure(study, folded={"gamma_10gev"})  # that sample's box as one node
 pipeline_graph(study)  # the same graph as Graphviz DOT text
 task_graph(study).node("gamma_10gev/simulation").median_seconds
 ```
@@ -136,13 +137,19 @@ with its boxes and never runs over them, and the figure fills the width it is gi
 
 | Drawn as | What it is |
 | --- | --- |
-| blue box | a parameter, with its domain; a dashed blue edge to each task it sets something of, and the task names what (`ECal_cell_size ← ecal_cell_size`) |
-| gray box | the geometry, made once per candidate from the compact file |
-| violet box around violet tasks | a sample and its stages: how each is made (`ddsim · 1000 events`), what tells the samples apart (`energy: 10 GeV`) |
-| aqua box | an evaluation: of a sample inside its box, of the candidate or combining samples outside; an item of a role reaches it by an edge labeled with the role |
-| orange box | an objective (▲ maximize, ▼ minimize) or a constraint, reached from the evaluation that measures it |
-| dotted border | a diagnostic: recorded, but no objective, constraint or `required: true` needs it |
-| red border, ⚠ line | a diagnostic that did not succeed in some trials, and in how many |
+| white card, blue dot | a parameter, with its domain; a dashed edge to each task it sets something of, and the task names what (`ECal_cell_size ← ecal_cell_size`) |
+| white card, slate dot | the geometry, made once per candidate from the compact file |
+| gray panel, violet dots | a sample and its stages: how each is made (`ddsim · 1000 events`), what tells the samples apart (`energy: 10 GeV`) |
+| white card, teal dot | an evaluation: of a sample inside its panel, of the candidate or combining samples outside; an item of a role reaches it by an edge labeled with the role |
+| white card, orange dot | an objective (in green ▲ maximize, in red ▼ minimize) or a constraint, reached from the evaluation that measures it |
+| dotted frame | a diagnostic: recorded, but no objective, constraint or `required: true` needs it |
+| red frame, ⚠ line | a diagnostic that did not succeed in some trials, and in how many |
+
+**Folding** keeps a large graph readable: `folded` names samples (or stacks, by key) whose box is
+drawn as one node, listing its tasks in order (`generation → simulation → calo.photon`) with each
+trial's time summed over its stages and the trials a diagnostic in it did not succeed in, joined
+to whatever its tasks were joined to outside it; `collapsed(task_graph(study), keys)` gives that
+graph. The dashboard folds every sample at first when a graph has more than 30 tasks.
 
 An edge is drawn only where no other path implies it: every evaluation of a sample reads the
 geometry, but through its simulation, so the geometry's edge goes to the simulation alone. Of a

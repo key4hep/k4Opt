@@ -20,8 +20,10 @@ from k4opt.frozen import FrozenMap
 from k4opt.optimization import StudyResults, TrialResult
 from k4opt.problem import ProblemSpec, parse_problem
 from k4opt.visualization import (
+    COLLAPSED,
     TaskGraph,
     VisualizationError,
+    collapsed,
     pipeline_figure,
     pipeline_graph,
     task_graph,
@@ -161,7 +163,7 @@ def test_a_study_holds_the_times_of_each_stage_and_the_trials_a_diagnostic_faile
     assert graph.node("readout").failed == (0, 2) and graph.recorded == 3
     dot = pipeline_graph(study(without_constraint(), trials))
     assert "median 1.5 min · 3 trials" in dot
-    assert '<font point-size="9" color="#d03b3b">⚠ did not succeed in 2 of 3 trials</font>' in dot
+    assert '<font point-size="10" color="#e11d48">⚠ did not succeed in 2 of 3 trials</font>' in dot
     assert "did not succeed" not in pipeline_graph(without_constraint())
 
 
@@ -183,8 +185,9 @@ def test_dot_shows_what_a_problem_names_as_it_is_but_a_backslash_in_a_tooltip() 
 def test_dot_takes_the_colors_stepped_for_a_dark_background() -> None:
     spec = parse_problem(example())
     light, dark = pipeline_graph(spec), pipeline_graph(spec, dark=True)
-    assert 'fillcolor="#fcfcfb"' in light and 'fillcolor="#1a1a19"' in dark
-    assert 'bgcolor="transparent"' in light and 'bgcolor="transparent"' in dark
+    assert 'fillcolor="#ffffff"' in light and 'fillcolor="#161b22"' in dark
+    assert 'fillcolor="#ebeff5"' in light and 'fillcolor="#11161d"' in dark  # a sample's panel
+    assert 'bgcolor="transparent"' in light and 'bgcolor="transparent"' in dark  # the page's
 
 
 @GRAPHVIZ
@@ -210,8 +213,8 @@ def test_the_drawing_covers_the_layout_and_takes_the_dark_colors_where_preferred
     figure = pipeline_figure(parse_problem(example()))
     (image,) = figure.layout.images
     svg = base64.b64decode(image.source.split(",", 1)[1]).decode()
-    assert '[fill="#fcfcfb"] { fill: #1a1a19 }' in svg and "prefers-color-scheme: dark" in svg
-    assert '[stroke="#2a78d6"] { stroke: #3987e5 }' in svg
+    assert '[fill="#ffffff"] { fill: #161b22 }' in svg and "prefers-color-scheme: dark" in svg
+    assert '[stroke="#dfe4ec"] { stroke: #2a313c }' in svg
     (x0, x1), (y0, y1) = figure.layout.xaxis.range, figure.layout.yaxis.range
     assert (image.x, image.x + image.sizex, image.y - image.sizey, image.y) == pytest.approx(
         (x0, x1, y0, y1)
@@ -283,7 +286,43 @@ def test_each_kind_has_its_own_color() -> None:
         for text in dot.splitlines()
         if f'tooltip="task: {id}' in text or f"<b>{id}</b>" in text
     )
-    assert 'color="#2a78d6"' in line("ecal_cell_size")  # parameter: blue
-    assert 'color="#6250d6"' in line("gamma_50gev/simulation")  # a sample's stage: violet
-    assert 'color="#1baf7a"' in line("pi0_rejection")  # evaluation: aqua
-    assert 'color="#eb6834"' in line("background_rejection")  # objective: orange
+    # white cards alike, each kind told by the dot before its title
+    marker = '<font color="{}" point-size="10">●</font>'.format
+    assert 'color="#dfe4ec", fillcolor="#ffffff"' in line("background_rejection")
+    assert marker("#3b82f6") in line("ecal_cell_size")  # parameter: blue
+    assert marker("#8b5cf6") in line("gamma_50gev/simulation")  # a sample's stage: violet
+    assert marker("#14b8a6") in line("pi0_rejection")  # evaluation: teal
+    assert marker("#f97316") in line("background_rejection")  # objective: orange
+    # a direction in green, up, or red, down: its text and its arrow alone
+    assert '<font point-size="10" color="#16a34a">▲ maximize</font>' in line("background_rejection")
+    assert '<font point-size="10" color="#dc2626">▼ minimize</font>' in line("ecal_barrel.channels")
+
+
+def test_a_folded_sample_is_one_node_joined_as_its_tasks_were() -> None:
+    spec = parse_problem(example())
+    whole = task_graph(spec)
+    graph = collapsed(whole, {"gamma_50gev"})
+    folded = graph.node(f"{COLLAPSED}gamma_50gev")
+    assert set(graph.samples) == {"pi0_50gev"} and folded.sample is None
+    assert folded.details[0] == "generation → simulation → calo.shower_shape"
+    assert not any(n.sample == "gamma_50gev" for n in graph.nodes)
+    reads = edges(graph, "reads")
+    assert ("geometry", folded.id) in reads and (folded.id, "pi0_rejection") in reads
+    assert reads[(folded.id, "pi0_rejection")] == "signal"  # the role it was read in
+    assert collapsed(whole, ()) is whole
+    every = collapsed(whole, set(whole.samples))
+    assert not every.samples and len(every.nodes) == len(whole.nodes) - 4
+
+
+@GRAPHVIZ
+def test_the_drawing_takes_the_colors_it_is_told() -> None:
+    spec = parse_problem(example())
+
+    def svg(figure: Any) -> str:
+        (image,) = figure.layout.images
+        return base64.b64decode(image.source.split(",", 1)[1]).decode()
+
+    light, dark = svg(pipeline_figure(spec, dark=False)), svg(pipeline_figure(spec, dark=True))
+    # drawn in the colors told, whatever the viewer prefers: no style that changes them
+    assert "<style>" not in light and "<style>" not in dark
+    assert 'stroke="#dfe4ec"' in light and 'stroke="#2a313c"' in dark  # a card's frame
