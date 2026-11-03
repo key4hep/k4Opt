@@ -6,7 +6,9 @@ each result from the trial's ``summary.json``. The optimizer is Optuna's TPE sam
 imported only when a study runs or is read, so the rest of k4opt works without it. A study keeps
 everything it is made with in ``study.json`` and can be resumed with exactly that.
 :func:`load_study` reads a study back, checked and without changing it, for inspection and
-export. See ``docs/optimization.md``.
+export; :func:`trade_offs` asks it which feasible trials give up at most so much of some
+objectives against a reference trial for at least so much of others. See
+``docs/optimization.md``.
 
 Typical use::
 
@@ -24,6 +26,7 @@ Typical use::
 
     study = load_study("runs/cld-ecal-study")  # later, anywhere the directory is
     study.trial(12).assessment.objectives  # each with its value, unit and uncertainty
+    trade_offs(study, 12, [Rule("gamma/calo.photon/simulation/res", "worsen", 0.05)]).matches
 """
 
 from __future__ import annotations
@@ -37,16 +40,21 @@ from k4opt.evaluation import EvaluatorProtocol
 from k4opt.execution import Activity
 from k4opt.optimization._results import OUTCOMES, StudyResults, TrialResult
 from k4opt.optimization._study import STUDY_NAME
+from k4opt.optimization._tradeoffs import RULE_KINDS, Rule, TradeOffs, trade_offs
 from k4opt.optimization.errors import OptimizationError
 
 __all__ = [
     "OUTCOMES",
+    "RULE_KINDS",
     "STUDY_NAME",
     "OptimizationError",
+    "Rule",
     "StudyResults",
+    "TradeOffs",
     "TrialResult",
     "load_study",
     "optimize",
+    "trade_offs",
 ]
 
 

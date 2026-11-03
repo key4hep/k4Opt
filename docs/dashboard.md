@@ -70,7 +70,14 @@ up each have their own message, and *Refresh* in the sidebar reads the catalog a
   Only the open tab runs.
   - **Overview**: [`trials_figure`](visualization.md) with its axes and what colors it, the
     trials on the Pareto front, and [`history_figure`](visualization.md#the-history-of-an-objective-history_figure)
-    for each objective. Clicking a trial in a figure opens it in a dialog.
+    for each objective. Clicking a trial in a figure opens it in a dialog. *Trade-offs against a
+    reference trial* asks of each objective that it improve by at least, worsen by at most (in
+    percent or in its unit) or keep its value against a reference
+    ([`trade_offs`](optimization.md#trade-offs-against-a-reference-trial-trade_offs)), differences
+    within the uncertainties counted as none unless turned off; the trials that meet it are
+    highlighted, the reference ringed, and listed with how each objective changed, and when none
+    does, it says which rule excludes most. *Compare with this trial*, on a trial opened, makes
+    it the reference. The reference and the rules are in the URL (`&ref=12&rules=0:worsen:5:%`).
   - **Trials**: every trial (values, uncertainties, limit margins, times, record ids, messages),
     filtered by outcome; selecting one shows all it recorded: its objectives, candidate, limits
     with their margins, stage times, diagnostics that did not succeed, and its record.

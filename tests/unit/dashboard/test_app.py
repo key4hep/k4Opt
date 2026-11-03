@@ -277,3 +277,25 @@ def test_the_analysis_tab_shows_how_the_parameters_act_on_the_chosen_objective(
         objective="objective:test.trade_off/analysis/b",
     )
     assert not at.exception and at.query_params["objective"].endswith("/b")
+
+
+def test_a_trade_off_in_the_url_highlights_the_trials_that_meet_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = published(tmp_path)
+    reference = next(t for t in results.trials if t.outcome == "feasible")
+    at = study_page(
+        monkeypatch, tmp_path, results, ref=str(reference.number), rules="0:worsen:1000:%"
+    )
+    assert not at.exception
+    (expander,) = at.expander
+    assert expander.label == "Trade-offs against a reference trial"
+    others = results.outcomes["feasible"] - 1
+    assert f"**{others} of {others} feasible trials** meet this" in texts(at)
+    table = next(f.value for f in at.dataframe if "Reference" in f.value.columns)
+    assert table["Trial"].iloc[0] == reference.number and table["Reference"].iloc[0]
+    assert at.query_params["rules"] == "0:worsen:1000:%"
+    at = study_page(monkeypatch, tmp_path, results, ref=str(reference.number), rules="1:keep:0:%,x")
+    assert not at.exception and at.query_params["rules"] == "1:keep:0:%"  # the rest dropped
+    at = study_page(monkeypatch, tmp_path, results, ref="999", rules="0:keep:0:%")
+    assert not at.exception and "ref" not in at.query_params  # a trial the study lacks: none

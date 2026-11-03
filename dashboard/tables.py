@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from k4opt.optimization import StudyResults, TrialResult
+from k4opt.optimization import StudyResults, TradeOffs, TrialResult
 from k4opt.problem import Parameter
 from k4opt.publication import Catalog
 from k4opt.record import Limit, ObjectiveValue
@@ -297,3 +297,31 @@ def trial_diagnostics(trial: TrialResult) -> list[Row]:
         {"Diagnostic": d.get("task"), "Status": d.get("status"), "Message": d.get("message")}
         for d in trial.diagnostics
     ]
+
+
+def trade_offs(results: StudyResults, found: TradeOffs) -> list[Row]:
+    """A row for the reference and each trial that meets the trade-off: its candidate, each
+    objective's value and how it changed against the reference, in percent of the reference's
+    value (``None`` where that is zero)."""
+    shown = units(results)
+    front = set(results.pareto)
+    reference = found.reference
+    assert reference.objectives is not None
+    rows = []
+    for number in (reference.number, *found.matches):
+        trial = results.trial(number)
+        assert trial.objectives is not None
+        row: Row = {
+            "Trial": number,
+            "Reference": number == reference.number,
+            "Pareto": number in front,
+        }
+        for p in results.problem.parameters:
+            row[_heading(p.name, p.unit)] = trial.candidate.get(p.name)
+        for o in results.problem.objectives:
+            row[_heading(o.label, shown.get(o.label))] = trial.objectives[o.label]
+            base = reference.objectives[o.label]
+            change = 0.0 if number == reference.number else found.change[number][o.label]
+            row[f"Δ {o.metric} [%]"] = None if base == 0 else 100 * change / abs(base)
+        rows.append(row)
+    return rows

@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from k4opt.errors import K4OptError
-from k4opt.optimization import StudyResults, TrialResult
+from k4opt.optimization import RULE_KINDS, Rule, StudyResults, TradeOffs, TrialResult, trade_offs
 from k4opt.publication import CatalogEntry, PublicationUnavailableError
 from k4opt.visualization import (
     TRIAL,
@@ -44,6 +44,17 @@ BY_OUTCOME = "outcome"  # the figure's colors unless chosen: each trial by its o
 # the trial a click on a figure opened, and counters bumped after each click on a figure and each
 # closing of a trial, so that the chart or table comes back without a selection
 OPENED, PICKS, ROWS = "trial-opened", "trial-picks", "trial-rows"
+# the URL's parameters of a trade-off: the reference trial, a rule for each objective by its
+# index (``0:worsen:5:%,1:improve:10:u``) and ``noise=0`` to compare values without their
+# uncertainties; and what each kind of rule is called
+REFERENCE, RULES, NOISE = "ref", "rules", "noise"
+ANY = "any"
+KINDS = {
+    ANY: "may do anything",
+    "improve": "must improve by at least",
+    "worsen": "may worsen by at most",
+    "keep": "must not worsen",
+}
 # the color of each outcome's badge; every other outcome is a trial without a result
 BADGES = {"feasible": "green", "infeasible": "orange", "running": "blue"}
 # the task selected, the stacks of samples drawn sample by sample (by key; ALL: every one), the
@@ -174,14 +185,25 @@ def _overview(results: StudyResults) -> None:
         shades = [BY_OUTCOME, *color_choices(results)]
         color = _chosen("Color", shades, COLOR, BY_OUTCOME, format_func=_axis_name)
     dark = st.context.theme.type == "dark"
+    found = _trade_offs(results)
     try:
         shade = None if color == BY_OUTCOME else color
-        figure = trials_figure(results, x, y, color=shade, dark=dark)
+        figure = trials_figure(
+            results,
+            x,
+            y,
+            color=shade,
+            highlight=None if found is None else found.matches,
+            reference=None if found is None else found.reference.number,
+            dark=dark,
+        )
     except K4OptError as exc:
         st.warning(data.plain(exc))
     else:
         figure.update_layout(title=None)  # the page names the study
         _pickable(figure, "trials")
+    if found is not None:
+        _matches(results, found, noisy=st.query_params.get(NOISE) != "0")
     if results.pareto:
         st.markdown(f"**On the Pareto front** ({len(results.pareto)} trials)")
         st.dataframe(tables.trials(results, results.pareto), hide_index=True, height=300)
@@ -200,6 +222,169 @@ def _overview(results: StudyResults) -> None:
     opened = st.session_state.pop(OPENED, None)
     if opened is not None:
         _dialog(results, opened)
+
+
+def _trade_offs(results: StudyResults) -> TradeOffs | None:
+    """The trade-off asked against a reference trial, its controls in an expander, open once a
+    reference is chosen; ``None`` until a reference and a rule are."""
+    valued = [t.number for t in results.trials if t.objectives is not None]
+    held = st.query_params.get(REFERENCE, "")
+    linked = int(held) if held.isdigit() and int(held) in valued else None
+    key = f"trade-reference-{results.id}"  # another study's reference is not this one's
+    state = st.session_state
+    if key not in state:
+        state[key] = linked
+    outcome = {t.number: t.outcome for t in results.trials}
+    with st.expander(
+        "Trade-offs against a reference trial",
+        expanded=state[key] is not None,
+        icon=":material/balance:",
+    ):
+        st.caption(
+            "Ask what each objective must give or may give up against a reference trial: the "
+            "feasible trials that meet every rule are highlighted, with how each objective "
+            "changed. Open a trial to compare with it."
+        )
+        reference = st.selectbox(
+            "Reference trial",
+            valued,
+            format_func=lambda n: (
+                f"trial {n} · {outcome[n]}" + (" · Pareto front" if n in results.pareto else "")
+            ),
+            placeholder="Choose a trial",
+            key=key,
+        )
+        held_rules = _held_rules(st.query_params.get(RULES, ""))
+        rules: list[Rule] = []
+        encoded = []
+        for index, objective in enumerate(results.problem.objectives):
+            kind0, amount0, relative0 = held_rules.get(index, (ANY, 0.0, True))
+            name, how, much, scale = st.columns([3, 3, 1, 1], vertical_alignment="center")
+            arrow = "▼" if objective.direction == "minimize" else "▲"
+            name.markdown(f"{arrow} **{data.plain(objective.metric)}**")
+            name.caption(data.plain(objective.label))
+            kind = how.selectbox(
+                "Rule",
+                list(KINDS),
+                index=list(KINDS).index(kind0),
+                format_func=KINDS.__getitem__,
+                key=f"trade-kind-{results.id}-{index}",
+                label_visibility="collapsed",
+            )
+            amount = much.number_input(
+                "Amount",
+                min_value=0.0,
+                value=amount0,
+                step=1.0,
+                key=f"trade-amount-{results.id}-{index}",
+                label_visibility="collapsed",
+                disabled=kind in (ANY, "keep"),
+            )
+            unit = tables.units(results).get(objective.label) or "in its unit"
+            relative = (
+                scale.selectbox(
+                    "In",
+                    ["%", unit],
+                    index=0 if relative0 else 1,
+                    key=f"trade-scale-{results.id}-{index}",
+                    label_visibility="collapsed",
+                    disabled=kind in (ANY, "keep"),
+                )
+                == "%"
+            )
+            for each in RULE_KINDS:  # the kind chosen, as a rule's kind
+                if each != kind:
+                    continue
+                rules.append(
+                    Rule(objective.label, each, amount / 100 if relative else amount, relative)
+                )
+                encoded.append(f"{index}:{kind}:{amount:g}:{'%' if relative else 'u'}")
+        noise = st.toggle(
+            "Differences within the recorded uncertainties count as none",
+            value=st.query_params.get(NOISE) != "0",
+            key=f"trade-noise-{results.id}",
+            help="A trial improves only beyond the uncertainty of its value and of the "
+            "reference's (added in quadrature), and worsening within it is no worsening.",
+        )
+    _keep_in_url(REFERENCE, None if reference is None else str(reference))
+    _keep_in_url(RULES, ",".join(encoded) or None)
+    _keep_in_url(NOISE, None if noise else "0")
+    if reference is None or not rules:
+        return None
+    try:
+        return trade_offs(results, reference, rules, within_uncertainty=noise)
+    except K4OptError as exc:
+        st.warning(data.plain(exc))
+        return None
+
+
+def _held_rules(text: str) -> dict[int, tuple[str, float, bool]]:
+    """The rules a URL holds, by objective index; whatever does not read as one is left out."""
+    held: dict[int, tuple[str, float, bool]] = {}
+    for part in text.split(","):
+        index, _, rest = part.partition(":")
+        kind, _, rest = rest.partition(":")
+        amount, _, scale = rest.partition(":")
+        try:
+            value = float(amount)
+        except ValueError:
+            continue
+        if index.isdigit() and kind in RULE_KINDS and value >= 0 and scale in ("%", "u"):
+            held[int(index)] = (kind, value, scale == "%")
+    return held
+
+
+def _keep_in_url(key: str, value: str | None) -> None:
+    """``value`` as the URL's parameter ``key``, none if ``None``."""
+    if value is None:
+        if key in st.query_params:
+            del st.query_params[key]
+    elif st.query_params.get(key) != value:
+        st.query_params[key] = value
+
+
+def _matches(results: StudyResults, found: TradeOffs, *, noisy: bool) -> None:
+    """How many trials meet the trade-off, and each with how it changed; why none, if none."""
+    reference = found.reference.number
+    if not found.matches:
+        hardest = ", ".join(
+            f"{data.plain(label.rsplit('/', 1)[-1])} excludes {count}"
+            for label, count in sorted(found.excludes.items(), key=lambda item: -item[1])
+        )
+        noise = " Differences within the uncertainties count as none." if noisy else ""
+        st.warning(
+            f"No feasible trial meets this against trial {reference}, of {found.compared}: "
+            f"{hardest}.{noise}"
+        )
+        return
+    st.markdown(
+        f"**{len(found.matches)} of {found.compared} feasible trials** meet this against "
+        f"trial {reference}; select one to open it."
+    )
+    if noisy:
+        st.caption(
+            "The changes are as measured; the rules compared them less the uncertainty of the two "
+            "values, so a change a little beyond a rule's amount can still meet it."
+        )
+    rows = tables.trade_offs(results, found)
+    state = st.session_state
+    state.setdefault(PICKS, 0)
+    event = st.dataframe(
+        rows,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"trade-table-{state[PICKS]}",
+        column_config={
+            column: st.column_config.NumberColumn(format="%+.1f%%")
+            for column in rows[0]
+            if column.startswith("Δ ")
+        },
+    )
+    picked = event.selection.rows if event is not None else []
+    if picked:
+        state[OPENED], state[PICKS] = rows[picked[0]]["Trial"], state[PICKS] + 1
+        st.rerun()
 
 
 def _pickable(figure: go.Figure, name: str) -> None:
@@ -225,6 +410,12 @@ def _pickable(figure: go.Figure, name: str) -> None:
 @st.dialog("Trial", width="large")
 def _dialog(results: StudyResults, number: int) -> None:
     _trial(results, results.trial(number))
+
+
+def _compare(results: StudyResults, number: int) -> None:
+    """Make trial ``number`` the reference of the trade-off, and open the Overview to show it."""
+    st.session_state[f"trade-reference-{results.id}"] = number
+    st.session_state[VIEW] = TABS[0]
 
 
 def _trials(results: StudyResults) -> None:
@@ -282,6 +473,15 @@ def _trial(results: StudyResults, trial: TrialResult, *, closable: bool = False)
     with close:
         if closable:
             closed = st.button("Close", key="trial-close", width="stretch")
+    if trial.objectives is not None and st.button(
+        "Compare with this trial",
+        icon=":material/balance:",
+        key=f"trial-compare-{trial.number}",
+        on_click=_compare,
+        args=(results, trial.number),
+        help="Make it the reference of a trade-off, on the Overview",
+    ):
+        st.rerun()  # from a dialog too: the whole page shows the new reference
     objectives = tables.trial_objectives(trial)
     if objectives:
         for start in range(0, len(objectives), 4):

@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("optuna")
 
-from k4opt.optimization import load_study
+from k4opt.optimization import Rule, load_study, trade_offs
 from k4opt.publication import Catalog, CatalogEntry, Snapshot
 from tests.support.studies import mixed_study
 
@@ -120,3 +120,22 @@ def test_a_trial_is_shown_with_all_it_recorded(tmp_path: Path) -> None:
     assert [(row["Value"], row["Satisfied"]) for row in tables.trial_limits(failed)] == [
         (None, None)
     ]
+
+
+def test_a_trade_off_lists_the_reference_and_each_match_with_its_changes(tmp_path: Path) -> None:
+    import tables
+
+    results = load_study(mixed_study(tmp_path / "s"))
+    feasible = [t for t in results.trials if t.outcome == "feasible"]
+    reference = feasible[0]
+    found = trade_offs(
+        results, reference.number, [Rule("test.trade_off/analysis/a", "worsen", 10.0)]
+    )
+    rows = tables.trade_offs(results, found)
+    assert [row["Trial"] for row in rows] == [reference.number, *found.matches]
+    assert rows[0]["Reference"] is True and rows[0]["Δ a [%]"] == 0.0
+    for row in rows[1:]:
+        trial = results.trial(row["Trial"])
+        base = reference.objectives["test.trade_off/analysis/a"]
+        change = trial.objectives["test.trade_off/analysis/a"] - base
+        assert row["Δ a [%]"] == pytest.approx(100 * change / abs(base))
