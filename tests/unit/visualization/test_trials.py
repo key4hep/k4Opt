@@ -19,7 +19,13 @@ from k4opt.optimization import StudyResults, TrialResult
 from k4opt.optimization._results import pareto_front
 from k4opt.problem import parse_problem
 from k4opt.record import Assessment, Limit, ObjectiveValue
-from k4opt.visualization import VisualizationError, axis_choices, trials_figure
+from k4opt.visualization import (
+    TRIAL,
+    VisualizationError,
+    axis_choices,
+    color_choices,
+    trials_figure,
+)
 from tests.unit.optimization.conftest import RADIUS, problem_document
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -265,3 +271,38 @@ def without_template(figure: str) -> dict[str, Any]:
     data: dict[str, Any] = json.loads(figure)
     data["layout"].pop("template", None)
     return data
+
+
+def test_the_feasible_trials_are_shaded_by_a_value_and_the_front_is_a_diamond() -> None:
+    study = study_of(
+        ("minimize", "minimize"),
+        [("feasible", [1, 9]), ("feasible", [9, 1]), ("feasible", [9, 9]), ("infeasible", [0, 0])],
+        constraint=10,
+    )
+    assert color_choices(study) == (
+        TRIAL,
+        "objective:test.trade_off/analysis/m0",
+        "objective:test.trade_off/analysis/m1",
+        "parameter:radius",
+    )
+    plain, shaded = trials_figure(study), trials_figure(study, color="parameter:radius")
+    assert plain.layout.coloraxis.colorscale is None
+    front, feasible = traces(shaded)["on the Pareto front"], traces(shaded)["feasible"]
+    assert front.marker.symbol == "diamond" and front.marker.coloraxis == "coloraxis"
+    assert list(front.marker.color) == [100.0, 101.0] and list(feasible.marker.color) == [102.0]
+    infeasible = traces(shaded)["infeasible (a limit violated)"]
+    assert infeasible.marker.coloraxis is None  # its own color: it is not to be compared
+    assert shaded.layout.coloraxis.colorbar.title.text == RADIUS  # its title, no source line
+    assert traces(shaded)["Pareto front"].line.color == "#898781"  # the shade is the points'
+    by_number = trials_figure(study, color=TRIAL, dark=True)
+    assert list(traces(by_number)["feasible"].marker.color) == [2]
+    assert by_number.layout.coloraxis.colorscale[0][1] == "#184f95"  # near the dark surface
+
+
+def test_a_categorical_parameter_or_an_unknown_value_shades_nothing() -> None:
+    parameter = {"type": "categorical", "choices": [100, 200]}
+    study = study_of(("minimize",), [("feasible", [1.0]), ("feasible", [2.0])], parameter=parameter)
+    assert color_choices(study) == (TRIAL, "objective:test.trade_off/analysis/m0")
+    for key in ("parameter:radius", "objective:nothing"):
+        with pytest.raises(VisualizationError, match="cannot be colored by"):
+            trials_figure(study, color=key)

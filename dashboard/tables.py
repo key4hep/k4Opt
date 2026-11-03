@@ -32,6 +32,7 @@ def studies(catalog: Catalog) -> list[Row]:
             "Created": entry.created,
             "Published": entry.published,
             "Trials": entry.trials,
+            "Feasible share": entry.outcomes["feasible"] / entry.trials if entry.trials else None,
             "Feasible": entry.outcomes["feasible"],
             "Infeasible": entry.outcomes["infeasible"],
             "Without a result": sum(entry.outcomes[o] for o in WITHOUT_RESULT),
@@ -229,3 +230,70 @@ def task_trials(results: StudyResults, node: GraphNode) -> list[Row]:
             row["Message"] = None if ended is None else ended.get("message")
         rows.append(row)
     return rows if any(len(row) > 2 for row in rows) else []
+
+
+def trial_facts(results: StudyResults, trial: TrialResult) -> list[Row]:
+    """How ``trial`` ended and where its record is, a row per fact."""
+    rows: list[tuple[str, object]] = [
+        ("Outcome", trial.outcome),
+        ("On the Pareto front", trial.number in results.pareto),
+        ("Time [s]", None if trial.elapsed_seconds is None else round(trial.elapsed_seconds, 1)),
+        ("Finished by a resume", trial.recovered),
+        ("Record", trial.record),
+        ("Record SHA-256", trial.sha256),
+        ("Message", trial.message),
+    ]
+    return [{"": name, "Value": value} for name, value in rows]
+
+
+def trial_candidate(results: StudyResults, trial: TrialResult) -> list[Row]:
+    """Each parameter's value in ``trial``, ``None`` for one it was not proposed (yet)."""
+    return [
+        {"Parameter": p.name, "Value": trial.candidate.get(p.name), "Unit": p.unit}
+        for p in results.problem.parameters
+    ]
+
+
+def trial_objectives(trial: TrialResult) -> list[Row]:
+    """Each objective ``trial`` measured, with its uncertainty and unit; none without a record."""
+    assessment = trial.assessment
+    return [
+        {
+            "Objective": o.label,
+            "Direction": o.direction,
+            "Value": o.value,
+            "±": o.uncertainty,
+            "Unit": o.unit,
+        }
+        for o in (() if assessment is None else assessment.objectives or ())
+    ]
+
+
+def trial_limits(trial: TrialResult) -> list[Row]:
+    """Each limit of ``trial``: the value, the bound, its margin (zero or below when satisfied)."""
+    assessment = trial.assessment
+    return [
+        {
+            "Constraint": limit.label,
+            "Bound": limit.bound,
+            "Limit": limit.limit,
+            "Value": limit.value,
+            "Margin": limit.margin,
+            "Unit": limit.unit,
+            "Satisfied": limit.satisfied,
+        }
+        for limit in (() if assessment is None else assessment.limits)
+    ]
+
+
+def trial_stages(trial: TrialResult) -> list[Row]:
+    """How long each stage of ``trial`` took, as its record holds it."""
+    return [{"Stage": stage, "Time [s]": seconds} for stage, seconds in trial.stage_seconds.items()]
+
+
+def trial_diagnostics(trial: TrialResult) -> list[Row]:
+    """Each diagnostic of ``trial`` that did not succeed: how it ended, and why."""
+    return [
+        {"Diagnostic": d.get("task"), "Status": d.get("status"), "Message": d.get("message")}
+        for d in trial.diagnostics
+    ]

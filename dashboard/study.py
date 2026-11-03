@@ -1,6 +1,8 @@
 """The Study page: one study, chosen by its id in the URL (``/study?study=<id>``), so that a link
-names it: how its trials ended, how a candidate is evaluated, what it optimizes, its trials in the
-plane of two axes, and what it was made with."""
+names it, in tabs, the one open in the URL too (``&view=Trials``): *Overview*, its trials in the
+plane of two axes and in the order they were proposed; *Trials*, each trial and all it recorded;
+*Pipeline*, how a candidate is evaluated; *Problem*, what it optimizes and what it was made
+with."""
 
 from __future__ import annotations
 
@@ -10,13 +12,16 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from k4opt.errors import K4OptError
-from k4opt.optimization import StudyResults
+from k4opt.optimization import StudyResults, TrialResult
 from k4opt.publication import CatalogEntry, PublicationUnavailableError
 from k4opt.visualization import (
+    TRIAL,
     GraphNode,
     TaskGraph,
     axis_choices,
+    color_choices,
     default_axes,
+    history_figure,
     pipeline_figure,
     task_graph,
     trials_figure,
@@ -25,9 +30,17 @@ from k4opt.visualization import (
 import data
 import tables
 
-# the URL's parameters: the study by its id, and the figure's axes (a page script shows a bare
-# string, so nothing here is a docstring but the module's)
-STUDY, X, Y = "study", "x", "y"
+# the URL's parameters: the study by its id, the tab open, the figure's axes and what colors it,
+# and the trial shown (a page script shows a bare string, so nothing here is a docstring but the
+# module's)
+STUDY, VIEW, X, Y, COLOR, SHOWN = "study", "view", "x", "y", "color", "trial"
+TABS = ("Overview", "Trials", "Pipeline", "Problem")
+BY_OUTCOME = "outcome"  # the figure's colors unless chosen: each trial by its outcome
+# the trial a click on a figure opened, and counters bumped after each click on a figure and each
+# closing of a trial, so that the chart or table comes back without a selection
+OPENED, PICKS, ROWS = "trial-opened", "trial-picks", "trial-rows"
+# the color of each outcome's badge; every other outcome is a trial without a result
+BADGES = {"feasible": "green", "infeasible": "orange", "running": "blue"}
 # the task selected, the stacks of samples drawn sample by sample (by key; ALL: every one), the
 # study they are of, and a counter bumped after each click, so that the chart comes back without
 # a selection and the next click on the same node is a click again
@@ -80,14 +93,16 @@ def main(found: data.Source) -> None:
             f"{data.plain(requested)}; choose one."
         )
     names = {study: entry.name for study, entry in entries.items()}
-    chosen = _chosen(
-        "Study",
-        list(entries),
-        STUDY,
-        None if requested is not None else next(iter(entries)),
-        format_func=lambda study: names[study],
-        placeholder="Choose a study",
-    )
+    narrow, _ = st.columns([1, 2])
+    with narrow:
+        chosen = _chosen(
+            "Study",
+            list(entries),
+            STUDY,
+            None if requested is not None else next(iter(entries)),
+            format_func=lambda study: names[study],
+            placeholder="Choose a study",
+        )
     if not chosen:
         return
     entry = entries[chosen]
@@ -133,10 +148,173 @@ def _render(entry: CatalogEntry, results: StudyResults) -> None:
     ]
     for column, (label, value) in zip(columns, shown, strict=True):
         column.metric(label, value, border=True)
+    # only the open tab runs (the graph needs Graphviz), and the URL says which it is
+    views = st.tabs(TABS, key=VIEW, bind="query-params")
+    pages = (_overview, _trials, _tasks, _problem)
+    for view, page in zip(views, pages, strict=True):
+        if view.open is not False:
+            with view:
+                page(results)
 
-    _tasks(results)
 
-    st.subheader("What it optimizes")
+def _overview(results: StudyResults) -> None:
+    choices = list(axis_choices(results))
+    default_x, default_y = default_axes(results)
+    left, middle, right = st.columns(3)
+    with left:
+        x = _chosen("Horizontal axis", choices, X, default_x, format_func=_axis_name)
+    with middle:
+        y = _chosen("Vertical axis", choices, Y, default_y, format_func=_axis_name)
+    with right:
+        shades = [BY_OUTCOME, *color_choices(results)]
+        color = _chosen("Color", shades, COLOR, BY_OUTCOME, format_func=_axis_name)
+    dark = st.context.theme.type == "dark"
+    try:
+        shade = None if color == BY_OUTCOME else color
+        figure = trials_figure(results, x, y, color=shade, dark=dark)
+    except K4OptError as exc:
+        st.warning(data.plain(exc))
+    else:
+        figure.update_layout(title=None)  # the page names the study
+        _pickable(figure, "trials")
+    if results.pareto:
+        st.markdown(f"**On the Pareto front** ({len(results.pareto)} trials)")
+        st.dataframe(tables.trials(results, results.pareto), hide_index=True, height=300)
+    st.subheader("History", anchor=False)
+    st.caption("Each objective in the order the trials were proposed; click a trial to open it.")
+    objectives = [f"objective:{o.label}" for o in results.problem.objectives]
+    columns = st.columns(min(len(objectives), 2))
+    for index, objective in enumerate(objectives):
+        with columns[index % len(columns)]:
+            try:
+                figure = history_figure(results, objective, dark=dark)
+            except K4OptError as exc:
+                st.warning(data.plain(exc))
+            else:
+                _pickable(figure, f"history-{index}")
+    opened = st.session_state.pop(OPENED, None)
+    if opened is not None:
+        _dialog(results, opened)
+
+
+def _pickable(figure: go.Figure, name: str) -> None:
+    """``figure``, each of whose points is a trial (its ``customdata``): a click on one opens it."""
+    state = st.session_state
+    state.setdefault(PICKS, 0)
+    event = st.plotly_chart(
+        figure,
+        theme="streamlit",
+        key=f"{name}-{state[PICKS]}",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    selection = getattr(event, "selection", None) or {}
+    for point in selection.get("points", []):
+        curve, index = point.get("curve_number"), point.get("point_index")
+        numbers = None if curve is None else figure.data[curve].customdata
+        if numbers is not None and index is not None:
+            state[OPENED], state[PICKS] = int(numbers[index]), state[PICKS] + 1
+            st.rerun()
+
+
+@st.dialog("Trial", width="large")
+def _dialog(results: StudyResults, number: int) -> None:
+    _trial(results, results.trial(number))
+
+
+def _trials(results: StudyResults) -> None:
+    counts = {outcome: n for outcome, n in results.outcomes.items() if n}
+    shown = st.pills(
+        "Outcome",
+        list(counts),
+        selection_mode="multi",
+        default=list(counts),
+        format_func=lambda outcome: f"{outcome} · {counts[outcome]}",
+        key="trials-outcomes",
+    )
+    rows = [row for row in tables.trials(results) if row["Outcome"] in shown]
+    state = st.session_state
+    state.setdefault(ROWS, 0)
+    event = st.dataframe(
+        rows,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"trials-table-{state[ROWS]}",
+    )
+    picked = event.selection.rows if event is not None else []
+    number = rows[picked[0]]["Trial"] if picked else _linked(results)
+    if number is None:
+        st.caption("Select a trial for all it recorded; a link to the page names it.")
+        return
+    assert isinstance(number, int)
+    if st.query_params.get(SHOWN) != str(number):
+        st.query_params[SHOWN] = str(number)
+    with st.container(border=True):
+        if _trial(results, results.trial(number), closable=True):
+            del st.query_params[SHOWN]
+            state[ROWS] += 1
+            st.rerun()
+
+
+def _linked(results: StudyResults) -> int | None:
+    """The trial the URL names, if the study has it."""
+    held = st.query_params.get(SHOWN, "")
+    numbers = {trial.number for trial in results.trials}
+    return int(held) if held.isdigit() and int(held) in numbers else None
+
+
+def _trial(results: StudyResults, trial: TrialResult, *, closable: bool = False) -> bool:
+    """All ``trial`` recorded: how it ended, its objectives, candidate, limits and stages; whether
+    it was closed, if it can be."""
+    title, close = st.columns([6, 1], vertical_alignment="center")
+    with title:
+        badges = [f":{BADGES.get(trial.outcome, 'red')}-badge[{trial.outcome}]"]
+        if trial.number in results.pareto:
+            badges.append(":blue-badge[:material/star: Pareto front]")
+        st.markdown(f"#### Trial {trial.number} &nbsp; " + " ".join(badges))
+    closed = False
+    with close:
+        if closable:
+            closed = st.button("Close", key="trial-close", width="stretch")
+    objectives = tables.trial_objectives(trial)
+    if objectives:
+        for start in range(0, len(objectives), 4):
+            columns = st.columns(4)
+            for column, row in zip(columns, objectives[start : start + 4], strict=False):
+                column.metric(
+                    data.plain(str(row["Objective"]).rsplit("/", 1)[-1]),
+                    _value(row),
+                    help=data.plain(f"{row['Objective']}, {row['Direction']}"),
+                    border=True,
+                )
+    if trial.message:
+        st.code(trial.message, language=None, wrap_lines=True)
+    left, right = st.columns(2)
+    with left:
+        st.dataframe(tables.trial_candidate(results, trial), hide_index=True)
+        st.dataframe(tables.trial_facts(results, trial), hide_index=True)
+    with right:
+        for rows in (
+            tables.trial_limits(trial),
+            tables.trial_stages(trial),
+            tables.trial_diagnostics(trial),
+        ):
+            if rows:
+                st.dataframe(rows, hide_index=True)
+    return closed
+
+
+def _value(row: tables.Row) -> str:
+    """An objective's value as a tile shows it, with its uncertainty and unit."""
+    value, uncertainty, unit = row["Value"], row["±"], row["Unit"]
+    text = f"{value:.4g}" if isinstance(value, float) else str(value)
+    if isinstance(uncertainty, (int, float)):
+        text += f" ± {uncertainty:.2g}"
+    return f"{text} {unit}" if unit and unit != "1" else text  # 1: a number, of no unit
+
+
+def _problem(results: StudyResults) -> None:
     st.markdown("**Parameters**")
     st.dataframe(tables.parameters(results), hide_index=True)
     st.markdown("**Objectives**")
@@ -144,38 +322,16 @@ def _render(entry: CatalogEntry, results: StudyResults) -> None:
     if results.problem.constraints:
         st.markdown("**Constraints**")
         st.dataframe(tables.constraints(results), hide_index=True)
-
-    st.subheader("Trials")
-    choices = list(axis_choices(results))
-    default_x, default_y = default_axes(results)
-    left, right = st.columns(2)
-    with left:
-        x = _chosen("Horizontal axis", choices, X, default_x, format_func=_axis_name)
-    with right:
-        y = _chosen("Vertical axis", choices, Y, default_y, format_func=_axis_name)
-    try:
-        figure = trials_figure(results, x, y, dark=st.context.theme.type == "dark")
-    except K4OptError as exc:
-        st.warning(data.plain(exc))
-    else:
-        figure.update_layout(title=None)  # the page names the study
-        st.plotly_chart(figure, theme="streamlit", key="trials")
-    if results.pareto:
-        st.markdown(f"**On the Pareto front** ({len(results.pareto)} trials)")
-        st.dataframe(tables.trials(results, results.pareto), hide_index=True)
-    with st.expander(f"Every trial ({len(results.trials)})"):
-        st.dataframe(tables.trials(results), hide_index=True)
-    with st.expander("What it was made with"):
-        st.dataframe(tables.provenance(results), hide_index=True)
-        st.dataframe(tables.evaluators(results), hide_index=True)
-        st.caption(
-            "Each trial's record stays in the study directory; the snapshot names it by its id "
-            "and SHA-256, and holds no file of it."
-        )
+    st.markdown("**What it was made with**")
+    st.dataframe(tables.provenance(results), hide_index=True)
+    st.dataframe(tables.evaluators(results), hide_index=True)
+    st.caption(
+        "Each trial's record stays in the study directory; the snapshot names it by its id "
+        "and SHA-256, and holds no file of it."
+    )
 
 
 def _tasks(results: StudyResults) -> None:
-    st.subheader("How a candidate is evaluated")
     state = st.session_state
     if state.get(OF) != results.id:  # another study: nothing of the last one stays selected
         state[OF], state[SELECTED], state[EXPANDED] = results.id, None, set()
@@ -264,10 +420,14 @@ def _selected(results: StudyResults, graph: TaskGraph) -> None:
         if rows:
             st.dataframe(rows, hide_index=True)
         else:
-            st.caption("Its value in each trial is in the table of every trial below.")
+            st.caption("Its value in each trial is in the table of the Trials tab.")
 
 
 def _axis_name(key: str) -> str:
+    if key == BY_OUTCOME:
+        return "outcome"
+    if key == TRIAL:
+        return "trial number"
     kind, _, name = key.partition(":")
     return f"{name} ({kind})"
 

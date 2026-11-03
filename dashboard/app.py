@@ -5,7 +5,8 @@ Run it on a publication directory or URL (``docs/dashboard.md``)::
     K4OPT_DASHBOARD_DATA=published/ streamlit run dashboard/app.py
 
 Two pages, in the top bar: *Studies* (``/``), every published study, and *Study*
-(``/study?study=<id>``), one of them. The sidebar says where the studies are read from.
+(``/study?study=<id>``), one of them. The sidebar, closed at first, says where the studies are
+read from.
 """
 
 from __future__ import annotations
@@ -16,7 +17,12 @@ from k4opt import __version__
 
 import data
 
-st.set_page_config(page_title="k4Opt", page_icon=":material/tune:", layout="wide")
+st.set_page_config(
+    page_title="k4Opt",
+    page_icon=":material/tune:",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 found = data.resolve()
 

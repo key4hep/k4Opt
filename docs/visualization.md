@@ -61,6 +61,28 @@ the reference palette's, checked for color-vision deficiency, and the groups dif
 well. No Plotly template is forced: a notebook shows its default, and the
 [dashboard](dashboard.md) its theme.
 
+**Coloring by a value.** `trials_figure(study, color="parameter:ecal_cell_size")` shades the
+feasible trials and those on the front by that value, on the palette's sequential blue with a
+color bar; the front is then drawn as diamonds, so it stays told apart, and its step line in gray.
+`color_choices(study)` lists what a figure can be colored by: `TRIAL` (`"trial"`, the order the
+trials were proposed in), each objective, and each parameter that is not categorical. Infeasible
+trials and those without a result keep their own marks.
+
+## The history of an objective: `history_figure`
+
+```python
+from k4opt.visualization import history_figure
+
+history_figure(study)  # the first objective, against the trial number
+history_figure(study, "objective:gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells")
+```
+
+Each trial with a value of the objective is drawn at its number, as `trials_figure` draws it. For
+a study of one objective, a step line follows the best feasible value so far, in the objective's
+direction, and the best trials are marked as such; for several objectives, the trials of the
+front are set apart instead, since no single trial is best. Trials without a value are counted
+below the plot. It refuses a parameter, and values of the objective recorded in different units.
+
 ## How a candidate is evaluated: `pipeline_figure`
 
 ```python

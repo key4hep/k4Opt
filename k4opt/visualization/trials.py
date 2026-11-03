@@ -13,15 +13,22 @@ or ``parameter:<name>``. A trial is drawn when it has a value on both axes, as o
 
 Every other trial is counted below the plot, by outcome. When the axes are exactly the two
 objectives of a two-objective study, the front is joined by its step line, the boundary of what
-it dominates; otherwise the figure says that it shows a projection of the front.
+it dominates; otherwise the figure says that it shows a projection of the front. Colored by a
+value (:func:`color_choices`: the trial number, an objective or a numeric parameter), the front
+and the feasible trials take the palette's sequential blue, the front as diamonds.
+
+:func:`history_figure` draws an objective against the trial number, the order the trials were
+proposed in, each trial as above; for a study of one objective, with the best feasible value so
+far as a step line.
 """
 
 from __future__ import annotations
 
 import html
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import plotly.graph_objects as go
 
@@ -31,12 +38,20 @@ from k4opt.problem import Objective, Parameter
 from k4opt.visualization.errors import VisualizationError
 
 OBJECTIVE, PARAMETER = "objective:", "parameter:"
+TRIAL = "trial"
+"""What :func:`trials_figure` colors its trials by to show the order they were proposed in."""
 
 # the reference palette's categorical slots 1 and 2 and its muted ink, light and dark steps; the
 # groups also differ by symbol, so that none is told by color alone
 _COLORS = {
     False: {"front": "#2a78d6", "infeasible": "#eb6834", "muted": "#898781", "ring": "#fcfcfb"},
     True: {"front": "#3987e5", "infeasible": "#d95926", "muted": "#898781", "ring": "#1a1a19"},
+}
+# the reference palette's sequential blue, from near the surface to far from it, for marks: from
+# step 250 to 700 on the light surface, from step 600 to 100 on the dark one
+_RAMPS = {
+    False: ("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281", "#0d366b"),
+    True: ("#184f95", "#256abf", "#3987e5", "#6da7ec", "#9ec5f4", "#cde2fb"),
 }
 
 
@@ -114,67 +129,42 @@ def default_axes(results: StudyResults) -> tuple[str, str]:
     return (choices[0], choices[1]) if objectives >= 2 else (choices[1], choices[0])
 
 
+def color_choices(results: StudyResults) -> tuple[str, ...]:
+    """What :func:`trials_figure` can color its trials by: the trial number (:data:`TRIAL`), each
+    objective, and each parameter that is not categorical."""
+    spec = results.problem
+    return (
+        TRIAL,
+        *(f"{OBJECTIVE}{o.label}" for o in spec.objectives),
+        *(f"{PARAMETER}{p.name}" for p in spec.parameters if p.kind != "categorical"),
+    )
+
+
 def trials_figure(
-    results: StudyResults, x: str | None = None, y: str | None = None, *, dark: bool = False
+    results: StudyResults,
+    x: str | None = None,
+    y: str | None = None,
+    *,
+    color: str | None = None,
+    dark: bool = False,
 ) -> go.Figure:
     """The trials of ``results`` with ``x`` and ``y`` (:func:`axis_choices`; by default the first
-    two objectives, or the first parameter and the only objective). ``dark`` takes the colors
-    stepped for a dark background. Raises :class:`VisualizationError` for an axis the study does
-    not have, and for values of one objective recorded in different units: they are never drawn
-    on one scale."""
+    two objectives, or the first parameter and the only objective). ``color`` (one of
+    :func:`color_choices`) shades the feasible trials by its value, the front set apart by its
+    symbol; by default they are told apart by group alone. ``dark`` takes the colors stepped for
+    a dark background. Raises :class:`VisualizationError` for an axis the study does not have,
+    and for values of one objective recorded in different units: they are never drawn on one
+    scale."""
     default_x, default_y = default_axes(results)
     horizontal, vertical = _axis(results, x or default_x), _axis(results, y or default_y)
-    colors = _COLORS[dark]
-    front = set(results.pareto)
-    groups: dict[str, list[TrialResult]] = {
-        "front": [],
-        "feasible": [],
-        "infeasible": [],
-        "none": [],
-    }
-    left_out: Counter[str] = Counter()
-    for trial in results.trials:
-        if horizontal.value(trial) is None or vertical.value(trial) is None:
-            left_out[trial.outcome] += 1
-        elif trial.number in front:
-            groups["front"].append(trial)
-        elif trial.outcome in ("feasible", "infeasible"):
-            groups[trial.outcome].append(trial)
-        else:
-            groups["none"].append(trial)
+    shade = None if color is None else _shade(results, color)
+    groups, left_out = _groups(
+        results, lambda t: horizontal.value(t) is not None and vertical.value(t) is not None
+    )
     drawn = [trial for group in groups.values() for trial in group]
     units = (_unit(horizontal, drawn), _unit(vertical, drawn))
     figure = go.Figure()
-    styles = {
-        "front": ("on the Pareto front", "circle", 11, colors["front"]),
-        "feasible": ("feasible", "circle", 8, colors["muted"]),
-        "infeasible": ("infeasible (a limit violated)", "x-thin-open", 9, colors["infeasible"]),
-        "none": ("no result", "circle-open", 8, colors["muted"]),
-    }
-    for group, (name, symbol, size, color) in styles.items():
-        trials = groups[group]
-        if not trials:
-            continue
-        figure.add_trace(
-            go.Scatter(
-                x=[horizontal.value(t) for t in trials],
-                y=[vertical.value(t) for t in trials],
-                mode="markers",
-                name=name,
-                marker={
-                    "symbol": symbol,
-                    "size": size,
-                    "color": color,
-                    # a ring of the background around a filled mark, so overlapping ones part
-                    "line": {"width": 2, "color": colors["ring"]}
-                    if symbol == "circle"
-                    else {"width": 1.5, "color": color},
-                },
-                customdata=[t.number for t in trials],  # which trial a point is
-                hovertext=[_hover(results, t, front) for t in trials],
-                hoverinfo="text",
-            )
-        )
+    _mark(figure, results, groups, horizontal.value, vertical.value, shade, dark=dark)
     objectives = results.problem.objectives
     exact = (
         len(objectives) == 2
@@ -194,7 +184,11 @@ def trials_figure(
                 x=[horizontal.value(t) for t in points],
                 y=[vertical.value(t) for t in points],
                 mode="lines",
-                line={"shape": "hv", "width": 2, "color": colors["front"]},
+                line={
+                    "shape": "hv",
+                    "width": 2,
+                    "color": _COLORS[dark]["front" if shade is None else "muted"],
+                },
                 name="Pareto front",
                 hoverinfo="skip",
                 showlegend=False,
@@ -210,6 +204,199 @@ def trials_figure(
         hovermode="closest",
         margin={"b": 110 if notes else 70},
     )
+    _shaded(figure, results, shade, drawn, dark=dark)
+    _annotate(figure, drawn, notes)
+    return figure
+
+
+def history_figure(
+    results: StudyResults, objective: str | None = None, *, dark: bool = False
+) -> go.Figure:
+    """The values of ``objective`` (``objective:<label>``; by default the first objective) in the
+    order the trials were proposed, each trial drawn as :func:`trials_figure` draws it. For a
+    study of one objective, a step line follows the best feasible value so far; the front of
+    several objectives is set apart by its color instead. Raises :class:`VisualizationError` for
+    an objective the study does not have, and for values recorded in different units."""
+    key = objective or f"{OBJECTIVE}{results.problem.objectives[0].label}"
+    axis = _axis(results, key)
+    if axis.objective is None:
+        raise VisualizationError(f"the history is of an objective, and {key!r} is a parameter")
+    groups, left_out = _groups(results, lambda t: axis.value(t) is not None)
+    drawn = [trial for group in groups.values() for trial in group]
+    unit = _unit(axis, drawn)
+    single = len(results.problem.objectives) == 1
+    figure = go.Figure()
+    _mark(
+        figure,
+        results,
+        groups,
+        lambda t: t.number,
+        axis.value,
+        None,
+        dark=dark,
+        front="best" if single else "on the Pareto front",
+    )
+    if single:
+        steps_x: list[int] = []
+        steps_y: list[Scalar | None] = []
+        best: TrialResult | None = None
+        for trial in sorted(drawn, key=lambda t: t.number):
+            if trial.outcome == "feasible" and (
+                best is None or axis.signed(trial) < axis.signed(best)
+            ):
+                best = trial
+            steps_x.append(trial.number)
+            steps_y.append(None if best is None else axis.value(best))
+        figure.add_trace(
+            go.Scatter(
+                x=steps_x,
+                y=steps_y,
+                mode="lines",
+                line={"shape": "hv", "width": 2, "color": _COLORS[dark]["front"]},
+                name="best feasible so far",
+                hoverinfo="skip",
+            )
+        )
+        figure.data = figure.data[-1:] + figure.data[:-1]  # the line under the markers
+    notes = []
+    if left_out:
+        counts = ", ".join(f"{count} {outcome}" for outcome, count in sorted(left_out.items()))
+        notes.append(f"Not shown, without a value: {counts}")
+    figure.update_layout(
+        xaxis={"title": {"text": "trial"}, "rangemode": "tozero"},
+        yaxis={"title": {"text": axis.title(unit)}},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
+        hovermode="closest",
+        margin={"t": 40, "b": 110 if notes else 70},
+    )
+    _annotate(figure, drawn, notes)
+    return figure
+
+
+@dataclass(frozen=True, slots=True)
+class _Shade:
+    """What the trials are colored by: a value of each, named ``title``."""
+
+    key: str
+    value: Callable[[TrialResult], Scalar | None]
+    axis: _Axis | None = None  # the objective or parameter, if it is one
+
+
+def _shade(results: StudyResults, key: str) -> _Shade:
+    if key == TRIAL:
+        return _Shade(key, lambda t: t.number)
+    if key not in color_choices(results):
+        raise VisualizationError(
+            f"the trials cannot be colored by {key!r}; they can be by "
+            f"{', '.join(color_choices(results))}"
+        )
+    axis = _axis(results, key)
+    return _Shade(key, axis.value, axis)
+
+
+def _groups(
+    results: StudyResults, shown: Callable[[TrialResult], bool]
+) -> tuple[dict[str, list[TrialResult]], Counter[str]]:
+    """The trials ``shown``, by how they are drawn, and how many of each outcome are not."""
+    front = set(results.pareto)
+    groups: dict[str, list[TrialResult]] = {
+        "front": [],
+        "feasible": [],
+        "infeasible": [],
+        "none": [],
+    }
+    left_out: Counter[str] = Counter()
+    for trial in results.trials:
+        if not shown(trial):
+            left_out[trial.outcome] += 1
+        elif trial.number in front:
+            groups["front"].append(trial)
+        elif trial.outcome in ("feasible", "infeasible"):
+            groups[trial.outcome].append(trial)
+        else:
+            groups["none"].append(trial)
+    return groups, left_out
+
+
+def _mark(
+    figure: go.Figure,
+    results: StudyResults,
+    groups: Mapping[str, Sequence[TrialResult]],
+    x: Callable[[TrialResult], Scalar | None],
+    y: Callable[[TrialResult], Scalar | None],
+    shade: _Shade | None,
+    *,
+    dark: bool,
+    front: str = "on the Pareto front",
+) -> None:
+    """A trace of markers for each group of trials, each point's ``customdata`` its trial's
+    number; the front and the feasible trials shaded by ``shade``, if any."""
+    colors = _COLORS[dark]
+    numbers = set(results.pareto)
+    styles = {
+        "front": (front, "diamond" if shade else "circle", 12 if shade else 11, colors["front"]),
+        "feasible": ("feasible", "circle", 8, colors["muted"]),
+        "infeasible": ("infeasible (a limit violated)", "x-thin-open", 9, colors["infeasible"]),
+        "none": ("no result", "circle-open", 8, colors["muted"]),
+    }
+    for group, (name, symbol, size, color) in styles.items():
+        trials = groups[group]
+        if not trials:
+            continue
+        filled = symbol in ("circle", "diamond")
+        marker: dict[str, Any] = {
+            "symbol": symbol,
+            "size": size,
+            "color": color,
+            # a ring of the background around a filled mark, so overlapping ones part
+            "line": {"width": 2, "color": colors["ring"]}
+            if filled
+            else {"width": 1.5, "color": color},
+        }
+        if shade is not None and group in ("front", "feasible"):
+            marker |= {"color": [shade.value(t) for t in trials], "coloraxis": "coloraxis"}
+        figure.add_trace(
+            go.Scatter(
+                x=[x(t) for t in trials],
+                y=[y(t) for t in trials],
+                mode="markers",
+                name=name,
+                marker=marker,
+                customdata=[t.number for t in trials],  # which trial a point is
+                hovertext=[_hover(results, t, numbers) for t in trials],
+                hoverinfo="text",
+            )
+        )
+
+
+def _shaded(
+    figure: go.Figure,
+    results: StudyResults,
+    shade: _Shade | None,
+    drawn: Sequence[TrialResult],
+    *,
+    dark: bool,
+) -> None:
+    """The scale the trials are shaded on: the reference palette's sequential blue, from near
+    the surface to far from it."""
+    if shade is None:
+        return
+    if shade.axis is None:
+        title = "trial"
+    else:
+        shaded = [t for t in drawn if t.outcome == "feasible" or t.number in results.pareto]
+        title = shade.axis.title(_unit(shade.axis, shaded)).split("<br>")[0]
+    ramp = _RAMPS[dark]
+    figure.update_layout(
+        coloraxis={
+            "colorscale": [[i / (len(ramp) - 1), step] for i, step in enumerate(ramp)],
+            "colorbar": {"title": {"text": title, "side": "right"}, "thickness": 12},
+        }
+    )
+
+
+def _annotate(figure: go.Figure, drawn: Sequence[TrialResult], notes: Sequence[str]) -> None:
+    """Say that no trial is drawn, if none is, and the ``notes`` below the plot."""
     if not drawn:
         figure.add_annotation(
             text="No trial has values on these axes yet",
@@ -233,7 +420,6 @@ def trials_figure(
             showarrow=False,
             font={"size": 12},
         )
-    return figure
 
 
 def _kind(axis: _Axis) -> dict[str, str]:
