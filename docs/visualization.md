@@ -83,6 +83,31 @@ direction, and the best trials are marked as such; for several objectives, the t
 front are set apart instead, since no single trial is best. Trials without a value are counted
 below the plot. It refuses a parameter, and values of the objective recorded in different units.
 
+## How the parameters act on an objective: the analysis figures
+
+```python
+from k4opt.visualization import edf_figure, parallel_figure, rank_figure, slice_figure
+
+parallel_figure(study)  # colored by the first objective; or parallel_figure(study, "objective:...")
+slice_figure(study, "objective:gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells")
+rank_figure(study)  # two parameters at least
+edf_figure(study)
+```
+
+They are the figures of Optuna Dashboard's analytics, drawn from the study's own values:
+
+| Figure | What it shows |
+| --- | --- |
+| `parallel_figure` | each feasible trial as a line through an axis per parameter (a categorical one with its choices, in their order), per objective and per bound of each constraint (its margin: zero or below when satisfied); colored by one objective, the better the further from the background, whatever its direction. Dragging along an axis keeps the trials within a range |
+| `slice_figure` | the objective against each parameter, a panel each with the vertical axis shared, the feasible trials colored by their number, the infeasible ones marked apart |
+| `rank_figure` | each pair of parameters, the feasible trials colored by how they rank in the objective (the share of the other feasible trials each is better than, from worst to best); infeasible ones in gray. It refuses a study of fewer than two parameters |
+| `edf_figure` | for each objective, the share of the trials with a value of it whose value is at most each value |
+
+Nothing is interpolated between trials: there is no contour plot, which would show values no
+trial measured. Every trial a figure leaves out is counted below it, by outcome (in the
+parallel coordinates, as their title, since Plotly draws no annotation over parallel axes).
+Parallel coordinates are drawn with WebGL, which the browser must have.
+
 ## How a candidate is evaluated: `pipeline_figure`
 
 ```python

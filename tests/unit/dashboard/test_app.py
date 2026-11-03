@@ -257,3 +257,23 @@ def test_a_catalog_entry_is_checked_against_its_snapshot_on_every_run(
     (tmp_path / "pub" / CATALOG_NAME).write_text(json.dumps(catalog))
     at.sidebar.button[0].click().run()
     assert "not the study its catalog entry describes: its name" in at.error[0].value
+
+
+def test_the_analysis_tab_shows_how_the_parameters_act_on_the_chosen_objective(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = published(tmp_path)
+    at = study_page(monkeypatch, tmp_path, results, view="Analysis")
+    assert not at.exception
+    charts = at.get("plotly_chart")
+    assert len(charts) == 3 and charts[1].key == "slice-0"  # parallel, slice, distribution
+    assert "needs two parameters at least" in texts(at)  # one parameter: no rank
+    assert at.query_params["objective"] == "objective:test.trade_off/analysis/a"
+    at = study_page(
+        monkeypatch,
+        tmp_path,
+        results,
+        view="Analysis",
+        objective="objective:test.trade_off/analysis/b",
+    )
+    assert not at.exception and at.query_params["objective"].endswith("/b")

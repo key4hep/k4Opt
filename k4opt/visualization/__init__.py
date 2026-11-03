@@ -4,9 +4,11 @@
 :func:`~k4opt.optimization.load_study` or a publication gives it) in the plane of two of its
 objectives or parameters: each trial as feasible, infeasible or on the Pareto front, its values,
 units and uncertainties on hover; :func:`history_figure` draws an objective in the order the
-trials were proposed. Nothing here interprets the study again: feasibility and the front are the
-study's own. It uses Plotly (``pip install 'k4opt[plot]'``), no optimizer's plotting, and works
-the same in a notebook and in the dashboard.
+trials were proposed; :func:`parallel_figure`, :func:`slice_figure`, :func:`rank_figure` and
+:func:`edf_figure` how its parameters act on its objectives. Nothing here interprets the study
+again: feasibility and the front are the study's own. It uses Plotly (``pip install
+'k4opt[plot]'``), no optimizer's plotting, and works the same in a notebook and in the
+dashboard.
 
 How a candidate is evaluated is its task graph (:func:`task_graph`), read from the problem's plan:
 what each parameter sets, each sample's stages, what each evaluation reads, and the evaluations the
@@ -27,6 +29,7 @@ Typical use::
     pipeline_figure(study).show()  # laid out by Graphviz: needs its dot program
 """
 
+from k4opt.visualization.analysis import edf_figure, parallel_figure, rank_figure, slice_figure
 from k4opt.visualization.errors import VisualizationError
 from k4opt.visualization.graph import GraphEdge, GraphNode, SampleBox, TaskGraph, task_graph
 from k4opt.visualization.pipeline import pipeline_figure, pipeline_graph
@@ -49,9 +52,13 @@ __all__ = [
     "axis_choices",
     "color_choices",
     "default_axes",
+    "edf_figure",
     "history_figure",
+    "parallel_figure",
     "pipeline_figure",
     "pipeline_graph",
+    "rank_figure",
+    "slice_figure",
     "task_graph",
     "trials_figure",
 ]

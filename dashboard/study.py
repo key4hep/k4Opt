@@ -1,8 +1,8 @@
 """The Study page: one study, chosen by its id in the URL (``/study?study=<id>``), so that a link
 names it, in tabs, the one open in the URL too (``&view=Trials``): *Overview*, its trials in the
 plane of two axes and in the order they were proposed; *Trials*, each trial and all it recorded;
-*Pipeline*, how a candidate is evaluated; *Problem*, what it optimizes and what it was made
-with."""
+*Analysis*, how its parameters act on an objective; *Pipeline*, how a candidate is evaluated;
+*Problem*, what it optimizes and what it was made with."""
 
 from __future__ import annotations
 
@@ -21,8 +21,12 @@ from k4opt.visualization import (
     axis_choices,
     color_choices,
     default_axes,
+    edf_figure,
     history_figure,
+    parallel_figure,
     pipeline_figure,
+    rank_figure,
+    slice_figure,
     task_graph,
     trials_figure,
 )
@@ -34,7 +38,8 @@ import tables
 # and the trial shown (a page script shows a bare string, so nothing here is a docstring but the
 # module's)
 STUDY, VIEW, X, Y, COLOR, SHOWN = "study", "view", "x", "y", "color", "trial"
-TABS = ("Overview", "Trials", "Pipeline", "Problem")
+ANALYZED = "objective"  # the URL's parameter of the objective the Analysis tab shows
+TABS = ("Overview", "Trials", "Analysis", "Pipeline", "Problem")
 BY_OUTCOME = "outcome"  # the figure's colors unless chosen: each trial by its outcome
 # the trial a click on a figure opened, and counters bumped after each click on a figure and each
 # closing of a trial, so that the chart or table comes back without a selection
@@ -150,7 +155,7 @@ def _render(entry: CatalogEntry, results: StudyResults) -> None:
         column.metric(label, value, border=True)
     # only the open tab runs (the graph needs Graphviz), and the URL says which it is
     views = st.tabs(TABS, key=VIEW, bind="query-params")
-    pages = (_overview, _trials, _tasks, _problem)
+    pages = (_overview, _trials, _analysis, _tasks, _problem)
     for view, page in zip(views, pages, strict=True):
         if view.open is not False:
             with view:
@@ -312,6 +317,56 @@ def _value(row: tables.Row) -> str:
     if isinstance(uncertainty, (int, float)):
         text += f" ± {uncertainty:.2g}"
     return f"{text} {unit}" if unit and unit != "1" else text  # 1: a number, of no unit
+
+
+def _analysis(results: StudyResults) -> None:
+    objectives = [f"objective:{o.label}" for o in results.problem.objectives]
+    narrow, _ = st.columns([1, 2])
+    with narrow:
+        objective = _chosen(
+            "Objective", objectives, ANALYZED, objectives[0], format_func=_axis_name
+        )
+    dark = st.context.theme.type == "dark"
+    st.subheader("Parallel coordinates", anchor=False)
+    st.caption(
+        "Each feasible trial is a line through its parameters, objectives and constraint "
+        "margins. Drag along an axis to keep the trials within a range; click the range to drop it."
+    )
+    _shown(lambda: parallel_figure(results, objective, dark=dark))
+    st.subheader("Slice", anchor=False)
+    st.caption(
+        "The objective against each parameter, colored by trial number; click a trial to open it."
+    )
+    _shown(lambda: slice_figure(results, objective, dark=dark), "slice")
+    st.subheader("Rank", anchor=False)
+    if len(results.problem.parameters) < 2:
+        st.caption("Ranking the trials over pairs of parameters needs two parameters at least.")
+    else:
+        st.caption(
+            "Each pair of parameters, the feasible trials colored by how they rank in the "
+            "objective; nothing is interpolated between them."
+        )
+        _shown(lambda: rank_figure(results, objective, dark=dark), "rank")
+    st.subheader("Distribution", anchor=False)
+    st.caption("The share of the trials with a value of each objective at most each value.")
+    _shown(lambda: edf_figure(results, dark=dark))
+    opened = st.session_state.pop(OPENED, None)
+    if opened is not None:
+        _dialog(results, opened)
+
+
+def _shown(make: Callable[[], go.Figure], pickable: str | None = None) -> None:
+    """The figure ``make`` makes, or why there is none; its trials opened by a click if
+    ``pickable`` names it."""
+    try:
+        figure = make()
+    except K4OptError as exc:
+        st.warning(data.plain(exc))
+        return
+    if pickable is None:
+        st.plotly_chart(figure, theme="streamlit")
+    else:
+        _pickable(figure, pickable)
 
 
 def _problem(results: StudyResults) -> None:
