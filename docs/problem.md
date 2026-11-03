@@ -595,8 +595,8 @@ declares, and the run records both. In the example:
   as: pi0_rejection
   version: "1"
   roles:
-    signal: {sample: gamma_20gev, evaluator: calo.shower_shape}
-    background: {sample: pi0_20gev, evaluator: calo.shower_shape}
+    signal: {sample: gamma_50gev, evaluator: calo.shower_shape}
+    background: {sample: pi0_50gev, evaluator: calo.shower_shape}
   settings: {signal_efficiency: 0.9}
 ```
 

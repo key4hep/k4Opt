@@ -161,7 +161,8 @@ semantics, manifest, Python API, limitations), [problem](docs/problem.md),
 [example evaluators](docs/evaluators.md), [optimization](docs/optimization.md),
 [publication](docs/publication.md), [visualization](docs/visualization.md) and
 [dashboard](docs/dashboard.md). The [photon/pi0 example](docs/evaluators.md#photonpi0-example)
-combines two samples through histogram artifacts and constrains an approximate channel cost.
+combines two samples through histogram artifacts and weighs the pi0 rejection of finer cells
+against an approximate channel count.
 
 ## Development
 

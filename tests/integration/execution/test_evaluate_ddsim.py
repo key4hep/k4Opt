@@ -318,7 +318,7 @@ def test_pi0_example_combines_hashed_histograms_from_two_real_samples(
     run = pi0_runs["inline"]
     root = Path(run["run_dir"])
     histograms = {}
-    for sample, pdg in (("gamma_20gev", 22), ("pi0_20gev", 111)):
+    for sample, pdg in (("gamma_50gev", 22), ("pi0_50gev", 111)):
         assert run["samples"][sample]["stages"]["simulation"]["events_read"] == EVENTS
         for event in get_reader(str(stage_file(run, sample, "events"))).get("events"):
             (primary,) = [p for p in event.get("MCParticles") if p.getGeneratorStatus() == 1]
@@ -332,12 +332,12 @@ def test_pi0_example_combines_hashed_histograms_from_two_real_samples(
         assert sum(histogram["counts"]) + histogram["underflow"] + histogram["overflow"] == EVENTS
     combined = run["evaluations"]["pi0_rejection"]
     assert combined["roles"] == {
-        "signal": ["gamma_20gev/calo.shower_shape"],
-        "background": ["pi0_20gev/calo.shower_shape"],
+        "signal": ["gamma_50gev/calo.shower_shape"],
+        "background": ["pi0_50gev/calo.shower_shape"],
     }
     metrics = {m["metric"]: m["value"] for m in combined["measurements"]}
-    background = histograms["pi0_20gev"]
-    cut_index = background["edges"].index(metrics["width_cut"])
+    background = histograms["pi0_50gev"]
+    cut_index = background["edges"].index(metrics["cut"])
     assert metrics["background_rejection"] == pytest.approx(
         1 - sum(background["counts"][:cut_index]) / EVENTS
     )
@@ -357,7 +357,7 @@ def test_pi0_example_gives_the_same_record_with_four_workers(
     assert four["environment"]["observed"]["execution"] == {"backend": "process", "workers": 4}
     # the EDM4hep files are not hashed: ROOT may write them a few bytes apart
     assert scientific(one, frozenset({"bytes"})) == scientific(four, frozenset({"bytes"}))
-    for sample in ("gamma_20gev", "pi0_20gev"):
+    for sample in ("gamma_50gev", "pi0_50gev"):
         evaluation = four["samples"][sample]["evaluations"]["calo.shower_shape"]
         assert (Path(four["run_dir"]) / evaluation["log"]).is_file()
         histogram = evaluation["artifacts"]["histogram"]

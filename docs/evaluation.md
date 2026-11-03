@@ -320,15 +320,15 @@ An evaluator writes its files in `request.workdir` and returns those it wants re
 class ShowerShape(Evaluator):
     name, version, stage = "calo.shower_shape", "1", "simulation"
     collections = {"hits": Collection("SimCalorimeterHit")}
-    metrics = {"ecal_barrel.shower_width": "mm"}
-    artifacts = {"histogram": "shower width per event, JSON {edges, counts}"}
+    metrics = {"ecal_barrel.halo_fraction": "1"}
+    artifacts = {"histogram": "halo fraction per event, JSON {edges, counts}"}
 
     def evaluate(self, request):
-        widths = [...]
+        fractions = [...]
         path = request.workdir / "histogram.json"
         path.write_text(json.dumps({"edges": edges, "counts": counts}))
         return EvaluationResult.valid(
-            [Measurement.from_values("simulation", "ecal_barrel.shower_width", widths, "mm")],
+            [Measurement.from_values("simulation", "ecal_barrel.halo_fraction", fractions, "1")],
             artifacts={"histogram": path},
         )
 ```

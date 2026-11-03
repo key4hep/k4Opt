@@ -613,14 +613,14 @@ def takes_shared_simulation_file(doc: dict[str, Any]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("file", "particles", "energies", "seeds"),
+    ("file", "particles", "energies", "seeds", "events"),
     [
-        ("cld-ecal-photon-energies.yaml", ["gamma", "gamma"], [10, 50], [42, 43]),
-        ("cld-ecal-pi0-rejection.yaml", ["gamma", "pi0"], [20, 20], [1, 2]),
+        ("cld-ecal-photon-energies.yaml", ["gamma", "gamma"], [10, 50], [42, 43], 1000),
+        ("cld-ecal-pi0-rejection.yaml", ["gamma", "pi0"], [50, 50], [1, 2], 500),
     ],
 )
 def test_the_checked_in_examples_share_their_stages(
-    file: str, particles: list[str], energies: list[int], seeds: list[int]
+    file: str, particles: list[str], energies: list[int], seeds: list[int], events: int
 ) -> None:
     example = EXAMPLE.with_name(file)
     assert "stages" in yaml.safe_load(example.read_text())
@@ -630,7 +630,7 @@ def test_the_checked_in_examples_share_their_stages(
     assert [g.options["particle"] for g in generation] == particles
     assert [g.options["energy"]["value"] for g in generation] == energies  # type: ignore[index]
     assert [s.seed for s in simulation] == seeds
-    assert {(s.events, s.options["physics.list"]) for s in simulation} == {(1000, "FTFP_BERT")}
+    assert {(s.events, s.options["physics.list"]) for s in simulation} == {(events, "FTFP_BERT")}
 
 
 @pytest.mark.parametrize(
