@@ -91,8 +91,13 @@ separation in particle flow does, and measuring it needs reconstruction.
 
 ## Photon/pi0 example
 
-The [combined example](../examples/problem/cld-ecal-pi0-rejection.yaml) simulates 20 GeV photons
-and neutral pions on one candidate geometry, then compares their shower-width histograms:
+How fine must the ECAL cells be to tell a photon from a neutral pion? A 50 GeV pi0 decays into
+two photons whose opening angle is at least 2 m/E, about 5.4 mrad, so they reach the CLD ECAL
+barrel (radius 2150 mm) at least about 12 mm apart. Cells finer than that see two showers side
+by side; coarser cells see one shower, as wide as a photon's. The
+[example](../examples/problem/cld-ecal-pi0-rejection.yaml) simulates 50 GeV photons and pi0s on
+each candidate geometry, compares a shower shape of the two and weighs the rejection it gives
+against the readout channels the cells cost:
 
 ```bash
 k4opt evaluate examples/problem/cld-ecal-pi0-rejection.yaml \
@@ -103,22 +108,49 @@ k4opt evaluate examples/problem/cld-ecal-pi0-rejection.yaml \
 ```
 
 Use the same three `--evaluator` arguments with `k4opt optimize`, replacing `--param` with
-`--trials 30 --seed 42`, to search cell sizes. The pinned Key4hep stack is required.
+`--trials 30 --seed 42 --workers 8`, to search cell sizes. The pinned Key4hep stack is
+required; each sample takes about 11 minutes on one core.
 
-`calo.shower_shape` computes each event's energy-weighted RMS hit distance transverse to the
-radial axis through the shower's energy-weighted center, in mm. It uses simulated ECAL barrel
-hits above the threshold, without particle reconstruction. An event with no energy above
-threshold makes the result invalid. Its `histogram` artifact contains `edges`, `counts`,
-`underflow` and `overflow`; a width exactly at the last edge is included in the last bin.
+`calo.shower_shape` computes each event's **halo fraction**: the fraction of its energy, in
+simulated ECAL barrel hits above the threshold, deposited farther than `radius` (10 mm, about
+the Moliere radius of tungsten) from the radial axis through the shower's energy-weighted
+center. It uses no particle reconstruction. A single photon keeps most of its energy near its
+axis; the two photons of a pi0 put theirs off the axis of their common center, and only cells
+finer than their separation can place it there. An event with no energy above threshold makes
+the result invalid. Its `histogram` artifact contains `edges`, `counts`, `underflow` and
+`overflow`; a fraction exactly at the last edge is included in the last bin.
 
-`calo.separation` reads both histograms through roles. It selects the first whole bin reaching
-the requested photon efficiency and accepts all bins through that bin. The achieved efficiency
-may exceed the request. `background_rejection` is **1 minus the accepted background fraction**,
-from zero to one; it remains finite when no background passes. The reported `width_cut` is the
-selected bin's upper edge. Histogram underflow or a cut requiring signal overflow is invalid;
-background overflow remains in the denominator. Empty histograms are invalid. Bin edges must
-match. No uncertainty is assigned: finite statistics, binning, using the signal sample to set
-the cut, and missing reconstruction/systematics limit this demonstration.
+`calo.separation` reads both histograms through roles, the signal's values being the low ones.
+It selects the first whole bin reaching the requested photon efficiency and accepts all bins
+through that bin. The achieved efficiency may exceed the request. `background_rejection` is
+**1 minus the accepted background fraction**, from zero to one; it remains finite when no
+background passes. The reported `cut` is the selected bin's upper edge. Histogram underflow or
+a cut requiring signal overflow is invalid; background overflow remains in the denominator.
+Empty histograms are invalid. Bin edges must match.
+
+The two objectives are the rejection at 90 % photon efficiency (maximized) and the channel
+count of `ecal.channels` (minimized). With 500 events per sample:
+
+| cell size (mm) | pi0 rejection | halo cut | channels |
+| ---: | ---: | ---: | ---: |
+| 2.5 | 0.960 | 0.267 | 3.8e8 |
+| 5.0 | 0.960 | 0.273 | 9.6e7 |
+| 7.5 | 0.944 | 0.288 | 4.2e7 |
+| 10.0 | 0.912 | 0.317 | 2.4e7 |
+| 12.5 | 0.844 | 0.356 | 1.5e7 |
+| 15.0 | 0.570 | 0.442 | 1.1e7 |
+| 17.5 | 0.384 | 0.528 | 7.8e6 |
+| 20.0 | 0.278 | 0.643 | 6.0e6 |
+
+Each rejection is ± 0.01 to 0.02 from the 500 pi0s alone. Below 5 mm the rejection no longer
+improves: the fluctuations of the showers, not the cells, limit it, while the channels keep
+growing as 1/cell size². Above about 12 mm, where the cells grow past the separation of the two
+photons, it collapses. The knee lies between: 10 mm cells keep 0.91 of the rejection at a
+quarter of the channels of 5 mm cells. As in the photon example, the cell size changes only the
+readout grid, so with the same seeds every candidate simulates the same showers, and the
+differences between candidates are known better than each value. No uncertainty is assigned:
+finite statistics, binning, using the signal sample to set the cut, the fixed energy and the
+missing reconstruction and systematics limit this demonstration.
 
 `ecal.channels` is a separate candidate-level cost model: `2*pi*radius*length*layers/cell_size²`.
 Its dimensions and cell size are explicit settings in mm; the parameter `ecal_cell_size` sets
@@ -130,8 +162,9 @@ dimensions that are not positive are the problem's mistake (`EvaluationContractE
 size that is not positive is the candidate's (`cls.reject`), which rejects that candidate alone.
 
 The two simulations each run once, both histogram artifacts are hashed, and the combined
-record names the producer of each role. This is a runnable demonstration of the data flow,
-not a validated particle-flow separation or physics-sensitivity study.
+record names the producer of each role. This shows how the cell size limits the photon/pi0
+separation of the showers themselves; it is not a validated pi0 identification or particle-flow
+study.
 
 ## Not done
 

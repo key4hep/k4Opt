@@ -52,14 +52,14 @@ def test_separation_uses_whole_bins_and_includes_background_overflow(tmp_path: P
     assert evaluator.evaluate(request) == {
         ("analysis", "background_rejection"): pytest.approx(0.7),
         ("analysis", "signal_efficiency"): 1.0,
-        ("analysis", "width_cut"): 2,
+        ("analysis", "cut"): 2,
     }
 
 
 @pytest.mark.parametrize(
     ("counts", "overflow", "message"),
     [
-        ([0, 0, 0], 0, "empty width histogram"),
+        ([0, 0, 0], 0, "empty histogram"),
         ([1, 0, 0], 9, "needs overflow events"),
     ],
 )
@@ -77,13 +77,22 @@ def test_separation_refuses_empty_or_unresolved_signal(
         example("separation.py", "Separation").evaluate(request)
 
 
-def test_shower_width_is_transverse_and_energy_weighted(
+def test_halo_fraction_is_the_energy_beyond_the_radius_transverse_to_the_axis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hits = [simulation.Hit(1, 1, (100, -3, 0)), simulation.Hit(2, 1, (100, 3, 0))]
+    # the center is (100, 0, 0), so the axis is x: the hits are 3 and 20 mm from it, and the
+    # one along the axis, 50 mm deeper, is on it
+    hits = [
+        simulation.Hit(1, 2, (100, -3, 0)),
+        simulation.Hit(2, 2, (100, 3, 0)),
+        simulation.Hit(3, 1, (100, 0, -20)),
+        simulation.Hit(4, 1, (100, 0, 20)),
+        simulation.Hit(5, 1, (150, 0, 0)),
+        simulation.Hit(6, 1, (50, 0, 0)),
+    ]
     simulation.install_events(monkeypatch, [simulation.Event(hits=simulation.Hits(hits))])
     request = EvaluationRequest(
-        settings={"threshold": 0.0, "bins": {"low": 0, "high": 2, "count": 2}},
+        settings={"threshold": 0.0, "radius": 10.0, "bins": {"low": 0, "high": 1, "count": 4}},
         inputs={"simulation": tmp_path / "events.root"},
         collections={"hits": "hits"},
         workdir=tmp_path,
@@ -91,12 +100,12 @@ def test_shower_width_is_transverse_and_energy_weighted(
     evaluator = example("shower_shape.py", "ShowerShape")
     evaluator.check(request)
     result = evaluator.evaluate(request)
-    assert result.measurements[0].value == pytest.approx(3.0)
+    assert result.measurements[0].value == pytest.approx(2 / 8)
     assert json.loads(result.artifacts["histogram"].read_text()) == {
-        "edges": [0, 1, 2],
-        "counts": [0, 0],
+        "edges": [0, 0.25, 0.5, 0.75, 1],
+        "counts": [0, 1, 0, 0],
         "underflow": 0,
-        "overflow": 1,
+        "overflow": 0,
     }
 
 

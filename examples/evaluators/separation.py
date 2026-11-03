@@ -1,6 +1,7 @@
 """Toy binned pi0 rejection at a requested photon efficiency, without systematics.
 
-Accept widths through the first whole bin reaching the requested signal efficiency. Report
+Signal and background are histograms of one dimensionless shower variable, low for the signal.
+Accept values through the first whole bin reaching the requested signal efficiency. Report
 rejection as the fraction of background rejected (1 - efficiency), finite even for zero passes.
 There is no interpolation within a bin and no claim of independent validation of the cut.
 """
@@ -19,7 +20,7 @@ class Separation(Evaluator):
     metrics = {
         ("analysis", "background_rejection"): "1",
         ("analysis", "signal_efficiency"): "1",
-        ("analysis", "width_cut"): "mm",
+        ("analysis", "cut"): "1",
     }
 
     @classmethod
@@ -47,13 +48,13 @@ class Separation(Evaluator):
                     for n in [*counts, under, over]
                 )
             ):
-                self.fail(f"{item.label}: malformed width histogram")
+                self.fail(f"{item.label}: malformed histogram")
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            self.fail(f"{item.label}: cannot read width histogram: {exc}")
+            self.fail(f"{item.label}: cannot read histogram: {exc}")
         if under:
             self.invalid(f"{item.label}: histogram underflow; lower the first bin edge")
         if sum(counts) + over == 0:
-            self.invalid(f"{item.label}: empty width histogram")
+            self.invalid(f"{item.label}: empty histogram")
         return edges, counts, over
 
     def evaluate(self, request):
@@ -72,6 +73,6 @@ class Separation(Evaluator):
                     ("analysis", "background_rejection"): 1
                     - accepted / (sum(b) + background_overflow),
                     ("analysis", "signal_efficiency"): selected / total,
-                    ("analysis", "width_cut"): edges[index + 1],
+                    ("analysis", "cut"): edges[index + 1],
                 }
         self.invalid("signal efficiency needs overflow events; increase the last bin edge")
