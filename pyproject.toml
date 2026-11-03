@@ -45,6 +45,8 @@ k4opt = ["py.typed"]
 [project.optional-dependencies]
 # k4opt optimize; k4opt evaluate and everything else work without it
 optimize = ["optuna>=5.0,<6"]
+# k4opt.visualization's figures; nothing else imports Plotly
+plot = ["plotly>=6.0"]
 # numpy: the example evaluator uses it (k4opt itself does not)
 test = ["pytest>=9.1", "pytest-cov>=7.1", "pytest-xdist>=3.8", "numpy>=2.2", "optuna>=5.0,<6"]
 dev = [
@@ -53,6 +55,8 @@ dev = [
     "pytest-xdist>=3.8",
     "numpy>=2.2",
     "optuna>=5.0,<6",
+    "plotly>=6.0",
+    "streamlit>=1.65",
     "ruff>=0.17.2",
     "mypy>=2.4",
     "types-PyYAML>=6.0.12",
@@ -96,6 +100,11 @@ files = ["k4opt"]
 [[tool.mypy.overrides]]
 # podio comes from the Key4hep stack and is imported only when a simulation is read
 module = ["podio", "podio.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Plotly ships no type information (k4opt.visualization only)
+module = ["plotly", "plotly.*"]
 ignore_missing_imports = true
 
 [tool.ruff]
