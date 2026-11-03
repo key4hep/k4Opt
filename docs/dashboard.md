@@ -61,18 +61,27 @@ to set it; a publication with nothing in it, one that does not answer and one th
 up each have their own message, and *Refresh* in the sidebar reads the catalog again. The pages:
 
 - **Studies** (`/`): every published study, the latest first, with its problem, when it was
-  created and published, how many trials ended how, and how many were running when it was
-  published (a study in progress is published as far as it got). Selecting one opens it.
-- **Study** (`/study?study=<id>`): one study, by its id, so that the link can be shared; the
-  figure's axes are in the URL too (`&x=objective:...&y=parameter:...`). Its outcome counts, how
-  a candidate is evaluated ([`pipeline_figure`](visualization.md#how-a-candidate-is-evaluated-pipeline_figure):
-  drag to pan, scroll to zoom; click a stack of samples alike to draw each, *Draw each sample*
-  and *Stack alike samples* for all of them, and click a task for what the problem says of it and
-  its time or failures in each trial), its parameters, objectives and constraints,
-  [`trials_figure`](visualization.md), the trials
-  on the Pareto front, every trial in an expander (values, uncertainties, limit margins, times,
-  record ids, messages), and what it was made with (k4opt, the Key4hep stack, the geometry, each
-  evaluator's version, source hash and commit, the optimizer and its seed).
+  created and published, how many trials ended how (and the feasible share), and how many were
+  running when it was published (a study in progress is published as far as it got). Selecting
+  one opens it.
+- **Study** (`/study?study=<id>`): one study, by its id, so that the link can be shared, with its
+  outcome counts and four tabs; the tab open, the figure's axes and colors and the trial shown
+  are in the URL too (`&view=Trials&trial=12`, `&x=objective:...&y=parameter:...&color=trial`).
+  Only the open tab runs.
+  - **Overview**: [`trials_figure`](visualization.md) with its axes and what colors it, the
+    trials on the Pareto front, and [`history_figure`](visualization.md#the-history-of-an-objective-history_figure)
+    for each objective. Clicking a trial in a figure opens it in a dialog.
+  - **Trials**: every trial (values, uncertainties, limit margins, times, record ids, messages),
+    filtered by outcome; selecting one shows all it recorded: its objectives, candidate, limits
+    with their margins, stage times, diagnostics that did not succeed, and its record.
+  - **Pipeline**: how a candidate is evaluated
+    ([`pipeline_figure`](visualization.md#how-a-candidate-is-evaluated-pipeline_figure): drag to
+    pan, scroll to zoom; click a stack of samples alike to draw each, *Draw each sample* and
+    *Stack alike samples* for all of them, and click a task for what the problem says of it and
+    its time or failures in each trial).
+  - **Problem**: its parameters, objectives and constraints, and what it was made with (k4opt,
+    the Key4hep stack, the geometry, each evaluator's version, source hash and commit, the
+    optimizer and its seed).
 
 **Caching.** The catalog changes when a study is published: it is kept 60 s for all viewers, and
 *Refresh* drops it. A snapshot never changes, since its name is its content: a study is kept by

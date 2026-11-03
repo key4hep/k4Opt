@@ -25,14 +25,17 @@ def main(found: data.Source) -> None:
         on_select="rerun",
         selection_mode="single-row",
         key="studies",
+        column_order=[column for column in rows[0] if column != "Id"],
         column_config={
+            "Feasible share": st.column_config.ProgressColumn(
+                format="percent", min_value=0, max_value=1, help="Feasible trials of all"
+            ),
             "Created": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
             "Published": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
             "Running at publication": st.column_config.NumberColumn(
                 help="Trials that were running when the study was published: publish it again "
                 "to see them end."
             ),
-            "Id": st.column_config.TextColumn(width="small"),
         },
     )
     selected = event.selection.rows if event is not None else []

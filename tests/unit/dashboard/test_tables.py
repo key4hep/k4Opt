@@ -88,4 +88,35 @@ def test_the_latest_published_study_comes_first() -> None:
             entry("b" * 8 + "-0000-4000-8000-" + "0" * 12, "2026-11-02"),
         )
     )
-    assert [row["Study"] for row in tables.studies(catalog)] == ["name-b", "name-a"]
+    rows = tables.studies(catalog)
+    assert [row["Study"] for row in rows] == ["name-b", "name-a"]
+    assert rows[0]["Feasible share"] is None  # of no trials: no share, never 0
+
+
+def test_a_trial_is_shown_with_all_it_recorded(tmp_path: Path) -> None:
+    import tables
+
+    results = load_study(mixed_study(tmp_path / "s"))
+    trial = next(t for t in results.trials if t.outcome == "infeasible")
+    facts = {row[""]: row["Value"] for row in tables.trial_facts(results, trial)}
+    assert facts["Outcome"] == "infeasible" and facts["On the Pareto front"] is False
+    assert (facts["Record"], facts["Time [s]"]) == (trial.record, round(trial.elapsed_seconds, 1))
+    assert tables.trial_candidate(results, trial) == [
+        {"Parameter": "radius", "Value": trial.candidate["radius"], "Unit": None}
+    ]
+    a, b = tables.trial_objectives(trial)
+    assert (a["Objective"], a["Unit"], b["Direction"]) == (
+        "test.trade_off/analysis/a",
+        "mm",
+        "minimize",
+    )
+    (limit,) = tables.trial_limits(trial)
+    assert (limit["Bound"], limit["Limit"], limit["Satisfied"]) == ("max", 400, False)
+    assert limit["Margin"] == trial.assessment.limits[0].margin > 0
+    assert [row["Stage"] for row in tables.trial_stages(trial)] == list(trial.stage_seconds)
+    assert tables.trial_diagnostics(trial) == []
+    failed = next(t for t in results.trials if t.outcome == "failed")
+    assert tables.trial_objectives(failed) == []
+    assert [(row["Value"], row["Satisfied"]) for row in tables.trial_limits(failed)] == [
+        (None, None)
+    ]
