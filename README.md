@@ -2,6 +2,8 @@
 
 A detector optimization framework for [Key4hep](https://key4hep.github.io/key4hep-doc/).
 
+👉 [Open the live dashboard](https://k4opt-dashboard.app.cern.ch/)
+
 k4opt is being built to let detector experts define, evaluate, compare and share
 detector optimization problems for the Key4hep chain (generation, simulation,
 reconstruction, analysis), starting from the detector descriptions in
@@ -26,7 +28,7 @@ API, command group, documentation and tests.
 | [`k4opt.optimization`](docs/optimization.md) | Search a problem's parameters with an existing optimizer (Optuna's TPE sampler): `k4opt optimize` proposes candidates, evaluates each into a trial directory, judges them against the objectives and constraints, and resumes a study only with what it was made with; `k4opt study` (`load_study`) reads a study back, checked and unchanged, to show its trials and Pareto front or export them as CSV or JSON | first version |
 | [`k4opt.publication`](docs/publication.md) | Publish a study as a portable, read-only snapshot without any local path (`k4opt publish STUDY --output DIR`) into a directory that can be served as static files or copied anywhere, with a catalog of its studies, and read it back from a directory or an HTTP(S) URL, checked, without Optuna | first version |
 | [`k4opt.visualization`](docs/visualization.md) | Plotly figures of a study from its results alone: `trials_figure`, the trials on two objectives or parameters as feasible, infeasible or on the Pareto front, with units and uncertainties (`k4opt[plot]`) | first version |
-| [dashboard](docs/dashboard.md) | A Streamlit app in `dashboard/` that shows the studies of a publication, with its container, CERN OpenShift manifests and a gated deploy workflow; not deployed yet | first version |
+| [dashboard](docs/dashboard.md) | A Streamlit app in `dashboard/` that shows the studies of a publication, with its container, CERN OpenShift manifests and a gated deploy workflow; deployed as the [live dashboard](https://k4opt-dashboard.app.cern.ch/) | first version |
 
 The planned components are directions, not commitments; their shape depends on
 what the first ones teach.
