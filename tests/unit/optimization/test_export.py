@@ -26,8 +26,9 @@ from k4opt.optimization import (
     load_study,
     optimize,
 )
-from k4opt.optimization._export import columns, export, to_csv, to_json
+from k4opt.optimization._export import columns, export, to_csv
 from k4opt.optimization._show import LABEL, render_results, render_trial
+from k4opt.optimization._study import portable
 from k4opt.problem import parse_problem
 from k4opt.record import Assessment, ObjectiveValue
 from tests.support import simulation
@@ -196,8 +197,8 @@ def test_column_names_stay_distinct_whatever_the_stages_and_metrics_are_called()
         ObjectiveValue("test.trade_off", s, m, "minimize", float(i), unit=f"u{i}")
         for i, (s, m) in enumerate(named)
     )
-    trial = TrialResult(0, "valid", {RADIUS: 300.0}, Path("t"), Assessment(measured, (), True))
-    study = StudyResults("s", "id", "now", Path("s"), spec, FrozenMap({}), (trial,), (0,))
+    trial = TrialResult(0, "valid", {RADIUS: 300.0}, Assessment(measured, (), True))
+    study = StudyResults("s", "id", "now", spec, FrozenMap({}), (trial,), (0,), Path("s"))
     header = columns(study)
     assert len(set(header)) == len(header)
     escaped = ["analysis/count", "analysis/count%3Aunit", "analysis%2Fx/y", "analysis/x%2Fy"]
@@ -220,10 +221,10 @@ def test_the_json_export_holds_the_study_and_each_record_as_it_is(
     output = tmp_path / "s"
     run(mixed_problem, output, 6)
     study = load_study(output)
-    data = json.loads(to_json(study))
+    data = json.loads(study.to_json())
+    assert list(data) == ["format", "study", "outcomes", "pareto", "trials"]
     assert data["format"] == "k4opt.study-results/1"
-    assert data["directory"] == str(output)
-    assert data["study"] == json.loads((output / "study.json").read_text())
+    assert data["study"] == portable(json.loads((output / "study.json").read_text()))
     assert (data["pareto"], data["outcomes"]) == (list(study.pareto), dict(study.outcomes))
     assert [entry["number"] for entry in data["trials"]] == list(range(6))
     for entry in data["trials"]:
@@ -235,7 +236,6 @@ def test_the_json_export_holds_the_study_and_each_record_as_it_is(
         assert (entry["status"], entry["message"]) == (record["status"], record["message"])
         assert entry["record"] == {
             "id": record["id"],
-            "path": f"trial-{entry['number']:06d}/summary.json",
             "sha256": hashlib.sha256(data_bytes).hexdigest(),
         }
         assert entry["pareto"] == (entry["number"] in study.pareto)
@@ -245,7 +245,7 @@ def test_an_export_is_the_same_bytes_every_time(tmp_path: Path, mixed_problem: P
     run(mixed_problem, tmp_path / "s", 4)
     first, second = load_study(tmp_path / "s"), load_study(tmp_path / "s")
     assert to_csv(first) == to_csv(second)
-    assert to_json(first) == to_json(second)
+    assert first.to_json() == second.to_json()
 
 
 ODD = """
@@ -274,7 +274,7 @@ def test_text_from_a_record_reads_back_and_carries_no_terminal_escape(
     assert "\x1b" not in text
     (row,) = csv.DictReader(io.StringIO(text))
     assert row["message"] == expected.replace("\x1b", "\\x1b")  # escaped, the rest as it is
-    exported = to_json(study)
+    exported = study.to_json()
     assert "\x1b" not in exported
     assert json.loads(exported)["trials"][0]["message"] == expected  # exactly
 
@@ -288,7 +288,7 @@ def test_an_export_is_a_new_file_outside_the_study_written_whole(
     before = tree_digest(output)
     printed = io.StringIO()
     export(study, "json", printed, None)
-    assert printed.getvalue() == to_json(study)
+    assert printed.getvalue() == study.to_json()
     target = tmp_path / "results.csv"
     export(study, "csv", io.StringIO(), target)
     assert target.read_text() == to_csv(study)
@@ -354,7 +354,7 @@ def test_the_exports_and_the_trial_view_list_what_the_diagnostics_left_out(
     run(diagnosed_problem, output, 6)
     study = load_study(output)
     rows = list(csv.DictReader(io.StringIO(to_csv(study))))
-    exported = json.loads(to_json(study))["trials"]
+    exported = json.loads(study.to_json())["trials"]
     for trial, row, data in zip(study.trials, rows, exported, strict=True):
         assert trial.status == "valid"
         assert [dict(d) for d in trial.diagnostics] == summary(output, trial.number)["diagnostics"]

@@ -115,7 +115,10 @@ def test_every_trial_has_a_directory_with_its_complete_record(
             "path": f"{name}/summary.json",
         }
         assert isinstance(trial.user_attrs["k4opt.sampler_seed"], int)
-        assert (reported.record, reported.directory) == (record["id"], output / name)
+        assert (reported.record, report.record_path(reported)) == (
+            record["id"],
+            output / name / "summary.json",
+        )
         assert trial.params == record["candidate"]
 
 
@@ -257,7 +260,8 @@ def test_a_candidate_an_evaluator_rejects_is_rejected_and_the_study_goes_on(
         assert frozen.state == TrialState.FAIL and frozen.values is None and not frozen.constraints
         assert trial.assessment is None and trial.record is None and trial.objectives is None
         assert trial.message == "test.candidate_check: this evaluator cannot measure 250"
-        assert not trial.directory.exists()
+        assert not (tmp_path / "s" / f"trial-{trial.number:06d}").exists()
+        assert report.record_path(trial) is None
         assert "rejected" in trial_line(trial)
     assert set(report.pareto) <= {t.number for t in report.trials if t.status == "valid"}
     assert report.outcomes["rejected"] == sum(t.status == "rejected" for t in report.trials)

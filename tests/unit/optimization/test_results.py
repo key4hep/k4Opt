@@ -132,9 +132,7 @@ def test_one_objective_has_all_its_best_trials_on_the_front(
 def _trial(number: int, values: list[int], feasible: bool) -> TrialResult:
     """A valid trial with these objective values, ``analysis/m0``, ``analysis/m1``, ..."""
     measured = tuple(Measurement("analysis", f"m{i}", v, unit="1") for i, v in enumerate(values))
-    return TrialResult(
-        number, "valid", {RADIUS: 1.0}, Path("t"), Assessment(measured, (), feasible)
-    )
+    return TrialResult(number, "valid", {RADIUS: 1.0}, Assessment(measured, (), feasible))
 
 
 @pytest.mark.parametrize(
@@ -379,7 +377,8 @@ def test_a_moved_study_reads_without_its_problem_evaluators_geometry_or_stack(
     monkeypatch.delenv("K4GEO")
     monkeypatch.delenv("KEY4HEP_STACK")
     after = load_study(tmp_path / "moved")
-    assert after.to_dict() == before | {"directory": str(tmp_path / "moved")}
+    assert after.directory == tmp_path / "moved"
+    assert after.to_dict() == before  # the JSON form names no location
 
 
 def test_the_files_of_a_moved_study_are_found_where_its_records_now_are(
@@ -390,15 +389,16 @@ def test_the_files_of_a_moved_study_are_found_where_its_records_now_are(
     before = load_study(tmp_path / "s").to_dict()
     shutil.move(tmp_path / "s", tmp_path / "moved")
     after = load_study(tmp_path / "moved")
-    assert after.to_dict() == before | {"directory": str(tmp_path / "moved")}
+    assert after.to_dict() == before
     for trial in after.trials:
-        assert trial.summary_path is not None
-        record = json.loads(trial.summary_path.read_text())
-        assert record["run_dir"] == str(tmp_path / "s" / trial.directory.name)  # where it was made
+        summary_path = after.record_path(trial)
+        assert summary_path is not None
+        record = json.loads(summary_path.read_text())
+        assert record["run_dir"] == str(tmp_path / "s" / summary_path.parent.name)  # made there
         for sample in ("gamma", "pion"):
             stage = record["samples"][sample]["stages"]["simulation"]
             for path in (stage["outputs"]["events"]["path"], *stage["logs"].values()):
-                assert (trial.directory / path).is_file()  # and where it is now
+                assert (summary_path.parent / path).is_file()  # and where it is now
 
 
 # --- what is refused -------------------------------------------------------------------------

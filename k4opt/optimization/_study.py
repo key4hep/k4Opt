@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from k4opt.frozen import freeze, thaw
 from k4opt.jsonio import write_json
 from k4opt.optimization._identity import _contents, compared, revision_warnings
 from k4opt.optimization.errors import OptimizationError
@@ -59,6 +60,83 @@ def session_seed(study_seed: int, trials: int) -> int:
 
 
 # --- study.json ------------------------------------------------------------------------------
+
+
+type _Kept = bool | Mapping[str, _Kept]
+
+_SOURCE: _Kept = {
+    "bytes": True,
+    "sha256": True,
+    "helpers": True,
+    "executed": True,
+    "revision": True,
+}
+PORTABLE: Mapping[str, _Kept] = {
+    "schema": True,
+    "id": True,
+    "created": True,
+    "identity": True,
+    "problem": {"definition": True},
+    "inputs": {"*": {"bytes": True, "sha256": True}},
+    "implementations": {
+        "*": {
+            "version": True,
+            "stage": True,
+            "metrics": True,
+            "artifacts": True,
+            "roles": True,
+            "source": _SOURCE,
+        }
+    },
+    "geometry": {
+        "compact": True,
+        "fingerprint": True,
+        "targets": True,
+        "externals": {"*": {"sha256": True, "files": True, "unresolved": True}},
+    },
+    "environment": {"KEY4HEP_STACK": True},
+    "k4opt": {"version": True, "sha256": True, "git": True},
+    "optimizer": {
+        "backend": True,
+        "version": True,
+        "study": True,
+        "sampler": True,
+        "directions": True,
+        "parameters": True,
+        "constraints": True,
+        "constraint_values": True,
+    },
+}
+"""What of ``study.json`` leaves the study directory (:func:`portable`), key by key; ``*`` stands
+for every key of a mapping keyed by name. Left out: every location (the problem file, the files
+the problem names, the evaluators' files, the geometry's source root and the files its external
+references resolve to, ``K4GEO``) and the optimizer's storage (a journal name, or a database URL
+with its host and user), and any key not named here."""
+
+
+def portable(document: Mapping[str, Any]) -> dict[str, Any]:
+    """``study.json`` without its locations, as the JSON form of a study holds it
+    (:data:`PORTABLE`): a fresh plain copy. Locations are no part of a study's identity, so its
+    ``identity`` digest is that of the portable document too."""
+    kept = _portable(document, PORTABLE, STUDY_NAME)
+    assert isinstance(kept, dict)
+    return kept
+
+
+def _portable(value: object, kept: _Kept, where: str) -> object:
+    if kept is True:
+        return thaw(freeze(value, where, OptimizationError))
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or not isinstance(kept, Mapping):
+        raise OptimizationError(f"{where} is not an object")
+    if "*" in kept:
+        return {key: _portable(item, kept["*"], f"{where}.{key}") for key, item in value.items()}
+    return {
+        key: _portable(value[key], rule, f"{where}.{key}")
+        for key, rule in kept.items()
+        if rule and key in value
+    }
 
 
 def write_study(directory: Path, document: Mapping[str, object]) -> None:

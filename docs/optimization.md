@@ -526,16 +526,22 @@ Booleans are `true` and `false`; control characters in text are escaped (`\x1b`)
 newline kept in quoted cells. The CSV cannot tell a categorical `""` or `"1"` from an empty cell
 or the number 1: the JSON export is the typed one.
 
-**JSON** (`k4opt.study-results/1`): the whole study, typed, with `study.json` as it is.
+**JSON** (`k4opt.study-results/1`): the whole study, typed, and without any location, so it can
+leave the machine: what a [publication](publication.md) holds is exactly these bytes. `study` is
+`study.json` without its locations: the problem file's path, the paths of the files it names, of
+the evaluators' files and of the files the geometry's external references resolve to, the
+geometry's source root, `K4GEO` and the optimizer's storage (a journal name, or a database URL
+with its host and user) are left out, and so is anything else not on the list in
+`k4opt/optimization/_study.py` (`PORTABLE`). Locations are no part of a study's identity, so its
+`identity` digest still holds. The study directory and the read warnings are not part of it
+either (warnings go to stderr).
 
 ```json
 {
   "format": "k4opt.study-results/1",
-  "directory": "/home/me/runs/cld-ecal-study",
-  "study": {"schema": "k4opt.study/1", "id": "3f9c2a1b-...", "problem": {}, "optimizer": {}},
+  "study": {"schema": "k4opt.study/1", "id": "3f9c2a1b-...", "problem": {"definition": {}}, "optimizer": {}},
   "outcomes": {"feasible": 28, "infeasible": 0, "invalid": 1, "failed": 1, "rejected": 0, "interrupted": 0, "error": 0, "running": 0},
   "pareto": [0, 4, 7],
-  "warnings": [],
   "trials": [
     {
       "number": 0,
@@ -548,7 +554,7 @@ or the number 1: the JSON export is the typed one.
       "stage_seconds": {"gamma_10gev/generation": 0.4, "gamma_10gev/simulation": 280.2},
       "message": null,
       "diagnostics": [],
-      "record": {"id": "7a2aca36-...", "path": "trial-000000/summary.json", "sha256": "a22d51..."},
+      "record": {"id": "7a2aca36-...", "sha256": "a22d51..."},
       "pareto": true
     }
   ]
@@ -560,7 +566,29 @@ objective as `stage`, `metric`, `value`, `unit` and `uncertainty`, and each limi
 `metric`, `bound`, `limit`, `unit`, `value`, `uncertainty`, `margin`, `scale`, `normalized` and
 `satisfied`. Its
 `diagnostics` are those of the record: each diagnostic that did not succeed, as `task`, `status`
-and `message`.
+and `message`. `record` identifies the trial's `summary.json` by its id and SHA-256; the record
+itself stays in the study directory, at `trial-NNNNNN/summary.json` (`NNNNNN` the trial's
+number). A running trial's `candidate` holds the values proposed so far, any other trial without
+a record those the optimizer proposed, and a trial with a record every parameter. Messages are
+as the records and the optimizer hold them: an evaluator that writes a path into its message
+puts it into the export.
+
+`StudyResults.from_dict` reads the JSON form back, without Optuna:
+
+```python
+import json
+from pathlib import Path
+
+from k4opt.optimization import StudyResults
+
+study = StudyResults.from_dict(json.loads(Path("results.json").read_text()))
+```
+
+It checks the form, not the measurements, whose records it does not hold: the identity digest of
+`study` (so its problem definition is the study's), each trial's status, outcome, candidate,
+assessment and record against the problem and each other (objectives, limits and feasibility
+among them), and the outcome counts and the Pareto front, recomputed. What does not hold up
+raises `OptimizationError`. `load_study` checks each record in full before any of it is exported.
 
 ## Python API
 
@@ -609,13 +637,15 @@ for m in trial.assessment.objectives:  # None for a trial without a valid result
     print(m.stage, m.metric, m.value, m.unit, m.uncertainty)
 trial.assessment.limits  # each Limit: value, limit, margin, scale, normalized, satisfied
 trial.elapsed_seconds, trial.stage_seconds  # recorded times, stages by label
-trial.record, trial.sha256, trial.summary_path  # the summary.json it was read from
+trial.record, trial.sha256, study.record_path(trial)  # the summary.json it was read from
 
-data = study.to_dict()  # the JSON export, plain data
+data = study.to_dict()  # the JSON form, plain data without locations; study.to_json() as text
+StudyResults.from_dict(data)  # read back, checked (above)
 ```
 
 `StudyResults` and `TrialResult` are a snapshot: immutable, detached from the storage, and free
-of Optuna types; `study.document` is `study.json` as a read-only mapping. `optimize` returns the
+of Optuna types; `study.document` is `study.json` as a read-only mapping (without its locations
+for a study read from its JSON form, whose `directory` is `None`). `optimize` returns the
 same. `load_study` raises `OptimizationError` for anything it cannot read or does not trust (above), and needs
 Optuna, which holds the trials; the rest of k4opt does not.
 
@@ -624,7 +654,7 @@ Optuna, which holds the trials; the rest of k4opt does not.
 Retrying interrupted trials, reusing the record of a candidate proposed twice, a warm start from
 `k4opt evaluate` records, sampler options, a characteristic `scale` per constraint, treating
 invalid candidates as infeasible, trials on other machines (a batch system), overrides for
-changed software, other optimizers, comparing or plotting studies, exporting an evaluator's
+changed software, other optimizers, comparing studies, exporting an evaluator's
 other measurements (each row names its record, which holds them), and a memory limit of k4opt's
 own. None of them is blocked by the design: records have ids, studies reference them, and the
 session knows no optimizer.

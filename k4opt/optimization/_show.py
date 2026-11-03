@@ -215,7 +215,7 @@ def render_trial(
         _print(out, style, "record", [_NO_RECORD.get(trial.status, "none")])
     else:
         record = [
-            printable(trial.summary_path),
+            printable(results.record_path(trial)),
             printable(f"id {trial.record}, sha256 {trial.sha256}"),
         ]
         if trial.status == "error":
