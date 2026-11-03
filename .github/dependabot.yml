@@ -4,6 +4,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # the dashboard's requirements are updated by their own entry below, not twice
+    exclude-paths:
+      - "dashboard/**"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -16,6 +19,10 @@ updates:
     directory: "/dashboard"
     schedule:
       interval: "weekly"
+    ignore:
+      # Streamlit (1.66.1) requires watchdog<7; drop this once a release allows it
+      - dependency-name: "watchdog"
+        versions: [">=7"]
   - package-ecosystem: "docker"
     directory: "/dashboard"
     schedule:
