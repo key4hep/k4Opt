@@ -1,7 +1,8 @@
 """Internal: the results of a study as JSON or CSV, for plotting and analysis elsewhere.
 
 ``k4opt study export`` writes one of them; ``docs/optimization.md`` describes both. JSON is the
-typed form, :meth:`~k4opt.optimization.StudyResults.to_dict`, with every value as recorded. CSV
+typed form, :meth:`~k4opt.optimization.StudyResults.to_json`, with every value as recorded and no
+location, the same bytes a publication holds (:mod:`k4opt.publication`). CSV
 is one row per trial, by number, with columns that only the problem decides, so that the exports
 of a study line up however many trials it has; a missing value is an empty cell, never 0 or NaN,
 a float is written with all its digits, and text with its control characters escaped. Either is
@@ -12,7 +13,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import os
 import unicodedata
 import urllib.parse
@@ -26,10 +26,6 @@ from k4opt.optimization.errors import OptimizationError
 from k4opt.record import SUMMARY_NAME
 
 FORMATS = ("csv", "json")
-
-
-def to_json(results: StudyResults) -> str:
-    return json.dumps(results.to_dict(), indent=2, allow_nan=False) + "\n"
 
 
 def _stages(results: StudyResults) -> list[str]:
@@ -163,14 +159,15 @@ def export(
     """Write the ``form`` (``csv`` or ``json``) export of ``results`` to ``out``, or to the new
     file ``output``: published whole (:func:`k4opt.jsonio.publish`), never over an existing file
     and never into the study directory, which reading leaves as it is."""
-    text = to_json(results) if form == "json" else to_csv(results)
+    text = results.to_json() if form == "json" else to_csv(results)
     if output is None:
         out.write(text)
         return
     path = Path(os.path.abspath(Path(output).expanduser()))
-    if Path(os.path.realpath(path)).is_relative_to(os.path.realpath(results.directory)):
+    study = results.directory
+    if study is not None and Path(os.path.realpath(path)).is_relative_to(os.path.realpath(study)):
         raise OptimizationError(
-            f"{path} is in the study directory {results.directory}; reading a study adds nothing "
+            f"{path} is in the study directory {study}; reading a study adds nothing "
             "to it, so export somewhere else"
         )
     try:

@@ -1,0 +1,21 @@
+# HTTPS at k4opt-dashboard.app.cern.ch, TLS ended at the router, plain HTTP redirected.
+# No visibility annotation: whether the route is reachable from outside CERN depends on the
+# cluster's routers and is to be checked from outside before any data is named in
+# deployment.yaml. Treat everything the dashboard shows as public (docs/dashboard.md).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: k4opt-dashboard
+  namespace: k4opt
+  labels:
+    app: k4opt-dashboard
+spec:
+  host: k4opt-dashboard.app.cern.ch
+  to:
+    kind: Service
+    name: k4opt-dashboard
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

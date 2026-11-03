@@ -48,9 +48,7 @@ def trial(
 ) -> TrialResult:
     if status == "valid":
         fields = {"assessment": assessed(feasible, a=1 / 3), **fields}
-    return TrialResult(
-        number, status, {"x": 498.78582224598927}, Path(f"trial-{number:06d}"), **fields
-    )
+    return TrialResult(number, status, {"x": 498.78582224598927}, **fields)
 
 
 class Clock:
@@ -282,12 +280,10 @@ def test_a_running_study_cannot_send_the_terminal_a_control_sequence() -> None:
     with Progress(3, out, err, bar=False, color=False) as shown:
         candidate = {f"x{esc}": f"c{esc}"}
         shown.trial(
-            TrialResult(
-                0, "valid", candidate, Path("t"), assessment=assessed(True, **{f"a{esc}": 1.0})
-            )
+            TrialResult(0, "valid", candidate, assessment=assessed(True, **{f"a{esc}": 1.0}))
         )
         shown.trial(trial(1, "failed", record="r", message=f"ddsim{esc}"))
-        shown.trial(TrialResult(2, "interrupted", {}, Path(f"trial{esc}")))
+        shown.trial(TrialResult(2, "interrupted", {}, message=f"stopped{esc}"))
         shown.warning(f"trial 1: careful{esc}")
     lines = out.getvalue().splitlines()
     assert "\x1b" not in out.getvalue() + err.getvalue() and len(lines) == 3
@@ -315,7 +311,6 @@ def test_a_study_read_back_cannot_send_the_terminal_a_control_sequence() -> None
         0,
         "valid",
         {RADIUS: f"x{esc}"},
-        Path(f"trial{esc}"),
         Assessment(measured, (limit,), True),
         record=f"id{esc}",
         sha256="0" * 64,
@@ -331,7 +326,7 @@ def test_a_study_read_back_cannot_send_the_terminal_a_control_sequence() -> None
         }
     )
     study = StudyResults(
-        f"name{esc}", f"id{esc}", f"now{esc}", Path(f"dir{esc}"), spec, document, (trial,), (0,)
+        f"name{esc}", f"id{esc}", f"now{esc}", spec, document, (trial,), (0,), Path(f"dir{esc}")
     )
     out = io.StringIO()
     render_results(study, out)

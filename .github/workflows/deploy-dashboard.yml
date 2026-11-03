@@ -1,0 +1,113 @@
+# Build the dashboard's image, push it to GHCR, and roll it out on CERN OpenShift (docs/dashboard.md).
+# The image is built and pushed on every change of what it holds on main, and on demand; the
+# deployment runs only once it is provisioned (the repository variable DASHBOARD_DEPLOY is
+# "true", the production environment holds OC_SERVER and OC_TOKEN), and only from main. Publishing
+# a study changes the data the dashboard reads, never its image: it needs no run of this.
+name: Deploy Dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "dashboard/**"
+      - "k4opt/**"
+      - "pyproject.toml"
+      - "openshift/**"
+      - ".github/workflows/deploy-dashboard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dashboard
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/key4hep/k4opt-dashboard
+  NAMESPACE: k4opt
+
+jobs:
+  image:
+    name: Build and push the image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build, tagged with the commit
+        run: |
+          docker build --pull --build-arg "REVISION=${GITHUB_SHA}" \
+            -t "${IMAGE}:${GITHUB_SHA}" -f dashboard/Dockerfile .
+
+      - name: Push, and on main as latest
+        id: push
+        run: |
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            docker tag "${IMAGE}:${GITHUB_SHA}" "${IMAGE}:latest"
+            docker push "${IMAGE}:latest"
+          fi
+          # the exact image, by digest: what the deployment runs
+          echo "image=$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${GITHUB_SHA}")" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to CERN OpenShift
+    needs: image
+    if: vars.DASHBOARD_DEPLOY == 'true' && github.ref == 'refs/heads/main'
+    # CERN's OpenShift API is reached from runners at CERN
+    runs-on: [self-hosted, fcc-ironic]
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://k4opt-dashboard.app.cern.ch
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the oc CLI
+        uses: redhat-actions/openshift-tools-installer@v3
+        with:
+          oc: latest
+
+      - name: Log in to CERN OpenShift
+        env:
+          OC_SERVER: ${{ secrets.OC_SERVER }}
+          OC_TOKEN: ${{ secrets.OC_TOKEN }}
+        # the API's certificate is verified: it is issued by a public authority
+        run: oc login --server="${OC_SERVER}" --token="${OC_TOKEN}"
+
+      - name: Apply the service, the route and the deployment of the new image
+        env:
+          NEW_IMAGE: ${{ needs.image.outputs.image }}
+        run: |
+          oc apply -n "${NAMESPACE}" -f openshift/service.yaml -f openshift/route.yaml
+          # one rollout, of exactly the image built above
+          oc set image --local -f openshift/deployment.yaml "dashboard=${NEW_IMAGE}" -o yaml \
+            | oc apply -n "${NAMESPACE}" -f -
+
+      - name: Wait for the rollout
+        run: oc rollout status deployment/k4opt-dashboard -n "${NAMESPACE}" --timeout=300s
+
+      - name: Report the route
+        env:
+          NEW_IMAGE: ${{ needs.image.outputs.image }}
+        run: |
+          host="$(oc get route k4opt-dashboard -n "${NAMESPACE}" -o jsonpath='{.spec.host}')"
+          echo "Dashboard: https://${host} (${NEW_IMAGE})"
+          echo "Deployed ${NEW_IMAGE} at https://${host}" >> "$GITHUB_STEP_SUMMARY"

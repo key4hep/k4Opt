@@ -6,8 +6,8 @@ k4opt is being built to let detector experts define, evaluate, compare and share
 detector optimization problems for the Key4hep chain (generation, simulation,
 reconstruction, analysis), starting from the detector descriptions in
 [k4geo](https://github.com/key4hep/k4geo). It is in early development: **geometry handling, a first end-to-end evaluation (a
-candidate, simulated with `ddsim` once and measured by one or more evaluators) and a first
-optimization with Optuna exist.**
+candidate, simulated with `ddsim` once and measured by one or more evaluators), a first
+optimization with Optuna, and publishing its results for a first dashboard exist.**
 
 ## Components
 
@@ -24,6 +24,9 @@ API, command group, documentation and tests.
 | [`k4opt.ddsim`](docs/ddsim.md) | Run `ddsim` on a prepared geometry with a particle gun or an event file: command from a sample's stages (the ddsim options written the way ddsim reads them), protected options, logs; run once per candidate and sample as its `simulation` stage, whatever number of evaluators read it | first vertical slice |
 | [examples](docs/evaluators.md) | Runnable photon-direction and photon/pi0-separation problems with evaluators to copy from, run with `k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] --param NAME=VALUE --output DIR`. The problem asks how fine the CLD ECAL cells should be: finer cells measure a photon's direction better (`calo.photon` measures it) but fire more readout channels. k4opt ships no evaluators | example |
 | [`k4opt.optimization`](docs/optimization.md) | Search a problem's parameters with an existing optimizer (Optuna's TPE sampler): `k4opt optimize` proposes candidates, evaluates each into a trial directory, judges them against the objectives and constraints, and resumes a study only with what it was made with; `k4opt study` (`load_study`) reads a study back, checked and unchanged, to show its trials and Pareto front or export them as CSV or JSON | first version |
+| [`k4opt.publication`](docs/publication.md) | Publish a study as a portable, read-only snapshot without any local path (`k4opt publish STUDY --output DIR`) into a directory that can be served as static files or copied anywhere, with a catalog of its studies, and read it back from a directory or an HTTP(S) URL, checked, without Optuna | first version |
+| [`k4opt.visualization`](docs/visualization.md) | Plotly figures of a study from its results alone: `trials_figure`, the trials on two objectives or parameters as feasible, infeasible or on the Pareto front, with units and uncertainties (`k4opt[plot]`) | first version |
+| [dashboard](docs/dashboard.md) | A Streamlit app in `dashboard/` that shows the studies of a publication, with its container, CERN OpenShift manifests and a gated deploy workflow; not deployed yet | first version |
 
 The planned components are directions, not commitments; their shape depends on
 what the first ones teach.
@@ -143,10 +146,19 @@ k4opt study trial runs/cld-ecal-study 12  # one trial, every value as recorded
 k4opt study export runs/cld-ecal-study --format csv --output results.csv
 ```
 
+publish it, and browse it in the dashboard:
+
+```bash
+k4opt publish runs/cld-ecal-study --output published/
+K4OPT_DASHBOARD_DATA=published/ streamlit run dashboard/app.py   # pip install -r dashboard/requirements.txt
+```
+
 The guides: [geometry](docs/geometry.md) (target references, include handling, override
 semantics, manifest, Python API, limitations), [problem](docs/problem.md),
 [evaluation](docs/evaluation.md), [execution](docs/execution.md), [record](docs/record.md),
-[example evaluators](docs/evaluators.md) and [optimization](docs/optimization.md). The [photon/pi0 example](docs/evaluators.md#photonpi0-example)
+[example evaluators](docs/evaluators.md), [optimization](docs/optimization.md),
+[publication](docs/publication.md), [visualization](docs/visualization.md) and
+[dashboard](docs/dashboard.md). The [photon/pi0 example](docs/evaluators.md#photonpi0-example)
 combines two samples through histogram artifacts and constrains an approximate channel cost.
 
 ## Development

@@ -689,11 +689,11 @@ def test_two_bindings_of_one_implementation_are_two_owners_in_a_record(
 def limit_of(bound: str, value: float, unit: str = "mrad", **constraint: Any) -> Any:
     """The limit ``bound`` of a constraint on ``analysis/a`` judged on ``value``."""
     from k4opt.problem.models import Constraint
-    from k4opt.record.assess import _limit
+    from k4opt.record.assess import judge_limit
 
     measured = Measurement("analysis", "a", value, unit)
     spec = Constraint("test.fixed", "analysis", "a", unit=unit, **constraint)
-    return _limit(spec, bound, measured)  # type: ignore[arg-type]
+    return judge_limit(spec, bound, measured)  # type: ignore[arg-type]
 
 
 def test_a_limit_in_another_unit_with_its_scale_in_that_unit_is_told_alike() -> None:

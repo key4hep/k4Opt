@@ -105,12 +105,11 @@ def trial_result(
         )
     candidate = {key: frozen.params[key] for key in references if key in frozen.params}
     recovered = attrs.get("k4opt.recovered") is True
-    own = directory / trial_directory(number)
     if frozen.state == TrialState.RUNNING:
-        return TrialResult(number, "running", candidate, own, recovered=recovered), []
+        return TrialResult(number, "running", candidate, recovered=recovered), []
     told, error = attrs.get("k4opt.record"), attrs.get("k4opt.error")
     if attrs.get("k4opt.status") == "rejected":
-        return _rejected(frozen, spec, candidate, own), []
+        return _rejected(frozen, spec, candidate, directory / trial_directory(number)), []
     if told is None:
         ours = "k4opt.dir" in attrs or recovered
         if frozen.state != TrialState.FAIL or "k4opt.status" in attrs or not ours:
@@ -119,7 +118,7 @@ def trial_result(
                 "with, or any mark of k4opt, so it was not made by k4opt optimize"
             )
         status, message = ("interrupted", None) if error is None else ("error", str(error))
-        return TrialResult(number, status, candidate, own, message=message, recovered=recovered), []
+        return TrialResult(number, status, candidate, message=message, recovered=recovered), []
     result, warnings = recorded(directory, document, spec, number, frozen.params, told, read)
     if attrs.get("k4opt.status") != result.status:
         raise OptimizationError(
@@ -174,7 +173,7 @@ def _rejected(
         raise OptimizationError(
             f"{where} {own.name} exists, though nothing of a rejected candidate is created"
         )
-    return TrialResult(number, "rejected", candidate, own, message=f"{by}: {message}")
+    return TrialResult(number, "rejected", candidate, message=f"{by}: {message}")
 
 
 def results_of(

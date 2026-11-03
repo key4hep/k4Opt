@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: k4opt-dashboard
+  namespace: k4opt
+  labels:
+    app: k4opt-dashboard
+spec:
+  selector:
+    app: k4opt-dashboard
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

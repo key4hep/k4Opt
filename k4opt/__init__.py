@@ -12,6 +12,11 @@ own public API, errors and command group:
 * :mod:`k4opt.ddsim` - run Key4hep's ``ddsim`` on a prepared geometry.
 * :mod:`k4opt.optimization` - search a problem's parameters with an optimizer
   (``k4opt optimize``), and read a study's results back (``k4opt study``).
+* :mod:`k4opt.publication` - publish a study as a portable snapshot (``k4opt publish``), and
+  read publications from a directory or over HTTP(S).
+* :mod:`k4opt.visualization` - Plotly figures of a study's results.
+
+The Streamlit dashboard of published studies lives outside the package, in ``dashboard/``.
 
 Shared pieces live at the top level: :mod:`k4opt.errors`, the helpers :mod:`k4opt.frozen`,
 :mod:`k4opt.yamlio`, :mod:`k4opt.jsonio` and :mod:`k4opt.revision`, and the ``k4opt`` command

@@ -19,6 +19,8 @@ from typing import Any, TextIO
 
 from k4opt.execution import Activity
 from k4opt.optimization._results import OUTCOMES, StudyResults, TrialResult, limit_names
+from k4opt.optimization._study import trial_directory
+from k4opt.record import SUMMARY_NAME
 from k4opt.terminal import Style, printable, width
 
 BAR_WIDTH = 40
@@ -56,7 +58,8 @@ def trial_line(trial: TrialResult, *, color: bool = False) -> str:
         )
         line = f"{head}{_paint(style, outcome, outcome.ljust(10))}  {candidate}  {values}"
     else:
-        where = f"{trial.directory.name}/summary.json" if trial.record else trial.directory.name
+        name = trial_directory(trial.number)
+        where = f"{name}/{SUMMARY_NAME}" if trial.record else name
         line = f"{head}{printable(trial.message or '')}  {style.dim(printable(where))}"
     if diagnostics := len(trial.diagnostics):
         noun = "diagnostic" if diagnostics == 1 else "diagnostics"

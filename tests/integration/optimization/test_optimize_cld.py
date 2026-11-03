@@ -10,6 +10,7 @@ Verify by hand with::
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -96,7 +97,9 @@ def test_a_study_of_the_example_runs_resumes_and_tells_the_optimizer_its_records
     command = ["study", "export", str(output), "--format", "json"]
     assert main(command, stdout=exported, stderr=io.StringIO()) == 0
     for entry in json.loads(exported.getvalue())["trials"]:
-        summary = json.loads((output / entry["record"]["path"]).read_text())
+        record = output / f"trial-{entry['number']:06d}" / "summary.json"
+        summary = json.loads(record.read_text())
+        assert entry["record"]["sha256"] == hashlib.sha256(record.read_bytes()).hexdigest()
         assert entry["assessment"] == summary["assessment"]
         assert (
             entry["stage_seconds"]["gamma_10gev/simulation"]

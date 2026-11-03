@@ -1,0 +1,5 @@
+# Labels of the self-hosted runners workflows run on: the deploy job of deploy-dashboard.yml runs
+# on the FCC runners that reach CERN's OpenShift API (docs/dashboard.md)
+self-hosted-runner:
+  labels:
+    - fcc-ironic

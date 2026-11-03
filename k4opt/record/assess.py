@@ -223,9 +223,9 @@ def _judge(spec: ProblemSpec, status: Status, represents: bool, value: _Lookup) 
         if getattr(constraint, bound) is not None
     ]
     if status is not Status.VALID:
-        return Assessment(None, tuple(_limit(c, bound, None) for c, bound in bounds), None)
+        return Assessment(None, tuple(judge_limit(c, bound, None) for c, bound in bounds), None)
     objectives = tuple(_objective(o, _required(value, o.ref)) for o in spec.objectives)
-    limits = tuple(_limit(c, b, _required(value, c.ref)) for c, b in bounds)
+    limits = tuple(judge_limit(c, b, _required(value, c.ref)) for c, b in bounds)
     feasible = all(limit.satisfied for limit in limits) if represents else None
     return Assessment(objectives, limits, feasible)
 
@@ -250,7 +250,10 @@ def _objective(objective: Objective, m: Measurement) -> ObjectiveValue:
     )
 
 
-def _limit(constraint: Constraint, bound: Bound, measurement: Measurement | None) -> Limit:
+def judge_limit(constraint: Constraint, bound: Bound, measurement: Measurement | None) -> Limit:
+    """The ``bound`` of ``constraint`` judged on ``measurement`` (``None``: not judged, as for an
+    evaluation that is not ``valid``): the one way a limit is judged, live, from a record, and
+    from the JSON form of a study (:meth:`k4opt.optimization.StudyResults.from_dict`)."""
     limit = constraint.min if bound == "min" else constraint.max
     assert limit is not None
     ref = (constraint.evaluator, constraint.stage, constraint.metric)
