@@ -3,6 +3,7 @@ study, and what it says when there is nothing to show, from a directory and over
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -95,13 +96,30 @@ def test_the_studies_of_a_publication_are_listed_and_one_is_shown_by_its_id(
     assert metrics["Trials"] == "8"
     assert metrics["Infeasible"] == str(results.outcomes["infeasible"])
     assert metrics["Pareto front"] == str(len(results.pareto))
-    assert len(at.get("plotly_chart")) == 1
+    assert len(at.get("plotly_chart")) == 2  # how a candidate is evaluated, and the trials
     frames = [frame.value for frame in at.dataframe]
     every = next(f for f in frames if len(f) == 8 and "Outcome" in f.columns)
     assert list(every["Outcome"]) == [t.outcome for t in results.trials]
     front = next(f for f in frames if "Outcome" in f.columns and len(f) == len(results.pareto))
     assert list(front["Trial"]) == list(results.pareto)
     assert at.query_params["x"].startswith("objective:")  # a link reopens the same view
+
+
+def test_the_tasks_of_a_candidate_are_drawn_and_one_sample_has_no_stack_to_expand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = published(tmp_path)
+    at = app(monkeypatch, tmp_path / "pub")
+    at.switch_page("study.py")
+    at.query_params["study"] = results.id
+    at.run()
+    assert not at.exception
+    if shutil.which("dot") is None:  # the page says what it needs, and shows the rest
+        assert "needs Graphviz's dot program" in texts(at)
+    else:
+        assert "Click a task for what it is" in texts(at)
+    buttons = {button.label: button for button in at.button}
+    assert buttons["Draw each sample"].disabled and buttons["Stack alike samples"].disabled
 
 
 def test_a_link_to_a_study_the_catalog_lacks_says_so(

@@ -56,12 +56,13 @@ def test_the_manifests_name_one_service_on_one_port_with_its_health_probes() -> 
     assert not route["metadata"].get("annotations")  # no claim about who can reach it
 
 
-def test_the_image_serves_the_port_without_optuna_and_as_any_user() -> None:
+def test_the_image_serves_the_port_with_graphviz_without_optuna_and_as_any_user() -> None:
     dockerfile = (ROOT / "dashboard" / "Dockerfile").read_text()
     assert f"EXPOSE {PORT}" in dockerfile and f'"--server.port={PORT}"' in dockerfile
     assert re.search(r"^FROM \S+:3\.13-slim@sha256:[0-9a-f]{64}$", dockerfile, re.MULTILINE)
     assert re.search(r"^USER 1001$", dockerfile, re.MULTILINE)
     assert "chmod -R g=u /app" in dockerfile and "HOME=/tmp" in dockerfile
+    assert "apt-get install -y --no-install-recommends graphviz" in dockerfile  # lays graphs out
     requirements = (ROOT / "dashboard" / "requirements.txt").read_text().splitlines()
     pinned = [line for line in requirements if line and not line.startswith("#")]
     assert all(re.fullmatch(r"[A-Za-z0-9_.-]+==\S+", line) for line in pinned)

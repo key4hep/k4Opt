@@ -106,6 +106,9 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install Graphviz, which lays out the graph of a study's tasks
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends graphviz
+
       - name: Install the dashboard's packages, k4opt and the test tools
         run: |
           python -m pip install -r dashboard/requirements.txt
@@ -138,6 +141,7 @@ jobs:
           test "$(curl -s http://127.0.0.1:8080/_stcore/health)" = ok
           curl -sf -o /dev/null http://127.0.0.1:8080/
           docker exec dashboard python -c "import importlib.util as u; assert u.find_spec('optuna') is None; import k4opt.publication, k4opt.visualization"
+          docker exec dashboard dot -V
           docker logs dashboard
 
       - name: Validate the OpenShift manifests (the Route's kind has no public schema)

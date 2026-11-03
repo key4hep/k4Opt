@@ -1,6 +1,6 @@
 # The k4opt dashboard: Streamlit on port 8080, reading the publication K4OPT_DASHBOARD_DATA names
-# (a directory or an https:// URL). No Key4hep stack, DD4hep, Geant4, podio or Optuna; no data in
-# the image. Built from the repository's root:
+# (a directory or an https:// URL). No Key4hep stack, DD4hep, Geant4, podio or Optuna, but Graphviz
+# to lay graphs out; no data in the image. Built from the repository's root:
 #
 #   docker build -f dashboard/Dockerfile -t k4opt-dashboard .
 #   docker run -p 8080:8080 -e K4OPT_DASHBOARD_DATA=https://... k4opt-dashboard
@@ -15,6 +15,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     K4OPT_DASHBOARD_DATA=
 
 WORKDIR /app
+
+# Graphviz's dot lays out the graph of a study's tasks (k4opt.visualization.pipeline_figure)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends graphviz \
+    && rm -rf /var/lib/apt/lists/*
 
 # the packages first, the code last: what changes most often is rebuilt alone
 COPY dashboard/requirements.txt dashboard/requirements.txt
