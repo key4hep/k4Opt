@@ -176,6 +176,7 @@ class _Http:
             with _OPENER.open(request, timeout=TIMEOUT) as response:
                 data: bytes = response.read(limit + 1)
         except urllib.error.HTTPError as exc:
+            exc.close()  # an error answer holds its connection too
             if exc.code in (404, 410):
                 raise _MissingFileError from None
             if 300 <= exc.code < 400:

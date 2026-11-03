@@ -248,7 +248,8 @@ print(study.to_json(), end="")
         text=True,
         check=False,
         cwd=REPOSITORY,
-        env=os.environ | {"PYTHONPATH": str(REPOSITORY)},
+        env=os.environ
+        | {"PYTHONPATH": os.pathsep.join([str(REPOSITORY), os.environ.get("PYTHONPATH", "")])},
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == (published / "s.json").read_text()
