@@ -50,6 +50,7 @@ again. Nothing in the dashboard depends on Optuna or on where a publication is k
 
 ```bash
 pip install -r dashboard/requirements.txt && pip install --no-deps -e .
+# and Graphviz, whose dot lays out how a candidate is evaluated: apt/dnf/brew install graphviz
 k4opt publish runs/cld-ecal-study --output published/      # needs Optuna, which reads the study
 K4OPT_DASHBOARD_DATA=published/ streamlit run dashboard/app.py
 ```
@@ -63,8 +64,12 @@ up each have their own message, and *Refresh* in the sidebar reads the catalog a
   created and published, how many trials ended how, and how many were running when it was
   published (a study in progress is published as far as it got). Selecting one opens it.
 - **Study** (`/study?study=<id>`): one study, by its id, so that the link can be shared; the
-  figure's axes are in the URL too (`&x=objective:...&y=parameter:...`). Its parameters,
-  objectives and constraints, its outcome counts, [`trials_figure`](visualization.md), the trials
+  figure's axes are in the URL too (`&x=objective:...&y=parameter:...`). Its outcome counts, how
+  a candidate is evaluated ([`pipeline_figure`](visualization.md#how-a-candidate-is-evaluated-pipeline_figure):
+  drag to pan, scroll to zoom; click a stack of samples alike to draw each, *Draw each sample*
+  and *Stack alike samples* for all of them, and click a task for what the problem says of it and
+  its time or failures in each trial), its parameters, objectives and constraints,
+  [`trials_figure`](visualization.md), the trials
   on the Pareto front, every trial in an expander (values, uncertainties, limit margins, times,
   record ids, messages), and what it was made with (k4opt, the Key4hep stack, the geometry, each
   evaluator's version, source hash and commit, the optimizer and its seed).
@@ -85,9 +90,10 @@ docker build -f dashboard/Dockerfile -t k4opt-dashboard .     # from the reposit
 docker run -p 8080:8080 -e K4OPT_DASHBOARD_DATA=https://... k4opt-dashboard
 ```
 
-`python:3.13-slim` (pinned by digest), the packages of `dashboard/requirements.txt` (every one
-pinned; Streamlit, Plotly, lxml, PyYAML and what they need, no Optuna), k4opt without its
-optional dependencies, and `dashboard/`. It holds no study: the data is read where it is published,
+`python:3.13-slim` (pinned by digest), Graphviz from Debian (its `dot` lays out the graph of a
+study's tasks), the packages of `dashboard/requirements.txt` (every one pinned; Streamlit, Plotly,
+lxml, PyYAML and what they need, no Optuna), k4opt without its optional dependencies, and
+`dashboard/`. It holds no study: the data is read where it is published,
 so publishing a study needs no new image. Streamlit listens on 8080 and answers
 `/_stcore/health`. It runs as any user of group 0, as OpenShift assigns one (and as 1001
 elsewhere); `HOME` is `/tmp`, where Streamlit keeps its settings.

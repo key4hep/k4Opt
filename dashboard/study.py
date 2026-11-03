@@ -1,17 +1,26 @@
 """The Study page: one study, chosen by its id in the URL (``/study?study=<id>``), so that a link
-names it: what it optimizes, how its trials ended, its trials in the plane of two axes, and what
-it was made with."""
+names it: how its trials ended, how a candidate is evaluated, what it optimizes, its trials in the
+plane of two axes, and what it was made with."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 
+import plotly.graph_objects as go
 import streamlit as st
 
 from k4opt.errors import K4OptError
 from k4opt.optimization import StudyResults
 from k4opt.publication import CatalogEntry, PublicationUnavailableError
-from k4opt.visualization import axis_choices, default_axes, trials_figure
+from k4opt.visualization import (
+    GraphNode,
+    TaskGraph,
+    axis_choices,
+    default_axes,
+    pipeline_figure,
+    task_graph,
+    trials_figure,
+)
 
 import data
 import tables
@@ -19,6 +28,17 @@ import tables
 # the URL's parameters: the study by its id, and the figure's axes (a page script shows a bare
 # string, so nothing here is a docstring but the module's)
 STUDY, X, Y = "study", "x", "y"
+# the task selected, the stacks of samples drawn sample by sample (by key; ALL: every one), the
+# study they are of, and a counter bumped after each click, so that the chart comes back without
+# a selection and the next click on the same node is a click again
+SELECTED, EXPANDED, OF, CHART = "tasks-selected", "tasks-expanded", "tasks-of", "tasks-chart"
+ALL = "*"
+# drag to pan, scroll to zoom, buttons for both and for going back to the whole graph
+CHART_CONFIG = {
+    "scrollZoom": True,
+    "displaylogo": False,
+    "modeBarButtons": [["zoomIn2d", "zoomOut2d", "resetScale2d"]],
+}
 
 
 def _chosen(
@@ -114,6 +134,8 @@ def _render(entry: CatalogEntry, results: StudyResults) -> None:
     for column, (label, value) in zip(columns, shown, strict=True):
         column.metric(label, value, border=True)
 
+    _tasks(results)
+
     st.subheader("What it optimizes")
     st.markdown("**Parameters**")
     st.dataframe(tables.parameters(results), hide_index=True)
@@ -150,6 +172,99 @@ def _render(entry: CatalogEntry, results: StudyResults) -> None:
             "Each trial's record stays in the study directory; the snapshot names it by its id "
             "and SHA-256, and holds no file of it."
         )
+
+
+def _tasks(results: StudyResults) -> None:
+    st.subheader("How a candidate is evaluated")
+    state = st.session_state
+    if state.get(OF) != results.id:  # another study: nothing of the last one stays selected
+        state[OF], state[SELECTED], state[EXPANDED] = results.id, None, set()
+    state.setdefault(CHART, 0)
+    expanded: set[str] = state[EXPANDED]
+    stack = ALL not in expanded
+    graph = task_graph(results, stack=stack, expanded=expanded)
+    stacks = [key for key, box in graph.samples.items() if box.is_stack]
+    caption, each, again = st.columns([4, 1, 1], vertical_alignment="bottom")
+    with caption:
+        st.caption(
+            "Left to right: the parameters (blue) and what each sets (dashed), the geometry, "
+            "each sample (violet) with its stages, the evaluations (aqua), and the objectives "
+            "and constraints (orange) they measure. Samples alike but for their options are "
+            "stacked in one box: click it to draw each. A dotted task is a diagnostic: recorded, "
+            "but no objective or constraint needs it. Times are medians over the trials."
+        )
+    with each:
+        if st.button("Draw each sample", disabled=not stacks, width="stretch"):
+            state[EXPANDED] = {ALL}
+            st.rerun()
+    with again:
+        if st.button("Stack alike samples", disabled=not expanded, width="stretch"):
+            state[EXPANDED] = set()
+            st.rerun()
+    try:
+        figure = pipeline_figure(results, stack=stack, expanded=expanded, selected=state[SELECTED])
+    except K4OptError as exc:
+        st.warning(data.plain(exc))
+        return
+    event = st.plotly_chart(
+        figure,
+        theme="streamlit",
+        key=f"tasks-{state[CHART]}",
+        on_select="rerun",
+        selection_mode="points",
+        config=CHART_CONFIG,
+    )
+    clicked = _clicked(event, figure)
+    if clicked is not None:
+        node = next((n for n in graph.nodes if n.id == clicked), None)
+        box = graph.samples.get(clicked if node is None else node.sample or "")
+        if box is not None and box.is_stack and (node is None or node.samples):
+            state[EXPANDED] = {*expanded, box.members[0]}  # a stack: draw each of its samples
+        else:
+            state[SELECTED] = clicked
+        state[CHART] += 1
+        st.rerun()
+    _selected(results, graph)
+
+
+def _clicked(event: object, figure: go.Figure) -> str | None:
+    """The id of the node clicked, if the chart reports one: a point of the figure's last trace,
+    the nodes, whose ``customdata[0]`` is the id."""
+    nodes = len(figure.data) - 1
+    selection = getattr(event, "selection", None) or {}
+    for point in selection.get("points", []):
+        index = point.get("point_index")
+        if point.get("curve_number") == nodes and index is not None:
+            return str(figure.data[nodes].customdata[index][0])
+    return None
+
+
+def _selected(results: StudyResults, graph: TaskGraph) -> None:
+    """What the problem says of the task clicked, and how it went in each trial."""
+    chosen = st.session_state.get(SELECTED)
+    node: GraphNode | None = next((n for n in graph.nodes if n.id == chosen), None)
+    if node is None:
+        st.caption("Click a task for what it is and how it went in each trial.")
+        return
+    title, clear = st.columns([5, 1], vertical_alignment="bottom")
+    with title:
+        st.markdown(f"##### {data.plain(node.title)}")
+        where = node.kind if node.sample is None else f"{node.kind} of {node.sample}"
+        st.caption(data.plain(where + ("" if node.required else ", a diagnostic")))
+    with clear:
+        if st.button("Clear", width="stretch", key="tasks-clear"):
+            st.session_state[SELECTED] = None
+            st.session_state[CHART] += 1
+            st.rerun()
+    left, right = st.columns([2, 3])
+    with left:
+        st.dataframe(tables.facts(node), hide_index=True)
+    rows = tables.task_trials(results, node)
+    with right:
+        if rows:
+            st.dataframe(rows, hide_index=True)
+        else:
+            st.caption("Its value in each trial is in the table of every trial below.")
 
 
 def _axis_name(key: str) -> str:

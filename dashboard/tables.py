@@ -14,6 +14,7 @@ from k4opt.optimization import StudyResults, TrialResult
 from k4opt.problem import Parameter
 from k4opt.publication import Catalog
 from k4opt.record import Limit, ObjectiveValue
+from k4opt.visualization import GraphNode
 
 type Row = dict[str, object]
 
@@ -201,3 +202,30 @@ def evaluators(results: StudyResults) -> list[Row]:
 
 def _get(data: object, key: str) -> Any:
     return data.get(key) if isinstance(data, Mapping) else None
+
+
+def facts(node: GraphNode) -> list[Row]:
+    """What the problem says of a node of the task graph, a row per fact."""
+    return [{"": name, "Value": value} for name, value in node.facts]
+
+
+def task_trials(results: StudyResults, node: GraphNode) -> list[Row]:
+    """A row for each trial with a record, of a stage or an evaluation: how long the stage took (if
+    it records its own time), and how the task ended when it is a diagnostic that did not succeed.
+    Empty when there is neither, and for any other node, whose values in each trial the table of
+    every trial holds."""
+    if node.kind not in ("geometry", "stage", "evaluator"):
+        return []
+    rows = []
+    for trial in results.trials:
+        if trial.record is None:
+            continue
+        row: Row = {"Trial": trial.number, "Outcome": trial.outcome}
+        if node.seconds:
+            row["Time [s]"] = node.seconds.get(trial.number)
+        if not node.required:
+            ended = next((d for d in trial.diagnostics if d.get("task") == node.id), None)
+            row["Did not succeed"] = None if ended is None else ended.get("status")
+            row["Message"] = None if ended is None else ended.get("message")
+        rows.append(row)
+    return rows if any(len(row) > 2 for row in rows) else []
