@@ -17,6 +17,7 @@ from k4opt.evaluation import Artifact, RoleInput
 from k4opt.execution._binding import task_cpus
 from k4opt.execution._files import NOTHING, Observed, portable, portable_artifact
 from k4opt.execution._preflight import _Prepared
+from k4opt.execution._reuse import REUSED
 from k4opt.execution._tasks import (
     GEOMETRY_TIMEOUT,
     GeometryWork,
@@ -85,8 +86,10 @@ def _role_input(
     made = result.made.get(name)
     if made is not None:  # made in its directory, hashed when it was made
         artifact = made
-    else:  # a file of the problem or the caller's, hashed when the session opened
-        size, sha256 = result.provenance.get("bytes"), result.provenance.get("sha256")
+    else:  # a file of the problem or the caller's, hashed when the session opened, or reused
+        given = result.provenance.get(REUSED)
+        identity = given if isinstance(given, Mapping) else result.provenance
+        size, sha256 = identity.get("bytes"), identity.get("sha256")
         artifact = Artifact(
             f"{result.id.label}#{name}",
             result.output,

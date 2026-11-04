@@ -487,6 +487,37 @@ problem, the evaluators or the records. Nothing of that exists yet. It would sti
 files moved to where the tasks run and back, the stack and the evaluators' code provided there
 and checked, credentials on the batch nodes, and its own memory and processor requests.
 
+### Stages made once: reuse
+
+A stage is not run again when a stage with its
+[signature](evaluation.md#stage-signatures) made its output already: the same definition (events,
+seed, options as the candidate sets them), the same inputs (the geometry's content and the stages
+it reads), the same files, programs, environment and k4opt code. The sample and the candidate
+play no part, so the candidates of a study that vary only the reconstruction, or an evaluator's
+setting, simulate once, and two samples defined alike simulate once. With a fixed seed every
+candidate simulates the same events anyway, and ddsim makes the same events from the same seed:
+reusing an output changes nothing a candidate is evaluated with, only the time it takes.
+
+What a session reuses:
+
+- the outputs of its own stages that ended `done`, as soon as they ended; a stage whose
+  signature is still running for another candidate (or sample) waits for it, holding its slot,
+  then reuses its output, or runs itself if it did not succeed;
+- the outputs of the stages the records it is given hold: `session.reuse(directories)` (a run
+  directory, or a directory of runs such as a study), `k4opt evaluate --reuse DIR` and
+  `k4opt optimize --reuse DIR`; a resumed study reuses its own trials' stages.
+
+An output is reused only if its record holds its signature, whose SHA-256 is that of its
+document, and its SHA-256; it is hashed again before each use if its stat changed, and one that
+changed or went is not reused (the stage runs). A record is written only once every task of its
+candidate ended, so nothing half written is ever reused. The reusing stage's record says
+`reused`: the record and stage that made the output, its run directory, its path there, its size
+and SHA-256, and has the same `signature`, but no `outputs` or `logs` of its own (the record that
+made it has them). Nothing is copied: the output stays in the run that made it, and the tasks
+that read it read it there, watched like a file of the candidate until it ends. A reused output
+that is later deleted leaves the records that reused it as they are: they still say, by
+signature and SHA-256, what they read.
+
 ## What ends a candidate, and what stops a session
 
 Everything that can go wrong with a candidate is one of four kinds, and each is reported the

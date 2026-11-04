@@ -170,6 +170,7 @@ def optimize(
     warn: Warn,
     progress: Progress,
     activity: Watch | None = None,
+    reuse: Sequence[str | os.PathLike[str]] = (),
 ) -> StudyResults:
     if isinstance(trials, bool) or not isinstance(trials, int) or trials < 1:
         raise OptimizationError(f"trials must be a positive integer, got {trials!r}")
@@ -189,6 +190,7 @@ def optimize(
 
     # its workers stop with the study however it ends
     with EvaluationSession.open(problem, implementations, workers=workers) as session:
+        session.reuse(reuse)
         return _run_study(
             session,
             directory,
@@ -260,6 +262,7 @@ def _run_study(
             if resume:
                 check_optuna_study(study, document)
                 _recover(run, progress)
+                session.reuse([directory])  # every trial's record held up: their stages serve
             seed = document["optimizer"]["sampler"]["seed"]
             seed_now = session_seed(seed, len(study.trials))
             study.sampler = optuna.samplers.TPESampler(

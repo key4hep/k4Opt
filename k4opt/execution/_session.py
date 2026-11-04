@@ -42,6 +42,7 @@ from k4opt.execution._drive import Activity, _drive, _Run
 from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._process import ProcessBackend
 from k4opt.execution._publish import RunOutcome, publish
+from k4opt.execution._reuse import Reuse
 from k4opt.execution._schedule import Scheduler
 from k4opt.execution._stages import DryRuns, input_files, try_reconstruction
 from k4opt.execution._tasks import GeometryWork, TaskOutcome, Workspace
@@ -217,6 +218,7 @@ class EvaluationSession:
         "_execution",
         "_inputs",
         "_open",
+        "_reuse",
         "_warnings",
     )
 
@@ -246,6 +248,7 @@ class EvaluationSession:
             execution = {"backend": "process", "workers": workers}
         self._execution: Mapping[str, Json] = FrozenMap(execution)
         self._open: Evaluations | None = None
+        self._reuse = Reuse()
         self._backend: ProcessBackend | None = None
         if workers is not None:  # one worker started at once: one that cannot work refuses here
             environment = baseline.process["environment"]
@@ -421,6 +424,29 @@ class EvaluationSession:
         """
         return self._baseline.identity()
 
+    def reuse(self, directories: Iterable[str | os.PathLike[str]]) -> int:
+        """Let the stages of this session's candidates reuse what the stages of the records in
+        ``directories`` made; how many outputs that adds.
+
+        Each directory is a run directory (it holds a ``summary.json``: ``k4opt evaluate``'s
+        output, a trial of a study) or holds run directories (a study). A stage of a candidate
+        is not run when one with its signature (:mod:`k4opt.record.signature`: the same
+        definition, inputs, geometry, files, programs, environment and k4opt code) made an
+        output that is still there with the SHA-256 its record holds: its record then says
+        ``reused``, with where the output comes from. The session's own stages are reused the
+        same way, without being named here. Raises :class:`~k4opt.execution.RunError` for a
+        directory that does not exist."""
+        runs: list[Path] = []
+        for given in directories:
+            path = Path(os.path.abspath(Path(given).expanduser()))
+            if (path / SUMMARY_NAME).is_file():
+                runs.append(path)
+            elif path.is_dir():
+                runs += sorted(each for each in path.iterdir() if (each / SUMMARY_NAME).is_file())
+            else:
+                raise RunError(f"reuse {os.fspath(given)}: {path} is no directory")
+        return self._reuse.index(runs)
+
     def check_limits(self) -> None:
         """Raise :class:`~k4opt.execution.RunError` if this session could not keep the time
         limits of the problem's evaluations: inline, nothing stops an evaluation that runs in
@@ -567,6 +593,7 @@ class EvaluationSession:
             self._checked,
             activity,
             sign=self._sign,
+            reuse=self._reuse,
         )
         try:
             for run in driven:
@@ -615,13 +642,13 @@ class EvaluationSession:
             reference=reference,
         )
 
-    def _checked(self, run: _Run, outcome: TaskOutcome, result: TaskResult) -> None:
+    def _checked(self, run: _Run, outcome: TaskOutcome | None, result: TaskResult) -> None:
         """What is checked of each result as it comes: that the geometry made changes the
         attributes the session resolved, to the values the candidate's configuration gives them,
         and that the references only the candidate's geometry names read what they read for the
         candidates already recorded. A geometry that was not made (it ran out of time, its worker
         died) has none to check."""
-        if result.id != GEOMETRY or result.status != DONE:
+        if result.id != GEOMETRY or result.status != DONE or outcome is None:
             return
         run.own_refs = outcome.own_refs
         assert run.prepared is not None

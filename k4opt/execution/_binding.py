@@ -154,8 +154,8 @@ def _identical(
         stages = (tuple(sample.stages.items()), tuple(set_by))
         if stages in first:
             warnings[
-                f"samples {first[stages]} and {name} have identical stages; each is simulated "
-                "separately"
+                f"samples {first[stages]} and {name} have identical stages: they are simulated "
+                "once and measure the same events"
             ] = None
         else:
             first[stages] = name

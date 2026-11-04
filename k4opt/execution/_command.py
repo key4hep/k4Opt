@@ -84,6 +84,7 @@ def run_candidate(
     inputs: Sequence[str] = (),
     workers: int | Literal["auto", "inline"] = "inline",
     warn: Callable[[str], None] | None = None,
+    reuse: Sequence[str | os.PathLike[str]] = (),
 ) -> RunOutcome | Rejected:
     """Evaluate the candidate given as ``NAME=VALUE`` strings; ``output`` must not exist. An
     evaluator's ``check`` may reject it instead (:class:`~k4opt.execution.Rejected`), with
@@ -91,7 +92,8 @@ def run_candidate(
 
     :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
     ``SAMPLE/STAGE=FILE`` strings, ``workers`` that of
-    :meth:`EvaluationSession.open`. ``warn``
+    :meth:`EvaluationSession.open`, and ``reuse`` the runs or studies whose stages a stage with
+    the same signature reuses (:meth:`EvaluationSession.reuse`). ``warn``
     is called with each of the session's warnings once the candidate is known to be valid, before
     anything is created, and with its :attr:`~EvaluationSession.notice` of diagnostics; the
     warnings are also kept in the summary.
@@ -102,6 +104,7 @@ def run_candidate(
         inputs=_parse_inputs(inputs),
         workers=workers,
     ) as session:
+        session.reuse(reuse)
         values = parse_candidate(session.spec, assignments)
         # a wrong candidate is reported before the warnings
         validate_candidate(session.spec, values)

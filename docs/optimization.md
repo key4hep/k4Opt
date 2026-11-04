@@ -258,6 +258,13 @@ at random too, so up to N - 1 more than with one worker. Each trial still record
 its session's sampler seed and its record, and the records of a candidate are the same whatever
 N: the simulation seed is each sample's own.
 
+**Stages made once.** A trial does not run a stage again whose output a stage with the same
+signature made already, in this session or in an earlier trial of the study (a resume reuses the
+study's own trials), or in the runs and studies `--reuse DIR` names (repeatable): a study that
+varies only the reconstruction, or only evaluators' settings, simulates once. The trial's record
+says where the reused output comes from ([reuse](execution.md#stages-made-once-reuse)). Neither
+the reuse nor `--reuse` is part of the study: a reused stage is the stage that would have run.
+
 ## The study directory
 
 ```text

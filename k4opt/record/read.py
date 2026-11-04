@@ -265,6 +265,40 @@ def _files(
     return files
 
 
+def _reused(
+    part: Mapping[str, object], task: TaskId, status: str, given: str | None, at: str
+) -> bool:
+    """Whether the stage ``task`` of a record reused the output of a stage with its signature:
+    then it is ``done``, ran nothing (it was not given as a file), made nothing in its directory
+    and kept no logs, and ``reused`` says where the output comes from (the record, the stage of
+    the same type, its path in that run, its size and SHA-256)."""
+    entry = part.get("reused")
+    if entry is None:
+        return False
+    item = _mapping(entry, f"{at}: reused")
+    if status != DONE or given is not None:
+        raise RecordError(f"{at}: reused, but a stage that is {status} or given reuses nothing")
+    source = item.get("task")
+    if not isinstance(source, str) or source.partition("/")[2] != task.name:
+        raise RecordError(f"{at}: reused the output of {source!r}, which is no {task.name}")
+    for key in ("record", "run_dir", "path"):
+        _text(item.get(key), f"{at}: reused.{key}")
+    if not isinstance(item.get("sha256"), str):
+        raise RecordError(f"{at}: reused an output without its SHA-256")
+    try:
+        Artifact(
+            f"{source}#{stage_output(task.name)}",
+            Path(str(item.get("path"))),
+            cast(int, item.get("bytes")),
+            cast(str | None, item.get("sha256")),
+        )
+    except EvaluationContractError as exc:
+        raise RecordError(f"{at}: reused: {exc}") from None
+    if part.get("outputs") or part.get("logs"):
+        raise RecordError(f"{at}: reused, but it names files of its own")
+    return True
+
+
 def _samples(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
     """The part of the record of each sample, which must be the problem's, in its order."""
     samples = _mapping(record.get("samples"), "samples")
@@ -464,7 +498,9 @@ def _results(
                     f"{at}: directory {part.get('directory')!r}, but its directory is {directory!r}"
                 )
             outputs = _files(part.get("outputs"), made_by, directory, f"{at}: outputs", hashed=True)
-            made = [stage_output(name)] if fragment.status == DONE and directory else []
+            reuses = _reused(part, made_by, fragment.status, plan[made_by].given, at)
+            ran = fragment.status == DONE and directory and not reuses
+            made = [stage_output(name)] if ran else []
             if list(outputs) != made:
                 raise RecordError(
                     f"{at}: outputs {list(outputs)}, but a stage that is {fragment.status} "

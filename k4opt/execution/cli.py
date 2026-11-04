@@ -75,6 +75,18 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         ),
     )
     evaluate.add_argument(
+        "--reuse",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help=(
+            "a run or a study whose stages a stage of this candidate reuses when it would be "
+            "made from the same things (the same signature: definition, inputs, geometry, files, "
+            "programs, environment and k4opt code) and its output is still there, unchanged; "
+            "the summary says where it comes from (repeatable)"
+        ),
+    )
+    evaluate.add_argument(
         "--workers",
         type=workers,
         metavar="N|auto|inline",
@@ -280,6 +292,7 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         implementations=implementations,
         inputs=args.input,
         workers="inline" if args.workers is None else args.workers,
+        reuse=args.reuse,
         warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
     )
     if isinstance(outcome, Rejected):

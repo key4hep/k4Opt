@@ -83,6 +83,7 @@ def optimize(
     resume: bool = False,
     storage: str | None = None,
     workers: int | Literal["auto", "inline"] = "inline",
+    reuse: Sequence[str | os.PathLike[str]] = (),
     warn: Callable[[str], None] | None = None,
     progress: Callable[[TrialResult], None] | None = None,
     activity: Callable[[Activity], None] | None = None,
@@ -104,6 +105,11 @@ def optimize(
     default); the optimizer is asked for a candidate only when a slot would otherwise be idle,
     and told each trial as it ends. It is not part of the study. A trial a stage or an evaluation
     of which runs longer than the problem's ``timeout`` for it fails, and the study goes on.
+    A stage of a trial is not run again when a stage with its signature made its output already
+    (the same definition, inputs, geometry, files, programs, environment and k4opt code: see
+    ``docs/evaluation.md``): in this session, in an earlier trial of the study (on a resume), or
+    in the runs and studies ``reuse`` names; its record says where the output comes from. Neither
+    is part of the study.
 
     ``warn`` is called with each warning, ``progress`` with each trial as it ends, the trials a
     resume finishes first (``recovered``), and ``activity`` with what runs whenever that changes
@@ -127,6 +133,7 @@ def optimize(
         resume=resume,
         storage=storage,
         workers=workers,
+        reuse=reuse,
         warn=warn or (lambda message: None),
         progress=progress or (lambda trial: None),
         activity=activity,

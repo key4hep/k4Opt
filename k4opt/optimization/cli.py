@@ -72,6 +72,17 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         help="continue the study in DIR, made with exactly the same problem, files and code",
     )
     parser.add_argument(
+        "--reuse",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help=(
+            "a run or a study whose stages the trials reuse when a stage would be made from the "
+            "same things (the same signature) and its output is still there, unchanged "
+            "(repeatable); a study reuses its own trials' stages anyway. Not part of the study"
+        ),
+    )
+    parser.add_argument(
         "--storage",
         metavar="URL",
         help="an Optuna database URL in place of DIR/study.journal (needs SQLAlchemy)",
@@ -165,6 +176,7 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 resume=args.resume,
                 storage=args.storage,
                 workers=args.workers,
+                reuse=args.reuse,
                 warn=progress.warning,
                 progress=progress.trial,
                 activity=progress.activity,

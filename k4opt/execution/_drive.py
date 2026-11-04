@@ -39,6 +39,7 @@ from k4opt.execution._binding import task_cpus
 from k4opt.execution._describe import describe, seen
 from k4opt.execution._files import Made, Observed, Tree, local, local_artifact
 from k4opt.execution._preflight import Rejected, _Prepared
+from k4opt.execution._reuse import REUSED, Reuse, made, reused
 from k4opt.execution._schedule import Scheduler
 from k4opt.execution._tasks import (
     GeometryWork,
@@ -118,8 +119,9 @@ class Activity:
     capacity: int
 
 
-type Check = Callable[[_Run, TaskOutcome, TaskResult], None]
-"""What the coordinator checks of each result as it comes, raising to stop its candidate."""
+type Check = Callable[[_Run, TaskOutcome | None, TaskResult], None]
+"""What the coordinator checks of each result as it comes, raising to stop its candidate; a
+reused stage has no outcome of its own."""
 
 type Sign = Callable[[_Run, Task, Mapping[TaskId, TaskResult]], Mapping[str, Json] | None]
 """The signature of a task of a candidate, from the results of what it reads, ``None`` for one
@@ -136,6 +138,7 @@ def _drive(
     check: Check | None = None,
     activity: Callable[[Activity], None] | None = None,
     sign: Sign | None = None,
+    reuse: Reuse | None = None,
 ) -> Generator[_Run]:
     """Run the tasks of candidates until there are none left; yield each candidate once all its
     tasks ended (``results``), or once its work raised (``error``: its other tasks are stopped).
@@ -145,12 +148,15 @@ def _drive(
     candidates run one after another, each in plan order. ``runs`` holds the candidates under
     way, by workspace. Leaving the loop early (``close()``, an exception) stops every task still
     running. ``activity`` is told what runs whenever that changed. ``sign`` gives the signature
-    of a task before it is handed out, which its result then carries in its provenance. Each
-    task may run as long as its description says
+    of a task before it is handed out, which its result then carries in its provenance. With
+    ``reuse``, a stage whose signature already made an output reuses it and is not run, and one
+    whose signature runs for another stage waits for it, holding its slot
+    (:mod:`k4opt.execution._reuse`). Each task may run as long as its description says
     (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`), which the backend enforces.
     """
     pulling = True
     told: Activity | None = None
+    ended: list[_Run] = []
 
     def tell() -> None:
         nonlocal told
@@ -166,33 +172,93 @@ def _drive(
         backend.cancel([Handle(key, task) for task in running])
         backend.close_workspace(key)
         runs.pop(key, None)
+        ended.append(run)
+        if reuse is not None:  # what waited for its stages runs itself
+            for item in reuse.forget(key):
+                assert isinstance(item, tuple)
+                hand_out(*item)
+
+    def submit(run: _Run, task: Task) -> None:
+        """Describe ``task`` of ``run`` and hand it to the backend."""
+        key = run.workspace.id
+        if key not in runs:  # stopped meanwhile
+            return
+        try:
+            assert run.prepared is not None
+            spec = describe(
+                task,
+                run.prepared,
+                run.workspace,
+                scheduler.results(key),
+                run.observed,
+                supplied=run.supplied.get(task.id),
+                geometry=run.geometry,
+            )
+            run.specs[task.id] = spec
+            backend.submit(spec, seen(task, run.observed))
+        except Exception as exc:
+            stop(run, exc)
+
+    def hand_out(run: _Run, task: Task) -> None:
+        """Sign ``task`` of ``run``, then reuse what a stage of its signature made, wait for one
+        that runs, or hand it to the backend."""
+        key = run.workspace.id
+        try:
+            signature = None if sign is None else sign(run, task, scheduler.results(key))
+        except Exception as exc:
+            stop(run, exc)
+            return
+        if signature is None:
+            submit(run, task)
+            return
+        run.signatures[task.id] = signature
+        digest = str(signature["sha256"])
+        if reuse is None:
+            submit(run, task)
+        elif (source := reuse.find(digest)) is not None:
+            result, run.observed[task.id] = reused(task, source)
+            complete(run, task, result)
+        elif reuse.running(digest):
+            reuse.wait(digest, key, task, (run, task))
+        else:
+            reuse.start(digest, key)
+            submit(run, task)
+
+    def complete(
+        run: _Run, task: Task, result: TaskResult, outcome: TaskOutcome | None = None
+    ) -> None:
+        """``task`` of ``run`` ended with ``result`` (from ``outcome``, if it ran): check it and
+        take it; the stages that waited for it then reuse what it made, or run themselves."""
+        key = run.workspace.id
+        signature = run.signatures.get(task.id)
+        if signature is not None:
+            provenance = {**result.provenance, SIGNATURE: signature}
+            result = replace(result, provenance=FrozenMap(provenance))
+        try:
+            if check is not None:
+                check(run, outcome, result)
+            scheduler.finished(key, result)
+        except Exception as exc:
+            stop(run, exc)
+            return
+        finally:
+            if signature is not None and reuse is not None and REUSED not in result.provenance:
+                digest = str(signature["sha256"])
+                source = made(task, result, run.workspace.id, run.workspace.root)
+                for item in reuse.ended(digest, source):
+                    assert isinstance(item, tuple)
+                    hand_out(*item)
+        if scheduler.done(key):
+            run.results = scheduler.remove(key)
+            backend.close_workspace(key)
+            del runs[key]
+            ended.append(run)
 
     try:
         while True:
-            ended: list[_Run] = []
             while (item := scheduler.next()) is not None:
                 key, task = item
-                run = runs[str(key)]
-                try:
-                    assert run.prepared is not None
-                    reads = scheduler.results(key)
-                    signature = None if sign is None else sign(run, task, reads)
-                    if signature is not None:
-                        run.signatures[task.id] = signature
-                    spec = describe(
-                        task,
-                        run.prepared,
-                        run.workspace,
-                        reads,
-                        run.observed,
-                        supplied=run.supplied.get(task.id),
-                        geometry=run.geometry,
-                    )
-                    run.specs[task.id] = spec
-                    backend.submit(spec, seen(task, run.observed))
-                except Exception as exc:
-                    stop(run, exc)
-                    ended.append(run)
+                hand_out(runs[str(key)], task)
             tell()
             for handle, outcome, observed in backend.wait(_WAIT) if scheduler.running else []:
                 found = runs.get(handle.workspace)
@@ -205,24 +271,13 @@ def _drive(
                     if isinstance(outcome, Exception):  # raised where the task ran
                         raise outcome
                     result = _result(run, task, outcome, observed)
-                    signature = run.signatures.get(task.id)
-                    if signature is not None:
-                        provenance = {**result.provenance, SIGNATURE: signature}
-                        result = replace(result, provenance=FrozenMap(provenance))
-                    if check is not None:
-                        check(run, outcome, result)
-                    scheduler.finished(handle.workspace, result)
                 except Exception as exc:
                     stop(run, exc)
-                    ended.append(run)
                     continue
-                if scheduler.done(handle.workspace):
-                    run.results = scheduler.remove(handle.workspace)
-                    backend.close_workspace(handle.workspace)
-                    del runs[handle.workspace]
-                    ended.append(run)
+                complete(run, task, result, outcome)
             tell()
             yield from ended
+            ended.clear()
             if pulling and scheduler.idle:
                 pulled = pull()
                 if pulled is None:
@@ -238,7 +293,7 @@ def _drive(
                 continue
             if not runs:  # and nothing more to pull: a free slot would have pulled
                 return
-            # each candidate under way has a task running or ready (a free slot takes it)
+            # each candidate under way has a task running, ready or waiting for its twin
             assert scheduler.running or not scheduler.idle
     finally:
         for run in list(runs.values()):

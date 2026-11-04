@@ -251,8 +251,9 @@ def test_the_collections_of_earlier_candidates_files_are_not_kept_for_ever(
 
     monkeypatch.setattr(_work, "_LISTED", 2)
     session = EvaluationSession.open(problem_file, [cell_count()])
-    for name in "abcd":
-        assert session.evaluate({RADIUS: 300.0}, tmp_path / name).candidate.status == "valid"
+    for name, radius in zip("abcd", (300.0, 310.0, 320.0, 330.0), strict=True):
+        # each another geometry: another simulation, whose file is listed
+        assert session.evaluate({RADIUS: radius}, tmp_path / name).candidate.status == "valid"
     assert [path.parent.parent.parent.parent.name for path, _ in session._context.listed] == [
         "c",
         "d",

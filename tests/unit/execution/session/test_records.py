@@ -96,7 +96,10 @@ def test_the_record_does_not_depend_on_the_order_the_tasks_ran_in(
     first = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     order: list[str] = []
     latest_ready(monkeypatch, order)
-    second = session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    # a session of its own: in the same one, the second would reuse the first one's simulation
+    second = EvaluationSession.open(problem_file, [cell_count(), Echo]).evaluate(
+        {RADIUS: 450.0}, tmp_path / "b"
+    )
     planned = [task.id.label for task in second.candidate.plan.tasks]
     assert order != planned and sorted(order) == sorted(planned)
     assert order[:2] == ["gamma/generation", "geometry"]  # the gun first: it reads no geometry
