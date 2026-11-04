@@ -2,13 +2,14 @@
 
 Whether a study may be resumed, and whether the record of a trial belongs to its study, are
 decided by one comparison (:func:`compared`) of what must be equal: the problem's definition (but
-not its name), the content of every file it names, each evaluator implementation's name, version,
-source hash, declared metrics and declared artifacts, the unmodified geometry's fingerprint, the
-attribute each geometry destination of the parameters resolves to and the content of the files
-its external references read, ``KEY4HEP_STACK`` and the hash of k4opt's code. Locations are
-recorded and never compared, so a study whose files moved resumes. :func:`digest` condenses the
-comparison, :func:`differences` says what differs, and the revision warnings say what a hash
-leaves out (an evaluator checkout with uncommitted changes, or at another commit).
+not its name or titles), the content of every file it names, each evaluator implementation's
+name, version, source hash, declared metrics and declared artifacts, the unmodified geometry's
+fingerprint, the attribute each geometry destination of the parameters resolves to and the
+content of the files its external references read, ``KEY4HEP_STACK`` and the hash of k4opt's
+code. Locations are recorded and never compared, so a study whose files moved resumes.
+:func:`digest` condenses the comparison, :func:`differences` says what differs, and the revision
+warnings say what a hash leaves out (an evaluator checkout with uncommitted changes, or at
+another commit).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem.models import ordered
+from k4opt.problem.models import essential
 
 
 def _contents(externals: object) -> object:
@@ -36,10 +37,9 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
     """What must be equal for two runs to belong to one study, from an identity
     (:meth:`k4opt.execution.EvaluationSession.identity`, or ``study.json`` which holds one)."""
     try:
-        definition = ordered(identity["problem"]["definition"])
-        definition.pop("name", None)  # a label, the file name by default
         return {
-            "problem": definition,
+            # but for its name (the file name by default) and the titles: what a reader is shown
+            "problem": essential(identity["problem"]["definition"]),
             "inputs": {
                 label: {"bytes": entry.get("bytes"), "sha256": entry.get("sha256")}
                 for label, entry in identity["inputs"].items()

@@ -15,8 +15,9 @@ what each parameter sets, each sample's stages, what each evaluation reads, and 
 objectives and constraints are measured by; of a study, also each stage's recorded times and the
 trials each diagnostic did not succeed in; samples alike but for their options are stacked into
 one box until expanded. :func:`pipeline_graph` writes it as Graphviz DOT text, and
-:func:`pipeline_figure` has Graphviz lay it out and draws it with Plotly. See
-``docs/visualization.md``.
+:func:`pipeline_figure` has Graphviz lay it out and draws it with Plotly. Every figure calls the
+parameters, samples, objectives and constraints by the titles the problem gives them, their names
+otherwise (:func:`names`). See ``docs/visualization.md``.
 
 Typical use::
 
@@ -40,6 +41,7 @@ from k4opt.visualization.graph import (
     collapsed,
     task_graph,
 )
+from k4opt.visualization.names import Names, names
 from k4opt.visualization.pipeline import pipeline_figure, pipeline_graph
 from k4opt.visualization.trials import (
     TRIAL,
@@ -55,6 +57,7 @@ __all__ = [
     "TRIAL",
     "GraphEdge",
     "GraphNode",
+    "Names",
     "SampleBox",
     "TaskGraph",
     "VisualizationError",
@@ -64,6 +67,7 @@ __all__ = [
     "default_axes",
     "edf_figure",
     "history_figure",
+    "names",
     "parallel_figure",
     "pipeline_figure",
     "pipeline_graph",

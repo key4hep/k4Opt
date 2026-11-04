@@ -31,6 +31,7 @@ from k4opt.problem._fields import (
     _sequence,
     _show,
     _text,
+    _title,
 )
 from k4opt.problem._parameters import _destinations, _parameters
 from k4opt.problem._samples import _check_options, _check_pipeline, _samples, _shared_stages
@@ -312,7 +313,7 @@ def _objectives(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Obj
         m = _mapping(
             item,
             path,
-            ("sample", "evaluator", "stage", "metric", "direction"),
+            ("sample", "evaluator", "stage", "metric", "title", "direction"),
             ("stage", "metric", "direction"),
         )
         sample, evaluator = _owner(m, path, evaluators)
@@ -322,6 +323,7 @@ def _objectives(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Obj
             metric=_text(m["metric"], f"{path}.metric"),
             direction=cast(Direction, _choice(m["direction"], f"{path}.direction", _DIRECTIONS)),
             sample=sample,
+            title=_title(m, path),
         )
         if objective.ref in first:
             raise _fail(path, f"duplicates objectives[{first[objective.ref]}] ({objective.label})")
@@ -338,7 +340,7 @@ def _constraints(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Co
         m = _mapping(
             item,
             path,
-            ("sample", "evaluator", "stage", "metric", "min", "max", "unit", "scale"),
+            ("sample", "evaluator", "stage", "metric", "title", "min", "max", "unit", "scale"),
             ("stage", "metric"),
         )
         if "min" not in m and "max" not in m:
@@ -363,6 +365,7 @@ def _constraints(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Co
             unit=_optional_text(m, "unit", path),
             sample=sample,
             scale=scale,
+            title=_title(m, path),
         )
         if constraint.ref in first:
             raise _fail(

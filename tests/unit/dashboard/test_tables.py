@@ -99,3 +99,73 @@ def test_a_trade_off_lists_the_reference_and_each_match_with_its_changes(tmp_pat
         base = reference.objectives["test.trade_off/analysis/a"]
         change = trial.objectives["test.trade_off/analysis/a"] - base
         assert row["Δ a [%]"] == pytest.approx(100 * change / abs(base))
+
+
+def test_parameters_titled_alike_each_keep_a_column_of_their_own() -> None:
+    import yaml
+
+    from k4opt.frozen import FrozenMap
+    from k4opt.optimization import StudyResults, TrialResult
+    from k4opt.problem import parse_problem
+
+    import tables
+
+    examples = Path(__file__).resolve().parents[3] / "examples" / "problem"
+    document = yaml.safe_load((examples / "cld-ecal-bindings.yaml").read_text())
+    document["parameters"]["ecal_cell_size"]["title"] = "Size"
+    document["parameters"]["range_cut"]["title"] = "Size"  # in mm too: one heading but for names
+    spec = parse_problem(document)
+    candidate = {"ecal_cell_size": 5.0, "range_cut": 0.5, "cell_threshold": 70.0}
+    trial = TrialResult(0, "valid", candidate, record="r")
+    results = StudyResults("s", "id", "now", spec, FrozenMap({}), (trial,), ())
+    (row,) = tables.trials(results)
+    assert row["Size (ecal_cell_size) [mm]"] == 5.0 and row["Size (range_cut) [mm]"] == 0.5
+
+
+def test_no_column_takes_the_place_of_another_whatever_the_titles(tmp_path: Path) -> None:
+    from k4opt.optimization import StudyResults
+    from k4opt.problem import parse_problem
+
+    import tables
+
+    results = load_study(mixed_study(tmp_path / "s"))
+    document = results.problem.to_dict()
+    document["parameters"]["radius"]["title"] = "Message"  # a fixed column's heading
+    document["objectives"][0]["title"] = "b"  # the other objective's metric, in another unit
+    document["objectives"][1]["title"] = "a"
+    document["constraints"][0]["title"] = "b"
+    spec = parse_problem(document)
+    titled = StudyResults(
+        results.name, results.id, results.created, spec, results.document, results.trials, ()
+    )
+    rows = tables.trials(titled)
+    count = len(rows[0])
+    assert count == len(tables.trials(results)[0])  # every column kept
+    trial = next(t for t in results.trials if t.objectives is not None)
+    (row,) = (r for r in rows if r["Trial"] == trial.number)
+    assert row["Message"] == trial.message and row["Message (radius)"] == trial.candidate["radius"]
+    assert row["b [mm]"] == trial.objectives["test.trade_off/analysis/a"]
+    assert row["margin b max [mm]"] == trial.assessment.limits[0].margin
+
+
+def test_a_heading_still_alike_after_its_whole_name_is_numbered() -> None:
+    from k4opt.frozen import FrozenMap
+    from k4opt.optimization import StudyResults, TrialResult
+    from k4opt.problem import parse_problem
+    from tests.unit.optimization.conftest import RADIUS, problem_document
+
+    import tables
+
+    # the parameter and an objective titled alike; each then takes its whole name, which are
+    # alike too: the objective's metric is named as the parameter's title and name
+    title = "test.trade_off/analysis/a"
+    document = problem_document(objectives=[("analysis", f"a ({RADIUS})", "minimize")])
+    document["parameters"][RADIUS]["title"] = title
+    document["objectives"][0]["title"] = title
+    spec = parse_problem(document)
+    trial = TrialResult(0, "valid", {RADIUS: 300.0}, record="r")
+    results = StudyResults("s", "id", "now", spec, FrozenMap({}), (trial,), ())
+    (row,) = tables.trials(results)
+    assert len(row) == 3 + 1 + 1 + 2  # the fixed columns, the parameter, the objective
+    assert row[f"{title} ({RADIUS})"] == 300.0  # the parameter's, the first column of the two
+    assert row[f"{title} ({RADIUS}) (2)"] is None  # the objective's, which the trial has not

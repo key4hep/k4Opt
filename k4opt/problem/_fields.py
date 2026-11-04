@@ -63,6 +63,14 @@ def _optional_text(m: Mapping[str, Any], key: str, path: str) -> str | None:
     return _text(m[key], _join(path, key)) if key in m else None
 
 
+def _title(m: Mapping[str, Any], path: str) -> str | None:
+    """The ``title`` of ``m``, if it has one: one line a reader is shown instead of a name."""
+    title = _optional_text(m, "title", path)
+    if title is not None and title.splitlines() != [title]:  # a line break, also at its end
+        raise _fail(_join(path, "title"), f"must be one line, got {_show(title)}")
+    return title
+
+
 def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 

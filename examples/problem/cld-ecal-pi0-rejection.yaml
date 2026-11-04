@@ -22,6 +22,7 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 parameters:
   # CLD uses 5.1 mm; at 20 mm a 50 GeV pi0 looks like one photon
   ecal_cell_size:
+    title: ECAL cell size
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
@@ -40,9 +41,11 @@ stages:
   simulation: {executor: ddsim, events: 500, physics.list: FTFP_BERT}
 samples:
   gamma_50gev:
+    title: 50 GeV γ
     generation: {particle: gamma}
     simulation: {seed: 1}
   pi0_50gev:
+    title: 50 GeV π⁰
     generation: {particle: pi0}
     simulation: {seed: 2}
 evaluators:
@@ -71,5 +74,13 @@ evaluators:
     settings: {layers: 40, radius: {value: 2150, unit: mm}, length: {value: 4420, unit: mm}}
 
 objectives:
-  - {evaluator: pi0_rejection, stage: analysis, metric: background_rejection, direction: maximize}
-  - {evaluator: readout, stage: geometry, metric: ecal_barrel.channels, direction: minimize}
+  - evaluator: pi0_rejection
+    stage: analysis
+    metric: background_rejection
+    title: π⁰ rejection
+    direction: maximize
+  - evaluator: readout
+    stage: geometry
+    metric: ecal_barrel.channels
+    title: Readout channels
+    direction: minimize

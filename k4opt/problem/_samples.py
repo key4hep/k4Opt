@@ -24,6 +24,7 @@ from k4opt.problem._fields import (
     _seconds,
     _show,
     _text,
+    _title,
 )
 from k4opt.problem.candidate import edges, stage_value
 from k4opt.problem.errors import ProblemConfigError
@@ -124,7 +125,7 @@ def _samples(
                 "lowercase letters, digits and '_', at most 64 characters",
             )
         where = f"samples.{name}"
-        stages = _mapping(value, where, (*STAGE_TYPES, "properties"))
+        stages = _mapping(value, where, ("title", *STAGE_TYPES, "properties"))
         made: dict[str, Stage] = {}
         for stage in STAGE_TYPES:
             if stage not in stages and stage not in shared:
@@ -144,7 +145,7 @@ def _samples(
             frozen = freeze(_mapping(raw, at, tuple(raw) if isinstance(raw, Mapping) else ()), at)
             assert isinstance(frozen, Mapping)
             properties = frozen
-        samples[name] = Sample(name, made, properties)
+        samples[name] = Sample(name, made, properties, _title(stages, where))
     for stage in shared:
         if stage not in taken:
             raise _fail(

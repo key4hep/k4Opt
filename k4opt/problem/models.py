@@ -133,7 +133,8 @@ class Parameter:
     every destination its value is written into, at least one, grouped by kind in the order the
     problem gives them: attributes of the geometry (``<value>*<unit>``), options of a stage,
     settings of evaluators (``{value, unit}`` with a unit). The domain says nothing about a
-    destination, and the destinations nothing about the domain.
+    destination, and the destinations nothing about the domain. ``title`` is what a reader is
+    shown instead of the name (``ECAL cell size``), if given; nothing else reads it.
     """
 
     name: str
@@ -142,6 +143,7 @@ class Parameter:
     bounds: tuple[Number, Number] | None = None
     choices: tuple[str | bool | Number, ...] | None = None
     unit: str | None = None
+    title: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "targets", tuple(self.targets))
@@ -151,7 +153,7 @@ class Parameter:
         one form of each target: a geometry reference, ``{option, samples}`` for a stage option
         (its samples listed), the setting of an evaluator binding; a list where a kind has
         several."""
-        data: dict[str, object] = {"type": self.kind}
+        data = _titled(self.title) | {"type": self.kind}
         if self.bounds is not None:
             data["bounds"] = list(self.bounds)
         if self.choices is not None:
@@ -335,12 +337,14 @@ class Sample:
     name is a label that evaluators, objectives and constraints refer to the sample by; what its
     events are is said by its stages alone. ``properties`` are facts about the sample that its
     evaluators may read (a process, a cross section), any JSON: k4opt records and delivers them,
-    and never reads them itself.
+    and never reads them itself. ``title`` is what a reader is shown instead of the name
+    (``10 GeV γ``), if given.
     """
 
     name: str
     stages: Mapping[str, Stage] = field(default_factory=lambda: FrozenMap({}))
     properties: Mapping[str, Json] = field(default_factory=lambda: FrozenMap({}))
+    title: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stages", FrozenMap(self.stages))
@@ -349,7 +353,7 @@ class Sample:
         object.__setattr__(self, "properties", properties)
 
     def to_dict(self) -> dict[str, object]:
-        data: dict[str, object] = {}
+        data = _titled(self.title)
         if self.properties:
             data["properties"] = thaw(self.properties)
         return data | {name: stage.to_dict() for name, stage in self.stages.items()}
@@ -403,16 +407,23 @@ def _owner(sample: str | None, evaluator: str) -> dict[str, object]:
     return owner | {"evaluator": evaluator}
 
 
+def _titled(title: str | None) -> dict[str, object]:
+    return {} if title is None else {"title": title}
+
+
 @dataclass(frozen=True, slots=True)
 class Objective:
     """A metric of an evaluator to minimize or maximize, measured on ``sample`` (``None`` for an
-    evaluator that measures the candidate). ``stage`` classifies the metric."""
+    evaluator that measures the candidate). ``stage`` classifies the metric. ``title`` is what a
+    reader is shown instead of the metric (``Angular residual``), if given: it names what is
+    measured, not the sample it is measured on."""
 
     evaluator: str
     stage: str
     metric: str
     direction: Direction
     sample: str | None = None
+    title: str | None = None
 
     @property
     def ref(self) -> MetricRef:
@@ -423,11 +434,15 @@ class Objective:
         return self.ref.label
 
     def to_dict(self) -> dict[str, object]:
-        return _owner(self.sample, self.evaluator) | {
-            "stage": self.stage,
-            "metric": self.metric,
-            "direction": self.direction,
-        }
+        return (
+            _owner(self.sample, self.evaluator)
+            | _titled(self.title)
+            | {
+                "stage": self.stage,
+                "metric": self.metric,
+                "direction": self.direction,
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +455,7 @@ class Constraint:
     units of it (:attr:`~k4opt.record.Limit.normalized`), so that limits on metrics of different
     units or magnitudes add up meaningfully. The problem requires one on every constraint once
     there are constraints on two or more metrics; ``None`` otherwise, which counts as 1.
+    ``title`` is what a reader is shown instead of the metric, as of an :class:`Objective`.
     """
 
     evaluator: str
@@ -450,6 +466,7 @@ class Constraint:
     unit: str | None = None
     sample: str | None = None
     scale: Number | None = None
+    title: str | None = None
 
     @property
     def ref(self) -> MetricRef:
@@ -460,10 +477,14 @@ class Constraint:
         return self.ref.label
 
     def to_dict(self) -> dict[str, object]:
-        data: dict[str, object] = _owner(self.sample, self.evaluator) | {
-            "stage": self.stage,
-            "metric": self.metric,
-        }
+        data: dict[str, object] = (
+            _owner(self.sample, self.evaluator)
+            | _titled(self.title)
+            | {
+                "stage": self.stage,
+                "metric": self.metric,
+            }
+        )
         if self.min is not None:
             data["min"] = self.min
         if self.max is not None:
@@ -570,6 +591,32 @@ def ordered(definition: Mapping[str, object]) -> dict[str, object]:
         else value
         for key, value in definition.items()
     }
+
+
+_TITLED = ("parameters", "samples", "objectives", "constraints")
+
+
+def _untitled(item: object) -> object:
+    if isinstance(item, Mapping):
+        return {key: value for key, value in item.items() if key != "title"}
+    return item
+
+
+def essential(definition: Mapping[str, object]) -> dict[str, object]:
+    """``definition`` (:meth:`ProblemSpec.to_dict` data) as two are compared: :func:`ordered`,
+    without what only names things for a reader, its ``name`` and every ``title``. Two problems
+    that differ only in those are one problem: a study goes on, and keeps its records."""
+    found = ordered(definition)
+    found.pop("name", None)
+    for key in _TITLED:
+        value = found.get(key)
+        if not isinstance(value, list):
+            continue
+        found[key] = [
+            [entry[0], _untitled(entry[1])] if key in _ORDERED else _untitled(entry)
+            for entry in value
+        ]
+    return found
 
 
 def pending(parameters: tuple[Parameter, ...], sample: str) -> dict[str, frozenset[str]]:

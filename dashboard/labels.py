@@ -10,12 +10,11 @@ means stays the study's to say.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from k4opt.optimization import StudyResults
-from k4opt.visualization import TRIAL
+from k4opt.visualization import TRIAL, names
 
 _MARKDOWN = re.compile(r"([\\`*_\[\]<>~$|])")  # what formats, links or embeds within a line
 
@@ -111,39 +110,17 @@ def count(n: int, word: str, plural: str | None = None) -> str:
     return f"{n} {word if n == 1 else plural or word + 's'}"
 
 
-def metric(label: str) -> str:
-    """The metric a label (``sample/evaluator/stage/metric``) names, its last part."""
-    return label.rsplit("/", 1)[-1]
-
-
-def names(results: StudyResults) -> dict[str, str]:
-    """The name shown of each objective and constrained metric, by label: its metric, with the
-    evaluation that measures it where two metrics are alike, the whole label where even that is
-    alike (two stages of one evaluation)."""
-    spec = results.problem
-    labels = list(
-        dict.fromkeys([o.label for o in spec.objectives] + [c.label for c in spec.constraints])
-    )
-    alike = Counter(metric(label) for label in labels)
-    named = {
-        label: metric(label)
-        if alike[metric(label)] == 1
-        else f"{metric(label)} ({label.rsplit('/', 2)[0]})"
-        for label in labels
-    }
-    twice = Counter(named.values())
-    return {label: name if twice[name] == 1 else label for label, name in named.items()}
-
-
 def axis(key: str, results: StudyResults) -> str:
-    """An axis or a color of a figure as a choice shows it: ``background_rejection · objective``,
-    ``ecal_cell_size · parameter``, ``trial number``."""
+    """An axis or a color of a figure as a choice shows it, by what the figures call it
+    (:func:`~k4opt.visualization.names`): ``background_rejection · objective``, ``ECAL cell size
+    · parameter``, ``trial number``."""
     if key == TRIAL:
         return "trial number"
     kind, _, name = key.partition(":")
     if not name:
         return key
-    return f"{names(results).get(name, name) if kind == 'objective' else name} · {kind}"
+    called = names(results.problem)
+    return f"{called.objective(name) if kind == 'objective' else called.parameter(name)} · {kind}"
 
 
 def detector(geometry: str) -> str:

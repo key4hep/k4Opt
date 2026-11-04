@@ -36,6 +36,7 @@ from k4opt.evaluation import Scalar
 from k4opt.optimization import StudyResults, TrialResult
 from k4opt.problem import Objective, Parameter
 from k4opt.visualization.errors import VisualizationError
+from k4opt.visualization.names import Names, names
 
 OBJECTIVE, PARAMETER = "objective:", "parameter:"
 TRIAL = "trial"
@@ -70,9 +71,11 @@ _RAMPS = {
 
 @dataclass(frozen=True, slots=True)
 class _Axis:
-    """What an axis shows: an objective (``index`` in the problem's) or a parameter."""
+    """What an axis shows: an objective (``index`` in the problem's) or a parameter, ``called``
+    as the figures call it (:func:`~k4opt.visualization.names`)."""
 
     key: str
+    called: str
     objective: Objective | None = None
     index: int = -1
     parameter: Parameter | None = None
@@ -101,15 +104,17 @@ class _Axis:
 
     def title(self, unit: str | None) -> str:
         shown = f" [{html.escape(unit)}]" if unit is not None and _shown(unit) else ""
+        called = html.escape(self.called)
         if self.parameter is not None:
-            return f"{html.escape(self.parameter.name)}{shown}<br><sup>parameter</sup>"
+            # a titled parameter's name under it, as the problem and the command line name it
+            name = "" if self.parameter.title is None else f" {html.escape(self.parameter.name)}"
+            return f"{called}{shown}<br><sup>parameter{name}</sup>"
         objective = self.objective
         assert objective is not None
         where = [objective.sample, objective.evaluator, objective.stage]
+        where += [] if objective.title is None else [objective.metric]
         source = " · ".join(html.escape(part) for part in where if part is not None)
-        return (
-            f"{html.escape(objective.metric)}{shown}, {objective.direction}<br><sup>{source}</sup>"
-        )
+        return f"{called}{shown}, {objective.direction}<br><sup>{source}</sup>"
 
 
 def axis_choices(results: StudyResults) -> tuple[str, ...]:
@@ -123,12 +128,13 @@ def axis_choices(results: StudyResults) -> tuple[str, ...]:
 
 def _axis(results: StudyResults, key: str) -> _Axis:
     spec = results.problem
+    called = names(spec)
     for index, objective in enumerate(spec.objectives):
         if key == f"{OBJECTIVE}{objective.label}":
-            return _Axis(key, objective=objective, index=index)
+            return _Axis(key, called.objective(objective.label), objective=objective, index=index)
     for parameter in spec.parameters:
         if key == f"{PARAMETER}{parameter.name}":
-            return _Axis(key, parameter=parameter)
+            return _Axis(key, called.parameter(parameter.name), parameter=parameter)
     raise VisualizationError(
         f"the study has no axis {key!r}; it has {', '.join(axis_choices(results))}"
     )
@@ -206,7 +212,7 @@ def trials_figure(
                     "line": {"width": 2.5},
                 },
                 customdata=[reference],
-                hovertext=[_hover(results, chosen, set(results.pareto))],
+                hovertext=[_hover(results, chosen, set(results.pareto), names(results.problem))],
                 hoverinfo="text",
             )
         )
@@ -380,6 +386,7 @@ def _mark(
     ``highlight``, if given, faint."""
     colors = _COLORS[dark]
     numbers = set(results.pareto)
+    called = names(results.problem)
     styles = {
         "front": (front, "diamond" if shade else "circle", 12 if shade else 11, colors["front"]),
         "feasible": ("feasible", "circle", 8, colors["muted"]),
@@ -412,7 +419,7 @@ def _mark(
                 name=name,
                 marker=marker,
                 customdata=[t.number for t in trials],  # which trial a point is
-                hovertext=[_hover(results, t, numbers) for t in trials],
+                hovertext=[_hover(results, t, numbers, called) for t in trials],
                 hoverinfo="text",
             )
         )
@@ -516,22 +523,22 @@ def _shown(unit: str | None) -> bool:
     return unit not in (None, "", "1")
 
 
-def _hover(results: StudyResults, trial: TrialResult, front: set[int]) -> str:
+def _hover(results: StudyResults, trial: TrialResult, front: set[int], called: Names) -> str:
     """Everything a trial was measured with and found: its candidate, its objectives with their
-    uncertainties, and the limits it violates."""
+    uncertainties, and the limits it violates, each called as ``called`` says."""
     state = trial.outcome + (", on the Pareto front" if trial.number in front else "")
     lines = [f"<b>trial {trial.number}</b>: {state}"]
     for parameter in results.problem.parameters:
         if parameter.name in trial.candidate:
             value = _number(trial.candidate[parameter.name], parameter.unit)
-            lines.append(f"{html.escape(parameter.name)} = {value}")
+            lines.append(f"{html.escape(called.parameter(parameter.name))} = {value}")
     assessment = trial.assessment
     if assessment is not None and assessment.objectives is not None:
         for objective in assessment.objectives:
             value = _number(objective.value, objective.unit, objective.uncertainty)
-            lines.append(f"{html.escape(objective.label)} = {value}")
+            lines.append(f"{html.escape(called.objective(objective.label))} = {value}")
         lines.extend(
-            f"violates {html.escape(limit.label)} {limit.bound} "
+            f"violates {html.escape(called.constraint(limit.label))} {limit.bound} "
             f"{_number(limit.limit, limit.unit)} by {_number(limit.margin, limit.unit)}"
             for limit in assessment.limits
             if limit.satisfied is False and limit.margin is not None

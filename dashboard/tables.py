@@ -1,22 +1,24 @@
 """The rows of the dashboard's tables, from a catalog and a study alone: no Streamlit here.
 
 Each function returns a list of rows, one ``dict`` each, column by column, with every value as the
-study records it (``None`` where it has none: an empty cell, never 0), headed by the names
-:func:`labels.names` gives (each column's whole label is in :func:`helps`). What a value means is
-the study's to say: outcomes, feasibility and the Pareto front are read, never judged again; a
-best value is the best the study's feasible trials reached of one objective, by its direction.
+study records it (``None`` where it has none: an empty cell, never 0), headed by what
+:func:`~k4opt.visualization.names` calls each (each column's whole label is in :func:`helps`).
+What a value means is the study's to say: outcomes, feasibility and the Pareto front are read,
+never judged again; a best value is the best the study's feasible trials reached of one
+objective, by its direction.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from k4opt.optimization import StudyResults, TradeOffs, TrialResult
 from k4opt.problem import Parameter
 from k4opt.record import Limit, ObjectiveValue
-from k4opt.visualization import GraphNode
+from k4opt.visualization import GraphNode, names
 
 import labels
 
@@ -56,10 +58,34 @@ def _heading(name: str, unit: str | None) -> str:
     return f"{name} [{shown}]" if shown else name
 
 
-def _columns(results: StudyResults) -> list[tuple[str, str, str]]:
-    """Each column of a trial's measurements: its heading, the whole label it shows (``± `` for
-    an uncertainty, ``margin `` for a limit's margin) and what it is."""
-    shown, named = units(results), labels.names(results)
+type _Kind = Literal["fixed", "parameter", "objective", "uncertainty", "margin", "change"]
+
+
+@dataclass(frozen=True, slots=True)
+class _Column:
+    """A column of a table: its heading, what it shows (a parameter's name, an objective's label,
+    a limit's ``label:bound``; the heading of a fixed column) and what kind of value that is."""
+
+    heading: str
+    key: str
+    kind: _Kind
+
+
+_TRIAL_FIXED = (("Trial", "Outcome", "Pareto"), ("Time [s]", "Message"))
+_TRADE_FIXED = (("Trial", "Reference", "Pareto"), ())
+
+
+def _columns(
+    results: StudyResults, fixed: tuple[tuple[str, ...], tuple[str, ...]], *, trade_off: bool
+) -> list[_Column]:
+    """Every column of a table, in order, each headed by what it is called, and no two alike:
+    the ``fixed`` columns before and after the rest; each parameter; each objective, with its
+    uncertainty if any trial recorded one and each limit's margin (of the trials table) or how it
+    changed against the reference (``trade_off``). A heading another column has too is replaced
+    by one with the whole name or label of what it shows (``Size (ecal_cell_size) [mm]``), and
+    one still alike then by a number after it (``a (2)``), so that no column ever takes the place
+    of another; a fixed one is never replaced."""
+    shown, called = units(results), names(results.problem)
     uncertain = {
         value.label
         for trial in results.trials
@@ -67,18 +93,60 @@ def _columns(results: StudyResults) -> list[tuple[str, str, str]]:
         for value in trial.assessment.objectives or ()
         if value.uncertainty is not None
     }
-    columns = []
+    options: dict[tuple[_Kind, str], list[str]] = {}
+    before, after = fixed
+    for name in before:
+        options["fixed", name] = [name]
+    for p in results.problem.parameters:
+        said = called.parameter(p.name)
+        options["parameter", p.name] = [
+            _heading(said, p.unit),
+            _heading(f"{said} ({p.name})", p.unit),
+        ]
     for o in results.problem.objectives:
-        heading = _heading(named[o.label], shown.get(o.label))
-        columns.append((heading, o.label, "objective"))
-        if o.label in uncertain:
-            columns.append((f"{heading} ±", o.label, "uncertainty"))
-    for c in results.problem.constraints:
+        unit = shown.get(o.label)
+        choices = [_heading(called.objective(o.label), unit), _heading(o.label, unit)]
+        options["objective", o.label] = choices
+        if trade_off:
+            options["change", o.label] = [f"Δ {called.objective(o.label)} [%]", f"Δ {o.label} [%]"]
+        elif o.label in uncertain:
+            options["uncertainty", o.label] = [f"{choice} ±" for choice in choices]
+    for c in () if trade_off else results.problem.constraints:
+        unit = c.unit or shown.get(c.label)
         for bound in ("min", "max"):
             if getattr(c, bound) is not None:
-                heading = _heading(f"margin {named[c.label]} {bound}", c.unit or shown.get(c.label))
-                columns.append((heading, f"{c.label}:{bound}", "margin"))
-    return columns
+                options["margin", f"{c.label}:{bound}"] = [
+                    _heading(f"margin {called.constraint(c.label)} {bound}", unit),
+                    _heading(f"margin {c.label} {bound}", unit),
+                ]
+    for name in after:
+        options["fixed", name] = [name]
+    chosen = _distinct({key: list(dict.fromkeys(each)) for key, each in options.items()})
+    # the rare heading still alike (a title written as another column's whole label) numbered,
+    # the fixed columns claiming theirs first
+    taken: set[str] = set()
+    headings: dict[tuple[_Kind, str], str] = {}
+    for kind, key in sorted(options, key=lambda column: column[0] != "fixed"):
+        heading, number = chosen[kind, key], 2
+        while heading in taken:
+            heading, number = f"{chosen[kind, key]} ({number})", number + 1
+        taken.add(heading)
+        headings[kind, key] = heading
+    return [_Column(headings[kind, key], key, kind) for kind, key in options]
+
+
+def _distinct[K](options: Mapping[K, Sequence[str]]) -> dict[K, str]:
+    """For each key, the first of its ``options`` no other key has: each key alike with another
+    takes its next option, while it has one."""
+    level = dict.fromkeys(options, 0)
+    while True:
+        chosen = {key: options[key][level[key]] for key in options}
+        alike = Counter(chosen.values())
+        clash = [k for k in options if alike[chosen[k]] > 1 and level[k] < len(options[k]) - 1]
+        if not clash:
+            return chosen
+        for key in clash:
+            level[key] += 1
 
 
 def helps(results: StudyResults) -> dict[str, str]:
@@ -88,49 +156,55 @@ def helps(results: StudyResults) -> dict[str, str]:
         "uncertainty": "the uncertainty of {}",
         "margin": "the margin of the limit {}: zero or below when satisfied",
     }
-    return {heading: said[kind].format(label) for heading, label, kind in _columns(results)}
+    return {
+        column.heading: said[column.kind].format(column.key)
+        for column in _columns(results, _TRIAL_FIXED, trade_off=False)
+        if column.kind in said
+    }
 
 
 def trials(results: StudyResults, numbers: Iterable[int] | None = None) -> list[Row]:
     """A row for each trial, or for those numbered ``numbers``: its outcome, its candidate, each
     objective's value (and its uncertainty, if any trial recorded one), each limit's margin (zero
     or below when satisfied), its time and message."""
-    columns = _columns(results)
+    columns = _columns(results, _TRIAL_FIXED, trade_off=False)
     chosen = None if numbers is None else set(numbers)
     front = set(results.pareto)
     rows = []
     for trial in results.trials:
         if chosen is not None and trial.number not in chosen:
             continue
-        row: Row = {
+        fixed = {
             "Trial": trial.number,
             "Outcome": trial.outcome,
             "Pareto": trial.number in front,
+            "Time [s]": trial.elapsed_seconds,
+            "Message": trial.message,
         }
-        for p in results.problem.parameters:
-            row[_heading(p.name, p.unit)] = trial.candidate.get(p.name)
-        row |= _measured(trial, columns)
-        row["Time [s]"] = trial.elapsed_seconds
-        row["Message"] = trial.message
-        rows.append(row)
+        rows.append(_row(trial, columns, fixed))
     return rows
 
 
-def _measured(trial: TrialResult, columns: list[tuple[str, str, str]]) -> Row:
+def _row(trial: TrialResult, columns: Sequence[_Column], fixed: Mapping[str, object]) -> Row:
+    """The row of ``trial``: each column's value, ``fixed`` that of each fixed column."""
     assessment = trial.assessment
     measured = {} if assessment is None else {o.label: o for o in assessment.objectives or ()}
     limits = {} if assessment is None else {limit.name: limit for limit in assessment.limits}
     row: Row = {}
-    for heading, label, kind in columns:
-        if kind == "margin":
-            limit = limits.get(label)
-            row[heading] = None if limit is None else limit.margin
-            continue
-        value = measured.get(label)
-        if value is None:
-            row[heading] = None
-        else:
-            row[heading] = value.value if kind == "objective" else value.uncertainty
+    for column in columns:
+        value: object = None
+        if column.kind == "fixed":
+            value = fixed[column.key]
+        elif column.kind == "parameter":
+            value = trial.candidate.get(column.key)
+        elif column.kind == "margin":
+            limit = limits.get(column.key)
+            value = None if limit is None else limit.margin
+        elif column.kind in ("objective", "uncertainty"):
+            found = measured.get(column.key)
+            if found is not None:
+                value = found.value if column.kind == "objective" else found.uncertainty
+        row[column.heading] = value
     return row
 
 
@@ -150,7 +224,7 @@ class Best:
 
 def bests(results: StudyResults) -> list[Best]:
     """The best of each objective that a feasible trial measured; none of one that none did."""
-    named = labels.names(results)
+    called = names(results.problem)
     found = []
     for index, objective in enumerate(results.problem.objectives):
         sign = -1 if objective.direction == "maximize" else 1
@@ -168,7 +242,7 @@ def bests(results: StudyResults) -> list[Best]:
             found.append(
                 Best(
                     objective.label,
-                    named[objective.label],
+                    called.objective(objective.label),
                     objective.direction,
                     best.value,
                     best.uncertainty,
@@ -262,10 +336,10 @@ def trial_record(trial: TrialResult) -> list[Row]:
 def trial_limits(results: StudyResults, trial: TrialResult) -> list[Row]:
     """Each limit of ``trial``: the value, the bound, its margin (zero or below when satisfied)."""
     assessment = trial.assessment
-    named = labels.names(results)
+    called = names(results.problem)
     return [
         {
-            "Constraint": named.get(limit.label, limit.label),
+            "Constraint": called.constraint(limit.label),
             "Bound": limit.bound,
             "Limit": limit.limit,
             "Value": limit.value,
@@ -298,25 +372,24 @@ def trade_offs(results: StudyResults, found: TradeOffs) -> list[Row]:
     """A row for the reference and each trial that meets the trade-off: its candidate, each
     objective's value and how it changed against the reference, in percent of the reference's
     value (``None`` where that is zero)."""
-    shown, named = units(results), labels.names(results)
+    columns = _columns(results, _TRADE_FIXED, trade_off=True)
     front = set(results.pareto)
     reference = found.reference
     assert reference.objectives is not None
     rows = []
     for number in (reference.number, *found.matches):
         trial = results.trial(number)
-        assert trial.objectives is not None
-        row: Row = {
+        fixed = {
             "Trial": number,
             "Reference": number == reference.number,
             "Pareto": number in front,
         }
-        for p in results.problem.parameters:
-            row[_heading(p.name, p.unit)] = trial.candidate.get(p.name)
-        for o in results.problem.objectives:
-            row[_heading(named[o.label], shown.get(o.label))] = trial.objectives[o.label]
-            base = reference.objectives[o.label]
-            change = 0.0 if number == reference.number else found.change[number][o.label]
-            row[f"Δ {named[o.label]} [%]"] = None if base == 0 else 100 * change / abs(base)
+        row = _row(trial, columns, fixed)
+        for column in columns:
+            if column.kind != "change":
+                continue
+            base = reference.objectives[column.key]
+            change = 0.0 if number == reference.number else found.change[number][column.key]
+            row[column.heading] = None if base == 0 else 100 * change / abs(base)
         rows.append(row)
     return rows

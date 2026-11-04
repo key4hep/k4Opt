@@ -26,6 +26,7 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 parameters:
   # CLD uses 5.1 mm; 20 mm is about the width of a photon shower
   ecal_cell_size:
+    title: ECAL cell size  # what figures and the dashboard call it; the name is what --param takes
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
@@ -37,6 +38,7 @@ parameters:
 # ddsim, which simulates the photons
 samples:
   gamma_10gev:
+    title: 10 GeV γ
     generation:
       executor: gun
       particle: gamma
@@ -70,8 +72,10 @@ evaluators:
 objectives:
   - stage: simulation
     metric: ecal_barrel.angular_residual
+    title: Angular residual
     direction: minimize
 
   - stage: simulation
     metric: ecal_barrel.fired_cells
+    title: Fired cells
     direction: minimize

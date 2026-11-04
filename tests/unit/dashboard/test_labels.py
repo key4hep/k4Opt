@@ -65,9 +65,7 @@ def test_text_never_formats_as_markdown() -> None:
     assert labels.plain("`[x](y)` *a_b*") == r"\`\[x\](y)\` \*a\_b\*"
 
 
-def test_a_metric_is_named_by_its_name_and_by_its_evaluation_only_where_two_are_alike(
-    tmp_path: Path,
-) -> None:
+def test_a_choice_of_axis_is_said_by_what_the_figures_call_it(tmp_path: Path) -> None:
     pytest.importorskip("optuna")
     from k4opt.optimization import load_study
     from tests.support.studies import mixed_study
@@ -75,10 +73,6 @@ def test_a_metric_is_named_by_its_name_and_by_its_evaluation_only_where_two_are_
     import labels
 
     results = load_study(mixed_study(tmp_path / "s"))
-    assert labels.names(results) == {
-        "test.trade_off/analysis/a": "a",
-        "test.trade_off/analysis/b": "b",
-    }
     assert labels.axis("objective:test.trade_off/analysis/b", results) == "b · objective"
     assert labels.axis("parameter:radius", results) == "radius · parameter"
     assert (labels.axis("trial", results), labels.axis("outcome", results)) == (
