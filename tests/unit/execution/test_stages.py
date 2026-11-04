@@ -1462,3 +1462,28 @@ def test_a_file_replaced_with_the_same_size_and_mtime_is_hashed_again(tmp_path: 
     second = file_identity(hepmc)
     assert first["sha256"] == hashlib.sha256(b"AAAA").hexdigest()
     assert second["sha256"] == hashlib.sha256(b"BBBB").hexdigest()
+
+
+def test_the_home_and_the_variables_of_a_stage_s_paths_are_those_of_the_session_s_opening(
+    monkeypatch: pytest.MonkeyPatch, doc: dict[str, Any], tmp_path: Path
+) -> None:
+    doc["samples"]["gamma"]["simulation"]["physics.pdgfile"] = "~/particle.tbl"
+    doc["samples"]["gamma"]["reconstruction"] = {
+        "executor": "k4run",
+        "directory": "$K4OPT_TEST_CONFIG/CLDConfig",
+        "options": "CLDReconstruction.py",
+    }
+    doc["evaluators"][0]["stage"] = "reconstruction"
+    for item in (*doc["objectives"], *doc["constraints"]):
+        item["stage"] = "reconstruction"
+    monkeypatch.setenv("HOME", str(tmp_path / "a"))
+    monkeypatch.setenv("K4OPT_TEST_CONFIG", str(tmp_path / "config-a"))
+    opened = StageContext.of(parse_problem(doc), "gamma", tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "b"))
+    monkeypatch.setenv("K4OPT_TEST_CONFIG", str(tmp_path / "config-b"))
+    assert opened.path("~/particle.tbl") == tmp_path / "a" / "particle.tbl"
+    assert opened.path("$K4OPT_TEST_CONFIG/CLDConfig", variables=True) == (
+        tmp_path / "config-a" / "CLDConfig"
+    )
+    # a variable the session did not take is left as written, never read now
+    assert opened.path("$K4OPT_TEST_OTHER/x", variables=True) == tmp_path / "$K4OPT_TEST_OTHER/x"

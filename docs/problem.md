@@ -438,8 +438,10 @@ of its own ([k4run](k4run.md)):
    a word. Every file of `directory` (or each options file) and of what `data` names is
    recorded with its hash, taken
    when the session opens, so that a study refuses to resume with another job; a file that
-   changes while k4run runs fails the reconstruction. An environment variable in `directory` or
-   `options` is read when the session opens, too, so every candidate runs that job.
+   changes while k4run runs fails the reconstruction; a file that appears in or goes from those
+   directories after the session opened stops the next candidate. An environment variable or a `~` in
+   `directory`, `options` or `data` is read when the session opens, too, so every candidate runs
+   that job.
 
 The reconstruction's output must hold every event of the simulation it read.
 

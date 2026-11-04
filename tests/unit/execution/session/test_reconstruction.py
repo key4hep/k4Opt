@@ -292,3 +292,24 @@ def test_missing_data_and_a_job_s_link_loop_are_refused_when_the_session_opens(
     (job / "loop").symlink_to(".")
     with pytest.raises(EvaluationContractError, match="is a link to a directory it lies in"):
         EvaluationSession.open(reco_file, implementations(reco_cells()))
+
+
+@pytest.mark.parametrize("where", ["data", "job"])
+def test_a_file_added_to_a_directory_the_job_reads_stops_the_next_candidate(
+    tmp_path: Path, reco_file: Path, fake: simulation.FakeDdsim, job: Path, where: str
+) -> None:
+    calibration = tmp_path / "calibration"
+    calibration.mkdir()  # empty when the session opens
+    doc = yaml.safe_load(reco_file.read_text())
+    doc["samples"]["gamma"]["reconstruction"]["data"] = {"dataFolder": f"{calibration}/"}
+    reco_file.write_text(yaml.safe_dump(doc))
+    with EvaluationSession.open(reco_file, implementations(reco_cells())) as session:
+        assert session.evaluate({RADIUS: 450.0}, tmp_path / "run").candidate.status == "valid"
+        added = (calibration if where == "data" else job) / "maps.root"
+        added.write_text("map")
+        label = "data.dataFolder" if where == "data" else "directory"
+        with pytest.raises(ProvenanceError, match=rf"reconstruction\.{label}/maps\.root appeared"):
+            session.evaluate({RADIUS: 450.0}, tmp_path / "again")
+        assert not (tmp_path / "again").exists()
+        added.unlink()  # as it was: the session goes on
+        assert session.evaluate({RADIUS: 450.0}, tmp_path / "third").candidate.status == "valid"

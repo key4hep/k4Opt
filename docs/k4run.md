@@ -29,7 +29,7 @@ samples:
 | Key | Meaning |
 | --- | --- |
 | `options` | Required. The job's options files, one or a list, in the order k4run loads them. With `directory`, each is named relative to it and lies inside it; without, a relative path is read from the directory of the problem file. |
-| `directory` | Optional. A directory the job runs from a writable copy of, in the stage's own directory (`job/`). A reconstruction such as CLD's runs only from its own directory: its Pandora settings name files relative to where it runs. `$NAME` and `${NAME}` are environment variables (`$CLDCONFIG`, set by the Key4hep environment), read once, when the session opens: every candidate runs the job the session identified, wherever the variable points later. `~` is the home directory. |
+| `directory` | Optional. A directory the job runs from a writable copy of, in the stage's own directory (`job/`). A reconstruction such as CLD's runs only from its own directory: its Pandora settings name files relative to where it runs. `$NAME` and `${NAME}` are environment variables (`$CLDCONFIG`, set by the Key4hep environment), read once, when the session opens: every candidate runs the job the session identified, wherever the variable points later. `~` is the home directory, also read when the session opens. |
 | `geometry` | Optional. The job's own argument that takes the compact file (CLD's and ILD's `compactFile`), for a job that derives more than the geometry service from it. Without it, k4opt sets `GeoSvc.detectors` (ALLEGRO, IDEA). |
 | `input` | Optional. The job's own argument that takes the input files (CLD's `inputFiles`). Without it, k4opt sets `IOSvc.Input`. |
 | `data` | Optional. Each argument of the job that names a file or a directory of data it reads, with its path: `data: {dataFolder: /scratch/calibration/}` for ALLEGRO's calibration maps and ONNX models. k4opt passes it (`--dataFolder=/scratch/calibration/`, a trailing `/` kept, since a job may append file names to it) and identifies what it names, a directory by every file in it, as it identifies the job's own files; the data is read where it is, not copied. Paths are read as `directory`'s are. |
@@ -104,11 +104,13 @@ job's working directory `job/`, where whatever else the job writes stays (histog
 `cdb.log`). The record of the stage keeps the argument list and, under `files`, the path, size
 and SHA-256 of every file of `directory` (or of each options file) and of what `data` names, by
 where the problem names it (`directory/PandoraSettingsCLD/PandoraSettingsDefault.xml`,
-`data.dataFolder/neighbours_map_ecalB_thetamodulemerged.root`). A link in a directory is
+`data.dataFolder/capacitances_ecalBarrelFCCee_theta.root`). A link in a directory is
 followed, as copying it does; a link to a directory it lies in (`loop -> .`) is refused when the
 session opens, since neither its files nor a copy of it would end. The session identifies the same
-files when it opens, so `verify_inputs` and a study's resume refuse another job; a file that
-changes while k4run runs fails the reconstruction. The record's `environment.observed.k4run` is
+files when it opens, so `verify_inputs` (before each candidate and before its record is
+published) and a study's resume refuse another job: a file with other bytes, and a file that
+appeared in `directory` or a `data` directory, or went, since the session opened. A file that
+changes, appears or goes while k4run runs fails the reconstruction. The record's `environment.observed.k4run` is
 the `k4run` that was started.
 
 ## From Python

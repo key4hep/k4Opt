@@ -76,19 +76,29 @@ def _variable_names(value: str) -> list[str]:
     return [m["braced"] or m["bare"] for m in _VARIABLE.finditer(value)]
 
 
+def _path_texts(stage: Stage) -> list[str]:
+    """The paths ``stage`` names, as written: its ``file``, a file a ddsim option names
+    (``physics.pdgfile``), a reconstruction's ``directory``, ``options`` and ``data``."""
+    raw: list[object] = [stage.file]
+    if stage.executor == "ddsim":
+        raw += [stage.options.get(key) for key in FILE_OPTIONS]
+    elif stage.executor == "k4run":
+        data = stage.options.get(k4run.DATA)
+        raw += [
+            stage.options.get(k4run.DIRECTORY),
+            stage.options.get(k4run.OPTIONS),
+            *(data.values() if isinstance(data, Mapping) else ()),
+        ]
+    texts = [v for item in raw for v in (item if isinstance(item, (list, tuple)) else [item])]
+    return [text for text in texts if isinstance(text, str)]
+
+
 def _variables_named(stage: Stage) -> list[str]:
-    """The environment variables the paths of ``stage`` name: a reconstruction's ``directory``,
-    ``options`` and ``data``."""
+    """The environment variables the paths of ``stage`` name: those of a reconstruction, the
+    only paths read with them (:meth:`StageContext.path`)."""
     if stage.executor != "k4run":
         return []
-    data = stage.options.get(k4run.DATA)
-    raw = [
-        stage.options.get(k4run.DIRECTORY),
-        stage.options.get(k4run.OPTIONS),
-        *(data.values() if isinstance(data, Mapping) else ()),
-    ]
-    texts = [v for item in raw for v in (item if isinstance(item, (list, tuple)) else [item])]
-    return [name for text in texts if isinstance(text, str) for name in _variable_names(text)]
+    return [name for text in _path_texts(stage) for name in _variable_names(text)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,9 +115,10 @@ class StageContext:
     before the program is killed and the stage fails; ``None`` for no limit. It is the stage
     task's (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`), never the problem's.
     ``sample`` names the sample in messages and labels. ``variables`` holds the value of each
-    environment variable a path of a stage names (a reconstruction's ``$CLDCONFIG``), taken when
-    the context was made, the session's opening: every candidate reads the files the session
-    identified, wherever the variable points later.
+    environment variable a path of a stage names (a reconstruction's ``$CLDCONFIG``), and the
+    home directory each ``~`` or ``~user`` a path starts with stands for (by that prefix), taken
+    when the context was made, the session's opening: every candidate reads the files the session
+    identified, wherever the variable or ``HOME`` points later.
 
     ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
     program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's
@@ -131,6 +142,10 @@ class StageContext:
         stages = spec.samples[sample].stages
         named = {name for stage in stages.values() for name in _variables_named(stage)}
         variables = {name: os.environ[name] for name in sorted(named) if name in os.environ}
+        for text in (text for stage in stages.values() for text in _path_texts(stage)):
+            prefix = text.split("/", 1)[0]
+            if prefix.startswith("~") and os.path.expanduser(prefix) != prefix:
+                variables[prefix] = os.path.expanduser(prefix)
         return cls(stages, spec.pending(sample), directory, sample=sample, variables=variables)
 
     def configured(self, stages: Mapping[str, Stage]) -> StageContext:
@@ -144,12 +159,17 @@ class StageContext:
     def path(self, value: str, variables: bool = False) -> Path:
         """The absolute path ``value`` stands for, a relative one taken from ``directory``; with
         ``variables``, ``$NAME`` and ``${NAME}`` stand for the environment variables of
-        :attr:`variables` (``$CLDCONFIG/share/CLDConfig``), one it does not hold left as written."""
+        :attr:`variables` (``$CLDCONFIG/share/CLDConfig``), one it does not hold left as written.
+        A leading ``~`` or ``~user`` is the home directory :attr:`variables` holds for it, taken
+        when the session opened, never the one ``HOME`` says now."""
         if variables:
             value = _VARIABLE.sub(
                 lambda m: self.variables.get(m["braced"] or m["bare"], m[0]), value
             )
-        path = Path(value).expanduser()
+        prefix, slash, rest = value.partition("/")
+        if prefix.startswith("~") and prefix in self.variables:
+            value = self.variables[prefix] + slash + rest
+        path = Path(value)
         if path.is_absolute():
             return path
         return Path(os.path.abspath((self.directory or Path.cwd()) / path))
@@ -364,7 +384,7 @@ def _job_files(context: StageContext, stage: Stage) -> dict[str, Path]:
     its ``directory`` (``directory/PandoraSettingsCLD/PandoraSettingsDefault.xml``), which the job
     runs a copy of, or its ``options`` files (``options``, ``options[1]``), and each file its
     ``data`` names, read where it is: a file (``data.calibration``) or each file of a directory
-    (``data.dataFolder/neighbours_map_ecalB.root``)."""
+    (``data.dataFolder/capacitances_ecalBarrelFCCee_theta.root``)."""
     files, directory = _job(context, stage)
     found: dict[str, Path]
     if directory is not None:
@@ -447,6 +467,7 @@ def _run_reconstruction(
         elif readable_identity(path) != identity:
             changed.append(f"{label}: {path}")
     changed.extend(f"{label}: gone" for label in sorted(read.keys() - recorded.keys()))
+    changed.extend(f"{label}: appeared" for label in sorted(recorded.keys() - read.keys()))
     if changed:
         note = (
             "the job's files changed or could not be read while k4run ran, so the record cannot "

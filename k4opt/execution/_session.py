@@ -90,6 +90,18 @@ def _supplied(
     return supplied
 
 
+def _named(binding: _Binding, supplied: Mapping[TaskId, Path]) -> dict[str, Path]:
+    """Every file the stages of the session read, by where it is named
+    (:func:`~k4opt.execution._stages.input_files`, ``supplied.<sample>.<stage>``), as the
+    directories the problem names hold them now."""
+    named: dict[str, Path] = {}
+    for sample, context in binding.contexts.items():
+        given = {task.name for task in supplied if task.sample == sample}
+        named |= input_files(context, *binding.targets[sample], provided=given)
+    named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
+    return named
+
+
 def _try_reconstructions(problem: ResolvedProblem, binding: _Binding, runs: DryRuns) -> None:
     """Raise :class:`~k4opt.evaluation.EvaluationContractError` if the job of a reconstruction
     that runs does not take its arguments (:func:`~k4opt.execution._stages.try_reconstruction`):
@@ -290,8 +302,7 @@ class EvaluationSession:
         binding = _bind_problem(
             spec, implementations, supplied, directory=problem.directory, catalog=problem.catalog
         )
-        named: dict[str, Path] = {}
-        for sample, context in binding.contexts.items():
+        for sample in binding.contexts:
             given = {task.name for task in supplied if task.sample == sample}
             targets = binding.targets[sample]
             for stage in given:  # read by an evaluator, given the other supplied stages
@@ -300,15 +311,13 @@ class EvaluationSession:
                         f"input {sample}/{stage}: no evaluator of the problem reads that stage of "
                         f"{sample}"
                     )
-            named |= input_files(context, *targets, provided=given)
-        named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
         runs = DryRuns(problem.source.root / problem.source.compact)
         try:
             _try_reconstructions(problem, binding, runs)
         except BaseException:
             runs.close()
             raise
-        baseline = Baseline.take(problem, binding, named)
+        baseline = Baseline.take(problem, binding, lambda: _named(binding, supplied))
         crowded = []  # of how the session runs, or what it is given: no summary keeps these
         slots = 1 if count is None else count
         for task in binding.plan.tasks:
