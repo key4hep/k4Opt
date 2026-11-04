@@ -313,3 +313,11 @@ def test_a_file_added_to_a_directory_the_job_reads_stops_the_next_candidate(
         assert not (tmp_path / "again").exists()
         added.unlink()  # as it was: the session goes on
         assert session.evaluate({RADIUS: 450.0}, tmp_path / "third").candidate.status == "valid"
+
+
+def test_a_link_in_the_job_s_directory_that_leads_nowhere_is_refused_when_the_session_opens(
+    tmp_path: Path, reco_file: Path, fake: simulation.FakeDdsim, job: Path
+) -> None:
+    (job / "PandoraSettingsCLD" / "old.xml").symlink_to(tmp_path / "removed.xml")
+    with pytest.raises(EvaluationContractError, match=r"old\.xml is a link to .*which does not"):
+        EvaluationSession.open(reco_file, implementations(reco_cells()))

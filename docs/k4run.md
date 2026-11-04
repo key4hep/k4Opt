@@ -106,7 +106,8 @@ and SHA-256 of every file of `directory` (or of each options file) and of what `
 where the problem names it (`directory/PandoraSettingsCLD/PandoraSettingsDefault.xml`,
 `data.dataFolder/capacitances_ecalBarrelFCCee_theta.root`). A link in a directory is
 followed, as copying it does; a link to a directory it lies in (`loop -> .`) is refused when the
-session opens, since neither its files nor a copy of it would end. The session identifies the same
+session opens, since neither its files nor a copy of it would end, and so is a link that leads
+nowhere, which a copy cannot follow. The session identifies the same
 files when it opens, so `verify_inputs` (before each candidate and before its record is
 published) and a study's resume refuse another job: a file with other bytes, and a file that
 appeared in `directory` or a `data` directory, or went, since the session opened. A file that

@@ -210,7 +210,6 @@ def test_a_link_to_a_directory_it_lies_in_is_refused_and_one_elsewhere_is_follow
     (config / "reco.py").write_text("# the job\n")
     (elsewhere / "map.root").write_text("map")
     (config / "maps").symlink_to(elsewhere)  # a directory outside the job's: its files count
-    (config / "gone").symlink_to(tmp_path / "nothing")  # leads nowhere: no file
     assert list(job_files(config)) == ["maps/map.root", "reco.py"]
     (config / "loop").symlink_to(".")
     with pytest.raises(K4runError, match="is a link to a directory it lies in"):
@@ -219,3 +218,26 @@ def test_a_link_to_a_directory_it_lies_in_is_refused_and_one_elsewhere_is_follow
     (elsewhere / "back").symlink_to(config)  # a cycle through the directory outside
     with pytest.raises(K4runError, match="maps/back is a link to a directory it lies in"):
         job_files(config)
+
+
+def test_a_link_that_leads_nowhere_is_refused_as_a_copy_could_not_follow_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sim: Path
+) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "reco.py").write_text("# the job\n")
+    (config / "gone").symlink_to(tmp_path / "nothing")
+    with pytest.raises(K4runError, match=r"gone is a link to .*nothing, which does not exist"):
+        job_files(config)
+    (config / "gone").unlink()
+    install_k4run(monkeypatch)
+    # without it, the directory the listing accepts is the one the run copies
+    done = reconstruct(
+        files=[config / "reco.py"],
+        directory=config,
+        compact=Path("/g.xml"),
+        input_file=sim,
+        workdir=tmp_path / "reco",
+        options={"options": "reco.py", "directory": str(config)},
+    )
+    assert done.error is None and sorted(job_files(done.cwd)) == ["reco.py"]

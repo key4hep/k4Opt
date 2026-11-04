@@ -70,8 +70,8 @@ def job_files(directory: Path) -> dict[str, Path]:
     """Every file below ``directory`` by its path relative to it (``PandoraSettingsCLD/...``),
     sorted, as the job's copy of it holds them: links followed, as copying does, so a link to a
     directory elsewhere holds that directory's files. Raises :class:`K4runError` for a link to a
-    directory it lies in (``loop -> .``): its files would never end, nor would a copy of it. A link
-    that leads nowhere is no file, and is left out."""
+    directory it lies in (``loop -> .``): its files would never end, nor would a copy of it; and
+    for a link that leads nowhere, which a copy cannot follow either."""
     found: dict[str, Path] = {}
 
     def walk(here: Path, relative: PurePosixPath, ancestors: frozenset[str]) -> None:
@@ -89,6 +89,11 @@ def job_files(directory: Path) -> dict[str, Path]:
                 walk(path, inner, ancestors | {real})
             elif entry.is_file(follow_symlinks=True):
                 found[inner.as_posix()] = path
+            elif entry.is_symlink() and not path.exists():
+                raise K4runError(
+                    f"{path} is a link to {os.readlink(path)}, which does not exist: a copy of "
+                    "the directory cannot follow it; remove the link"
+                )
 
     walk(Path(directory), PurePosixPath(), frozenset())
     return dict(sorted(found.items()))
