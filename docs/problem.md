@@ -342,7 +342,9 @@ takes only its own keys:
 - `k4run`: the job's `options` files (required; one or a list), an optional `directory` the job
   runs from a copy of (the options files are then named relative to it), optional `geometry`
   and `input` naming the job's own arguments that take the compact file and the input files,
-  and any other key is an argument of the job, named as `k4run OPTIONS.py --help` names it, such
+  optional `data` naming the job's arguments that name the data it reads (`{dataFolder:
+  /scratch/calibration/}`, passed by k4opt and identified file by file), and any other key is an
+  argument of the job, named as `k4run OPTIONS.py --help` names it, such
   as `cms: 91` ([k4run](k4run.md)). It has no `events` or `seed`: the job reconstructs every
   event of the simulation, whose `events` and `seed` made them; a seed the job itself reads is
   one of its arguments.
@@ -433,7 +435,8 @@ of its own ([k4run](k4run.md)):
    it read that geometry and those events and wrote that file, or the reconstruction fails: a
    job such as CLD's, which takes its geometry by an argument of its own and has a default
    (CLD_o2_v07), would otherwise reconstruct the candidate's events on another geometry without
-   a word. Every file of `directory` (or each options file) is recorded with its hash, taken
+   a word. Every file of `directory` (or each options file) and of what `data` names is
+   recorded with its hash, taken
    when the session opens, so that a study refuses to resume with another job; a file that
    changes while k4run runs fails the reconstruction. An environment variable in `directory` or
    `options` is read when the session opens, too, so every candidate runs that job.

@@ -252,3 +252,43 @@ def test_a_candidate_whose_value_the_job_does_not_take_is_rejected_before_anythi
     assert not isinstance(outcome, Rejected) and outcome.candidate.status == "valid"
     record = json.loads((tmp_path / "b" / SUMMARY_NAME).read_text())
     assert "--cms=240" in record["samples"]["gamma"]["stages"]["reconstruction"]["argv"]
+
+
+def test_the_data_a_job_reads_is_passed_and_identified_and_a_change_is_caught(
+    tmp_path: Path, reco_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    calibration = tmp_path / "calibration"
+    calibration.mkdir()
+    (calibration / "noise.root").write_text("noise")
+    doc = yaml.safe_load(reco_file.read_text())
+    doc["samples"]["gamma"]["reconstruction"]["data"] = {"dataFolder": f"{calibration}/"}
+    reco_file.write_text(yaml.safe_dump(doc))
+    with EvaluationSession.open(reco_file, implementations(reco_cells())) as session:
+        label = "samples.gamma.reconstruction.data.dataFolder/noise.root"
+        assert session.identity()["inputs"][label]["bytes"] == len("noise")
+        outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "run")
+        assert outcome.candidate.status == "valid"
+        record = json.loads((tmp_path / "run" / SUMMARY_NAME).read_text())
+        stage = record["samples"]["gamma"]["stages"]["reconstruction"]
+        assert f"--dataFolder={calibration}/" in stage["argv"]
+        assert stage["files"]["data.dataFolder/noise.root"]["bytes"] == len("noise")
+        (calibration / "noise.root").write_text("other noise")
+        with pytest.raises(ProvenanceError, match=r"noise\.root"):
+            session.evaluate({RADIUS: 450.0}, tmp_path / "again")
+
+
+def test_missing_data_and_a_job_s_link_loop_are_refused_when_the_session_opens(
+    tmp_path: Path, reco_file: Path, fake: simulation.FakeDdsim, job: Path
+) -> None:
+    doc = yaml.safe_load(reco_file.read_text())
+    doc["samples"]["gamma"]["reconstruction"]["data"] = {"dataFolder": str(tmp_path / "none")}
+    reco_file.write_text(yaml.safe_dump(doc))
+    with pytest.raises(
+        EvaluationContractError, match=r"reconstruction\.data\.dataFolder: .* is no"
+    ):
+        EvaluationSession.open(reco_file, implementations(reco_cells()))
+    del doc["samples"]["gamma"]["reconstruction"]["data"]
+    reco_file.write_text(yaml.safe_dump(doc))
+    (job / "loop").symlink_to(".")
+    with pytest.raises(EvaluationContractError, match="is a link to a directory it lies in"):
+        EvaluationSession.open(reco_file, implementations(reco_cells()))

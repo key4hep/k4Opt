@@ -16,7 +16,7 @@ import stat
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from k4opt import program
 from k4opt.frozen import Json
@@ -68,13 +68,29 @@ class ReconstructionRun:
 
 def job_files(directory: Path) -> dict[str, Path]:
     """Every file below ``directory`` by its path relative to it (``PandoraSettingsCLD/...``),
-    sorted, as the job's copy of it holds them: links followed, as copying does."""
+    sorted, as the job's copy of it holds them: links followed, as copying does, so a link to a
+    directory elsewhere holds that directory's files. Raises :class:`K4runError` for a link to a
+    directory it lies in (``loop -> .``): its files would never end, nor would a copy of it. A link
+    that leads nowhere is no file, and is left out."""
     found: dict[str, Path] = {}
-    for root, dirs, names in os.walk(directory, followlinks=True):
-        dirs.sort()
-        for name in names:
-            path = Path(root) / name
-            found[path.relative_to(directory).as_posix()] = path
+
+    def walk(here: Path, relative: PurePosixPath, ancestors: frozenset[str]) -> None:
+        real = os.path.realpath(here)
+        if real in ancestors:
+            raise K4runError(
+                f"{here} is a link to a directory it lies in ({real}): its files, and a copy of "
+                "them, would never end; remove the link"
+            )
+        with os.scandir(here) as entries:
+            listed = sorted(entries, key=lambda entry: entry.name)
+        for entry in listed:
+            path, inner = Path(entry.path), relative / entry.name
+            if entry.is_dir(follow_symlinks=True):
+                walk(path, inner, ancestors | {real})
+            elif entry.is_file(follow_symlinks=True):
+                found[inner.as_posix()] = path
+
+    walk(Path(directory), PurePosixPath(), frozenset())
     return dict(sorted(found.items()))
 
 
@@ -148,6 +164,7 @@ def reconstruct(
     input_file: Path,
     workdir: Path,
     options: Mapping[str, Json],
+    data: Mapping[str, str] | None = None,
     timeout: float | None = None,
     started: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
@@ -157,7 +174,8 @@ def reconstruct(
     ``compact``, in the new directory ``workdir``.
 
     ``options`` are the stage's (:data:`~k4opt.k4run.command.EXECUTOR_KEYS` and the job's
-    arguments, see :func:`~k4opt.k4run.command.k4run_arguments`). The job runs in ``workdir/job``,
+    arguments, see :func:`~k4opt.k4run.command.k4run_arguments`); ``data`` the absolute path of
+    each argument its ``data`` names, as written there if ``None``. The job runs in ``workdir/job``,
     a writable copy of ``directory`` or an empty directory; ``workdir`` receives
     ``events.edm4hep.root`` and the files of :data:`LOG_FILES`. ``timeout`` limits the whole run,
     the copy of ``directory`` included: a ``k4run`` still running when it is over is killed with
@@ -200,6 +218,7 @@ def reconstruct(
         input_file=input_file,
         output=output,
         options=options,
+        data=data,
     )
     run = program.run(
         "k4run",
@@ -246,6 +265,7 @@ def dry_run(
     compact: Path,
     workdir: Path,
     options: Mapping[str, Json],
+    data: Mapping[str, str] | None = None,
     placeholder: Path | None = None,
     timeout: float = DRY_RUN_TIMEOUT,
 ) -> str | None:
@@ -274,6 +294,7 @@ def dry_run(
         input_file=placeholder,
         output=workdir / OUTPUT,
         options=options,
+        data=data,
         dry_run=True,
     )
     run = program.run("k4run", arguments, workdir=workdir, cwd=job, logs=LOG_FILES, timeout=timeout)

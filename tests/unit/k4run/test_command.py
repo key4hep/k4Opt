@@ -190,5 +190,50 @@ def test_an_option_a_parameter_sets_is_not_also_written_nor_the_geometry_argumen
     check_options(JOB, pending={"cms"})
     with pytest.raises(K4runError, match=r"reconstruction\.cms: is given, but a parameter sets it"):
         check_options({**JOB, "cms": 91}, pending={"cms"})
-    with pytest.raises(K4runError, match="the argument that takes the geometry"):
+    with pytest.raises(
+        K4runError, match="is an argument that takes the geometry, the input or data"
+    ):
         check_options({**JOB, "geometry": "compactFile"}, pending={"compactFile"})
+
+
+def test_data_the_job_reads_is_passed_by_k4opt_after_what_it_sets() -> None:
+    options = {**JOB, "data": {"dataFolder": "/scratch/calibration/"}, "cms": 91}
+    arguments = k4run_arguments(
+        files=["run_digi_reco.py"],
+        k4opt_options=Path("/k.py"),
+        compact=Path("/g.xml"),
+        input_file=Path("/s.root"),
+        output=Path("/r.root"),
+        options=options,
+        data={"dataFolder": "/abs/calibration/"},  # as the session resolved it
+    )
+    assert arguments[-3:] == (
+        "--IOSvc.Output=/r.root",
+        "--dataFolder=/abs/calibration/",
+        "--cms=91",
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "extra", "message"),
+    [
+        ([], {}, "reconstruction.data: must map each argument of the job"),
+        ({}, {}, "reconstruction.data: must map each argument of the job"),
+        ({"dataFolder": ""}, {}, "reconstruction.data.dataFolder: must be a nonblank text"),
+        ({"IOSvc.Input": "/x"}, {}, "reconstruction.data.IOSvc.Input: k4opt sets this argument"),
+        ({"dataFolder": "/x"}, {"dataFolder": "/y"}, "reconstruction.dataFolder: is an argument"),
+        (
+            {"compactFile": "/x"},
+            {"geometry": "compactFile"},
+            "reconstruction.data.compactFile: is the argument that takes the geometry",
+        ),
+    ],
+)
+def test_data_that_cannot_be_passed_is_refused(
+    data: Any, extra: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(K4runError) as raised:
+        check_options({**JOB, "data": data, **extra})
+    assert message in str(raised.value)
+    with pytest.raises(K4runError, match="it says which job runs"):
+        settable_option("data")

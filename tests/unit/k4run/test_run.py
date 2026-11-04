@@ -199,3 +199,23 @@ def test_dry_runs_that_share_a_placeholder_write_it_once(tmp_path: Path, job: Pa
 
 def test_the_files_of_a_job_s_directory_are_listed_by_their_relative_path(job: Path) -> None:
     assert list(job_files(job)) == ["CLDReconstruction.py", "PandoraSettingsCLD/Likelihood.xml"]
+
+
+def test_a_link_to_a_directory_it_lies_in_is_refused_and_one_elsewhere_is_followed(
+    tmp_path: Path,
+) -> None:
+    config, elsewhere = tmp_path / "config", tmp_path / "elsewhere"
+    config.mkdir()
+    elsewhere.mkdir()
+    (config / "reco.py").write_text("# the job\n")
+    (elsewhere / "map.root").write_text("map")
+    (config / "maps").symlink_to(elsewhere)  # a directory outside the job's: its files count
+    (config / "gone").symlink_to(tmp_path / "nothing")  # leads nowhere: no file
+    assert list(job_files(config)) == ["maps/map.root", "reco.py"]
+    (config / "loop").symlink_to(".")
+    with pytest.raises(K4runError, match="is a link to a directory it lies in"):
+        job_files(config)
+    (config / "loop").unlink()
+    (elsewhere / "back").symlink_to(config)  # a cycle through the directory outside
+    with pytest.raises(K4runError, match="maps/back is a link to a directory it lies in"):
+        job_files(config)

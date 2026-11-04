@@ -77,11 +77,16 @@ def _variable_names(value: str) -> list[str]:
 
 
 def _variables_named(stage: Stage) -> list[str]:
-    """The environment variables the paths of ``stage`` name: a reconstruction's ``directory``
-    and ``options``."""
+    """The environment variables the paths of ``stage`` name: a reconstruction's ``directory``,
+    ``options`` and ``data``."""
     if stage.executor != "k4run":
         return []
-    raw = [stage.options.get(k4run.DIRECTORY), stage.options.get(k4run.OPTIONS)]
+    data = stage.options.get(k4run.DATA)
+    raw = [
+        stage.options.get(k4run.DIRECTORY),
+        stage.options.get(k4run.OPTIONS),
+        *(data.values() if isinstance(data, Mapping) else ()),
+    ]
     texts = [v for item in raw for v in (item if isinstance(item, (list, tuple)) else [item])]
     return [name for text in texts if isinstance(text, str) for name in _variable_names(text)]
 
@@ -344,16 +349,37 @@ def _job(context: StageContext, stage: Stage) -> tuple[list[Path], Path | None]:
     return [context.path(name, variables=True) for name in names], None
 
 
+def _data(context: StageContext, stage: Stage) -> dict[str, str]:
+    """The absolute path of each argument the ``data`` of the reconstruction ``stage`` names, by
+    argument, a trailing ``/`` kept: a job may append file names to it (ALLEGRO's
+    ``--dataFolder``)."""
+    return {
+        name: str(context.path(value, variables=True)) + ("/" if value.endswith("/") else "")
+        for name, value in k4run.data_arguments(stage.options).items()
+    }
+
+
 def _job_files(context: StageContext, stage: Stage) -> dict[str, Path]:
-    """The files the reconstruction ``stage`` runs, by where it names them: each file of its
-    ``directory`` (``directory/PandoraSettingsCLD/PandoraSettingsDefault.xml``), which the job
-    runs a copy of, or its ``options`` files (``options``, ``options[1]``)."""
+    """The files the reconstruction ``stage`` runs and reads, by where it names them: each file of
+    its ``directory`` (``directory/PandoraSettingsCLD/PandoraSettingsDefault.xml``), which the job
+    runs a copy of, or its ``options`` files (``options``, ``options[1]``), and each file its
+    ``data`` names, read where it is: a file (``data.calibration``) or each file of a directory
+    (``data.dataFolder/neighbours_map_ecalB.root``)."""
     files, directory = _job(context, stage)
+    found: dict[str, Path]
     if directory is not None:
-        return {f"directory/{name}": path for name, path in k4run.job_files(directory).items()}
-    if len(files) == 1 and not isinstance(stage.options.get(k4run.OPTIONS), (list, tuple)):
-        return {"options": files[0]}
-    return {f"options[{index}]": path for index, path in enumerate(files)}
+        found = {f"directory/{name}": path for name, path in k4run.job_files(directory).items()}
+    elif len(files) == 1 and not isinstance(stage.options.get(k4run.OPTIONS), (list, tuple)):
+        found = {"options": files[0]}
+    else:
+        found = {f"options[{index}]": path for index, path in enumerate(files)}
+    for name, value in _data(context, stage).items():
+        path = Path(value)
+        if path.is_dir():
+            found |= {f"data.{name}/{inner}": file for inner, file in k4run.job_files(path).items()}
+        else:
+            found[f"data.{name}"] = path
+    return found
 
 
 def _check_reconstruction(context: StageContext, provided: Collection[str]) -> None:
@@ -372,6 +398,17 @@ def _check_reconstruction(context: StageContext, provided: Collection[str]) -> N
         if not path.is_file():
             within = f" in {directory}" if directory is not None else _variable_hint(context, name)
             raise EvaluationContractError(f"{where}.options: {path} is not a file{within}")
+    written = k4run.data_arguments(stage.options)
+    for name, value in _data(context, stage).items():
+        if not Path(value).exists():
+            hint = _variable_hint(context, written[name])
+            raise EvaluationContractError(
+                f"{where}.data.{name}: {value.rstrip('/')} is no file or directory{hint}"
+            )
+    try:  # a link to a directory it lies in is refused here, before anything runs
+        _job_files(context, stage)
+    except k4run.K4runError as exc:
+        raise EvaluationContractError(f"{where}: {exc}") from exc
 
 
 def _run_reconstruction(
@@ -388,6 +425,7 @@ def _run_reconstruction(
         input_file=inputs["simulation"],
         workdir=workdir,
         options=stage.options,
+        data=_data(context, stage),
         timeout=context.timeout,
         started=context.started,
         die_with_parent=context.die_with_parent,
@@ -495,8 +533,8 @@ class DryRuns:
     def said(self, context: StageContext, options: Mapping[str, Json]) -> str | None:
         """Why the job of the reconstruction of ``context``'s sample, with the stage's
         ``options``, does not take its arguments; ``None`` if it does."""
-        stage = context.stages["reconstruction"]
-        files, directory = _job(context, replace(stage, options=options))
+        stage = replace(context.stages["reconstruction"], options=options)
+        files, directory = _job(context, stage)
         key = json.dumps(
             [[str(file) for file in files], str(directory), thaw(options)], sort_keys=True
         )
@@ -510,6 +548,7 @@ class DryRuns:
                 compact=self.compact,
                 workdir=workdir,
                 options=options,
+                data=_data(context, stage),
                 placeholder=self._scratch / "placeholder.edm4hep.root",
             )
             shutil.rmtree(workdir, ignore_errors=True)  # a copy of the job: only its answer counts

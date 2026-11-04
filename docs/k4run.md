@@ -32,6 +32,7 @@ samples:
 | `directory` | Optional. A directory the job runs from a writable copy of, in the stage's own directory (`job/`). A reconstruction such as CLD's runs only from its own directory: its Pandora settings name files relative to where it runs. `$NAME` and `${NAME}` are environment variables (`$CLDCONFIG`, set by the Key4hep environment), read once, when the session opens: every candidate runs the job the session identified, wherever the variable points later. `~` is the home directory. |
 | `geometry` | Optional. The job's own argument that takes the compact file (CLD's and ILD's `compactFile`), for a job that derives more than the geometry service from it. Without it, k4opt sets `GeoSvc.detectors` (ALLEGRO, IDEA). |
 | `input` | Optional. The job's own argument that takes the input files (CLD's `inputFiles`). Without it, k4opt sets `IOSvc.Input`. |
+| `data` | Optional. Each argument of the job that names a file or a directory of data it reads, with its path: `data: {dataFolder: /scratch/calibration/}` for ALLEGRO's calibration maps and ONNX models. k4opt passes it (`--dataFolder=/scratch/calibration/`, a trailing `/` kept, since a job may append file names to it) and identifies what it names, a directory by every file in it, as it identifies the job's own files; the data is read where it is, not copied. Paths are read as `directory`'s are. |
 | any other key | An argument of the job or a Gaudi property, named as `k4run OPTIONS.py --help` names it, without the dashes: `cms: 91` is `--cms=91`, `GeoSvc.OutputLevel: 3` is `--GeoSvc.OutputLevel=3`, a list is `--key v1 v2`, `true` the flag `--key`. `false` is refused: a flag of the job's own (CLD's `--truthTracking`, an argparse `store_true`) takes no value and cannot be switched off, and leaving it out keeps the job's default, which k4opt does not know, so leave the key out yourself; a Gaudi property, which takes a value, is given the text `'False'` (`GeoSvc.EnableGeant4Geo: 'False'`). A mapping or `null` is refused, as is a list value starting with `-`, which k4run would read as an argument. |
 
 A reconstruction takes no `events` or `seed`: it reconstructs every event of the simulation it
@@ -101,8 +102,11 @@ The stage's directory, `samples/<sample>/reconstruction/`, holds the output
 directory, exit code, time limit, peak memory), `joboptions.txt` and `k4opt.opts.py`, and the
 job's working directory `job/`, where whatever else the job writes stays (histograms,
 `cdb.log`). The record of the stage keeps the argument list and, under `files`, the path, size
-and SHA-256 of every file of `directory` (or of each options file), by where the problem names
-it (`directory/PandoraSettingsCLD/PandoraSettingsDefault.xml`). The session identifies the same
+and SHA-256 of every file of `directory` (or of each options file) and of what `data` names, by
+where the problem names it (`directory/PandoraSettingsCLD/PandoraSettingsDefault.xml`,
+`data.dataFolder/neighbours_map_ecalB_thetamodulemerged.root`). A link in a directory is
+followed, as copying it does; a link to a directory it lies in (`loop -> .`) is refused when the
+session opens, since neither its files nor a copy of it would end. The session identifies the same
 files when it opens, so `verify_inputs` and a study's resume refuse another job; a file that
 changes while k4run runs fails the reconstruction. The record's `environment.observed.k4run` is
 the `k4run` that was started.
@@ -139,7 +143,11 @@ directory as the record names them.
 
 ## Not yet
 
-A job that reads its input's collections while it is configured may refuse the dry run's input of
+k4opt identifies what the stage names (`directory`, `options`, `data`); a file the job reads by a
+path of its own (written in its options files, or taken from an environment variable) is read
+unidentified, so name it under `data`. A flag of the job cannot be switched off (`false` is
+refused, above), so a parameter cannot vary one on and off. A job that reads its input's
+collections while it is configured may refuse the dry run's input of
 one empty event, though it would take the simulation; the dry run then refuses the problem with
 what the job said. Each candidate's reconstruction copies the job's directory (CLDConfig is
 440 KB), which a job of many large files would make expensive. A reconstruction of part of the

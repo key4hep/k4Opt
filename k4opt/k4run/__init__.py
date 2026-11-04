@@ -29,12 +29,14 @@ Typical use::
 """
 
 from k4opt.k4run.command import (
+    DATA,
     DIRECTORY,
     EXECUTOR_KEYS,
     GEOMETRY,
     INPUT,
     OPTIONS,
     check_options,
+    data_arguments,
     k4run_arguments,
     options_files,
     settable_option,
@@ -45,6 +47,7 @@ from k4opt.k4run.joboptions import properties, verify
 from k4opt.k4run.run import LOG_FILES, ReconstructionRun, dry_run, job_files, reconstruct
 
 __all__ = [
+    "DATA",
     "DIRECTORY",
     "EXECUTOR_KEYS",
     "GEOMETRY",
@@ -54,6 +57,7 @@ __all__ = [
     "K4runError",
     "ReconstructionRun",
     "check_options",
+    "data_arguments",
     "dry_run",
     "job_files",
     "k4run_arguments",

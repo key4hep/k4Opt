@@ -45,11 +45,12 @@ STAGE = "reconstruction"
 """The stage type k4run runs; the messages here name the options by it
 (``reconstruction.cms: ...``)."""
 
-OPTIONS, DIRECTORY, GEOMETRY, INPUT = "options", "directory", "geometry", "input"
-EXECUTOR_KEYS = (OPTIONS, DIRECTORY, GEOMETRY, INPUT)
+OPTIONS, DIRECTORY, GEOMETRY, INPUT, DATA = "options", "directory", "geometry", "input", "data"
+EXECUTOR_KEYS = (OPTIONS, DIRECTORY, GEOMETRY, INPUT, DATA)
 """The options of a stage k4opt reads itself: the job's options files, the directory it runs from
-a copy of, and the job's own arguments that take the geometry and the input. Every other option is
-an argument of the job."""
+a copy of, the job's own arguments that take the geometry and the input, and those that name the
+files or directories of data the job reads (``data``), which k4opt identifies. Every other option
+is an argument of the job."""
 
 _EVERY_EVENT = "k4opt reconstructs every event of the simulation it reads"
 _BATCH = "k4opt runs the job in batch, to its end"
@@ -238,10 +239,37 @@ def wiring(options: Mapping[str, Json]) -> tuple[str | None, str | None]:
     return geometry, input_
 
 
+def data_arguments(options: Mapping[str, Json]) -> dict[str, str]:
+    """The job's arguments that name a file or a directory of data it reads, each with its path as
+    the stage writes it: ``data: {dataFolder: /scratch/calibration/}`` (ALLEGRO's calibration
+    maps and models). k4opt passes each (``--dataFolder=/scratch/calibration/``) and identifies
+    what it names, a directory by every file in it, as it identifies the job's own files."""
+    if DATA not in options:
+        return {}
+    raw = options[DATA]
+    if not isinstance(raw, Mapping) or not raw:
+        raise _fail(
+            DATA,
+            "must map each argument of the job that names data it reads to the file or directory, "
+            "such as {dataFolder: /scratch/calibration/}",
+        )
+    geometry, input_ = wiring(options)
+    named: dict[str, str] = {}
+    for name, path in raw.items():
+        where = f"{DATA}.{name}"
+        _check_name(name, where)
+        if name in options:
+            raise _fail(name, "is an argument data: names, which k4opt passes; leave it out here")
+        if name in (geometry, input_):
+            raise _fail(where, "is the argument that takes the geometry or the input")
+        named[name] = _text(path, where)
+    return named
+
+
 def settable_option(key: str) -> Settable:
     """How a parameter sets the job argument ``key``: as its value itself, whose unit the job
     decides; :class:`K4runError` for one it cannot set: what k4opt reads itself (the options
-    files, the directory, the arguments that take the geometry and the input) and what k4opt
+    files, the directory, the arguments that take the geometry, the input and data) and what k4opt
     manages."""
     if key in EXECUTOR_KEYS:
         raise _fail(
@@ -262,12 +290,15 @@ def check_options(options: Mapping[str, Json], pending: Collection[str] = ()) ->
     if DIRECTORY in options:
         _text(options[DIRECTORY], DIRECTORY)
     geometry, input_ = wiring(options)
+    data = data_arguments(options)
     for key in pending:
         settable_option(key)
         if key in options:
             raise _fail(key, "is given, but a parameter sets it")
-        if key in (geometry, input_):
-            raise _fail(key, "is the argument that takes the geometry or the input; k4opt sets it")
+        if key in (geometry, input_) or key in data:
+            raise _fail(
+                key, "is an argument that takes the geometry, the input or data; k4opt sets it"
+            )
     job_arguments(options)
 
 
@@ -279,19 +310,25 @@ def k4run_arguments(
     input_file: Path,
     output: Path,
     options: Mapping[str, Json],
+    data: Mapping[str, str] | None = None,
     dry_run: bool = False,
 ) -> tuple[str, ...]:
     """The arguments of ``k4run``: the job's options ``files``, k4opt's own options file after
     them (so that it changes nothing the job set, and before every argument: a file after
     ``--inputFiles a.root`` would be read as one more input), then what k4opt sets (every event,
-    the geometry, the input, the output) and the job's arguments, in order."""
+    the geometry, the input, the output, the data, by ``data``: the paths of the stage's ``data``
+    as k4opt resolved them, as the stage writes them if ``None``) and the job's arguments, in
+    order."""
     geometry, input_ = wiring(options)
+    if data is None:
+        data = data_arguments(options)
     managed = [
         "--num-events=-1",
         f"--{geometry or 'GeoSvc.detectors'}={compact}",
         f"--{input_ or 'IOSvc.Input'}",
         str(input_file),
         f"--IOSvc.Output={output}",
+        *(f"--{name}={path}" for name, path in data.items()),
     ]
     return (
         *files,
