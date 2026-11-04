@@ -192,8 +192,8 @@ def test_summary_is_written_and_truthful(
     seconds = [stage["elapsed_seconds"] for stage in on_disk["samples"]["gamma"]["stages"].values()]
     seconds += [on_disk["geometry"]["elapsed_seconds"], evaluator["elapsed_seconds"]]
     assert min(seconds) >= 0 and sum(seconds) <= on_disk["elapsed_seconds"]
-    # what the simulation made in its directory: its output, by reference, never hashed, and
-    # its logs
+    # what the simulation made in its directory: its output, by reference, hashed when the stage
+    # ended, and its logs
     assert simulated["directory"] == "samples/gamma/simulation"
     events = tmp_path / "a" / "samples" / "gamma" / "simulation" / "events.edm4hep.root"
     assert simulated["outputs"] == {
@@ -201,7 +201,7 @@ def test_summary_is_written_and_truthful(
             "ref": "gamma/simulation#events",
             "path": "samples/gamma/simulation/events.edm4hep.root",
             "bytes": events.stat().st_size,
-            "sha256": None,
+            "sha256": hashlib.sha256(events.read_bytes()).hexdigest(),
         }
     }
     assert list(simulated["logs"]) == ["stdout", "stderr", "command"]

@@ -83,7 +83,7 @@ def _role_input(
     assert result.output is not None  # a stage that makes a file
     name = stage_output(item.stage)
     made = result.made.get(name)
-    if made is not None:  # made in its directory: never hashed
+    if made is not None:  # made in its directory, hashed when it was made
         artifact = made
     else:  # a file of the problem or the caller's, hashed when the session opened
         size, sha256 = result.provenance.get("bytes"), result.provenance.get("sha256")

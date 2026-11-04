@@ -5,9 +5,9 @@ it, and told apart from a rewritten one, on the filesystem that took it, by its 
 size, times and inode (:data:`Stat`). The stats are machine-specific and never recorded.
 
 The files a task makes in its own directory are :class:`Made`: what the record says of each (an
-:class:`~k4opt.evaluation.Artifact`, hashed for an evaluator's artifact, never for the possibly
-huge output of a stage), and the file's ``stat`` when it was made. A file whose stat changed is
-no longer what the record says (:meth:`Made.changed`), so the tasks that read it check it
+:class:`~k4opt.evaluation.Artifact`, hashed once, when the task ends: an evaluator's artifact
+and the output of a stage alike), and the file's ``stat`` when it was made. A file whose stat
+changed is no longer what the record says (:meth:`Made.changed`), so the tasks that read it check it
 before and after they run, and the candidate checks all of them at its end. The files of the
 geometry, which the record identifies together by their fingerprint and every simulation of
 every sample reads, are watched as one :class:`Tree`. :func:`artifacts` checks and hashes what

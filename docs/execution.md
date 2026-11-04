@@ -173,8 +173,10 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
        and `message`; the particle gun, or the size and SHA-256 of a given or supplied file; the
        exact `ddsim` command and exit code, the files its options name, with their hashes; the
        events found (`events_read`), its `directory`, its `outputs` (the EDM4hep file of a
-       simulation that is `done`: its reference `gamma_10gev/simulation#events`, path and size,
-       never hashed, so `sha256` is `null`) and `logs` (`stdout`, `stderr`, `command`), the tasks
+       simulation that is `done`: its reference `gamma_10gev/simulation#events`, path, size and
+       SHA-256, hashed when the stage ended), its `signature` (what it was made from,
+       [docs/evaluation.md](evaluation.md#stage-signatures)) and `logs` (`stdout`, `stderr`,
+       `command`), the tasks
        it `reads` (labeled `gamma_10gev/generation`, and `geometry`) and those it was
        `blocked_by`, and the time spent on it (`null` if it did not run);
      - `evaluations`, each binding that measures the sample by its name, in problem order: the

@@ -58,10 +58,17 @@ from k4opt.problem.candidate import (
 )
 from k4opt.problem.config import resolve_problem
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
-from k4opt.problem.plan import GEOMETRY, Kind, TaskId, stage_task
-from k4opt.problem.stages import STAGE_TYPES, plan_stages
+from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, stage_task
+from k4opt.problem.stages import STAGE_TYPES, executors, plan_stages
 from k4opt.record.read import SUMMARY_SCHEMA
 from k4opt.record.results import DONE, TaskResult
+from k4opt.record.signature import (
+    SIGNATURE,
+    geometry_identity,
+    given_identity,
+    signed,
+    stage_document,
+)
 from k4opt.record.write import SUMMARY_NAME
 
 
@@ -559,6 +566,7 @@ class EvaluationSession:
             pull,
             self._checked,
             activity,
+            sign=self._sign,
         )
         try:
             for run in driven:
@@ -623,6 +631,58 @@ class EvaluationSession:
         except RunError as exc:  # of the kind it is: a ProvenanceError stays one
             run_dir = run.workspace.root
             raise type(exc)(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
+
+    def _sign(
+        self, run: _Run, task: Task, results: Mapping[TaskId, TaskResult]
+    ) -> Mapping[str, Json] | None:
+        """The signature of ``task`` of ``run`` (:mod:`k4opt.record.signature`), from the results
+        of what it reads: for a stage that runs, what it is made from; ``None`` for anything
+        else, and for a stage that reads a geometry without a fingerprint."""
+        if task.id.kind is not Kind.STAGE or task.given is not None:
+            return None
+        sample, name = task.id.sample, task.id.name
+        assert sample is not None
+        assert run.prepared is not None
+        stage = run.prepared.contexts[sample].stages[name]
+        reads: dict[str, object] = {}
+        for need in task.needs:
+            provenance = results[need].provenance
+            if need == GEOMETRY:
+                reads[need.name] = geometry_identity(provenance)
+            elif self._binding.plan[need].given is not None:
+                reads[need.name] = given_identity(provenance)
+            else:
+                upstream = provenance.get(SIGNATURE)
+                reads[need.name] = upstream.get("sha256") if isinstance(upstream, Mapping) else None
+        if any(identity is None for identity in reads.values()):
+            return None  # what it reads is not identified: neither is what it makes
+        prefix = f"samples.{sample}.{name}."
+        files = {
+            label.removeprefix(prefix): identity
+            for label, (_, identity) in self._baseline.files.items()
+            if label.startswith(prefix)
+        }
+        process = self._baseline.process
+        programs, environment, k4opt = process["programs"], process["environment"], process["k4opt"]
+        assert isinstance(programs, Mapping)
+        assert isinstance(environment, Mapping)
+        assert isinstance(k4opt, Mapping)
+        program = None if stage.executor is None else executors(name)[stage.executor].program
+        document = stage_document(
+            name,
+            stage,
+            reads=reads,
+            files=files,
+            program=None if program is None else programs.get(program),
+            environment={
+                "KEY4HEP_STACK": environment.get("KEY4HEP_STACK"),
+                "search": process["search"],
+            },
+            k4opt=k4opt.get("sha256"),
+        )
+        signature = freeze(signed(document), SIGNATURE, RunError)
+        assert isinstance(signature, Mapping)
+        return signature
 
     def _prepare(
         self, candidate: Mapping[str, Scalar]

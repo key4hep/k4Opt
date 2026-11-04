@@ -48,7 +48,7 @@ from k4opt.problem.plan import (
     represents_candidate,
     stage_task,
 )
-from k4opt.problem.stages import STAGE_TYPES, stage_output
+from k4opt.problem.stages import STAGE_TYPES, executors, stage_output
 from k4opt.record.errors import RecordError
 from k4opt.record.results import (
     DECLINED,
@@ -58,6 +58,13 @@ from k4opt.record.results import (
     candidate_message,
     candidate_status,
     diagnostics,
+)
+from k4opt.record.signature import (
+    SIGNATURE,
+    digest,
+    geometry_identity,
+    given_identity,
+    stage_document,
 )
 
 SUMMARY_SCHEMA = "k4opt.run/1"
@@ -456,9 +463,7 @@ def _results(
                 raise RecordError(
                     f"{at}: directory {part.get('directory')!r}, but its directory is {directory!r}"
                 )
-            outputs = _files(
-                part.get("outputs"), made_by, directory, f"{at}: outputs", hashed=False
-            )
+            outputs = _files(part.get("outputs"), made_by, directory, f"{at}: outputs", hashed=True)
             made = [stage_output(name)] if fragment.status == DONE and directory else []
             if list(outputs) != made:
                 raise RecordError(
@@ -635,6 +640,74 @@ class Recorded(NamedTuple):
     value: _Lookup
 
 
+def _within(value: object, *keys: str) -> Mapping[str, object]:
+    """The mapping at ``keys`` of ``value``; an empty one where there is none."""
+    for key in keys:
+        value = value.get(key) if isinstance(value, Mapping) else None
+    return value if isinstance(value, Mapping) else {}
+
+
+def _check_signatures(
+    configuration: Configuration, record: Mapping[str, object], plan: Plan
+) -> None:
+    """Each stage that ran holds its signature (:mod:`k4opt.record.signature`), and that
+    signature is what the record says the stage was made from: its definition, the geometry and
+    the stages it read, the files the problem names for it, the program it ran, the environment
+    and k4opt's code; its SHA-256 is that of its document. A blocked stage, and one given as a
+    file, has none."""
+    samples = cast(Mapping[str, Mapping[str, Any]], record["samples"])  # checked by _samples
+    geometry = _mapping(record.get("geometry"), "geometry")
+    observed = _within(record, "environment", "observed")
+    programs = _within(observed, "programs")
+    environment = {"KEY4HEP_STACK": observed.get("KEY4HEP_STACK"), "search": observed.get("search")}
+    k4opt = _within(observed, "k4opt_source").get("sha256")
+    for task in plan.of(Kind.STAGE):
+        assert task.id.sample is not None
+        sample, name = task.id.sample, task.id.name
+        part = samples[sample]["stages"][name]
+        at = f"stage {task.id.label!r}"
+        held = part.get(SIGNATURE)
+        if task.given is not None or part.get("status") == Status.BLOCKED:
+            if held is not None:
+                raise RecordError(f"{at}: a signature, but a stage that did not run has none")
+            continue
+        held = _mapping(held, f"{at}: {SIGNATURE}")
+        document = _mapping(held.get("document"), f"{at}: {SIGNATURE}.document")
+        if held.get("sha256") != digest(document):
+            raise RecordError(f"{at}: its signature's SHA-256 is not that of its document")
+        stage = configuration.samples[sample].stages[name]
+        reads: dict[str, object] = {}
+        for need in task.needs:
+            if need == GEOMETRY:
+                reads[need.name] = geometry_identity(geometry)
+                continue
+            assert need.sample is not None
+            upstream = samples[need.sample]["stages"][need.name]
+            if plan[need].given is not None:
+                reads[need.name] = given_identity(upstream)
+            else:
+                reads[need.name] = (upstream.get(SIGNATURE) or {}).get("sha256")
+        files = part.get("files")
+        if not isinstance(files, Mapping):  # it ended before it read them: its document says
+            files = _within(document, "files")
+        executor = executors(name)[stage.executor or ""]
+        expected = stage_document(
+            name,
+            stage,
+            reads=reads,
+            files=files,
+            program=None if executor.program is None else programs.get(executor.program),
+            environment=environment,
+            k4opt=k4opt,
+        )
+        if _plain(expected) != _plain(dict(document)):
+            differ = [key for key in expected if expected[key] != document.get(key)]
+            raise RecordError(
+                f"{at}: its signature says it was made from other {', '.join(differ)} than the "
+                "record does"
+            )
+
+
 def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
     """Check the run record ``summary`` (``summary.json`` as read back) against the problem
     ``spec`` as :meth:`~k4opt.record.Assessment.from_summary` documents, all but its
@@ -659,6 +732,7 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
     )
     evaluators = _evaluations(spec, configuration, record, samples, declared, demands, plan)
     results = _results(spec, configuration, record, samples, supplied, evaluators, plan)
+    _check_signatures(configuration, record, plan)
     required = [task.id.label for task in plan.tasks if task.required]
     if record.get("required") != required:
         raise RecordError(

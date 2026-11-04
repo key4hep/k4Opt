@@ -369,7 +369,7 @@ def test_an_artifact_is_recorded_by_reference_path_size_and_hash(
     assert without.summary["implementations"]["test.cell_count"]["artifacts"] is None
 
 
-def test_an_artifact_is_hashed_once_and_an_edm4hep_output_never(
+def test_an_artifact_and_an_edm4hep_output_are_each_hashed_once(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hashed: list[str] = []
@@ -381,7 +381,10 @@ def test_an_artifact_is_hashed_once_and_an_edm4hep_output_never(
     monkeypatch.setattr(_files, "_sha256", sha256)  # uncached: every hash is counted
     run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[plotting()])
     artifact = tmp_path / "a" / "samples" / "gamma" / "evaluators" / "test.cell_count"
-    assert hashed == [str(artifact / "histogram.json")]  # a gun reads no file
+    events = tmp_path / "a" / "samples" / "gamma" / "simulation" / "events.edm4hep.root"
+    # a gun reads no file; the simulation's output is hashed when it ends, the artifact when the
+    # evaluation returns
+    assert hashed == [str(events), str(artifact / "histogram.json")]
 
 
 @pytest.mark.parametrize(
@@ -446,7 +449,7 @@ OUTPUT = "samples/gamma/stages/simulation/outputs/events"
     [
         # a content identity only where one was computed
         (f"{VALID}/artifacts/histogram/sha256", None, "sha256 None, but such a file is hashed"),
-        (f"{OUTPUT}/sha256", "a" * 64, "but such a file is never hashed"),
+        (f"{OUTPUT}/sha256", None, "sha256 None, but such a file is hashed when it is made"),
         (f"{VALID}/artifacts/histogram/sha256", "A" * 64, "sha256 must be 64 lowercase hex"),
         # each by its reference, its own and none other
         (f"{VALID}/artifacts/histogram/ref", "gamma/simulation#events", "ref 'gamma/simulation#"),

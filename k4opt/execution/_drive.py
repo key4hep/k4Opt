@@ -48,9 +48,10 @@ from k4opt.execution._tasks import (
     Workspace,
 )
 from k4opt.execution._work import asked
-from k4opt.frozen import FrozenMap
+from k4opt.frozen import FrozenMap, Json
 from k4opt.problem.plan import Kind, Task, TaskId, represents_candidate
 from k4opt.record.results import CandidateRecord, TaskResult
+from k4opt.record.signature import SIGNATURE
 
 
 @dataclass(slots=True)
@@ -64,7 +65,9 @@ class _Run:
     published: what the tasks that read them check, and the candidate checks at its end; a task
     that never ran (blocked) has none. ``rejected`` says why an evaluator rejected it, in which
     case nothing of it was created and it has no ``prepared``. ``request``, ``values`` and
-    ``reference`` (what its record says it was made for) are the caller's."""
+    ``reference`` (what its record says it was made for) are the caller's. ``signatures`` holds
+    the signature of each stage handed out (:mod:`k4opt.record.signature`), which its result
+    carries."""
 
     workspace: Workspace
     prepared: _Prepared | None
@@ -81,6 +84,7 @@ class _Run:
     request: object = None
     values: Mapping[str, Scalar] = field(default_factory=dict)
     reference: object = None
+    signatures: dict[TaskId, Mapping[str, Json]] = field(default_factory=dict)
 
 
 def _result(run: _Run, task: Task, outcome: TaskOutcome, observed: Observations) -> TaskResult:
@@ -117,6 +121,10 @@ class Activity:
 type Check = Callable[[_Run, TaskOutcome, TaskResult], None]
 """What the coordinator checks of each result as it comes, raising to stop its candidate."""
 
+type Sign = Callable[[_Run, Task, Mapping[TaskId, TaskResult]], Mapping[str, Json] | None]
+"""The signature of a task of a candidate, from the results of what it reads, ``None`` for one
+that has none (:mod:`k4opt.record.signature`): what the coordinator attaches to its result."""
+
 _WAIT = 0.2  # seconds the coordinator waits for a task to end before it looks around again
 
 
@@ -127,6 +135,7 @@ def _drive(
     pull: Callable[[], _Run | None],
     check: Check | None = None,
     activity: Callable[[Activity], None] | None = None,
+    sign: Sign | None = None,
 ) -> Generator[_Run]:
     """Run the tasks of candidates until there are none left; yield each candidate once all its
     tasks ended (``results``), or once its work raised (``error``: its other tasks are stopped).
@@ -135,9 +144,10 @@ def _drive(
     scheduler is idle, after every candidate that ended was yielded, so with one slot the
     candidates run one after another, each in plan order. ``runs`` holds the candidates under
     way, by workspace. Leaving the loop early (``close()``, an exception) stops every task still
-    running. ``activity`` is told what runs whenever that changed. Each task may run as long as
-    its description says (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`), which the backend
-    enforces.
+    running. ``activity`` is told what runs whenever that changed. ``sign`` gives the signature
+    of a task before it is handed out, which its result then carries in its provenance. Each
+    task may run as long as its description says
+    (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`), which the backend enforces.
     """
     pulling = True
     told: Activity | None = None
@@ -165,11 +175,15 @@ def _drive(
                 run = runs[str(key)]
                 try:
                     assert run.prepared is not None
+                    reads = scheduler.results(key)
+                    signature = None if sign is None else sign(run, task, reads)
+                    if signature is not None:
+                        run.signatures[task.id] = signature
                     spec = describe(
                         task,
                         run.prepared,
                         run.workspace,
-                        scheduler.results(key),
+                        reads,
                         run.observed,
                         supplied=run.supplied.get(task.id),
                         geometry=run.geometry,
@@ -191,6 +205,10 @@ def _drive(
                     if isinstance(outcome, Exception):  # raised where the task ran
                         raise outcome
                     result = _result(run, task, outcome, observed)
+                    signature = run.signatures.get(task.id)
+                    if signature is not None:
+                        provenance = {**result.provenance, SIGNATURE: signature}
+                        result = replace(result, provenance=FrozenMap(provenance))
                     if check is not None:
                         check(run, outcome, result)
                     scheduler.finished(handle.workspace, result)

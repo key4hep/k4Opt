@@ -739,7 +739,7 @@ def test_what_a_role_reads_reaches_the_evaluator_unchanged_and_k4opt_computes_no
     Assessment.from_summary(session.spec, summary)
 
 
-def test_a_role_that_reads_a_stage_gets_its_file_unhashed(
+def test_a_role_that_reads_a_stage_gets_its_file_hashed_once(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hashed: list[str] = []
@@ -784,7 +784,9 @@ def test_a_role_that_reads_a_stage_gets_its_file_unhashed(
     events = zz.artifacts["simulation"]
     assert events.ref == "zz/simulation#events"
     assert events.path == tmp_path / "a" / "samples" / "zz" / "simulation" / "events.edm4hep.root"
-    assert events.sha256 is None and not any(path.endswith(".root") for path in hashed)
+    # hashed once, when the simulation ended, not again for the role that reads it
+    assert events.sha256 == hashlib.sha256(events.path.read_bytes()).hexdigest()
+    assert hashed.count(str(events.path)) == 1
     summary = json.loads(outcome.summary_path.read_text())
     assert summary["evaluations"]["test.files"]["reads"] == [
         "geometry",
