@@ -26,7 +26,7 @@ def test_each_option_is_an_argument_of_the_job_in_the_order_written() -> None:
         **JOB,
         "cms": 91,
         "truthTracking": True,
-        "conformalTracking": False,
+        "GeoSvc.EnableGeant4Geo": "False",
         "GeoSvc.OutputLevel": 3,
         "threshold": 5e-05,
         "inputFiles2": ["a.root", "b.root"],
@@ -35,7 +35,7 @@ def test_each_option_is_an_argument_of_the_job_in_the_order_written() -> None:
     assert job_arguments(options) == (
         "--cms=91",
         "--truthTracking",
-        "--conformalTracking=False",
+        "--GeoSvc.EnableGeant4Geo=False",
         "--GeoSvc.OutputLevel=3",
         "--threshold=5e-05",
         "--inputFiles2",
@@ -120,7 +120,7 @@ def test_what_k4opt_sets_is_refused_in_either_spelling(key: str) -> None:
 
 
 def test_another_property_of_a_managed_service_is_the_job_s() -> None:
-    check_options({**JOB, "IOSvc.OutputLevel": 2, "GeoSvc.EnableGeant4Geo": False})
+    check_options({**JOB, "IOSvc.OutputLevel": 2, "GeoSvc.EnableGeant4Geo": "False"})
 
 
 @pytest.mark.parametrize(
@@ -142,6 +142,10 @@ def test_another_property_of_a_managed_service_is_the_job_s() -> None:
         ({**JOB, "directory": ""}, "reconstruction.directory: must be a nonblank text"),
         ({**JOB, "--cms": 91}, "write it without the leading dashes: 'cms'"),
         ({**JOB, "cms": None}, "reconstruction.cms: must be a number, a text, a boolean"),
+        (
+            {**JOB, "conformalTracking": False},
+            "reconstruction.conformalTracking: false cannot be passed: a flag of the job's own",
+        ),
         ({**JOB, "cms": {"value": 91}}, "reconstruction.cms: must be a number"),
         ({**JOB, "cms": []}, "reconstruction.cms: an empty list passes nothing"),
         ({**JOB, "files": ["a", "-b"]}, "reconstruction.files[1]: a value of a list must not"),

@@ -130,7 +130,7 @@ knows the result.
 | `valid`, a limit violated | COMPLETE | the objectives | at least one above zero |
 | `invalid` | FAIL | none | none |
 | `failed` | FAIL | none | none |
-| `rejected`: a required evaluation's `check` rejected the candidate; no record, no directory | FAIL | none | none |
+| `rejected`: a required evaluation's `check` rejected the candidate, or a required reconstruction's job does not take the arguments it sets; no record, no directory | FAIL | none | none |
 | interrupted, no record | FAIL | none | none |
 | the trial stopped the study | FAIL | none | none |
 | still running when another trial stopped the study | FAIL, as interrupted | none | none |
@@ -141,7 +141,8 @@ again. Treating invalidity as a constraint would be a scientific choice, and it 
 
 A rejected trial has no record: nothing of its candidate was created. What the study keeps of it
 is in the optimizer's storage, `k4opt.status: rejected`, `k4opt.rejected_by` (the required
-evaluation whose `check` rejected it, `gamma_10gev/calo.photon`) and `k4opt.message`, and a study
+evaluation whose `check` rejected it, `gamma_10gev/calo.photon`, or the required reconstruction
+whose job refused an argument a parameter sets, `pi0_50gev/reconstruction`) and `k4opt.message`, and a study
 read back holds exactly that or refuses the trial: with values, a record, other attributes, a
 trial directory or a rejection by a diagnostic, it is not one k4opt made.
 

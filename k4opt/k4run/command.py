@@ -13,8 +13,11 @@ Verified against the ``k4run`` of the Key4hep nightly 2026-10-20 (k4FWCore's ``b
   set after the files ran, so they win over what the job set.
 * So no table of k4opt says which arguments a job takes, or of what kind: an option of the stage
   is passed on as ``--<name>=<value>`` (a list as ``--<name> v1 v2``, ``true`` as the bare flag
-  ``--<name>``, ``false`` as ``--<name>=False``, which a Gaudi property reads), and the job's
-  ``--dry-run`` is what decides that the job takes it (:func:`k4opt.k4run.dry_run`).
+  ``--<name>``), and the job's ``--dry-run`` is what decides that the job takes it
+  (:func:`k4opt.k4run.dry_run`). ``false`` is refused: a flag of the job's own (CLD's
+  ``--truthTracking``, an argparse ``store_true``) takes no value and cannot be switched off,
+  and leaving it out means the job's default, which k4opt does not know; a Gaudi property, which
+  does take one, is given the text ``'False'``.
 * k4opt gives the job the candidate's geometry, the simulation's events and the file to write
   through k4FWCore's services (``GeoSvc.detectors``, ``IOSvc.Input``, ``IOSvc.Output``), or, for
   the geometry and the input, through the job's own argument the stage names (``geometry:
@@ -144,6 +147,13 @@ def _argument(key: str, value: Json) -> tuple[str, ...]:
     """The arguments that pass ``value`` to ``--<key>``."""
     if value is True:
         return (f"--{key}",)
+    if value is False:
+        raise _fail(
+            key,
+            "false cannot be passed: a flag of the job's own (--truthTracking) takes no value and "
+            "cannot be switched off, so leave the option out to keep the job's default; a Gaudi "
+            "property takes the text 'False'",
+        )
     if isinstance(value, (list, tuple)):
         if not value:
             raise _fail(key, "an empty list passes nothing; leave the option out")

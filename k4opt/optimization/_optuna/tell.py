@@ -112,7 +112,7 @@ def _reject(run: _Study, trial: Trial, rejected: Rejected) -> TrialResult:
     why. Nothing of the candidate was created, so there is no record: this is all there is of
     it, read back strictly (:func:`~k4opt.optimization._optuna.read.trial_result`)."""
     trial.set_user_attr("k4opt.status", "rejected")
-    trial.set_user_attr("k4opt.rejected_by", rejected.evaluation)
+    trial.set_user_attr("k4opt.rejected_by", rejected.by)
     trial.set_user_attr("k4opt.message", rejected.message[:_MESSAGE])
     frozen = run.study.tell(trial, state=TrialState.FAIL)
     result, _ = trial_result(run.directory, run.document, run.spec, frozen, run.read)

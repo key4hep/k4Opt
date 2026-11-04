@@ -1091,9 +1091,9 @@ def test_a_resumed_study_keeps_its_rejected_trials_rejected(
 @pytest.mark.parametrize(
     ("forge", "message"),
     [
-        ({"k4opt.rejected_by": "nothing"}, "which is no required evaluation of the problem"),
+        ({"k4opt.rejected_by": "nothing"}, "which is neither a required evaluation of the problem"),
         # a diagnostic's check() rejecting the candidate only keeps that diagnostic from running
-        ({"k4opt.rejected_by": "spare"}, "'spare', which is no required evaluation"),
+        ({"k4opt.rejected_by": "spare"}, "'spare', which is neither a required evaluation"),
         ({"k4opt.feasible": True}, "not what k4opt tells a rejected trial"),
         ({"k4opt.record": {"id": "x"}}, "not what k4opt tells a rejected trial"),
         ({"k4opt.message": 3}, "its message is 3"),

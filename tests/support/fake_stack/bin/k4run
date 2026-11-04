@@ -12,7 +12,9 @@ resolved options, then copies the input to ``IOSvc.Output``: the fake podio read
 events. With ``--dry-run`` it only parses.
 
 What else it does is said by the environment variable ``FAKE_K4RUN``, a JSON object: ``refuse``,
-a text, refuses the arguments as argparse does (``k4run: error: <text>``, status 2); ``exit``
+a text, refuses the arguments as argparse does (``k4run: error: <text>``, status 2), and
+``refuse_args`` maps an argument (``--cms=250``) to such a text, refused when it is given;
+``exit``
 is its exit status after the run; ``stderr`` a text it writes there; ``sleep`` how many seconds
 it sleeps first; ``no_output`` and ``no_dump`` leave the output or the dump out; ``geometry``
 and ``input`` replace what the dump says the job read; ``drop`` leaves that many events of a
@@ -44,12 +46,13 @@ for arg in args:
             flags.append(name)
     elif name is not None:
         options[name].append(arg)
+refused = control.get("refuse") or next(
+    (text for arg, text in control.get("refuse_args", {}).items() if arg in sys.argv), None
+)
+if refused:
+    sys.stderr.write(f"usage: k4run [options] config_files\nk4run: error: {refused}\n")
+    sys.exit(2)
 if "dry-run" in options:
-    if "refuse" in control:
-        sys.stderr.write(
-            f"usage: k4run [options] config_files\nk4run: error: {control['refuse']}\n"
-        )
-        sys.exit(2)
     sys.exit(0)
 if control.get("sleep"):
     time.sleep(control["sleep"])

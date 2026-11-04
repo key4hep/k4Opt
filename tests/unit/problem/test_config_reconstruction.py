@@ -13,7 +13,7 @@ import yaml
 from k4opt.problem import ProblemConfigError, parse_problem
 from k4opt.problem.candidate import configure, validate_candidate
 from k4opt.problem.models import StageDestination
-from k4opt.problem.plan import Kind, plan_tasks
+from k4opt.problem.plan import Kind, plan_tasks, rejecting
 from tests.support.problems import two_samples
 
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
@@ -155,3 +155,38 @@ def test_the_reconstruction_example_parses() -> None:
     stage = problem.samples["pi0_50gev"].stages["reconstruction"]
     assert stage.options["geometry"] == "compactFile"
     assert [e.stage for e in problem.evaluators] == ["reconstruction", None]
+
+
+def test_a_flag_cannot_be_switched_off_so_a_boolean_parameter_is_refused_at_false(
+    reco: dict[str, Any],
+) -> None:
+    del reco["samples"]["gamma"]["reconstruction"]["truthTracking"]
+    reco["parameters"]["truth"] = {
+        "type": "categorical",
+        "choices": [True, False],
+        "targets": {"reconstruction": "truthTracking"},
+    }
+    reject(
+        reco,
+        "parameters.truth: at its choice False, samples.gamma.reconstruction.truthTracking: "
+        "false cannot be passed",
+    )
+
+
+def test_a_reconstruction_rejects_candidates_only_where_a_parameter_sets_its_arguments(
+    reco: dict[str, Any],
+) -> None:
+    problem = parse_problem(reco)
+    plan = plan_tasks(problem.samples, problem.evaluators, references=problem.references)
+    labels = [task.label for task in rejecting(plan, problem.samples, problem.parameters)]
+    assert labels == ["gamma/calo.single_particle_shower"]
+    del reco["samples"]["gamma"]["reconstruction"]["cms"]
+    reco["parameters"]["cms"] = {
+        "type": "categorical",
+        "choices": [91, 240],
+        "targets": {"reconstruction": "cms"},
+    }
+    problem = parse_problem(reco)
+    plan = plan_tasks(problem.samples, problem.evaluators, references=problem.references)
+    labels = [task.label for task in rejecting(plan, problem.samples, problem.parameters)]
+    assert labels == ["gamma/reconstruction", "gamma/calo.single_particle_shower"]

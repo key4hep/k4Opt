@@ -35,7 +35,14 @@ DECLARED = ("name", "version", "stage", "collections", "settings", "metrics", "a
 """What an evaluator class declares, as plain data on the class."""
 
 
-_TYPE = re.compile(r"[A-Za-z_]\w*(::[A-Za-z_]\w*)?")
+_ELEMENT = r"[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?"
+_TYPE = re.compile(_ELEMENT)
+# EDM4hep's associations: podio::Link<From, To> (ReconstructedParticle to MCParticle, say)
+_LINK = re.compile(rf"(?:podio::)?Link<\s*(?P<a>{_ELEMENT})\s*,\s*(?P<b>{_ELEMENT})\s*>")
+
+
+def _podio(element: str) -> str:
+    return element if "::" in element else f"edm4hep::{element}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,18 +50,23 @@ class Collection:
     """An EDM4hep collection an evaluator reads from the file of its stage.
 
     ``type`` is the type of its elements, ``"SimCalorimeterHit"`` (the ``edm4hep::`` prefix is
-    implied). The problem names the collection in the evaluator's ``collections``, unless
-    ``default`` names it (``"MCParticles"``); the problem may still name another.
+    implied), or a link between two of them, ``"Link<ReconstructedParticle,MCParticle>"``
+    (podio's ``podio::Link<edm4hep::ReconstructedParticle,edm4hep::MCParticle>``), whose
+    elements relate one of each (``getFrom()``, ``getTo()``, ``getWeight()``). The problem names
+    the collection in the evaluator's ``collections``, unless ``default`` names it
+    (``"MCParticles"``); the problem may still name another.
     """
 
     type: str
     default: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.type, str) or not _TYPE.fullmatch(self.type):
+        if not isinstance(self.type, str) or not (
+            _TYPE.fullmatch(self.type) or _LINK.fullmatch(self.type)
+        ):
             raise EvaluationContractError(
-                f"Collection: type must be an EDM4hep type such as 'SimCalorimeterHit', "
-                f"got {self.type!r}"
+                f"Collection: type must be an EDM4hep type such as 'SimCalorimeterHit', or a "
+                f"link such as 'Link<ReconstructedParticle,MCParticle>', got {self.type!r}"
             )
         if self.default is not None and (not isinstance(self.default, str) or not self.default):
             raise EvaluationContractError(
@@ -63,8 +75,12 @@ class Collection:
 
     @property
     def podio_type(self) -> str:
-        """``type`` as podio names it, ``edm4hep::SimCalorimeterHit``."""
-        return self.type if "::" in self.type else f"edm4hep::{self.type}"
+        """``type`` as podio names it, ``edm4hep::SimCalorimeterHit``,
+        ``podio::Link<edm4hep::ReconstructedParticle,edm4hep::MCParticle>``."""
+        link = _LINK.fullmatch(self.type)
+        if link is not None:
+            return f"podio::Link<{_podio(link['a'])},{_podio(link['b'])}>"
+        return _podio(self.type)
 
 
 @dataclass(frozen=True, slots=True)

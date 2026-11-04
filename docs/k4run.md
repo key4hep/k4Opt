@@ -29,15 +29,16 @@ samples:
 | Key | Meaning |
 | --- | --- |
 | `options` | Required. The job's options files, one or a list, in the order k4run loads them. With `directory`, each is named relative to it and lies inside it; without, a relative path is read from the directory of the problem file. |
-| `directory` | Optional. A directory the job runs from a writable copy of, in the stage's own directory (`job/`). A reconstruction such as CLD's runs only from its own directory: its Pandora settings name files relative to where it runs. `$NAME` and `${NAME}` are environment variables (`$CLDCONFIG`, set by the Key4hep environment), `~` is the home directory. |
+| `directory` | Optional. A directory the job runs from a writable copy of, in the stage's own directory (`job/`). A reconstruction such as CLD's runs only from its own directory: its Pandora settings name files relative to where it runs. `$NAME` and `${NAME}` are environment variables (`$CLDCONFIG`, set by the Key4hep environment), read once, when the session opens: every candidate runs the job the session identified, wherever the variable points later. `~` is the home directory. |
 | `geometry` | Optional. The job's own argument that takes the compact file (CLD's and ILD's `compactFile`), for a job that derives more than the geometry service from it. Without it, k4opt sets `GeoSvc.detectors` (ALLEGRO, IDEA). |
 | `input` | Optional. The job's own argument that takes the input files (CLD's `inputFiles`). Without it, k4opt sets `IOSvc.Input`. |
-| any other key | An argument of the job or a Gaudi property, named as `k4run OPTIONS.py --help` names it, without the dashes: `cms: 91` is `--cms=91`, `GeoSvc.OutputLevel: 3` is `--GeoSvc.OutputLevel=3`, a list is `--key v1 v2`, `true` the flag `--key`, `false` `--key=False` (as a Gaudi property reads it). A mapping or `null` is refused, as is a list value starting with `-`, which k4run would read as an argument. |
+| any other key | An argument of the job or a Gaudi property, named as `k4run OPTIONS.py --help` names it, without the dashes: `cms: 91` is `--cms=91`, `GeoSvc.OutputLevel: 3` is `--GeoSvc.OutputLevel=3`, a list is `--key v1 v2`, `true` the flag `--key`. `false` is refused: a flag of the job's own (CLD's `--truthTracking`, an argparse `store_true`) takes no value and cannot be switched off, and leaving it out keeps the job's default, which k4opt does not know, so leave the key out yourself; a Gaudi property, which takes a value, is given the text `'False'` (`GeoSvc.EnableGeant4Geo: 'False'`). A mapping or `null` is refused, as is a list value starting with `-`, which k4run would read as an argument. |
 
 A reconstruction takes no `events` or `seed`: it reconstructs every event of the simulation it
 reads, whose `events` and `seed` made them (an evaluator of the reconstruction gets those as
 `request.events` and `request.seed`). A seed the job itself reads is one of its arguments.
-`timeout` limits it as any stage ([Time limits](problem.md#time-limits)).
+`timeout` limits it as any stage ([Time limits](problem.md#time-limits)), the copy of
+`directory` included.
 
 ## What k4opt sets, and checks
 
@@ -71,17 +72,27 @@ arguments: a file after `--inputFiles a.root` would be read as one more input fi
 ## The dry run
 
 The job's options files define its arguments, so k4opt keeps no table of them: whether the job
-takes its arguments is the job's to say. When a session opens, before anything is simulated, it
-runs `k4run --dry-run` with the arguments of each reconstruction that runs, once with the
-options that parameters set at the first end of each domain and once for each other end, from a
-copy of the job's directory, on the problem's own geometry and an input of one empty event (which
-k4FWCore requires to exist; a multithreaded job reads its first event). The job's options files
-run and k4run parses every argument, strictly; nothing is reconstructed. The first dry run writes
-the input, in about five seconds; each other takes about a second. A job that refuses an
-argument refuses the problem:
+takes its arguments is the job's to say. A dry run is `k4run --dry-run` with the arguments the
+reconstruction would get, from a copy of the job's directory, on the problem's own geometry and
+an input of one empty event (which k4FWCore requires to exist; a multithreaded job reads its
+first event): the job's options files run and k4run parses every argument, strictly; nothing is
+reconstructed. The first dry run of a session writes the input, in about five seconds; each other
+takes about a second, and a job asked once is not asked again.
 
-    samples.pi0_50gev.reconstruction: the job does not take its arguments: k4run: error:
-    argument --cms: invalid choice: '250' (choose from 91, 160, 240, 365)
+- When a session opens, before anything is simulated, each reconstruction that runs is dry-run,
+  with the options that parameters set at the first end of each domain and once for each other
+  end. A job that refuses an argument refuses the problem:
+
+      samples.pi0_50gev.reconstruction: the job does not take its arguments: k4run: error:
+      argument --cms: invalid choice: '250' (choose from 91, 160, 240, 365)
+
+- The ends of a domain do not decide the values between them: an argument may take only a few
+  choices (CLD's `--cms` takes 91, 160, 240 and 365, so `bounds: [91, 365]` passes at both ends).
+  So each candidate that sets an argument of a required reconstruction is dry-run as well, before
+  anything of it is created, and one whose values the job does not take is **rejected**, as an
+  evaluator's `check` rejects one (`rejected by pi0_50gev/reconstruction: ...`; an optimizer's
+  FAIL trial marked rejected, and the study goes on). Declare an argument of a few choices as a
+  categorical parameter, whose every choice is tried when the session opens.
 
 ## Files and records
 
@@ -128,7 +139,11 @@ directory as the record names them.
 
 ## Not yet
 
-A reconstruction of part of the events; a multithreaded job's threads counted against the
+A job that reads its input's collections while it is configured may refuse the dry run's input of
+one empty event, though it would take the simulation; the dry run then refuses the problem with
+what the job said. Each candidate's reconstruction copies the job's directory (CLDConfig is
+440 KB), which a job of many large files would make expensive. A reconstruction of part of the
+events; a multithreaded job's threads counted against the
 `--workers` (a Gaudi Hive job counts as one processor); a parameter with a unit that sets a
 reconstruction option (the job decides the unit of what it reads); fetching a job's data files
 (ALLEGRO's `--dataFolder`: give a local directory); LCIO outputs; branches, such as truth and

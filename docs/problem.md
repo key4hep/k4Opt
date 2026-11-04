@@ -412,14 +412,18 @@ reconstruction:
 Its options follow the same three rules, with what differs for a job that is a Python program
 of its own ([k4run](k4run.md)):
 
-1. *Written as k4run reads them.* A key is `--<key>=<value>`, a list `--<key> v1 v2`, `true` the
-   bare flag and `false` `--<key>=False` (as a Gaudi property reads it).
+1. *Written as k4run reads them.* A key is `--<key>=<value>`, a list `--<key> v1 v2` and `true`
+   the bare flag. `false` is refused: a flag of the job's own (`--truthTracking`) takes no value
+   and cannot be switched off, and k4opt does not know the job's default; a Gaudi property is
+   given the text `'False'`.
 2. *The job validates.* The options files define the job's arguments, so k4opt keeps no table of
    them: before anything is simulated, the session runs `k4run --dry-run` with the arguments of
    each reconstruction (each end of the domain of a parameter that sets one), on the problem's
    own geometry and an input of one empty event, and refuses the problem with what k4run said
    (`samples.gamma.reconstruction: the job does not take its arguments: k4run: error: argument
-   --cms: invalid choice: '92'`).
+   --cms: invalid choice: '92'`). The ends of a domain do not decide the values between them
+   (`--cms` takes four choices), so each candidate that sets an argument is tried too, and
+   rejected if the job does not take it ([k4run](k4run.md#the-dry-run)).
 3. *What an evaluation defines is protected, and verified.* k4opt gives the job the candidate's
    geometry (`GeoSvc.detectors`, or the job's argument `geometry` names), the simulation's
    events (`IOSvc.Input`, or the argument `input` names), the file to write (`IOSvc.Output`) and
@@ -431,7 +435,8 @@ of its own ([k4run](k4run.md)):
    (CLD_o2_v07), would otherwise reconstruct the candidate's events on another geometry without
    a word. Every file of `directory` (or each options file) is recorded with its hash, taken
    when the session opens, so that a study refuses to resume with another job; a file that
-   changes while k4run runs fails the reconstruction.
+   changes while k4run runs fails the reconstruction. An environment variable in `directory` or
+   `options` is read when the session opens, too, so every candidate runs that job.
 
 The reconstruction's output must hold every event of the simulation it read.
 

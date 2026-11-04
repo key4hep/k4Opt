@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -158,10 +159,11 @@ def reconstruct(
     ``options`` are the stage's (:data:`~k4opt.k4run.command.EXECUTOR_KEYS` and the job's
     arguments, see :func:`~k4opt.k4run.command.k4run_arguments`). The job runs in ``workdir/job``,
     a writable copy of ``directory`` or an empty directory; ``workdir`` receives
-    ``events.edm4hep.root`` and the files of :data:`LOG_FILES`. A ``k4run`` that runs longer than
-    ``timeout`` seconds is killed with every process it started, and the run fails with its logs
-    kept; ``started`` and ``die_with_parent`` are as for :func:`k4opt.program.run`. After the run,
-    the job's resolved options must show that it read ``compact`` and ``input_file`` and wrote
+    ``events.edm4hep.root`` and the files of :data:`LOG_FILES`. ``timeout`` limits the whole run,
+    the copy of ``directory`` included: a ``k4run`` still running when it is over is killed with
+    every process it started, and the run fails with its logs kept; ``started`` and
+    ``die_with_parent`` are as for :func:`k4opt.program.run`. After the run, the job's resolved
+    options must show that it read ``compact`` and ``input_file`` and wrote
     the output (:func:`~k4opt.k4run.verify`). Raises :class:`K4runError` for unsupported options,
     a ``timeout`` that is not a positive number of seconds, or an existing ``workdir``.
     """
@@ -182,11 +184,15 @@ def reconstruct(
             present["edm4hep"] = output
         return ReconstructionRun(argv, workdir / JOB, returncode, output, present, error, peak)
 
+    began = time.monotonic()
     try:
         job = _stage(workdir, directory)
         paths["options"].write_text(_dump_options(paths["joboptions"]))
     except OSError as exc:
         return made((), None, f"cannot prepare the reconstruction in {workdir}: {exc}")
+    remaining = None if timeout is None else timeout - (time.monotonic() - began)
+    if remaining is not None and remaining <= 0:
+        return made((), None, f"copying the job's directory took longer than {timeout:g} s")
     arguments = k4run_arguments(
         files=_run_files(files, directory),
         k4opt_options=paths["options"],
@@ -201,11 +207,18 @@ def reconstruct(
         workdir=workdir,
         cwd=job,
         logs=LOG_FILES,
-        timeout=timeout,
+        timeout=remaining,
         started=started,
         die_with_parent=die_with_parent,
     )
     error = run.error
+    # its limit is what the copy left of the reconstruction's
+    killed = run.returncode is None and remaining is not None and run.argv
+    if killed and error is not None and error.startswith("k4run ran longer than"):
+        error = (
+            f"k4run ran longer than the reconstruction's {timeout:g} s (the copy of the job's "
+            f"directory included) and was killed (logs in {workdir}):\n" + program.tail(run.stderr)
+        )
     if error is None:
         geometry, input_argument = wiring(options)
         try:

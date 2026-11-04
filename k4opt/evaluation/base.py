@@ -157,7 +157,7 @@ class Evaluator:
         if self.stage not in request.inputs:
             raise EvaluationContractError(f"inputs[{self.stage!r}] is missing")
         names = collection_names(self, request.collections)
-        wanted = {role: (names[role], declared[role].type) for role in declared}
+        wanted = {role: (names[role], declared[role].podio_type) for role in declared}
         return read_events(request.inputs[self.stage], wanted)
 
     def invalid(self, message: str) -> NoReturn:

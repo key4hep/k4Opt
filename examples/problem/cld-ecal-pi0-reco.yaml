@@ -2,8 +2,9 @@
 # neutral pion? A 50 GeV pi0 decays into two photons that reach the ECAL at least about 12 mm
 # apart. CLD's reconstruction (CLDConfig, run by k4run) clusters the cells with Pandora: with fine
 # cells it finds two photons, with coarse ones it merges them into one. The example evaluator
-# pfo.pi0 measures how often it resolves them, and the mass it gives the pair; ecal.channels the
-# approximate readout cost (docs/evaluators.md).
+# pfo.pi0 measures how often each generated photon is reconstructed as a photon of its own (truth
+# matched, so split showers do not count); ecal.channels the approximate readout cost
+# (docs/evaluators.md).
 #
 #   k4opt evaluate examples/problem/cld-ecal-pi0-reco.yaml \
 #       --evaluator examples/evaluators/pfo_pi0.py:PfoPi0 \
@@ -51,7 +52,7 @@ samples:
       truthTracking: true  # the photons need no pattern recognition
 evaluators:
   - name: pfo.pi0
-    version: "1"
+    version: "2"
     stage: reconstruction
     collections: {pfos: PandoraPFOs}
     settings:

@@ -51,7 +51,7 @@ from k4opt.problem.models import (
     SettingDestination,
     StageDestination,
 )
-from k4opt.problem.stages import STAGE_TYPES, graph, reads_geometry, writes_files
+from k4opt.problem.stages import STAGE_TYPES, executors, graph, reads_geometry, writes_files
 
 
 class Kind(StrEnum):
@@ -236,6 +236,35 @@ def varied(
             found |= reach.get(reference_task(item), set())
         reach[task] = found
     return {task: tuple(name for name in order if name in found) for task, found in reach.items()}
+
+
+def rejecting(
+    plan: Plan, samples: Mapping[str, Sample], parameters: Sequence[Parameter]
+) -> tuple[TaskId, ...]:
+    """The tasks of ``plan`` that may reject a candidate before anything of it is created, in
+    plan order: each required evaluation (its evaluator's ``check``), and each required stage
+    that runs by an executor that asks its program whether it takes a candidate's options
+    (:attr:`~k4opt.problem.stages.Executor.asks`: k4run's dry run) and has an option that one of
+    ``parameters`` sets. A diagnostic decides nothing of the candidate, so it rejects none."""
+    set_options = {
+        (sample, destination.stage)
+        for parameter in parameters
+        for destination in parameter.targets
+        if isinstance(destination, StageDestination)
+        for sample in destination.samples
+    }
+    found = []
+    for task in plan.tasks:
+        if not task.required:
+            continue
+        if task.id.kind is Kind.EVALUATOR:
+            found.append(task.id)
+        elif task.id.kind is Kind.STAGE and task.given is None and task.id.sample is not None:
+            stage = samples[task.id.sample].stages[task.id.name]
+            asks = stage.executor is not None and executors(task.id.name)[stage.executor].asks
+            if asks and (task.id.sample, task.id.name) in set_options:
+                found.append(task.id)
+    return tuple(found)
 
 
 def represents_candidate(plan: Plan) -> bool:

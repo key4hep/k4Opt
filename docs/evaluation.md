@@ -70,7 +70,9 @@ What the optional parts do:
   candidate's parameters alone.
 - `collections`: the EDM4hep collections it reads from the file of its stage, by role, each a
   `Collection` with the type of its elements (`"SimCalorimeterHit"`, the `edm4hep::` prefix is
-  implied). The problem's entry names the collection of each role (`hits: ECalBarrelCollection`);
+  implied), or of links between two of them, EDM4hep's associations
+  (`"Link<ReconstructedParticle,MCParticle>"`, podio's `podio::Link<...>`, whose elements have
+  `getFrom()`, `getTo()` and `getWeight()`: a reconstruction's truth matching). The problem's entry names the collection of each role (`hits: ECalBarrelCollection`);
   a role with a `default` (`Collection("MCParticle", default="MCParticles")`) needs no name,
   though the problem may give another. A role is a Python identifier. `self.events(request)`
   yields each event of the file with its collections as attributes (`event.hits`), all read from

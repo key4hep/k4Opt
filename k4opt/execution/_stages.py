@@ -35,6 +35,8 @@ import contextlib
 import json
 import os
 import re
+import shutil
+import tempfile
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -65,6 +67,24 @@ from k4opt.problem.stages import (
     writes_files,
 )
 
+_VARIABLE = re.compile(
+    r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+def _variable_names(value: str) -> list[str]:
+    return [m["braced"] or m["bare"] for m in _VARIABLE.finditer(value)]
+
+
+def _variables_named(stage: Stage) -> list[str]:
+    """The environment variables the paths of ``stage`` name: a reconstruction's ``directory``
+    and ``options``."""
+    if stage.executor != "k4run":
+        return []
+    raw = [stage.options.get(k4run.DIRECTORY), stage.options.get(k4run.OPTIONS)]
+    texts = [v for item in raw for v in (item if isinstance(item, (list, tuple)) else [item])]
+    return [name for text in texts if isinstance(text, str) for name in _variable_names(text)]
+
 
 @dataclass(frozen=True, slots=True)
 class StageContext:
@@ -79,7 +99,10 @@ class StageContext:
     is ``None``. ``timeout`` is how many seconds a stage that runs a program (ddsim) may take
     before the program is killed and the stage fails; ``None`` for no limit. It is the stage
     task's (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`), never the problem's.
-    ``sample`` names the sample in messages and labels.
+    ``sample`` names the sample in messages and labels. ``variables`` holds the value of each
+    environment variable a path of a stage names (a reconstruction's ``$CLDCONFIG``), taken when
+    the context was made, the session's opening: every candidate reads the files the session
+    identified, wherever the variable points later.
 
     ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
     program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's
@@ -92,14 +115,18 @@ class StageContext:
     directory: Path | None = None
     timeout: float | None = None
     sample: str | None = None
+    variables: Mapping[str, str] = field(default_factory=dict)
     started: Callable[[int], None] | None = field(default=None, compare=False, repr=False)
     die_with_parent: bool = field(default=False, compare=False, repr=False)
 
     @classmethod
     def of(cls, spec: ProblemSpec, sample: str, directory: Path | None = None) -> StageContext:
         """The stages of the sample ``sample`` of ``spec``, as it writes them, whose file is in
-        ``directory``."""
-        return cls(spec.samples[sample].stages, spec.pending(sample), directory, sample=sample)
+        ``directory``, with the environment variables their paths name as they are now."""
+        stages = spec.samples[sample].stages
+        named = {name for stage in stages.values() for name in _variables_named(stage)}
+        variables = {name: os.environ[name] for name in sorted(named) if name in os.environ}
+        return cls(stages, spec.pending(sample), directory, sample=sample, variables=variables)
 
     def configured(self, stages: Mapping[str, Stage]) -> StageContext:
         """The same conditions with the ``stages`` of one candidate, complete."""
@@ -111,9 +138,13 @@ class StageContext:
 
     def path(self, value: str, variables: bool = False) -> Path:
         """The absolute path ``value`` stands for, a relative one taken from ``directory``; with
-        ``variables``, ``$NAME`` and ``${NAME}`` stand for environment variables
-        (``$CLDCONFIG/share/CLDConfig``)."""
-        path = Path(os.path.expandvars(value) if variables else value).expanduser()
+        ``variables``, ``$NAME`` and ``${NAME}`` stand for the environment variables of
+        :attr:`variables` (``$CLDCONFIG/share/CLDConfig``), one it does not hold left as written."""
+        if variables:
+            value = _VARIABLE.sub(
+                lambda m: self.variables.get(m["braced"] or m["bare"], m[0]), value
+            )
+        path = Path(value).expanduser()
         if path.is_absolute():
             return path
         return Path(os.path.abspath((self.directory or Path.cwd()) / path))
@@ -293,13 +324,10 @@ def _inspect_simulation(
     return observed, None
 
 
-def _variable_hint(value: str) -> str:
-    """Why the path ``value`` may not exist: an environment variable in it that is not set."""
-    unset = [
-        name
-        for name in re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", value)
-        if name not in os.environ
-    ]
+def _variable_hint(context: StageContext, value: str) -> str:
+    """Why the path ``value`` may not exist: an environment variable in it that was not set when
+    the session opened."""
+    unset = [name for name in _variable_names(value) if name not in context.variables]
     if not unset:
         return ""
     return f" (${', $'.join(unset)} not set: is the Key4hep environment set up?)"
@@ -338,11 +366,11 @@ def _check_reconstruction(context: StageContext, provided: Collection[str]) -> N
     if directory is not None and not directory.is_dir():
         raw = str(stage.options[k4run.DIRECTORY])
         raise EvaluationContractError(
-            f"{where}.directory: {directory} is not a directory{_variable_hint(raw)}"
+            f"{where}.directory: {directory} is not a directory{_variable_hint(context, raw)}"
         )
     for name, path in zip(k4run.options_files(stage.options), files, strict=True):
         if not path.is_file():
-            within = f" in {directory}" if directory is not None else _variable_hint(name)
+            within = f" in {directory}" if directory is not None else _variable_hint(context, name)
             raise EvaluationContractError(f"{where}.options: {path} is not a file{within}")
 
 
@@ -453,41 +481,78 @@ def _variants(
     return variants
 
 
-def try_reconstruction(
-    context: StageContext,
-    parameters: Sequence[Parameter],
-    compact: Path,
-    scratch: Path,
-    tried: set[str],
-) -> None:
-    """Raise :class:`EvaluationContractError` if the job of the reconstruction of ``context``'s
-    sample does not take its arguments: ``k4run --dry-run`` (:func:`k4opt.k4run.dry_run`) on the
-    geometry ``compact``, once for each of its variants (each end of the domain of a parameter
-    that sets one of its options). Each runs in a new directory in ``scratch``, whose
-    placeholder input they share; ``tried`` holds the jobs tried before, which are not tried
-    again."""
-    stage = context.stages["reconstruction"]
-    files, directory = _job(context, stage)
-    where = context.where("reconstruction")
-    for written, options in _variants(context, stage, parameters):
+class DryRuns:
+    """The dry runs of a session's reconstructions (:func:`k4opt.k4run.dry_run`) on the geometry
+    ``compact`` the problem starts from: what each distinct job said, so that none is asked
+    twice, and the scratch directory they run in, made when the first runs and holding the
+    placeholder input they share. :meth:`close` removes it; a later dry run makes a new one."""
+
+    def __init__(self, compact: Path) -> None:
+        self.compact = compact
+        self._said: dict[str, str | None] = {}
+        self._scratch: Path | None = None
+
+    def said(self, context: StageContext, options: Mapping[str, Json]) -> str | None:
+        """Why the job of the reconstruction of ``context``'s sample, with the stage's
+        ``options``, does not take its arguments; ``None`` if it does."""
+        stage = context.stages["reconstruction"]
+        files, directory = _job(context, replace(stage, options=options))
         key = json.dumps(
             [[str(file) for file in files], str(directory), thaw(options)], sort_keys=True
         )
-        if key in tried:
-            continue
-        tried.add(key)
-        reason = k4run.dry_run(
-            files=files,
-            directory=directory,
-            compact=compact,
-            workdir=scratch / f"dry-run-{len(tried)}",
-            options=options,
-            placeholder=scratch / "placeholder.edm4hep.root",
-        )
+        if key not in self._said:
+            if self._scratch is None:
+                self._scratch = Path(tempfile.mkdtemp(prefix="k4opt-dry-run-"))
+            workdir = self._scratch / f"dry-run-{len(self._said)}"
+            self._said[key] = k4run.dry_run(
+                files=files,
+                directory=directory,
+                compact=self.compact,
+                workdir=workdir,
+                options=options,
+                placeholder=self._scratch / "placeholder.edm4hep.root",
+            )
+            shutil.rmtree(workdir, ignore_errors=True)  # a copy of the job: only its answer counts
+        return self._said[key]
+
+    def close(self) -> None:
+        if self._scratch is not None:
+            shutil.rmtree(self._scratch, ignore_errors=True)
+            self._scratch = None
+
+
+def try_reconstruction(
+    context: StageContext, parameters: Sequence[Parameter], runs: DryRuns
+) -> None:
+    """Raise :class:`EvaluationContractError` if the job of the reconstruction of ``context``'s
+    sample does not take its arguments: a dry run (:class:`DryRuns`) for each of its variants
+    (each end of the domain of a parameter that sets one of its options). The ends do not decide
+    every value between them (an argument of a few choices: CLD's ``cms``), so each candidate is
+    tried as well (:func:`try_candidate`)."""
+    stage = context.stages["reconstruction"]
+    for written, options in _variants(context, stage, parameters):
+        reason = runs.said(context, options)
         if reason is not None:
             raise EvaluationContractError(
-                f"{where}: {reason}" + (f" (with {written})" if written else "")
+                f"{context.where('reconstruction')}: {reason}"
+                + (f" (with {written})" if written else "")
             )
+
+
+def try_candidate(context: StageContext, pending: Collection[str], runs: DryRuns) -> str | None:
+    """Why the job of the reconstruction of ``context``'s sample, as one candidate configures
+    it, does not take its arguments, ``None`` if it does or if no parameter sets one of them
+    (``pending``, as the problem writes the stage): then the session tried it when it opened."""
+    if not pending:
+        return None
+    reason = runs.said(context, context.stages["reconstruction"].options)
+    if reason is None:
+        return None
+    shown = ", ".join(
+        f"{option} = {context.stages['reconstruction'].options[option]!r}"
+        for option in sorted(pending)
+    )
+    return f"{reason} (with {shown}, as the candidate sets them)"
 
 
 def _simulation_cpus(stage: Stage) -> int:

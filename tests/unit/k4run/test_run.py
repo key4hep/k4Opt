@@ -147,7 +147,9 @@ def test_a_job_that_runs_too_long_is_killed(
         timeout=0.5,
     )
     assert done.returncode is None
-    assert done.error is not None and "k4run ran longer than 0.5 s and was killed" in done.error
+    assert (
+        done.error is not None and "k4run ran longer than the reconstruction's 0.5 s" in done.error
+    )
 
 
 def test_an_existing_directory_or_a_bad_timeout_is_refused(

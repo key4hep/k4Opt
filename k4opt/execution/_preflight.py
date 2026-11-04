@@ -32,7 +32,7 @@ from k4opt.evaluation import (
 )
 from k4opt.execution._binding import _Binding
 from k4opt.execution._instances import _check_unchanged
-from k4opt.execution._stages import StageContext, check_stages
+from k4opt.execution._stages import DryRuns, StageContext, check_stages, try_candidate
 from k4opt.frozen import FrozenMap, Json
 from k4opt.problem.candidate import Configuration
 from k4opt.problem.models import EvaluatorSpec
@@ -41,15 +41,17 @@ from k4opt.problem.plan import Kind, TaskId, evaluations
 
 @dataclass(frozen=True, slots=True)
 class Rejected:
-    """A candidate an evaluator rejected before anything of it was created: the ``evaluation``
-    whose ``check`` rejected it (``gamma/calo.photon``, ``readout``) and its ``message``. It was
-    not evaluated, so it has no record, no measurement and no status of an evaluation."""
+    """A candidate rejected before anything of it was created, ``by`` a required task, and why
+    (``message``): the evaluation whose ``check`` rejected it (``gamma/calo.photon``,
+    ``readout``), or the reconstruction whose job does not take the arguments the candidate sets
+    (``gamma/reconstruction``). It was not evaluated, so it has no record, no measurement and no
+    status of an evaluation."""
 
-    evaluation: str
+    by: str
     message: str
 
     def __str__(self) -> str:
-        return f"rejected by {self.evaluation}: {self.message}"
+        return f"rejected by {self.by}: {self.message}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,9 +71,12 @@ class _Prepared:
     declined: Mapping[TaskId, str] = FrozenMap({})
 
 
-def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared | Rejected:
+def _preflight(
+    binding: _Binding, configuration: Configuration, dry_runs: DryRuns | None = None
+) -> _Prepared | Rejected:
     """Prepare one candidate, configured as ``configuration`` says, before a file is created or a
-    stage runs; :class:`Rejected` if the ``check`` of a required evaluation rejects it.
+    stage runs; :class:`Rejected` if the ``check`` of a required evaluation rejects it, or the job
+    of a required reconstruction does not take the arguments the candidate's values set in it.
 
     Checks that each evaluator class declares what it did when the session bound it, the stages
     of each sample with what the candidate sets in them, complete, the settings of each
@@ -80,7 +85,10 @@ def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared | R
     candidate (its settings and collections resolved, the events, seed and properties of its
     sample; no roles, since nothing exists yet for them to read), in plan order, up to the first
     required evaluation whose ``check`` rejects it (:class:`~k4opt.evaluation.CandidateRejected`);
-    a diagnostic's rejection only keeps that diagnostic from running (``declined``). Raises
+    a diagnostic's rejection only keeps that diagnostic from running (``declined``). Then, with
+    ``dry_runs``, each required reconstruction whose arguments the candidate sets is dry-run
+    (:func:`~k4opt.execution._stages.try_candidate`): the ends of a parameter's domain, which the
+    session tried, do not decide every value between them. Raises
     :class:`EvaluationContractError` for settings that do not match what an evaluator declares
     and for a ``check`` that ends with ``EvaluationFailed`` or ``EvaluationInvalid`` (nothing ran
     that could fail or be invalid), and whatever else a ``check`` or a stage's check raises.
@@ -120,6 +128,14 @@ def _preflight(binding: _Binding, configuration: Configuration) -> _Prepared | R
                 "invalid; reject the candidate with cls.reject('...'), or raise "
                 "EvaluationContractError for settings the evaluator cannot work with"
             ) from exc
+    # a diagnostic reconstruction that refuses its arguments fails, and decides nothing
+    for task in binding.rejecting if dry_runs is not None else ():
+        if task.kind is Kind.STAGE and task.name == "reconstruction" and dry_runs is not None:
+            assert task.sample is not None
+            pending = binding.contexts[task.sample].pending.get("reconstruction", ())
+            reason = try_candidate(contexts[task.sample], pending, dry_runs)
+            if reason is not None:
+                return Rejected(task.label, reason)
     return _Prepared(
         binding,
         configuration,

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 pytest.importorskip("optuna")
 
@@ -36,6 +37,7 @@ from tests.support.evaluators import (
 )
 from tests.support.simulation import COLLECTION
 from tests.unit.optimization.conftest import (
+    GUN,
     RADIUS,
     Log,
     evaluator_from,
@@ -699,3 +701,48 @@ def test_a_study_of_the_library_evaluates_inline_unless_told_otherwise(
     assert summary["environment"]["observed"]["execution"] == {
         "backend": "inline",
     }
+
+
+def test_a_candidate_a_reconstruction_does_not_take_is_rejected_and_read_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    from tests.support.evaluators import reco_cells
+    from tests.support.stack import install_k4run
+
+    job = tmp_path / "CLDConfig"
+    job.mkdir()
+    (job / "CLDReconstruction.py").write_text("# the job\n")
+    path = write_problem(
+        parameter={"targets": {"reconstruction": "cms"}, "type": "integer", "bounds": [240, 242]},
+        evaluators=[
+            {
+                "name": "test.reco_cells",
+                "version": "1",
+                "stage": "reconstruction",
+                "collections": {"hits": COLLECTION},
+            }
+        ],
+        objectives=[("reconstruction", "ecal_barrel.mean_hit_cells", "minimize")],
+    )
+    document = yaml.safe_load(path.read_text())
+    document["samples"] = {
+        "gamma": {
+            "generation": GUN | {"particle": "gamma"},
+            "simulation": {"executor": "ddsim", "events": 2, "seed": 1},
+            "reconstruction": {
+                "executor": "k4run",
+                "directory": str(job),
+                "options": "CLDReconstruction.py",
+            },
+        }
+    }
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    simulation.install(monkeypatch)
+    # the ends of the domain are taken, the value between them is not
+    install_k4run(monkeypatch, refuse_args={"--cms=241": "argument --cms: invalid choice: '241'"})
+    report = study(path, tmp_path / "s", trials=8, evaluators=[reco_cells()])
+    statuses = {t.candidate[RADIUS]: t.status for t in report.trials}
+    assert statuses == {240: "valid", 241: "rejected", 242: "valid"}
+    (rejected,) = {t.message for t in report.trials if t.status == "rejected"}
+    assert rejected.startswith("gamma/reconstruction: the job does not take its arguments")
+    assert load_study(tmp_path / "s") == report  # the reader takes a reconstruction's rejection

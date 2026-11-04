@@ -43,12 +43,15 @@ class Executor:
     (``settable``, raising for one it cannot set) and the stage whose process runs it, if another
     one does (``inside``: the gun, fired by ddsim, which sets its events and seed). An executor
     without ``events`` that runs in a process of its own processes every event of the stage it
-    reads (k4run)."""
+    reads (k4run). ``asks`` says whether k4opt asks the program itself whether it takes the
+    options, before anything runs (k4run's dry run): then a required stage whose option a
+    parameter sets is asked for each candidate, and rejects one whose values it does not take."""
 
     events: bool
     options: Callable[[Mapping[str, Json], Collection[str]], None]
     settable: Callable[[str], Settable]
     inside: str | None = None
+    asks: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +98,10 @@ _STAGES: Mapping[str, StageType] = {
         ("simulation",),
         {
             "k4run": Executor(
-                events=False, options=k4run.check_options, settable=k4run.settable_option
+                events=False,
+                options=k4run.check_options,
+                settable=k4run.settable_option,
+                asks=True,
             )
         },
         geometry=True,
