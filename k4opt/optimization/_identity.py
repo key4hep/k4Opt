@@ -10,6 +10,13 @@ code. Locations are recorded and never compared, so a study whose files moved re
 :func:`digest` condenses the comparison, :func:`differences` says what differs, and the revision
 warnings say what a hash leaves out (an evaluator checkout with uncommitted changes, or at
 another commit).
+
+The programs of the stack the stages run (ddsim, k4run) are compared apart
+(:func:`program_differences`), by where their executable is (a release of the stack is told
+apart by its path) as much as by its content: they are recorded since the study's digest was
+fixed, so that studies made before stay readable, and must be the same for a study to resume and
+for each of its records. The variables that decide what those programs load
+(:func:`search_warnings`) only warn: two shells differ in them for reasons of their own.
 """
 
 from __future__ import annotations
@@ -173,6 +180,46 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
             "its own for a long campaign)"
         )
     return found
+
+
+def _program(entry: object) -> str:
+    if not isinstance(entry, Mapping):
+        return "not found or not readable"
+    return f"{entry.get('path')} (SHA-256 {str(entry.get('sha256'))[:12]})"
+
+
+def program_differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
+    """How the programs of the stack the stages run (``programs``: by name, the executable with
+    its size and SHA-256) differ between the study and ``current``, each said for a person."""
+    then, now_ = study.get("programs"), current.get("programs")
+    if then == now_:
+        return []
+    if not isinstance(then, Mapping) or not isinstance(now_, Mapping):
+        return [
+            "the study does not record which programs of the stack (ddsim, k4run) it ran, so "
+            "a resume could not run the same ones; start a new study"
+        ]
+    return [
+        f"{name} is {_program(now_.get(name))}, not {_program(then.get(name))} as the study ran"
+        for name in dict.fromkeys([*then, *now_])
+        if then.get(name) != now_.get(name)
+    ]
+
+
+def search_warnings(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
+    """The variables that decide what the programs load (``search``) that differ between the
+    study and ``current``: the same programs may then run other code (a local build, another
+    virtual environment), which no other part of the identity would show."""
+    then, now_ = study.get("search"), current.get("search")
+    if not isinstance(then, Mapping) or not isinstance(now_, Mapping):
+        return []
+    changed = [name for name in dict.fromkeys([*then, *now_]) if then.get(name) != now_.get(name)]
+    if not changed:
+        return []
+    return [
+        f"{', '.join(changed)} differ from when the study was made: ddsim and k4run may load "
+        "other modules or libraries than its trials did (a local build, another environment)"
+    ]
 
 
 def dirty_checkouts(implementations: Mapping[str, Mapping[str, Any]]) -> list[str]:

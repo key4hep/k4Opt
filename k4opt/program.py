@@ -3,16 +3,24 @@ it, and how a parameter's value is written into one of its options.
 
 Shared by the components that run a program (:mod:`k4opt.ddsim`, :mod:`k4opt.k4run`): each
 builds its command, says where it keeps the logs and checks what the program wrote; :func:`run`
-starts the program found on ``PATH`` in the stage's directory, without a shell, in a process group
-of its own, and keeps its standard output and error and a record of the command (``argv``, the
-directory, the exit status, the time limit and the peak memory). A program that fails is reported
-by :attr:`ProgramRun.error`, never by an exception: settings that cannot be run are refused before
-(:class:`ProgramError`).
+starts the program (the executable it is given, or the one found on ``PATH``) in the stage's
+directory, without a shell, in a process group of its own, and keeps its standard output and
+error and a record of the command (``argv``, the directory, the exit status, the time limit and
+the peak memory). A program that fails is reported by :attr:`ProgramRun.error`, never by an
+exception: settings that cannot be run are refused before (:class:`ProgramError`).
+
+What a program runs is identified by :func:`locate` and :func:`identify` (its executable, where
+its links lead, with its size and SHA-256) and :func:`search_environment` (the variables that
+decide which interpreter and which libraries and modules it loads). ddsim and k4run are Python
+scripts (``#!/usr/bin/env python3``): the same script with another ``PYTHONPATH`` runs other
+code, and the libraries behind it are identified only as far as ``KEY4HEP_STACK`` names an
+immutable release.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import math
 import os
 import resource
@@ -32,6 +40,10 @@ from k4opt.jsonio import write_json
 
 LOG_TAIL = 15
 """Lines of standard error quoted in the message of a program that failed."""
+
+SEARCH_VARIABLES = ("PATH", "PYTHONPATH", "LD_LIBRARY_PATH", "ROOT_INCLUDE_PATH")
+"""The environment variables that decide which interpreter, libraries and modules a program of
+the stack loads (:func:`search_environment`)."""
 
 LOG_ROLES = ("stdout", "stderr", "command")
 """The files :func:`run` keeps, by role: the program's standard output and error and the record of
@@ -89,6 +101,42 @@ class ProgramRun:
         """The existing files of the run, by role: ``stdout``, ``stderr`` and ``command``."""
         roles = {"stdout": self.stdout, "stderr": self.stderr, "command": self.command}
         return {role: path for role, path in roles.items() if path.is_file()}
+
+
+def locate(name: str) -> Path | None:
+    """The executable ``name`` found on ``PATH``, where its links lead; ``None`` if there is
+    none."""
+    found = shutil.which(name)
+    return None if found is None else Path(os.path.realpath(found))
+
+
+def identify(executable: Path) -> dict[str, object] | None:
+    """What identifies ``executable``: its ``path``, ``bytes`` and ``sha256``; ``None`` if it
+    cannot be read."""
+    digest = hashlib.sha256()
+    try:
+        with executable.open("rb") as handle:
+            size = 0
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+                size += len(block)
+    except OSError:
+        return None
+    return {"path": str(executable), "bytes": size, "sha256": digest.hexdigest()}
+
+
+def search_environment() -> dict[str, str | None]:
+    """The SHA-256 of each variable of :data:`SEARCH_VARIABLES` as this process has it,
+    ``None`` for one that is not set: what tells apart two shells that would run other code
+    through the same executables (a local build layered over a release)."""
+    return {
+        name: None if (value := os.environ.get(name)) is None else _text_digest(value)
+        for name in SEARCH_VARIABLES
+    }
+
+
+def _text_digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def tail(path: Path) -> str:
@@ -223,16 +271,19 @@ def run(
     timeout: float | None = None,
     started: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
+    executable: Path | None = None,
 ) -> ProgramRun:
-    """Run the program ``name`` found on ``PATH`` with ``arguments`` in the existing directory
-    ``cwd`` (``workdir`` if ``None``), keeping the files ``logs`` names by role
-    (:data:`LOG_ROLES`) in the existing directory ``workdir``.
+    """Run the program ``name`` with ``arguments`` in the existing directory ``cwd``
+    (``workdir`` if ``None``), keeping the files ``logs`` names by role (:data:`LOG_ROLES`) in
+    the existing directory ``workdir``.
 
-    The program is started by its absolute path, so that a relative ``PATH`` entry still resolves
-    from inside ``cwd``. One that runs longer than ``timeout`` seconds is killed with every
-    process it started, and the run fails with its logs kept. ``started`` is told the id of the
-    process group the program runs in once it started, and ``die_with_parent`` kills it when the
-    calling thread ends, even by SIGKILL (see :func:`execute`). The caller checks ``timeout``
+    The program is ``executable`` if it is given (as a session pins it, :func:`locate`), else the
+    one found on ``PATH`` now. It is started by its absolute path, so that a relative ``PATH``
+    entry still resolves from inside ``cwd``. One that runs longer than ``timeout`` seconds is
+    killed with every process it started, and the run fails with its logs kept. ``started`` is
+    told the id of the process group the program runs in once it started, and
+    ``die_with_parent`` kills it when the calling thread ends, even by SIGKILL (see
+    :func:`execute`). The caller checks ``timeout``
     (:func:`timeout_problem`) and what the program should have written.
     """
     stdout, stderr, command = (workdir / logs[role] for role in LOG_ROLES)
@@ -241,7 +292,7 @@ def run(
     def made(argv: tuple[str, ...], returncode: int | None, error: str | None) -> ProgramRun:
         return ProgramRun(argv, here, returncode, stdout, stderr, command, error)
 
-    found = shutil.which(name)
+    found = str(executable) if executable is not None else shutil.which(name)
     if found is None:
         return made((), None, f"{name} not found on PATH (is the Key4hep environment set up?)")
     argv = (os.path.abspath(found), *arguments)

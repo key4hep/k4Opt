@@ -287,6 +287,11 @@ keeps its geometry and its EDM4hep file.
   SHA-256 of each file its external references read (`${DD4hepINSTALL}/...`, `${K4GEO}/...`,
   absolute paths);
 - `KEY4HEP_STACK` and `K4GEO`;
+- `programs`: each program of the stack the stages run (`ddsim`, `k4run`), as the executable the
+  session found on `PATH` when it opened, where its links lead, with its size and SHA-256
+  (`null` for one that cannot be read);
+- `search`: the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`,
+  which decide what those programs load;
 - k4opt's version, the SHA-256 of its code and its git checkout;
 - the `identity` digest;
 - the optimizer: `optuna` and its version, the study name (`<problem name>-<8 hex>`), the
@@ -315,10 +320,16 @@ directory itself is fine: a trial's record names the files of its run directory 
 | evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash, or whose hash is not known to be of the code that runs, `executed: false`, cannot make a study) and of the modules it imports from beside it (`helpers`), the metrics it declares with their units and the artifacts it declares (read from its class, where an evaluator declares them) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, the attribute each geometry target of the parameters resolves to (its file below the root, locator, attribute and unmodified value; every trial's record must change exactly those) and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
+| programs | each program the stages run (`ddsim`, `k4run`): the path of its executable, where its links lead (a release of the stack is told apart by its path), its size and SHA-256; every trial's record must have run the same | the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH` (a change warns) |
 | k4opt | the SHA-256 of its code | version, git commit |
 | Optuna | its exact version; the study's directions, id, identity digest and limit names; the storage | |
 
-The `identity` digest covers the compared column only. A resume is refused, with what changed,
+The `identity` digest covers the compared column only, but for the programs, which are compared
+apart (a study made before k4opt recorded them is read as before, and cannot be resumed). Both
+ddsim and k4run are Python scripts: the same script with another `PYTHONPATH` (a local build
+layered over the release) runs other code, which only the warning about the search variables
+shows; the libraries behind the scripts are identified as far as `KEY4HEP_STACK` names an
+immutable release. A resume is refused, with what changed,
 for any difference in it. It is also refused for `--seed` with `--resume` (a study keeps its
 seed), for a recorded optimizer (sampler, seed, startup trials, distributions, limits,
 constraint-value policy) other than the one this k4opt would run the study with, and for a
@@ -330,8 +341,8 @@ uncommitted changes: the evaluator's file and the modules it imports are unchang
 either refuses the resume), but other files beside them, such as data it reads, may not be.
 
 Within a session, the files the problem names, the files the geometry's external references
-read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are checked before each candidate and again
-after it ran, before its record is written; the geometry's own files are checked by its
+read, `KEY4HEP_STACK`, `K4GEO`, the programs and k4opt's code are checked before each
+candidate and again after it ran, before its record is written; the geometry's own files are checked by its
 materialization. A change while a candidate runs leaves its directory without a
 `summary.json`, and the trial stops the study.
 

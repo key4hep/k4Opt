@@ -639,7 +639,8 @@ own process), which is why it must stay an inexpensive check of the request.
 record of the stages, are **framework-observed** (the executed `ddsim` command and exit code,
 the hashes of given files, the events found). `k4opt evaluate` also records the k4opt version
 with the SHA-256 of k4opt's own Python files and its git checkout, the active stack
-(`KEY4HEP_STACK`, `K4GEO`, the `ddsim` that ran) and each evaluator's source identity as
+(`KEY4HEP_STACK`, `K4GEO`, the `ddsim` and `k4run` that ran, with their SHA-256, and the
+variables that decide what they load) and each evaluator's source identity as
 described above. That identifies the evaluator's own code, not the modules it imports;
 `name` and `version` remain labels. The problem's `environment.key4hep` is a declared pin and is
 not compared with the stack that ran.

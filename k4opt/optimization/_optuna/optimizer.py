@@ -18,7 +18,13 @@ import optuna
 from optuna.distributions import BaseDistribution, distribution_to_json
 from optuna.storages import BaseStorage
 
-from k4opt.optimization._identity import differences, digest, revision_warnings
+from k4opt.optimization._identity import (
+    differences,
+    digest,
+    program_differences,
+    revision_warnings,
+    search_warnings,
+)
 from k4opt.optimization._optuna.storage import storage_record
 from k4opt.optimization._study import CONSTRAINT_VALUES, STUDY_SCHEMA, now, trial_directories
 from k4opt.optimization.errors import OptimizationError
@@ -90,7 +96,7 @@ def check_resume(
     """Refuse to resume a study with anything it compares otherwise than it was made with, and
     one whose recorded optimizer is not the one this k4opt would run it with."""
     optimizer = document["optimizer"]
-    found = differences(document, identity)
+    found = differences(document, identity) + program_differences(document, identity)
     seed = (optimizer.get("sampler") or {}).get("seed")
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**32:
         found.append(f"its sampler seed {seed!r} is no seed in [0, 2**32)")
@@ -121,6 +127,8 @@ def check_resume(
             "study for this"
         )
     for warning in revision_warnings(document["implementations"], identity["implementations"]):
+        warn(warning)
+    for warning in search_warnings(document, identity):
         warn(warning)
 
 

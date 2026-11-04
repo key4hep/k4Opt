@@ -173,8 +173,10 @@ def reconstruct(
     timeout: float | None = None,
     started: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
+    executable: Path | None = None,
 ) -> ReconstructionRun:
-    """Run the ``k4run`` found on ``PATH`` on the job's options ``files`` (absolute, inside
+    """Run ``k4run`` (``executable``, or the one found on ``PATH``) on the job's options ``files``
+    (absolute, inside
     ``directory`` if it is given), reconstructing every event of ``input_file`` with the geometry
     ``compact``, in the new directory ``workdir``.
 
@@ -234,6 +236,7 @@ def reconstruct(
         timeout=remaining,
         started=started,
         die_with_parent=die_with_parent,
+        executable=executable,
     )
     error = run.error
     # its limit is what the copy left of the reconstruction's
@@ -273,6 +276,7 @@ def dry_run(
     data: Mapping[str, str] | None = None,
     placeholder: Path | None = None,
     timeout: float = DRY_RUN_TIMEOUT,
+    executable: Path | None = None,
 ) -> str | None:
     """Why the job does not take its arguments, ``None`` if it does: ``k4run --dry-run`` with the
     arguments :func:`reconstruct` would give it, from a copy of ``directory`` in the new
@@ -302,7 +306,15 @@ def dry_run(
         data=data,
         dry_run=True,
     )
-    run = program.run("k4run", arguments, workdir=workdir, cwd=job, logs=LOG_FILES, timeout=timeout)
+    run = program.run(
+        "k4run",
+        arguments,
+        workdir=workdir,
+        cwd=job,
+        logs=LOG_FILES,
+        timeout=timeout,
+        executable=executable,
+    )
     if run.error is None:
         return None
     if run.returncode == 2:  # argparse: the last line says which argument

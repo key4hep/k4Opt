@@ -23,7 +23,12 @@ from typing import Any
 
 from k4opt.frozen import freeze, thaw
 from k4opt.jsonio import write_json
-from k4opt.optimization._identity import _contents, compared, revision_warnings
+from k4opt.optimization._identity import (
+    _contents,
+    compared,
+    program_differences,
+    revision_warnings,
+)
 from k4opt.optimization.errors import OptimizationError
 
 STUDY_NAME = "study.json"
@@ -95,6 +100,8 @@ PORTABLE: Mapping[str, _Kept] = {
         "externals": {"*": {"sha256": True, "files": True, "unresolved": True}},
     },
     "environment": {"KEY4HEP_STACK": True},
+    "programs": {"*": {"path": True, "bytes": True, "sha256": True}},
+    "search": True,
     "k4opt": {"version": True, "sha256": True, "git": True},
     "optimizer": {
         "backend": True,
@@ -247,6 +254,9 @@ def check_record(
         raise OptimizationError(f"{where} ran in another KEY4HEP_STACK than the study")
     if _get(observed, "k4opt_source", "sha256") != study["k4opt"]["sha256"]:
         raise OptimizationError(f"{where} was made by other k4opt code than the study")
+    ran = program_differences(study, {"programs": _get(observed, "programs")})
+    if ran:
+        raise OptimizationError(f"{where} ran other programs than the study: {'; '.join(ran)}")
     # a geometry that was not made (it ran out of time, its worker died) changed and read nothing
     if _get(summary, "geometry", "status") == "done":
         changes = _get(summary, "geometry", "changes")

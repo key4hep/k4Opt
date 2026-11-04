@@ -1135,3 +1135,79 @@ def _checking() -> Any:
     from tests.support.evaluators import candidate_check
 
     return candidate_check()
+
+
+# --- the programs of the stack a study runs ----------------------------------------------------
+
+
+def _ddsim_build(directory: Path, label: str) -> Path:
+    """A copy of the fake stack's ``ddsim`` in ``directory``, told apart by ``label``."""
+    from tests.support import stack
+
+    directory.mkdir(parents=True)
+    path = directory / "ddsim"
+    path.write_text((stack.FAKE_STACK / "bin" / "ddsim").read_text() + f"# build {label}\n")
+    path.chmod(0o755)
+    return path
+
+
+def _first_on_path(monkeypatch: pytest.MonkeyPatch, path: Path, base: str) -> None:
+    import os
+
+    monkeypatch.setenv("PATH", f"{path.parent}{os.pathsep}{base}")
+
+
+def test_a_study_resumes_only_with_the_ddsim_it_ran(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from tests.support import stack
+
+    stack.install(monkeypatch)
+    base = os.environ["PATH"]
+    first = _ddsim_build(tmp_path / "a", "a")
+    second = _ddsim_build(tmp_path / "b", "b")
+    output = tmp_path / "s"
+    _first_on_path(monkeypatch, first, base)
+    run(sampled_problem, output, 1, seed=1, workers=1, evaluators=[cell_count()])
+    document = json.loads((output / "study.json").read_text())
+    assert document["programs"]["ddsim"]["path"] == str(first)
+    # the same KEY4HEP_STACK, another build of ddsim first on PATH
+    _first_on_path(monkeypatch, second, base)
+    with pytest.raises(OptimizationError, match=f"ddsim is {second} .*, not {first} "):
+        run(sampled_problem, output, 1, resume=True, workers=1, evaluators=[cell_count()])
+    _first_on_path(monkeypatch, first, base)
+    # the same ddsim with other search paths: resumed, with a warning
+    monkeypatch.setenv("PYTHONPATH", f"{tmp_path / 'local'}{os.pathsep}{os.environ['PYTHONPATH']}")
+    warned: list[str] = []
+    resumed = run(
+        sampled_problem,
+        output,
+        1,
+        resume=True,
+        workers=1,
+        evaluators=[cell_count()],
+        warn=warned.append,
+    )
+    assert [t.status for t in resumed.trials] == ["valid", "valid"]
+    assert [w for w in warned if "PYTHONPATH differ" in w]
+
+
+def test_a_record_that_ran_another_ddsim_than_its_study_is_refused(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.optimization._study import check_record
+
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    run(sampled_problem, output, 1, seed=1, evaluators=[cell_count()])
+    document = json.loads((output / "study.json").read_text())
+    record = summary(output, 0)
+    params = {RADIUS: record["candidate"][RADIUS]}
+    assert check_record(document, record, 0, params) == []
+    record["environment"]["observed"]["programs"] = {
+        "ddsim": {"path": "/other/bin/ddsim", "bytes": 1, "sha256": "0" * 64}
+    }
+    with pytest.raises(OptimizationError, match="ran other programs than the study: ddsim is"):
+        check_record(document, record, 0, params)

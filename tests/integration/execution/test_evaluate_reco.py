@@ -73,7 +73,8 @@ def test_the_candidate_is_reconstructed_on_its_own_geometry(run: dict[str, Any])
     resolved = properties((root / stage["logs"]["joboptions"]).read_text())
     assert resolved["GeoSvc.detectors"] == [str(root / run["geometry"]["compact"])]
     assert "directory/CLDReconstruction.py" in stage["files"]
-    assert run["environment"]["observed"]["k4run"].endswith("/k4run")
+    k4run = run["environment"]["observed"]["programs"]["k4run"]
+    assert stage["argv"][0] == k4run["path"] and k4run["path"].endswith("/k4run")
     resolved_fraction = next(m for m in run["metrics"] if m["metric"] == "pi0.resolved")
     assert 0 <= resolved_fraction["value"] <= 1
 

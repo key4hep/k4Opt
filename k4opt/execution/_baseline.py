@@ -1,15 +1,18 @@
 """Internal: what an evaluation session evaluates with, taken once when it opens, and the checks
 that none of it changed since.
 
-A record says which problem, files, geometry, implementations, environment and code its
+A record says which problem, files, geometry, implementations, environment, programs and code its
 candidate was evaluated with. A session takes all of that once, when it opens
 (:meth:`Baseline.take`): the identity (size and SHA-256) of every file the stages read, what the
 geometry's external references read, what the implementations declare and their sources, the
-environment and k4opt's own code. Before a candidate is prepared and again before its record is
-written, :meth:`Baseline.verify` refuses if any of it changed, so that no record names files or
-code other than those its candidate ran with. What a reference only candidates name reads is
-remembered as candidates are recorded (:meth:`Baseline.remember`), so that every candidate of
-the session reads the same files through it (:meth:`Baseline.check_read`).
+environment, the programs of the stack its stages run (each executable the stage contexts pinned,
+with its size and SHA-256, and the variables that decide what they load) and k4opt's own code.
+Before a candidate is prepared and again before its record is written, :meth:`Baseline.verify`
+refuses if any of it changed (but the variables, which a process cannot change in its workers),
+so that no record names files, programs or code other than those its candidate ran with. What
+a reference only candidates name reads is remembered as candidates are recorded
+(:meth:`Baseline.remember`), so that every candidate of the session reads the same files
+through it (:meth:`Baseline.check_read`).
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.problem.candidate import Configuration
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
+from k4opt.program import identify, search_environment
 from k4opt.record.results import TaskResult
 from k4opt.revision import code_identity, code_unchanged
 
@@ -110,8 +114,21 @@ class Baseline:
         # before anything runs, so that an edit to the checkout during a long run is not
         # recorded as the code that ran, nor a later change of the environment as the session's
         environment = {name: os.environ.get(name) for name in ("KEY4HEP_STACK", "K4GEO")}
+        executables = {
+            name: path
+            for context in binding.contexts.values()
+            for name, path in context.programs.items()
+        }
+        programs = {name: identify(Path(path)) for name, path in sorted(executables.items())}
         process = freeze(
-            {"k4opt": code_identity(), "environment": environment}, "process", RunError
+            {
+                "k4opt": code_identity(),
+                "environment": environment,
+                "programs": programs,
+                "search": search_environment(),
+            },
+            "process",
+            RunError,
         )
         check_code()
         assert isinstance(process, Mapping)
@@ -139,6 +156,8 @@ class Baseline:
                 "targets": self.targets(),
             },
             "environment": process["environment"],
+            "programs": process["programs"],
+            "search": process["search"],
             "k4opt": {"version": __version__, **process["k4opt"]},
         }
 
@@ -212,6 +231,7 @@ class Baseline:
         module it imports changed since the session opened."""
         self._verify_environment()
         check_code()
+        self._verify_programs()
         self.verify_inputs()
         self._verify_externals()
         self._verify_implementations()
@@ -265,6 +285,21 @@ class Baseline:
                 raise ProvenanceError(
                     f"geometry: {ref} does not read the files it read when the session opened "
                     f"(now {path}); the candidates of a session start from one geometry"
+                )
+
+    def _verify_programs(self) -> None:
+        """Each program the stages run is the executable the session identified: the same size
+        and SHA-256 where it was found."""
+        programs = self.process["programs"]
+        assert isinstance(programs, Mapping)
+        for name, opened in programs.items():
+            if not isinstance(opened, Mapping):
+                continue  # it could not be read: its stage reports that
+            now = identify(Path(str(opened["path"])))
+            if now != thaw(opened):
+                raise ProvenanceError(
+                    f"{name}: {opened['path']} changed after the session opened; the candidates "
+                    "of a session run the same programs"
                 )
 
     def _verify_environment(self) -> None:

@@ -66,6 +66,7 @@ from k4opt.problem.stages import (
     stage_type,
     writes_files,
 )
+from k4opt.program import locate
 
 _VARIABLE = re.compile(
     r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
@@ -118,7 +119,10 @@ class StageContext:
     environment variable a path of a stage names (a reconstruction's ``$CLDCONFIG``), and the
     home directory each ``~`` or ``~user`` a path starts with stands for (by that prefix), taken
     when the context was made, the session's opening: every candidate reads the files the session
-    identified, wherever the variable or ``HOME`` points later.
+    identified, wherever the variable or ``HOME`` points later. ``programs`` holds, by name, the
+    executable each program a stage of it runs (``ddsim``, ``k4run``) was found at then, where
+    its links lead (:func:`k4opt.program.locate`): every candidate runs that one, whatever
+    ``PATH`` finds later. A program not found then is looked for on ``PATH`` when it runs.
 
     ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
     program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's
@@ -132,6 +136,7 @@ class StageContext:
     timeout: float | None = None
     sample: str | None = None
     variables: Mapping[str, str] = field(default_factory=dict)
+    programs: Mapping[str, str] = field(default_factory=dict)
     started: Callable[[int], None] | None = field(default=None, compare=False, repr=False)
     die_with_parent: bool = field(default=False, compare=False, repr=False)
 
@@ -146,7 +151,31 @@ class StageContext:
             prefix = text.split("/", 1)[0]
             if prefix.startswith("~") and os.path.expanduser(prefix) != prefix:
                 variables[prefix] = os.path.expanduser(prefix)
-        return cls(stages, spec.pending(sample), directory, sample=sample, variables=variables)
+        named_programs = sorted(
+            {
+                name
+                for stage_name, stage in stages.items()
+                if stage.executor is not None
+                and (name := executors(stage_name)[stage.executor].program) is not None
+            }
+        )
+        programs = {
+            name: str(found) for name in named_programs if (found := locate(name)) is not None
+        }
+        return cls(
+            stages,
+            spec.pending(sample),
+            directory,
+            sample=sample,
+            variables=variables,
+            programs=programs,
+        )
+
+    def executable(self, program: str) -> Path | None:
+        """The executable of ``program`` the session found (:attr:`programs`), ``None`` if it
+        found none."""
+        found = self.programs.get(program)
+        return None if found is None else Path(found)
 
     def configured(self, stages: Mapping[str, Stage]) -> StageContext:
         """The same conditions with the ``stages`` of one candidate, complete."""
@@ -306,6 +335,7 @@ def _run_simulation(
         timeout=context.timeout,
         started=context.started,
         die_with_parent=context.die_with_parent,
+        executable=context.executable("ddsim"),
     )
     # it ran in workdir, the stage's own directory, which the record names relative to the run
     provenance: dict[str, Json] = {
@@ -449,6 +479,7 @@ def _run_reconstruction(
         timeout=context.timeout,
         started=context.started,
         die_with_parent=context.die_with_parent,
+        executable=context.executable("k4run"),
     )
     # it ran in workdir/job, a copy of the directory; the record names workdir relative to the run
     provenance: dict[str, Json] = {
@@ -571,6 +602,7 @@ class DryRuns:
                 options=options,
                 data=_data(context, stage),
                 placeholder=self._scratch / "placeholder.edm4hep.root",
+                executable=context.executable("k4run"),
             )
             shutil.rmtree(workdir, ignore_errors=True)  # a copy of the job: only its answer counts
         return self._said[key]

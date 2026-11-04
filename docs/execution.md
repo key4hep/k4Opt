@@ -198,8 +198,11 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git
      checkout (`null` when it is installed rather than checked out), `KEY4HEP_STACK` and `K4GEO`
-     (those the session opened with, checked before each candidate) and the `ddsim` and `k4run`
-     that were started; the pin and the stack are not compared).
+     (those the session opened with, checked before each candidate), `programs` (the `ddsim`
+     and `k4run` every stage ran: the executable the session found on `PATH` when it opened,
+     where its links lead, with its size and SHA-256, `null` for one that cannot be read) and
+     `search` (the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`,
+     which decide what those programs load); the pin and the stack are not compared).
 
 The command prints the candidate's values, its status, each evaluation's status and metrics with their
 uncertainty (a binding named with `as` beside its evaluator, and the sample it measures:
@@ -310,7 +313,8 @@ before creating anything, and `CandidateRejected` for a candidate an evaluator r
 problem or supplied) that changes during a session (other bytes under the same path, or removed)
 stops the next candidate with a `RunError` before anything is created; `verify_inputs()` checks
 it on its own. So does a change of what the geometry's external references read, of
-`KEY4HEP_STACK` or `K4GEO`, or of k4opt's files: the candidates of a session run in the
+`KEY4HEP_STACK` or `K4GEO`, of a program the stages run (the executable the session found), or
+of k4opt's files: the candidates of a session run in the
 environment it opened in, which every summary of the session records. A change while a candidate
 runs raises the `RunError` after its stages and evaluators ran, and its directory keeps their
 files but no `summary.json`: the record could not say which files or code it was made with. A
@@ -323,8 +327,10 @@ the session evaluates with: the problem's path and definition, the identities of
 stages read, the `implementations` (the version, stage, source and declared metrics of each
 evaluator the problem binds, by name, once however often it is bound), the compact file,
 source root and fingerprint of the unmodified geometry and what its external references read,
-`KEY4HEP_STACK` and `K4GEO`, and k4opt's version, code SHA-256 and checkout. The environment
-and k4opt's identity are taken when the session opens, before anything runs, and every summary
+`KEY4HEP_STACK` and `K4GEO`, the `programs` and `search` variables, and k4opt's version, code
+SHA-256 and checkout. Each program a stage runs is found on `PATH` once, when the session opens,
+and every candidate runs that executable, whatever `PATH` says later. The environment, the
+programs and k4opt's identity are taken when the session opens, before anything runs, and every summary
 of the session records the same k4opt identity, so an edit to the k4opt checkout during a long
 run is not recorded as the code that ran (a hash cannot prove which code Python executed, only
 narrow the gap). k4opt's code is hashed once per process, since Python runs the modules it

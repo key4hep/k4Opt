@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -98,8 +99,14 @@ def test_the_reconstruction_runs_on_the_candidate_s_geometry_and_simulation(
     ]
     assert record["files"]["directory/CLDReconstruction.py"]["bytes"] == len("# the job\n")
     assert (here / "reconstruction" / "job" / "PandoraSettingsCLD" / "Likelihood.xml").is_file()
-    assert summary["environment"]["observed"]["k4run"].endswith("fake_stack/bin/k4run")
-    assert summary["environment"]["observed"]["ddsim"] == simulation.DDSIM
+    programs = summary["environment"]["observed"]["programs"]
+    assert programs["k4run"]["path"].endswith("fake_stack/bin/k4run")
+    assert (
+        programs["k4run"]["sha256"]
+        == hashlib.sha256(Path(programs["k4run"]["path"]).read_bytes()).hexdigest()
+    )
+    assert argv[0] == programs["k4run"]["path"]  # the executable identified is the one run
+    assert programs["ddsim"] is None  # faked at a path that does not exist: not readable
     (metric,) = summary["metrics"]
     assert metric["label"] == "gamma/test.reco_cells/reconstruction/ecal_barrel.mean_hit_cells"
 

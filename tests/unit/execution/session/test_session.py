@@ -213,7 +213,14 @@ def test_summary_is_written_and_truthful(
         on_disk["samples"]["gamma"]["stages"]["generation"]["particle_gun"]["particle"] == "gamma"
     )
     assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
-    assert on_disk["environment"]["observed"]["ddsim"] == "/stack/bin/ddsim"
+    # the fake ddsim's /stack/bin/ddsim cannot be read: it is recorded as such
+    assert on_disk["environment"]["observed"]["programs"] == {"ddsim": None}
+    assert set(on_disk["environment"]["observed"]["search"]) == {
+        "PATH",
+        "PYTHONPATH",
+        "LD_LIBRARY_PATH",
+        "ROOT_INCLUDE_PATH",
+    }
     assert on_disk["environment"]["observed"]["k4opt"] == __version__
     # what the version only labels: the content of the code that ran
     assert on_disk["environment"]["observed"]["k4opt_source"] == code_identity()

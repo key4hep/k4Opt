@@ -404,9 +404,13 @@ class EvaluationSession:
         ``geometry``: the compact file, the source root, the fingerprint of the unmodified
         geometry and what its external references read
         (:meth:`~k4opt.geometry.GeometrySource.external_files`); ``environment``:
-        ``KEY4HEP_STACK`` and ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its
-        git checkout, as every summary records them. The environment, k4opt and the external
-        files are taken when the session opened. A fresh copy on every call.
+        ``KEY4HEP_STACK`` and ``K4GEO``; ``programs``: each program of the stack the stages run,
+        by name, as the executable the session runs (its path, size and SHA-256, ``None`` if it
+        cannot be read); ``search``: the SHA-256 of each variable that decides what those
+        programs load (:func:`k4opt.program.search_environment`); ``k4opt``: its version, the
+        SHA-256 of its code and its git checkout, as every summary records them. The
+        environment, the programs, k4opt and the external files are taken when the session
+        opened. A fresh copy on every call.
         """
         return self._baseline.identity()
 
