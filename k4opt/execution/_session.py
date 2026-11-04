@@ -37,7 +37,7 @@ from k4opt.evaluation import (
 from k4opt.execution._backends import Backend, InlineBackend
 from k4opt.execution._baseline import Baseline, candidate_reads
 from k4opt.execution._binding import _bind_problem, _Binding, _context, task_cpus
-from k4opt.execution._cpus import AUTO, INLINE, usable_cpus
+from k4opt.execution._cpus import AUTO, INLINE, usable_cpus, usable_memory
 from k4opt.execution._drive import Activity, _drive, _Run
 from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._process import ProcessBackend
@@ -336,6 +336,7 @@ class EvaluationSession:
                 f"{slots} workers, more than the {usable} processors this process may use: tasks "
                 "will share processors"
             )
+        crowded += _memory_warning(binding, count)
         if supplied:
             crowded.append(
                 f"supplied {', '.join(sorted(task.label for task in supplied))}: each file is "
@@ -636,6 +637,31 @@ class EvaluationSession:
 
 
 _END = object()  # what the requests give once there are none left; no request is it
+
+PROGRAM_MEMORY = 2 * 1024**3
+"""What k4opt expects one task that runs a program of the stack (ddsim, k4run) to take at its
+peak, in bytes, for :func:`_memory_warning`: CLD's simulation and reconstruction peak at
+1.3 to 1.6 GiB."""
+
+
+def _memory_warning(binding: _Binding, workers: int | None) -> list[str]:
+    """Why the session's workers may not fit in the memory this process may use, if they may
+    not: as many programs of the stack (ddsim, k4run) at once as there are workers, each of
+    :data:`PROGRAM_MEMORY`. k4opt reserves and limits no memory; a program the kernel kills for
+    want of it fails its stage."""
+    runs = any(task.given is None for task in binding.plan.of(Kind.STAGE))
+    memory = usable_memory()
+    if workers is None or not runs or memory is None:
+        return []
+    expected = workers * PROGRAM_MEMORY
+    if expected <= memory:
+        return []
+    return [
+        f"{workers} workers may run {workers} programs of the stack (ddsim, k4run) at once, about "
+        f"{expected / 1024**3:.0f} GiB at {PROGRAM_MEMORY / 1024**3:.0f} GiB each, more than the "
+        f"{memory / 1024**3:.1f} GiB this process may use: a program the kernel kills for "
+        "memory fails its stage; fewer --workers?"
+    ]
 
 
 def _check_output(run_dir: Path, under_way: Iterable[Path]) -> None:

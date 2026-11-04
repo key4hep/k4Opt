@@ -101,6 +101,21 @@ def tail(path: Path) -> str:
     return "\n".join(line.rstrip("\r\n") for line in lines)
 
 
+def ended(returncode: int) -> str:
+    """How a program that did not succeed ended, for a person: ``exited with status 3``, or
+    ``was killed by SIGKILL`` for a negative status (a signal); a SIGKILL that k4opt did not
+    send is most often the kernel's, out of memory."""
+    if returncode >= 0:
+        return f"exited with status {returncode}"
+    try:
+        name = signal.Signals(-returncode).name
+    except ValueError:
+        return f"was killed by signal {-returncode}"
+    if name == "SIGKILL":
+        return "was killed by SIGKILL (out of memory? the record holds its peak memory)"
+    return f"was killed by {name}"
+
+
 def timeout_problem(timeout: float | None) -> str | None:
     """Why ``timeout`` is no time limit, ``None`` if it is one: ``None`` (no limit) or a positive,
     finite number of seconds; ``nan`` would never run out, a negative one at once."""
@@ -251,7 +266,7 @@ def run(
         error = f"{name} ran longer than {timeout:g} s and was killed (logs in {workdir}):\n"
         error += tail(stderr)
     elif returncode != 0:
-        error = f"{name} exited with status {returncode} (logs in {workdir}):\n" + tail(stderr)
+        error = f"{name} {ended(returncode)} (logs in {workdir}):\n" + tail(stderr)
     peak = peaks[0] if peaks else None
     record = {
         "argv": argv,

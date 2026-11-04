@@ -601,7 +601,7 @@ def test_an_exception_that_cannot_be_rebuilt_is_raised_as_a_task_error() -> None
 @pytest.mark.parametrize(
     ("killed", "required", "status", "message"),
     [
-        ("ddsim", True, "failed", "ddsim exited with status -9"),
+        ("ddsim", True, "failed", "ddsim was killed by SIGKILL (out of memory?"),
         ("the worker during ddsim", True, "failed", "died (killed by SIGKILL)"),
         ("the worker during an evaluation", True, "failed", "died (killed by SIGKILL)"),
         ("the worker during an evaluation", False, "valid", None),
@@ -638,7 +638,9 @@ def test_a_process_killed_like_the_oom_killer_does_fails_its_task_and_leaves_not
         else summary["samples"]["gamma"]["stages"]["simulation"]
     )
     assert failed["status"] == "failed"
-    reason = "died (killed by SIGKILL)" if "worker" in killed else "status -9"
+    reason = (
+        "died (killed by SIGKILL)" if "worker" in killed else "killed by SIGKILL (out of memory?"
+    )
     assert reason in failed["message"]
     if "evaluation" not in killed:  # what ddsim wrote so far stays referenced
         assert {"stdout", "stderr"} <= failed["logs"].keys()

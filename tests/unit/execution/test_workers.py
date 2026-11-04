@@ -11,7 +11,7 @@ import yaml
 
 from k4opt.cli import main
 from k4opt.execution import EvaluationSession, RunError, _cpus, _session
-from k4opt.execution._cpus import cgroup_quota, usable_cpus
+from k4opt.execution._cpus import cgroup_quota, usable_cpus, usable_memory
 from tests.support.evaluators import cell_count
 from tests.support.geometry import MINI_GEO
 from tests.unit.execution.test_parallel import write_problem
@@ -95,6 +95,33 @@ def test_without_cgroups_v2_there_is_no_quota(tmp_path: Path) -> None:
     assert cgroup_quota(proc, mountinfo) is None
     assert cgroup_quota(tmp_path / "missing", mountinfo) is None
     assert cgroup_quota(proc, tmp_path / "missing") is None
+
+
+def test_usable_memory_is_the_machines_at_most_the_smallest_memory_max(tmp_path: Path) -> None:
+    proc, mountinfo = cgroups(tmp_path, "/user.slice/job", {})
+    point = tmp_path / "sys" / "fs" / "cgroup"
+    machine = usable_memory(tmp_path / "missing", mountinfo)
+    assert machine is not None and machine > 0
+    assert usable_memory(proc, mountinfo) == machine  # no memory.max
+    (point / "user.slice" / "memory.max").write_text("max\n")
+    (point / "user.slice" / "job" / "memory.max").write_text(f"{4 * 1024**3}\n")
+    assert usable_memory(proc, mountinfo) == min(machine, 4 * 1024**3)
+
+
+def test_workers_that_may_not_fit_in_memory_are_warned_about(
+    problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_session, "usable_memory", lambda: 3 * 1024**3)
+    with EvaluationSession.open(problem_file, [cell_count()], workers=2) as session:
+        assert [w for w in session.warnings if "memory" in w] == [
+            "2 workers may run 2 programs of the stack (ddsim, k4run) at once, about 4 GiB at "
+            "2 GiB each, more than the 3.0 GiB this process may use: a program the kernel kills "
+            "for memory fails its stage; fewer --workers?"
+        ]
+    with EvaluationSession.open(problem_file, [cell_count()], workers=1) as session:
+        assert not [w for w in session.warnings if "memory" in w]
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:  # inline: one at once
+        assert not [w for w in session.warnings if "memory" in w]
 
 
 def test_usable_processors_are_the_affinity_at_most_the_quota(

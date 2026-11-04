@@ -424,7 +424,11 @@ with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # sto
   each needs its memory once (its threads share it). Add the session's own process. Measure one
   candidate first, then choose N for the memory as much as for the processors, with some room,
   since it is an estimate; a shared machine (lxplus) is not yours alone. k4opt sets no memory
-  limit of its own.
+  limit of its own (a limit of address space breaks Geant4 and ROOT, which reserve far more
+  than they use), but warns when N programs of the stack (ddsim, k4run) at about 2 GiB each
+  (CLD's peak at 1.3 to 1.6 GiB) would not fit in the machine's memory, at most its cgroup's
+  `memory.max`. A program the kernel kills for want of memory fails its stage with a message
+  that names the signal ("was killed by SIGKILL (out of memory? ...)").
 - **Records** are the same whatever runs the tasks: each task gets the same configuration
   (geometry, stage options and seeds, requests), each record holds its results in plan order
   with the same statuses, blocking and diagnostics, and deterministic evaluators measure the

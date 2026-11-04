@@ -47,11 +47,14 @@ def stat_of(path: Path) -> Stat | None:
     return (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
 
 
-@functools.lru_cache(maxsize=32)
+@functools.cache
 def _sha256(path: str, size: int, mtime_ns: int, ctime_ns: int, inode: int) -> str:
     """SHA-256 of a file. The other arguments only key the cache, so the same file is read once
-    per run of candidates but a changed one is hashed again: writing to a file or replacing it
-    changes its ctime or inode even if the content keeps its size and its mtime is restored.
+    per process however many candidates read it, but a changed one is hashed again: writing to a
+    file or replacing it changes its ctime or inode even if the content keeps its size and its
+    mtime is restored. The cache is not bounded: a session checks every file it identified before
+    each candidate, so a bound smaller than their number would hash each of them every time; an
+    entry is a few hundred bytes per version of a file.
     The kernel stamps ctime with a coarse clock (milliseconds), so a file rewritten within the
     same tick as it was hashed is not told apart; input files are assumed not to change while
     a campaign hashes them."""
