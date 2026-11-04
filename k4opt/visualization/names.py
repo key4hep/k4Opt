@@ -1,11 +1,11 @@
 """What the figures and the dashboard call the parameters, samples, objectives and constraints of a
 problem: the ``title`` the problem gives one, its name otherwise, and never two of a kind alike.
 
-A sample is called by its title, or its name. A parameter is called by its title, or its name;
-two parameters titled alike are each called by the title and the name (``Cell size
-(ecal_barrel_size)``). An objective is called by its title, or its metric, and only where two
-objectives would be called alike is more said: the sample it is measured on (by that sample's own
-title or name), then its whole label; so is a constraint among the constraints. A title names
+A parameter or a sample is called by its title, or its name; two parameters (or two samples)
+titled alike are each called by the title and the name (``Cell size (ecal_barrel_size)``). An
+objective is called by its title, or its metric, and only where two objectives would be called
+alike is more said: the sample it is measured on (by that sample's own title or name), then its
+whole label; so is a constraint among the constraints. A title names
 what is measured, the sample is the sample's to name: two objectives titled ``Angular residual``
 on the samples ``10 GeV γ`` and ``50 GeV γ`` are ``Angular residual · 10 GeV γ`` and ``Angular
 residual · 50 GeV γ``. An objective and a constraint on one metric are each called by their own
@@ -46,17 +46,18 @@ class Names:
 
 def names(spec: ProblemSpec) -> Names:
     """What the things of ``spec`` are called."""
-    samples = {name: sample.title or name for name, sample in spec.samples.items()}
-    parameters = {
-        p.name: [p.name] if p.title is None else [p.title, f"{p.title} ({p.name})"]
-        for p in spec.parameters
-    }
+    samples = _distinct({name: _titled(name, s.title) for name, s in spec.samples.items()})
     return Names(
-        _distinct(parameters),
+        _distinct({p.name: _titled(p.name, p.title) for p in spec.parameters}),
         samples,
         _distinct(_measured(spec.objectives, samples)),
         _distinct(_measured(spec.constraints, samples)),
     )
+
+
+def _titled(name: str, title: str | None) -> list[str]:
+    """What a parameter or sample may be called: its title, then the title and its name."""
+    return [name] if title is None else [title, f"{title} ({name})"]
 
 
 def _measured(

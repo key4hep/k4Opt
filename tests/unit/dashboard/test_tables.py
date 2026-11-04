@@ -120,3 +120,29 @@ def test_parameters_titled_alike_each_keep_a_column_of_their_own() -> None:
     results = StudyResults("s", "id", "now", spec, FrozenMap({}), (trial,), ())
     (row,) = tables.trials(results)
     assert row["Size (ecal_cell_size) [mm]"] == 5.0 and row["Size (range_cut) [mm]"] == 0.5
+
+
+def test_no_column_takes_the_place_of_another_whatever_the_titles(tmp_path: Path) -> None:
+    from k4opt.optimization import StudyResults
+    from k4opt.problem import parse_problem
+
+    import tables
+
+    results = load_study(mixed_study(tmp_path / "s"))
+    document = results.problem.to_dict()
+    document["parameters"]["radius"]["title"] = "Message"  # a fixed column's heading
+    document["objectives"][0]["title"] = "b"  # the other objective's metric, in another unit
+    document["objectives"][1]["title"] = "a"
+    document["constraints"][0]["title"] = "b"
+    spec = parse_problem(document)
+    titled = StudyResults(
+        results.name, results.id, results.created, spec, results.document, results.trials, ()
+    )
+    rows = tables.trials(titled)
+    count = len(rows[0])
+    assert count == len(tables.trials(results)[0])  # every column kept
+    trial = next(t for t in results.trials if t.objectives is not None)
+    (row,) = (r for r in rows if r["Trial"] == trial.number)
+    assert row["Message"] == trial.message and row["Message (radius)"] == trial.candidate["radius"]
+    assert row["b [mm]"] == trial.objectives["test.trade_off/analysis/a"]
+    assert row["margin b max [mm]"] == trial.assessment.limits[0].margin

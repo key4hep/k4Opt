@@ -171,6 +171,17 @@ def test_parameters_samples_and_measured_metrics_are_drawn_by_their_titles() -> 
     assert [box.title for box in alone.samples.values()] == ["10 GeV γ", "50 GeV γ"]
 
 
+def test_measurements_of_one_box_titled_alike_are_told_apart_by_what_they_measure() -> None:
+    document = example("cld-ecal-photon-energies")
+    for objective in document["objectives"]:
+        objective["title"] = "Resolution"  # both of gamma_50gev, of two metrics
+    graph = task_graph(parse_problem(document), stack=False)
+    fired = "calo.photon/simulation/ecal_barrel.fired_cells"
+    assert graph.node(f"objective:gamma_10gev/{RESIDUAL}").title == "Resolution"  # alone in it
+    assert graph.node(f"objective:gamma_50gev/{RESIDUAL}").title == RESIDUAL
+    assert graph.node(f"objective:gamma_50gev/{fired}").title == fired
+
+
 def test_samples_whose_objectives_are_titled_otherwise_are_not_stacked() -> None:
     document = example("cld-ecal-bindings")
     document["objectives"][0]["title"] = "Residual at 10 GeV"

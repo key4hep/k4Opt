@@ -63,10 +63,17 @@ def test_a_metric_alone_of_its_title_is_called_by_its_title_alone() -> None:
 
 def test_metrics_alike_on_one_sample_are_called_by_their_labels() -> None:
     document = bindings()
-    document["samples"]["gamma_50gev"]["title"] = "gamma_10gev"  # the other's name, as a title
+    fired = "calo.photon/simulation/ecal_barrel.fired_cells"
+    document["objectives"].append(
+        {"sample": "gamma_10gev", "stage": "simulation", "metric": "ecal_barrel.fired_cells"}
+        | {"direction": "minimize"}
+    )
+    for objective in document["objectives"]:
+        objective["title"] = "Resolution"
     called = names(parse_problem(document))
     assert called.objective(f"gamma_10gev/{RESIDUAL}") == f"gamma_10gev/{RESIDUAL}"
-    assert called.objective(f"gamma_50gev/{RESIDUAL}") == f"gamma_50gev/{RESIDUAL}"
+    assert called.objective(f"gamma_10gev/{fired}") == f"gamma_10gev/{fired}"
+    assert called.objective(f"gamma_50gev/{RESIDUAL}") == "Resolution · gamma_50gev"
 
 
 def test_parameters_titled_alike_are_each_called_by_the_title_and_their_name() -> None:
@@ -78,6 +85,15 @@ def test_parameters_titled_alike_are_each_called_by_the_title_and_their_name() -
     assert called.parameter("ecal_cell_size") == "Cut (ecal_cell_size)"
     assert called.parameter("range_cut") == "Cut (range_cut)"
     assert called.parameter("cell_threshold") == "Threshold"
+
+
+def test_samples_titled_alike_are_each_called_by_the_title_and_their_name() -> None:
+    document = bindings()
+    for sample in document["samples"].values():
+        sample["title"] = "γ"
+    called = names(parse_problem(document))
+    assert called.sample("gamma_10gev") == "γ (gamma_10gev)"
+    assert called.sample("gamma_50gev") == "γ (gamma_50gev)"
 
 
 def test_an_objective_and_a_constraint_on_one_metric_are_each_called_by_their_own_title() -> None:

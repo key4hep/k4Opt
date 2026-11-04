@@ -27,6 +27,7 @@ figures': :func:`~k4opt.visualization.pipeline_graph`, :func:`~k4opt.visualizati
 from __future__ import annotations
 
 import statistics
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
@@ -173,8 +174,11 @@ def task_graph(
         for need in _reduced(plan, task)
     ]
     measured: list[Objective | Constraint] = [*spec.objectives, *spec.constraints]
+    # in its sample's box a measurement is called by its title or metric alone, the box saying
+    # the sample, unless another of its kind in that box is called alike
+    alike = Counter((type(item), item.sample, item.title or item.metric) for item in measured)
     for item in measured:
-        node = _measured(item)
+        node = _measured(item, alike[type(item), item.sample, item.title or item.metric] > 1)
         nodes.append(node)
         edges.append(
             GraphEdge(
@@ -208,15 +212,18 @@ def _parameter(parameter: Parameter, called: Names) -> GraphNode:
     )
 
 
-def _measured(item: Objective | Constraint) -> GraphNode:
+def _measured(item: Objective | Constraint, alike: bool) -> GraphNode:
+    """An objective or a constraint, titled by its title or metric, by what it measures in its
+    sample (``group``, as every sample alike) where another in its box is ``alike``."""
     group = f"{item.evaluator}/{item.stage}/{item.metric}"
+    title = group if alike else item.title or item.metric
     if isinstance(item, Objective):
         arrow = "▲" if item.direction == "maximize" else "▼"
         facts = [("objective", item.label), ("direction", item.direction)]
         return GraphNode(
             f"objective:{item.label}",
             "objective",
-            item.title or item.metric,
+            title,
             (f"{arrow} {item.direction}",),
             tuple(facts),
             item.sample,
@@ -235,7 +242,7 @@ def _measured(item: Objective | Constraint) -> GraphNode:
     return GraphNode(
         f"constraint:{item.label}",
         "constraint",
-        item.title or item.metric,
+        title,
         (_bounds(item),),
         tuple(facts),
         item.sample,
