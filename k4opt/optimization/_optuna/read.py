@@ -19,6 +19,7 @@ from optuna.storages import BaseStorage
 from optuna.trial import FrozenTrial, TrialState
 
 from k4opt.frozen import freeze
+from k4opt.optimization._optuna import marks
 from k4opt.optimization._optuna.optimizer import check_optuna_study, study_attributes
 from k4opt.optimization._optuna.space import constraint_values, objective_values
 from k4opt.optimization._optuna.storage import close, existing_storage, leaving
@@ -65,9 +66,9 @@ def _check_told_values(frozen: FrozenTrial, result: TrialResult) -> None:
     values, constraints = objective_values(assessment), constraint_values(assessment)
     if frozen.values != values:
         raise OptimizationError(f"{where} the values {frozen.values}, its record gives {values}")
-    if frozen.user_attrs.get("k4opt.feasible") != assessment.feasible:
+    if frozen.user_attrs.get(marks.FEASIBLE) != assessment.feasible:
         raise OptimizationError(
-            f"{where} feasible={frozen.user_attrs.get('k4opt.feasible')!r}, its record gives "
+            f"{where} feasible={frozen.user_attrs.get(marks.FEASIBLE)!r}, its record gives "
             f"{assessment.feasible!r}"
         )
     if frozen.constraints != constraints:
@@ -104,15 +105,17 @@ def trial_result(
             "not have"
         )
     candidate = {key: frozen.params[key] for key in references if key in frozen.params}
-    recovered = attrs.get("k4opt.recovered") is True
+    recovered = attrs.get(marks.RECOVERED) is True
     if frozen.state == TrialState.RUNNING:
         return TrialResult(number, "running", candidate, recovered=recovered), []
-    told, error = attrs.get("k4opt.record"), attrs.get("k4opt.error")
-    if attrs.get("k4opt.status") == "rejected":
+    told, error = attrs.get(marks.RECORD), attrs.get(marks.ERROR)
+    if attrs.get(marks.STATUS) == "rejected":
         return _rejected(frozen, spec, candidate, directory / trial_directory(number)), []
     if told is None:
-        ours = "k4opt.dir" in attrs or recovered
-        if frozen.state != TrialState.FAIL or "k4opt.status" in attrs or not ours:
+        # interrupted, also while its rejection was told (a prefix of it, without the status)
+        ours = marks.DIR in attrs or recovered
+        own = {key for key in attrs if key.startswith(marks.PREFIX)}
+        if frozen.state != TrialState.FAIL or own - marks.PARTLY_REJECTED or not ours:
             raise OptimizationError(
                 f"trial {number} is {frozen.state.name} without the record k4opt tells a trial "
                 "with, or any mark of k4opt, so it was not made by k4opt optimize"
@@ -120,9 +123,9 @@ def trial_result(
         status, message = ("interrupted", None) if error is None else ("error", str(error))
         return TrialResult(number, status, candidate, message=message, recovered=recovered), []
     result, warnings = recorded(directory, document, spec, number, frozen.params, told, read)
-    if attrs.get("k4opt.status") != result.status:
+    if attrs.get(marks.STATUS) != result.status:
         raise OptimizationError(
-            f"trial {number}: the optimizer was told the status {attrs.get('k4opt.status')!r}, "
+            f"trial {number}: the optimizer was told the status {attrs.get(marks.STATUS)!r}, "
             f"but its record is {result.status!r}"
         )
     if frozen.state == TrialState.COMPLETE and result.status == "valid":
@@ -134,12 +137,6 @@ def trial_result(
             f"trial {number} is {frozen.state.name}, but its record is {result.status!r}"
         )
     return replace(result, recovered=recovered), warnings
-
-
-_REJECTED = frozenset(
-    {"k4opt.status", "k4opt.rejected_by", "k4opt.message", "k4opt.dir", "k4opt.sampler_seed"}
-)
-"""What a rejected trial carries of k4opt's, and nothing else of it."""
 
 
 def _rejected(
@@ -155,12 +152,12 @@ def _rejected(
     where = f"trial {number} is rejected, but"
     if frozen.state != TrialState.FAIL or frozen.values is not None or frozen.constraints:
         raise OptimizationError(f"{where} it is {frozen.state.name}, with values or constraints")
-    k4opt = {key for key in attrs if key.startswith("k4opt.")}
-    if k4opt - _REJECTED or not {"k4opt.rejected_by", "k4opt.message"} <= k4opt:
+    k4opt = {key for key in attrs if key.startswith(marks.PREFIX)}
+    if k4opt - marks.REJECTED or not {marks.REJECTED_BY, marks.MESSAGE} <= k4opt:
         raise OptimizationError(
             f"{where} it carries {', '.join(sorted(k4opt))}, not what k4opt tells a rejected trial"
         )
-    by, message = attrs["k4opt.rejected_by"], attrs["k4opt.message"]
+    by, message = attrs[marks.REJECTED_BY], attrs[marks.MESSAGE]
     plan = plan_tasks(spec.samples, spec.evaluators, references=spec.references)
     if by not in [task.label for task in rejecting(plan, spec.samples, spec.parameters)]:
         raise OptimizationError(
@@ -195,7 +192,7 @@ def results_of(
         result, found = trial_result(directory, document, spec, frozen, read)
         trials.append(result)
         notes += found
-    known = {frozen.user_attrs.get("k4opt.dir", trial_directory(frozen.number)) for frozen in held}
+    known = {frozen.user_attrs.get(marks.DIR, trial_directory(frozen.number)) for frozen in held}
     notes += [
         f"{name} in {directory} belongs to no trial of the study, so it is not shown"
         for name in trial_directories(directory)

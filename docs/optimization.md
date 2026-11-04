@@ -354,6 +354,9 @@ cleanly. Each running trial is FAIL, or is told its record if one was published 
 ddsim is killed, with any process it started, and so are the worker processes; the
 lock is removed; the command exits 1 and says how to resume. A study killed outright (SIGKILL)
 takes its worker processes with it (Linux), and a resume closes the trials it left running.
+Wherever an interruption falls, even between two of the writes that tell the optimizer a
+trial, the study stays readable and resumable: that trial reads as what it was told to be, or
+as `interrupted` (the mark that says what a trial is, `k4opt.status`, is written last).
 
 **The lock.** `.lock` is created exclusively when a process starts working on a study, and
 removed when it ends, so two processes never work on one study. A lock that a killed process

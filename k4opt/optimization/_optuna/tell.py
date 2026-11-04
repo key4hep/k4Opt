@@ -27,6 +27,7 @@ from optuna.trial import FrozenTrial, Trial, TrialState
 
 from k4opt.errors import K4OptError
 from k4opt.execution import Rejected, RunOutcome
+from k4opt.optimization._optuna import marks
 from k4opt.optimization._optuna.read import trial_result
 from k4opt.optimization._optuna.space import constraint_values, objective_values
 from k4opt.optimization._results import TrialResult, record_of
@@ -85,23 +86,23 @@ def _report(
             )
     for warning in warnings:
         run.warn(warning)
-    trial.set_user_attr("k4opt.status", result.status)
+    trial.set_user_attr(marks.STATUS, result.status)
     path = f"{trial_directory(number)}/{SUMMARY_NAME}"
     record = {"id": result.record, "sha256": result.sha256, "path": path}
-    trial.set_user_attr("k4opt.record", record)
+    trial.set_user_attr(marks.RECORD, record)
     if isinstance(result.message, str):
-        trial.set_user_attr("k4opt.message", result.message[:_MESSAGE])
+        trial.set_user_attr(marks.MESSAGE, result.message[:_MESSAGE])
     # the diagnostics that did not succeed, which the status leaves out (checked by from_summary)
-    trial.set_user_attr("k4opt.diagnostics", len(result.diagnostics))
+    trial.set_user_attr(marks.DIAGNOSTICS, len(result.diagnostics))
     if recovered:
-        trial.set_user_attr("k4opt.recovered", True)
+        trial.set_user_attr(marks.RECOVERED, True)
     if values is None:
         run.study.tell(trial, state=TrialState.FAIL)
     else:
         for key, value in constraints.items():
             if key not in existing:
                 trial.set_constraint(key, value)
-        trial.set_user_attr("k4opt.feasible", assessment.feasible)
+        trial.set_user_attr(marks.FEASIBLE, assessment.feasible)
         run.study.tell(trial, values)
     return replace(result, recovered=recovered)
 
@@ -110,10 +111,16 @@ def _reject(run: _Study, trial: Trial, rejected: Rejected) -> TrialResult:
     """Tell the optimizer that an evaluator rejected the candidate of ``trial``: FAIL, without
     values or constraint values, marked ``rejected`` with the evaluation that rejected it and
     why. Nothing of the candidate was created, so there is no record: this is all there is of
-    it, read back strictly (:func:`~k4opt.optimization._optuna.read.trial_result`)."""
-    trial.set_user_attr("k4opt.status", "rejected")
-    trial.set_user_attr("k4opt.rejected_by", rejected.by)
-    trial.set_user_attr("k4opt.message", rejected.message[:_MESSAGE])
+    it, read back strictly (:func:`~k4opt.optimization._optuna.read.trial_result`). The marks are
+    written in the order of :data:`~k4opt.optimization._optuna.marks.REJECTION`, its status last,
+    so that a trial interrupted before that reads as interrupted."""
+    told = {
+        marks.REJECTED_BY: rejected.by,
+        marks.MESSAGE: rejected.message[:_MESSAGE],
+        marks.STATUS: "rejected",
+    }
+    for key in marks.REJECTION:
+        trial.set_user_attr(key, told[key])
     frozen = run.study.tell(trial, state=TrialState.FAIL)
     result, _ = trial_result(run.directory, run.document, run.spec, frozen, run.read)
     return result
@@ -121,7 +128,7 @@ def _reject(run: _Study, trial: Trial, rejected: Rejected) -> TrialResult:
 
 def _fail(run: _Study, trial: Trial, error: str | None = None) -> FrozenTrial:
     if error is not None:
-        trial.set_user_attr("k4opt.error", error[:_MESSAGE])
+        trial.set_user_attr(marks.ERROR, error[:_MESSAGE])
     return run.study.tell(trial, state=TrialState.FAIL)
 
 
@@ -176,7 +183,9 @@ def _failed(run: _Study, trial: Trial, error: str) -> str:
 def _close_interrupted(run: _Study, trial: Trial, output: Path) -> None:
     """A trial that Ctrl-C, SIGTERM or another trial's error ended: told its record if that was
     published just before, FAIL otherwise, its directory left as it is; nothing if the storage
-    holds it ended already, or cannot say (a resume settles it)."""
+    holds it ended already, or cannot say (a resume settles it). A trial interrupted before it
+    was marked as k4opt's (just after it was asked for) is marked now, so that it reads as
+    interrupted."""
     stored = _stored(run, trial.number)
     if stored is None or stored.state != TrialState.RUNNING:
         return
@@ -185,8 +194,10 @@ def _close_interrupted(run: _Study, trial: Trial, output: Path) -> None:
         try:
             _report(run, trial, stored.constraints)
             return
-        except K4OptError:
-            pass  # a record that does not hold up is no result
+        except K4OptError as exc:  # a record that does not hold up is no result
+            run.warn(f"trial {trial.number}: its record does not hold up ({exc}); interrupted")
+    if marks.DIR not in stored.user_attrs:
+        trial.set_user_attr(marks.DIR, output.name)
     _fail(run, trial)
 
 
@@ -199,7 +210,7 @@ def _recover(run: _Study, progress: Progress) -> None:
     changed, its state, status, candidate, values or constraint values are not the record's, or
     k4opt did not make it."""
     trials = run.study.get_trials(deepcopy=False)
-    known = {trial.user_attrs.get("k4opt.dir", trial_directory(trial.number)) for trial in trials}
+    known = {trial.user_attrs.get(marks.DIR, trial_directory(trial.number)) for trial in trials}
     stray = [name for name in trial_directories(run.directory) if name not in known]
     if stray:
         raise OptimizationError(
@@ -222,6 +233,6 @@ def _recover(run: _Study, progress: Progress) -> None:
         if (run.directory / trial_directory(frozen.number) / SUMMARY_NAME).is_file():
             progress(_report(run, trial, frozen.constraints, recovered=True))
             continue
-        trial.set_user_attr("k4opt.recovered", True)
+        trial.set_user_attr(marks.RECOVERED, True)
         finished = run.study.tell(trial, state=TrialState.FAIL)
         progress(trial_result(run.directory, run.document, run.spec, finished, run.read)[0])

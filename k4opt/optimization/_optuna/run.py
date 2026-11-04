@@ -35,6 +35,7 @@ from k4opt.evaluation import EvaluatorProtocol
 from k4opt.execution import Activity, EvaluationSession, RunRequest
 from k4opt.optimization._identity import dirty_checkouts, unhashed
 from k4opt.optimization._lock import Lock
+from k4opt.optimization._optuna import marks
 from k4opt.optimization._optuna.optimizer import (
     CONSTANT_LIAR,
     STARTUP_TRIALS,
@@ -118,8 +119,8 @@ def _requests(
         name = trial_directory(trial.number)
         output = run.directory / name
         in_flight[trial.number] = (trial, output)
-        trial.set_user_attr("k4opt.dir", name)
-        trial.set_user_attr("k4opt.sampler_seed", seed)
+        trial.set_user_attr(marks.DIR, name)
+        trial.set_user_attr(marks.SAMPLER_SEED, seed)
         candidate = {key: trial.params[key] for key in space}
         yield RunRequest(candidate, output, {"study": run.document["id"], "trial": trial.number})
 

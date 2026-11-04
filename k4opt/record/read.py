@@ -16,6 +16,7 @@ record alone: no file the record names is opened, so an old record stays readabl
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -87,6 +88,42 @@ def _mapping(value: object, where: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise RecordError(f"{where} must be a mapping, got {type(value).__name__}")
     return value
+
+
+def seconds(value: object, where: str) -> float | None:
+    """A time a record holds (an ``elapsed_seconds``): ``None``, or a finite number of seconds,
+    zero or more; raises :class:`~k4opt.record.RecordError` for anything else."""
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise RecordError(f"{where} is {value!r}, not a time in seconds")
+    return value
+
+
+def _times(record: Mapping[str, object]) -> None:
+    """Every ``elapsed_seconds`` of the record is a time: the candidate's, the geometry's and
+    each task's."""
+    seconds(record.get("elapsed_seconds"), "elapsed_seconds")
+    geometry = record.get("geometry")
+    if isinstance(geometry, Mapping):
+        seconds(geometry.get("elapsed_seconds"), "geometry.elapsed_seconds")
+    samples = record.get("samples")
+    for sample, part in (samples if isinstance(samples, Mapping) else {}).items():
+        for kind in ("stages", "evaluations"):
+            tasks = part.get(kind) if isinstance(part, Mapping) else None
+            for name, entry in (tasks if isinstance(tasks, Mapping) else {}).items():
+                if isinstance(entry, Mapping):
+                    where = f"samples.{sample}.{kind}.{name}.elapsed_seconds"
+                    seconds(entry.get("elapsed_seconds"), where)
+    evaluations = record.get("evaluations")
+    for name, entry in (evaluations if isinstance(evaluations, Mapping) else {}).items():
+        if isinstance(entry, Mapping):
+            seconds(entry.get("elapsed_seconds"), f"evaluations.{name}.elapsed_seconds")
 
 
 def _list(value: object, where: str) -> list[object]:
@@ -660,4 +697,5 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
         return owner.measured[(ref.stage, ref.metric)]  # a valid one measured it: check_result
 
     _check_metrics(spec, record, value)
+    _times(record)
     return Recorded(status, represents, value)
