@@ -14,7 +14,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from k4opt.ddsim import DdsimError
 from k4opt.frozen import Json
 from k4opt.problem._fields import (
     _choice,
@@ -38,6 +37,7 @@ from k4opt.problem.models import (
 )
 from k4opt.problem.plan import TaskId, stage_task, varied
 from k4opt.problem.stages import STAGE_TYPES, executors, stage_reads
+from k4opt.program import ProgramError
 
 # the rest of a stage are executor options
 _STAGE_KEYS = ("executor", "file", "events", "seed", "timeout")
@@ -202,6 +202,17 @@ def _stage(where: str, place: _Place, m: Mapping[str, Any]) -> Stage:
             raise _fail(path, f"missing required key 'events': how many events {executor} runs")
         events = _integer(m["events"], place.key("events"), minimum=1)
         seed = _integer(m["seed"], place.key("seed")) if "seed" in m else None
+    elif spec.inside is None:  # it processes every event of the stage it reads
+        for key in ("events", "seed"):
+            if key in m:
+                reads = " and ".join(f"{where}.{need}" for need in stage_reads(name))
+                reason = (
+                    f"{executor} processes every event of {reads}; set the events there"
+                    if key == "events"
+                    else f"{executor} takes no seed of k4opt's; a seed the job itself reads is "
+                    "one of its arguments, an option like any other"
+                )
+                raise _fail(place.key(key), reason)
     else:
         for key in ("events", "seed"):
             if key in m:
@@ -243,7 +254,7 @@ def _located(message: str, place: _Place, options: Mapping[str, Json]) -> str:
         return f"{place.path}: {rest}"
     for key in sorted(options, key=len, reverse=True):  # options may hold dots: physics.list
         prefix = f"{place.stage}.{key}"
-        if head == prefix or head.startswith(f"{prefix}."):
+        if head == prefix or head.startswith((f"{prefix}.", f"{prefix}[")):
             return f"{place.key(key)}{head[len(prefix) :]}: {rest}"
     return f"samples.{place.sample}.{message}"
 
@@ -273,7 +284,7 @@ def _check_options(
             pending = frozenset(set_by)
             try:
                 executor.options(stage.options, pending)
-            except DdsimError as exc:  # its message starts with the stage: generation.particle
+            except ProgramError as exc:  # its message starts with the stage: generation.particle
                 raise ProblemConfigError(_located(str(exc), place, stage.options)) from exc
             for option, parameter in set_by.items():
                 settable = executor.settable(option)
@@ -281,7 +292,7 @@ def _check_options(
                     written = {**stage.options, option: stage_value(settable, parameter, edge)}
                     try:
                         executor.options(written, pending - {option})
-                    except DdsimError as exc:
+                    except ProgramError as exc:
                         end = "bound" if parameter.bounds is not None else "choice"
                         raise ProblemConfigError(
                             f"parameters.{parameter.name}: at its {end} {edge!r}, "

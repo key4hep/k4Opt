@@ -15,8 +15,7 @@ from typing import Any
 import pytest
 import yaml
 
-from k4opt import __version__
-from k4opt.ddsim import run as ddsim_run
+from k4opt import __version__, program
 from k4opt.errors import K4OptError
 from k4opt.evaluation import (
     CandidateRejected,
@@ -1107,7 +1106,7 @@ def test_what_changes_while_a_candidate_runs_leaves_it_without_a_record(
             monkeypatch.setattr(revision, "source_digest", lambda directory: "edited since")
         return fake(argv, **kwargs)
 
-    monkeypatch.setattr(ddsim_run, "_execute", changing)
+    monkeypatch.setattr(program, "execute", changing)
     message = {
         "generation file": rf"samples\.gamma\.generation\.file: {hepmc} changed after the session",
         "external file": r"geometry: \$\{DD4hepINSTALL\}/.*detector_types\.xml does not read",
@@ -1168,7 +1167,7 @@ def test_a_candidate_records_and_checks_the_external_files_its_values_name(
             model.write_text("solid other")
             return fake(argv, **kwargs)
 
-        monkeypatch.setattr(ddsim_run, "_execute", changing)
+        monkeypatch.setattr(program, "execute", changing)
         message = r"\$\{CAD\}/b\.stl does not read the files it read when the candidate started"
     with pytest.raises(RunError, match=rf"geometry: {message}.*which has no {SUMMARY_NAME}"):
         session.evaluate({RADIUS: 500.0, "support": "${CAD}/b.stl"}, tmp_path / "c")
@@ -1191,7 +1190,7 @@ def test_a_simulation_that_runs_out_of_time_fails_its_candidate(
         fake.calls.append((argv, kwargs))
         return None  # killed when its time ran out
 
-    monkeypatch.setattr(ddsim_run, "_execute", stuck)
+    monkeypatch.setattr(program, "execute", stuck)
     # inline too: a stage's limit stops the program it runs
     session = EvaluationSession.open(limit_simulation(problem_file, 90), [cell_count()])
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
@@ -1246,7 +1245,7 @@ def test_a_run_reference_is_recorded_as_given(
 @pytest.mark.parametrize(
     ("inputs", "message"),
     [
-        ({"gamma/reconstruction": "{file}"}, "input 'gamma/reconstruction': unknown stage"),
+        ({"gamma/analysis": "{file}"}, "input 'gamma/analysis': unknown stage"),
         ({"gamma/simulation": "{missing}"}, "is not a file"),
         (
             {"gamma/generation": "{file}", "gamma/simulation": "{file}"},

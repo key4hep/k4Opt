@@ -46,7 +46,9 @@ runs and no output is written, so it is the quick way to see what a parameter ch
 expensive simulation. It does load the evaluators and calls their `check()`, and it does not show
 that the simulation or the evaluation will succeed. In particular, k4opt checks how a ddsim option
 is written, not that the installed ddsim knows it: a misspelt `physics.rangecuut` passes the dry
-run, and ddsim refuses it when it starts, which fails the simulation. For
+run, and ddsim refuses it when it starts, which fails the simulation. A reconstruction's job is
+asked, though: opening the session dry-runs `k4run` with its arguments, so a misspelt argument
+of the job refuses the problem before anything runs ([k4run](k4run.md#the-dry-run)). For
 [`cld-ecal-bindings.yaml`](../examples/problem/cld-ecal-bindings.yaml), a target of each kind on
 two samples:
 
@@ -118,7 +120,9 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    `load_problem()` discovered;
 2. for each sample, in the order of the problem, the stages its evaluators or roles read are made
    available once each: a generation `file` is checked and hashed, and the `simulation` stage
-   runs `ddsim` on that snapshot in `<output>/samples/<sample>/simulation`. Then each evaluator
+   runs `ddsim` on that snapshot in `<output>/samples/<sample>/simulation`, and a
+   `reconstruction` stage `k4run` on it and the simulation in
+   `<output>/samples/<sample>/reconstruction` ([k4run](k4run.md)). Then each evaluator
    that measures the sample, in the order of the problem, reads the files of the sample's stages
    it needs and may write in `<output>/samples/<sample>/evaluators/<binding>`; last, each
    evaluator of the candidate runs in `<output>/evaluators/<binding>`; combined evaluators read
@@ -194,8 +198,8 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git
      checkout (`null` when it is installed rather than checked out), `KEY4HEP_STACK` and `K4GEO`
-     (those the session opened with, checked before each candidate) and the `ddsim` that was
-     started; the pin and the stack are not compared).
+     (those the session opened with, checked before each candidate) and the `ddsim` and `k4run`
+     that were started; the pin and the stack are not compared).
 
 The command prints the candidate's values, its status, each evaluation's status and metrics with their
 uncertainty (a binding named with `as` beside its evaluator, and the sample it measures:
@@ -294,7 +298,7 @@ for size in (5.0, 7.0, 10.0):
 | --- | --- |
 | load the problem file (later edits to it do not reach the session) and discover the geometry | check the candidate against the parameter domains |
 | bind the evaluator classes by what each class declares, without creating any; check the stages of each sample they read and their settings and collections; decide who measures each metric | build the request of each evaluation for this candidate and call its class's `check` with it, which may reject the candidate; check that each class still declares what it did |
-| collect the warnings about collections ddsim is not expected to write, and about what is measured or simulated twice (`session.warnings`); list the diagnostics (`session.diagnostics`, and `session.notice` to tell whoever starts it) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened |
+| collect the warnings about collections ddsim is not expected to write, and about what is measured or simulated twice (`session.warnings`); list the diagnostics (`session.diagnostics`, and `session.notice` to tell whoever starts it) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened, and that the directories a reconstruction reads hold the same files |
 | record the size and SHA-256 of every file the stages read, by where the problem names it (a stage `file`, `samples.gamma_10gev.generation.file`; a file a ddsim option names; a file supplied with `inputs`, `supplied.gamma_10gev.simulation`; a file two samples read is hashed once and named for each), what the geometry's external references read ([`external_files`](geometry.md#fingerprint)), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, create one instance of each evaluation's evaluator where it runs and call it, check again what the previous row checks, assess, write the summary |
 
 No request or evaluator instance outlives the evaluation it was made for, so an evaluator's
@@ -478,7 +482,7 @@ same way by `EvaluationSession`, `k4opt evaluate` and `k4opt optimize`:
 
 | Kind | What produces it | `EvaluationSession` | `k4opt evaluate` | A study |
 | --- | --- | --- | --- | --- |
-| **rejected** | the `check` of a required evaluation calls `cls.reject("...")` (`CandidateRejected`); a diagnostic's only keeps that diagnostic from running (`invalid`) | `evaluate()` returns `Rejected(evaluation, message)`; nothing is created | exit 1, nothing created | a FAIL trial marked `rejected`; it goes on |
+| **rejected** | the `check` of a required evaluation calls `cls.reject("...")` (`CandidateRejected`); a diagnostic's only keeps that diagnostic from running (`invalid`); or the job of a required reconstruction does not take an argument the candidate sets ([k4run](k4run.md#the-dry-run)) | `evaluate()` returns `Rejected(by, message)`; nothing is created | exit 1, nothing created | a FAIL trial marked `rejected`; it goes on |
 | **failed** or **invalid** | a stage that fails or runs out of time; a worker that dies (an OOM kill, a crash), its geometry's included; an evaluation that runs out of time, ends with `self.fail()`/`self.invalid()`, or lacks a collection | a `RunOutcome` with that status and a `summary.json` | exit 1 | a FAIL trial with its record; it goes on |
 | **contract or framework error** | an evaluator that raises anything else, a `check` that raises anything but `CandidateRejected`, `CandidateRejected` outside `check`, a result that breaks the contract, an `__init__` that raises, a geometry that cannot be materialized, the same task killing N + 1 workers in a row | the exception; no `summary.json` | exit 2 | the trial is FAIL with `k4opt.error`; the study **stops** |
 | **provenance** | a file, the environment, k4opt's or an evaluator's code that changed since the session opened, a file a task made that changed, a geometry that is not the one the session resolved (`ProvenanceError`, a `RunError`) | the exception; no `summary.json` | exit 2 | the study **stops** |

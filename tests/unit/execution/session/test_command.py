@@ -311,7 +311,7 @@ def test_a_supplied_simulation_is_evaluated_but_never_counts_as_the_candidate(
     ("given", "message"),
     [
         ("gamma/simulation", "expected SAMPLE/STAGE=FILE"),
-        ("gamma/reconstruction={file}", "unknown stage; use generation, simulation"),
+        ("gamma/analysis={file}", "unknown stage; use generation, simulation, reconstruction"),
         ("gamma/simulation={missing}", "is not a file"),
         ("gamma/generation={file}", "no evaluator of the problem reads that stage of gamma"),
         # a stage of which sample: the problem says, even with only one

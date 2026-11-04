@@ -21,7 +21,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
-from k4opt.ddsim import DdsimError, Settable
 from k4opt.geometry import InvalidTargetError, parse_reference
 from k4opt.problem._fields import (
     _choice,
@@ -50,6 +49,7 @@ from k4opt.problem.models import (
     StageDestination,
 )
 from k4opt.problem.stages import STAGE_TYPES, executors
+from k4opt.program import ProgramError, Settable
 
 _KINDS = ("continuous", "integer", "categorical")
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
@@ -335,7 +335,7 @@ def _stage(
             )
         try:
             settable = executors(draft.stage)[stage.executor].settable(draft.option)
-        except DdsimError as exc:  # its message names the option: simulation.physics.pdgfile: ...
+        except ProgramError as exc:  # its message names the option: simulation.physics.pdgfile: ...
             reason = str(exc).partition(": ")[2] or str(exc)
             raise _fail(path, f"{stage.executor} option {draft.option!r}: {reason}") from None
         if draft.option in stage.options:
@@ -388,6 +388,15 @@ def _check_form(item: _Declared, settable: Settable, option: str, path: str) -> 
                 path,
                 f"option {option!r} takes a quantity in {', '.join(settable.units)}: the "
                 f"parameter must be continuous or integer, with one of these units, not {given}",
+            )
+        _check_exact(item, path)
+        return
+    if settable.form == "value":
+        if item.unit is not None:
+            raise _fail(
+                path,
+                f"option {option!r} takes a bare value, whose unit the job decides (k4opt cannot "
+                f"convert {item.unit!r} into it): the parameter must have no unit",
             )
         _check_exact(item, path)
         return

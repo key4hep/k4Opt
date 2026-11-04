@@ -1,13 +1,16 @@
 """The pipeline stage types a problem's samples are made of, described once.
 
 Each sample of a problem says how each of its stages is made: run by an executor (``gun`` for
-``generation``, ``ddsim`` for ``simulation``) or given as a file. An evaluator names the stage it
+``generation``, ``ddsim`` for ``simulation``, ``k4run`` for ``reconstruction``) or given as a
+file. An evaluator names the stage it
 reads with ``stage`` (``"simulation"``); the framework makes that stage of each sample it
 measures, and the stages it depends on, available.
 
 * ``generation``: where the primary particles come from. The ``gun`` executor has no file of
   its own (``ddsim`` fires it); a generation given as a file is an event file such as HepMC.
 * ``simulation``: ``ddsim`` on the prepared geometry; reads ``generation``.
+* ``reconstruction``: a Gaudi job (``k4run``) on the prepared geometry; reads every event of
+  ``simulation``.
 
 This module says what each stage type is: the stages it reads, its executors, the options each takes
 and which of them a parameter can set, whether it reads the candidate's geometry or writes files,
@@ -26,30 +29,29 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 
-from k4opt.ddsim import (
-    LOG_FILES,
-    Settable,
-    check_options,
-    check_particle_gun,
-    settable_gun,
-    settable_option,
-)
+from k4opt import ddsim, k4run
 from k4opt.evaluation import EvaluationContractError
 from k4opt.frozen import Json
+from k4opt.program import Settable
 
 
 @dataclass(frozen=True, slots=True)
 class Executor:
     """What runs a stage: whether it takes ``events`` (required) and ``seed``, what checks its
-    own options (raising :class:`~k4opt.ddsim.DdsimError`) given those that parameters set,
-    which it then does not have (the pending ones), how a parameter sets one of its options
+    own options (raising a :class:`~k4opt.program.ProgramError`) given those that parameters
+    set, which it then does not have (the pending ones), how a parameter sets one of its options
     (``settable``, raising for one it cannot set) and the stage whose process runs it, if another
-    one does (``inside``: the gun, fired by ddsim, which sets its events and seed)."""
+    one does (``inside``: the gun, fired by ddsim, which sets its events and seed). An executor
+    without ``events`` that runs in a process of its own processes every event of the stage it
+    reads (k4run). ``asks`` says whether k4opt asks the program itself whether it takes the
+    options, before anything runs (k4run's dry run): then a required stage whose option a
+    parameter sets is asked for each candidate, and rejects one whose values it does not take."""
 
     events: bool
     options: Callable[[Mapping[str, Json], Collection[str]], None]
     settable: Callable[[str], Settable]
     inside: str | None = None
+    asks: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +75,8 @@ _STAGES: Mapping[str, StageType] = {
         {
             "gun": Executor(
                 events=False,
-                options=check_particle_gun,
-                settable=settable_gun,
+                options=ddsim.check_particle_gun,
+                settable=ddsim.settable_gun,
                 inside="simulation",
             )
         },
@@ -83,10 +85,28 @@ _STAGES: Mapping[str, StageType] = {
     ),
     "simulation": StageType(
         ("generation",),
-        {"ddsim": Executor(events=True, options=check_options, settable=settable_option)},
+        {
+            "ddsim": Executor(
+                events=True, options=ddsim.check_options, settable=ddsim.settable_option
+            )
+        },
         geometry=True,
         writes=True,
-        logs=LOG_FILES,
+        logs=ddsim.LOG_FILES,
+    ),
+    "reconstruction": StageType(
+        ("simulation",),
+        {
+            "k4run": Executor(
+                events=False,
+                options=k4run.check_options,
+                settable=k4run.settable_option,
+                asks=True,
+            )
+        },
+        geometry=True,
+        writes=True,
+        logs=k4run.LOG_FILES,
     ),
 }
 

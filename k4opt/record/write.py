@@ -146,11 +146,11 @@ def assemble(
     plan, results = candidate.plan, candidate.results
     environment = thaw(process["environment"])
     assert isinstance(environment, dict)
-    started = [
-        argv
-        for task in plan.of(Kind.STAGE)
+    started = {  # the first path each program of a stage was started from, by program
+        Path(str(argv[0])).name: argv[0]
+        for task in reversed(plan.of(Kind.STAGE))
         if isinstance(argv := results[task.id].provenance.get("argv"), (list, tuple)) and argv
-    ]
+    }
     entries = dict(evaluations(configuration.samples, configuration.evaluators))
     geometry = results[GEOMETRY]
 
@@ -226,14 +226,15 @@ def assemble(
         "environment": {
             # declared by the problem: a pin, not a check of what ran
             "declared": spec.environment.to_dict()["key4hep"],
-            # observed in this process; ddsim is the executable that was started
+            # observed in this process; ddsim and k4run are the executables that were started
             "observed": {
                 "k4opt": __version__,
                 # what the version only labels: the content of its code, and its checkout
                 "k4opt_source": thaw(process["k4opt"]),
                 # the session's, which the process still had when this candidate started
                 **environment,
-                "ddsim": started[0][0] if started else None,
+                "ddsim": started.get("ddsim"),
+                "k4run": started.get("k4run"),
                 # where and how the tasks ran: provenance, never part of what was evaluated
                 "execution": thaw(execution),
             },

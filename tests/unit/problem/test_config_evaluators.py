@@ -181,9 +181,10 @@ def test_a_sample_only_a_role_reads_is_used(doc: dict[str, Any]) -> None:
             "combined evaluators are not supported yet",
         ),
         (
-            {"signal": {"sample": "gamma", "stage": "reconstruction"}},
+            {"signal": {"sample": "gamma", "stage": "analysis"}},
             {},
-            "evaluators[1].roles.signal.stage: must be one of ['generation', 'simulation']",
+            "evaluators[1].roles.signal.stage: must be one of ['generation', 'simulation', "
+            "'reconstruction']",
         ),
         (
             {"signal": {"sample": "gamma", "stage": "generation"}},

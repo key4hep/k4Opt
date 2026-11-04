@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""A fake ``k4run`` for tests: a job whose geometry and input k4FWCore's services take, as k4run
+runs one.
+
+It reads its arguments as k4run does: the options files first (the last is k4opt's, which names
+where Gaudi writes the job's resolved options, ``DUMPFILE``), then ``--<name>=<value>`` or
+``--<name> <value>...``. As the job it stands for, it sets ``GeoSvc.detectors`` from its own
+argument ``--compactFile`` (default ``/default/CLD_o2_v07.xml``) and ``IOSvc.Input`` from
+``--inputFiles`` (default ``dummy_input.edm4hep.root``); ``--GeoSvc.detectors`` and
+``--IOSvc.Input`` given on the command line win, as k4run's properties do. It writes the
+resolved options, then copies the input to ``IOSvc.Output``: the fake podio reads it as the same
+events. With ``--dry-run`` it only parses.
+
+What else it does is said by the environment variable ``FAKE_K4RUN``, a JSON object: ``refuse``,
+a text, refuses the arguments as argparse does (``k4run: error: <text>``, status 2), and
+``refuse_args`` maps an argument (``--cms=250``) to such a text, refused when it is given;
+``exit``
+is its exit status after the run; ``stderr`` a text it writes there; ``sleep`` how many seconds
+it sleeps first; ``no_output`` and ``no_dump`` leave the output or the dump out; ``geometry``
+and ``input`` replace what the dump says the job read; ``drop`` leaves that many events of a
+JSON input out of the output; ``write`` writes, in the working directory, the text of each file
+it maps.
+"""
+
+import json
+import os
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+
+control = json.loads(os.environ.get("FAKE_K4RUN", "{}"))
+args = sys.argv[1:]
+files = []
+while args and not args[0].startswith("--"):
+    files.append(args.pop(0))
+options: dict[str, list[str]] = {}
+flags = []
+name = None
+for arg in args:
+    if arg.startswith("--"):
+        name, eq, value = arg[2:].partition("=")
+        options[name] = [value] if eq else []
+        if not eq:
+            flags.append(name)
+    elif name is not None:
+        options[name].append(arg)
+refused = control.get("refuse") or next(
+    (text for arg, text in control.get("refuse_args", {}).items() if arg in sys.argv), None
+)
+if refused:
+    sys.stderr.write(f"usage: k4run [options] config_files\nk4run: error: {refused}\n")
+    sys.exit(2)
+if "dry-run" in options:
+    sys.exit(0)
+if control.get("sleep"):
+    time.sleep(control["sleep"])
+sys.stderr.write(control.get("stderr", ""))
+for written, text in control.get("write", {}).items():
+    Path(written).write_text(text)
+mine = Path(files[-1]).read_text()
+match = re.search(r"DUMPFILE = '([^']*)'", mine)
+detectors = (
+    options.get("GeoSvc.detectors") or options.get("compactFile") or ["/default/CLD_o2_v07.xml"]
+)
+inputs = options.get("IOSvc.Input") or options.get("inputFiles") or ["dummy_input.edm4hep.root"]
+output = options["IOSvc.Output"][0]
+detectors = control.get("geometry", detectors)
+inputs = control.get("input", inputs)
+if match is not None and not control.get("no_dump"):
+    lines = [
+        "ApplicationMgr.EvtMax = " + options.get("num-events", ["3"])[0] + ";",
+        f"GeoSvc.detectors = {detectors!r};",
+        f"IOSvc.Input = {inputs!r};",
+        f"IOSvc.Output = {output!r};",
+        *(f"Job.{key} = {value!r};" for key, value in sorted(options.items())),
+    ]
+    Path(match.group(1)).write_text("\n".join(lines) + "\n")
+if not control.get("no_output"):
+    source = Path(options.get("IOSvc.Input", options.get("inputFiles", [""]))[0])
+    drop = control.get("drop", 0)
+    if drop:
+        events = json.loads(source.read_text())
+        events["events"] = events["events"][:-drop]
+        Path(output).write_text(json.dumps(events))
+    else:
+        shutil.copyfile(source, output)
+print(f"fake k4run: {' '.join(files)}")
+sys.exit(control.get("exit", 0))

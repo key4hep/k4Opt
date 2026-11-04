@@ -191,3 +191,30 @@ def test_a_declaration_that_is_no_mapping_breaks_the_contract(
     ):
         with pytest.raises(EvaluationContractError, match=message):
             call()
+
+
+@pytest.mark.parametrize(
+    ("declared", "podio"),
+    [
+        ("SimCalorimeterHit", "edm4hep::SimCalorimeterHit"),
+        ("edm4hep::MCParticle", "edm4hep::MCParticle"),
+        (
+            "Link<ReconstructedParticle,MCParticle>",
+            "podio::Link<edm4hep::ReconstructedParticle,edm4hep::MCParticle>",
+        ),
+        (
+            "podio::Link<edm4hep::CalorimeterHit, edm4hep::MCParticle>",
+            "podio::Link<edm4hep::CalorimeterHit,edm4hep::MCParticle>",
+        ),
+    ],
+)
+def test_a_collection_of_elements_or_of_links_between_them_is_named_as_podio_names_it(
+    declared: str, podio: str
+) -> None:
+    assert Collection(declared).podio_type == podio
+
+
+@pytest.mark.parametrize("declared", ["Link<MCParticle>", "Link<A,B,C>", "std::vector<int>", ""])
+def test_another_type_is_refused(declared: str) -> None:
+    with pytest.raises(K4OptError, match="or a link such as"):
+        Collection(declared)

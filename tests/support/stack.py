@@ -46,6 +46,13 @@ def install(monkeypatch: pytest.MonkeyPatch, marks: Path | None = None, **told: 
     monkeypatch.setenv("FAKE_DDSIM", json.dumps(control))
 
 
+def install_k4run(monkeypatch: pytest.MonkeyPatch, **told: Any) -> None:
+    """Run the fake ``k4run`` of ``fake_stack/bin``, here and in every worker started from now
+    on; ``told`` says what it does (see ``fake_stack/bin/k4run``)."""
+    monkeypatch.setenv("PATH", f"{FAKE_STACK / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_K4RUN", json.dumps(told))
+
+
 def eventually(condition: Callable[[], bool], timeout: float = 30.0) -> bool:
     """Whether ``condition`` holds within ``timeout`` seconds, asked every few milliseconds."""
     deadline = time.monotonic() + timeout

@@ -15,7 +15,8 @@ from typing import Any
 
 import pytest
 
-from k4opt.ddsim import DdsimError, _launch, simulate
+from k4opt import _launch, program
+from k4opt.ddsim import DdsimError, simulate
 from k4opt.ddsim import run as ddsim_run
 from k4opt.frozen import freeze
 from tests.support import simulation
@@ -49,7 +50,7 @@ def test_a_command_record_write_failure_keeps_the_process_outcome(
     def denied(*args: Any, **kwargs: Any) -> None:
         raise PermissionError("command is not writable")
 
-    monkeypatch.setattr(ddsim_run, "write_json", denied)
+    monkeypatch.setattr(program, "write_json", denied)
     run = simulate(
         compact=tmp_path / "c.xml",
         workdir=tmp_path / "run",
@@ -74,7 +75,7 @@ def test_error_tail_streams_the_log(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         pytest.fail("the whole log must not be read into memory")
 
     monkeypatch.setattr(Path, "read_text", no_read_text)
-    lines = ddsim_run._tail(path).splitlines()
+    lines = program.tail(path).splitlines()
     assert len(lines) == 15 and lines[-2:] == ["\ufffd", "last line"]
 
 
@@ -112,7 +113,7 @@ def test_a_relative_executable_found_on_path_is_made_absolute(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = simulation.install(monkeypatch)
-    monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: "bin/ddsim")  # PATH=bin:...
+    monkeypatch.setattr(program.shutil, "which", lambda name: "bin/ddsim")  # PATH=bin:...
     monkeypatch.chdir(tmp_path)
     simulate(
         compact=tmp_path / "c.xml",
@@ -176,7 +177,7 @@ def wrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     ddsim.parent.mkdir()
     ddsim.write_text(WRAPPER)
     ddsim.chmod(0o755)
-    monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: str(ddsim))
+    monkeypatch.setattr(program.shutil, "which", lambda name: str(ddsim))
     child = tmp_path / "run" / "child.pid"
     yield child
     if child.is_file():  # never left behind, whatever the test found

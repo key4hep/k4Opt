@@ -66,6 +66,7 @@ from k4opt.problem.plan import (
     evaluations,
     plan_tasks,
     read_stages,
+    rejecting,
     stage_task,
 )
 
@@ -260,6 +261,8 @@ class _Binding:
     properties: Mapping[str, Mapping[str, Json]] = FrozenMap({})  # by sample
     # seconds a stage that runs or an evaluation may take unless it sets its own: the problem's
     timeout: float | None = None
+    # the tasks that may reject a candidate before anything of it is created (plan.rejecting)
+    rejecting: tuple[TaskId, ...] = ()
 
 
 def _bind_problem(
@@ -355,6 +358,7 @@ def _bind_problem(
         FrozenMap(demands),
         FrozenMap({name: sample.properties for name, sample in spec.samples.items()}),
         None if spec.timeout is None else float(spec.timeout),
+        rejecting(plan, spec.samples, spec.parameters),
     )
 
 

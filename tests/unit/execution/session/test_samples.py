@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 import yaml
 
+from k4opt import program
 from k4opt.cli import main
-from k4opt.ddsim import run as ddsim_run
 from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationRequest,
@@ -325,7 +325,7 @@ def test_the_command_reports_each_evaluation_with_its_sample(
     )
     assert "events:      gamma: 3 of 3" in out and "events:      pion: 3 of 3" in out
     stdout = tmp_path / "a" / "samples" / "pion" / "simulation" / "ddsim.stdout.log"
-    assert f"stdout:      pion: {stdout}" in out
+    assert f"stdout:      pion/simulation: {stdout}" in out
 
 
 def test_a_sample_whose_simulation_fails_blocks_only_its_own_evaluations(
@@ -337,7 +337,7 @@ def test_a_sample_whose_simulation_fails_blocks_only_its_own_evaluations(
         code = fake(argv, **kwargs)
         return 2 if particle(argv) == "pi-" else code
 
-    monkeypatch.setattr(ddsim_run, "_execute", pions_crash)
+    monkeypatch.setattr(program, "execute", pions_crash)
     doc = echo(two_samples(problem_file))
     doc["evaluators"].append({"name": "test.parameter_echo", "version": "1"})
     doc["objectives"].append(
@@ -426,7 +426,7 @@ def test_a_file_that_changes_while_the_second_sample_runs_leaves_no_record(
             hepmc.write_bytes(b"HepMC::Version 3\nE 1\n")
         return fake(argv, **kwargs)
 
-    monkeypatch.setattr(ddsim_run, "_execute", rewriting)
+    monkeypatch.setattr(program, "execute", rewriting)
     session = EvaluationSession.open(problem_file, [cell_count()])
     with pytest.raises(RunError, match=r"samples\.gamma\.generation\.file: .* changed after"):
         session.evaluate({RADIUS: 450.0}, tmp_path / "a")
@@ -598,7 +598,7 @@ def test_a_combined_evaluator_is_blocked_by_an_input_that_did_not_succeed(
         code = fake(argv, **kwargs)
         return 2 if particle(argv) == "pi+" else code
 
-    monkeypatch.setattr(ddsim_run, "_execute", ww_crashes)
+    monkeypatch.setattr(program, "execute", ww_crashes)
     doc = echo(combined(problem_file), "readout")
     doc["evaluators"].append({"name": "test.parameter_echo", "as": "readout", "version": "1"})
     doc["constraints"] = [

@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from k4opt.ddsim import run as ddsim_run
+from k4opt import program
 from k4opt.evaluation import (
     Collection,
     EvaluationContractError,
@@ -156,13 +156,13 @@ def log(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """What happened, in order: ``check``/``evaluate`` of a :class:`Spy` and each ddsim run."""
     events: list[str] = []
     simulation.install(monkeypatch, events_with([1, 1, 2, 3], [4, 5], [6, 7, 8, 9]))
-    fake = ddsim_run._execute
+    fake = program.execute
 
     def logged(argv: list[str], **kwargs: Any) -> Any:
         events.append("ddsim")
         return fake(argv, **kwargs)
 
-    monkeypatch.setattr(ddsim_run, "_execute", logged)
+    monkeypatch.setattr(program, "execute", logged)
     return events
 
 
@@ -747,13 +747,13 @@ def test_every_second_is_counted_once(
     monkeypatch.setattr(_work, "time", clock)
     monkeypatch.setattr(bridge, "time", clock)
     simulation.install(monkeypatch)
-    fake = ddsim_run._execute
+    fake = program.execute
 
     def slow_ddsim(argv: list[str], **kwargs: Any) -> Any:
         clock.now += 10.0
         return fake(argv, **kwargs)
 
-    monkeypatch.setattr(ddsim_run, "_execute", slow_ddsim)
+    monkeypatch.setattr(program, "execute", slow_ddsim)
 
     def slow(inner: type[Any]) -> type[Any]:
         class Slow(inner):  # type: ignore[misc, valid-type]

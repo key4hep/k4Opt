@@ -38,7 +38,8 @@ by a small launcher that asks for that signal and becomes ddsim (`exec`), so not
 between fork and exec in a process whose libraries (ROOT) may have started threads; if the
 system refuses the signal, the run fails and says so instead of starting ddsim unprotected.
 k4opt's worker processes pass both, so that ddsim ends with a worker the coordinator stops or
-the kernel's OOM killer ends.
+the kernel's OOM killer ends. How a program is run is shared with the reconstruction
+([k4run](k4run.md)): `k4opt.program` starts it, keeps its logs and measures it.
 `check_arguments` does the first
 part alone, `check_particle_gun` and `check_options` check a gun or options on their own (the
 problem does when it is loaded). `workdir` receives `events.edm4hep.root`, `ddsim.stdout.log`,

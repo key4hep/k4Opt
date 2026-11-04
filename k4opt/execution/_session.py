@@ -43,7 +43,7 @@ from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._process import ProcessBackend
 from k4opt.execution._publish import RunOutcome, publish
 from k4opt.execution._schedule import Scheduler
-from k4opt.execution._stages import input_files
+from k4opt.execution._stages import DryRuns, input_files, try_reconstruction
 from k4opt.execution._tasks import GeometryWork, TaskOutcome, Workspace
 from k4opt.execution._worker import session_spec
 from k4opt.execution.errors import RunError
@@ -57,7 +57,7 @@ from k4opt.problem.candidate import (
     validate_candidate,
 )
 from k4opt.problem.config import resolve_problem
-from k4opt.problem.models import ProblemSpec
+from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES, plan_stages
 from k4opt.record.read import SUMMARY_SCHEMA
@@ -88,6 +88,27 @@ def _supplied(
             raise RunError(f"input {label}={os.fspath(given)}: {path} is not a file")
         supplied[stage_task(stage, sample)] = path
     return supplied
+
+
+def _named(binding: _Binding, supplied: Mapping[TaskId, Path]) -> dict[str, Path]:
+    """Every file the stages of the session read, by where it is named
+    (:func:`~k4opt.execution._stages.input_files`, ``supplied.<sample>.<stage>``), as the
+    directories the problem names hold them now."""
+    named: dict[str, Path] = {}
+    for sample, context in binding.contexts.items():
+        given = {task.name for task in supplied if task.sample == sample}
+        named |= input_files(context, *binding.targets[sample], provided=given)
+    named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
+    return named
+
+
+def _try_reconstructions(problem: ResolvedProblem, binding: _Binding, runs: DryRuns) -> None:
+    """Raise :class:`~k4opt.evaluation.EvaluationContractError` if the job of a reconstruction
+    that runs does not take its arguments (:func:`~k4opt.execution._stages.try_reconstruction`):
+    before anything is simulated, so that a misspelt argument costs a second, not a simulation."""
+    for task in binding.plan.of(Kind.STAGE):
+        if task.id.name == "reconstruction" and task.given is None and task.id.sample is not None:
+            try_reconstruction(binding.contexts[task.id.sample], problem.spec.parameters, runs)
 
 
 def _run_reference(run: Mapping[str, Json] | None) -> object:
@@ -185,6 +206,7 @@ class EvaluationSession:
         "_baseline",
         "_binding",
         "_context",
+        "_dry_runs",
         "_execution",
         "_inputs",
         "_open",
@@ -198,14 +220,17 @@ class EvaluationSession:
         inputs: Mapping[TaskId, Path],
         warnings: tuple[str, ...],
         workers: int | None = None,
+        dry_runs: DryRuns | None = None,
     ) -> None:
         """Use :meth:`open`."""
         self._baseline = baseline
         self._binding = binding
+        problem = baseline.problem
+        self._dry_runs = dry_runs or DryRuns(problem.source.root / problem.source.compact)
+        weakref.finalize(self, self._dry_runs.close)  # a backstop: close() removes its scratch
         self._inputs = FrozenMap(inputs)
         self._warnings = warnings
         # what every task needs, wherever it runs
-        problem = baseline.problem
         self._context = _context(
             problem.spec, binding, baseline.externals, problem.source, problem.catalog
         )
@@ -277,8 +302,7 @@ class EvaluationSession:
         binding = _bind_problem(
             spec, implementations, supplied, directory=problem.directory, catalog=problem.catalog
         )
-        named: dict[str, Path] = {}
-        for sample, context in binding.contexts.items():
+        for sample in binding.contexts:
             given = {task.name for task in supplied if task.sample == sample}
             targets = binding.targets[sample]
             for stage in given:  # read by an evaluator, given the other supplied stages
@@ -287,9 +311,13 @@ class EvaluationSession:
                         f"input {sample}/{stage}: no evaluator of the problem reads that stage of "
                         f"{sample}"
                     )
-            named |= input_files(context, *targets, provided=given)
-        named |= {f"supplied.{task.sample}.{task.name}": file for task, file in supplied.items()}
-        baseline = Baseline.take(problem, binding, named)
+        runs = DryRuns(problem.source.root / problem.source.compact)
+        try:
+            _try_reconstructions(problem, binding, runs)
+        except BaseException:
+            runs.close()
+            raise
+        baseline = Baseline.take(problem, binding, lambda: _named(binding, supplied))
         crowded = []  # of how the session runs, or what it is given: no summary keeps these
         slots = 1 if count is None else count
         for task in binding.plan.tasks:
@@ -314,7 +342,7 @@ class EvaluationSession:
                 "identified (size and SHA-256), not verified to be the output of the stage the "
                 "problem defines; the records list it as supplied"
             )
-        return cls(baseline, binding, supplied, (*binding.warnings, *crowded), count)
+        return cls(baseline, binding, supplied, (*binding.warnings, *crowded), count, runs)
 
     @property
     def spec(self) -> ProblemSpec:
@@ -485,6 +513,7 @@ class EvaluationSession:
             if self._open is not None:
                 self._open.close()
         finally:
+            self._dry_runs.close()
             if self._backend is not None:
                 self._backend.close()
 
@@ -599,7 +628,7 @@ class EvaluationSession:
         values, key = validate_candidate(spec, candidate)
         configuration = configure(spec, values)
         self._baseline.verify()  # first: a file that is gone changed, more than it is missing
-        prepared = _preflight(self._binding, configuration)
+        prepared = _preflight(self._binding, configuration, self._dry_runs)
         if isinstance(prepared, Rejected):
             return values, key, prepared, []
         overrides = geometry_overrides(self._baseline.problem, configuration)

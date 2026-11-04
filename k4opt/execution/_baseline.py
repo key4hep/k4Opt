@@ -15,10 +15,11 @@ the session reads the same files through it (:meth:`Baseline.check_read`).
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from k4opt import __version__
+from k4opt.errors import K4OptError
 from k4opt.evaluation.loader import changed_code, evaluator_source
 from k4opt.execution._binding import _Binding, _implementations
 from k4opt.execution._files import readable_identity
@@ -48,7 +49,16 @@ class Baseline:
     implementation (``taken``) and of the process (``process``: k4opt's code and the
     environment), and the implementations by name (``classes``)."""
 
-    __slots__ = ("_read", "classes", "externals", "files", "problem", "process", "taken")
+    __slots__ = (
+        "_listed",
+        "_read",
+        "classes",
+        "externals",
+        "files",
+        "problem",
+        "process",
+        "taken",
+    )
 
     def __init__(
         self,
@@ -58,8 +68,11 @@ class Baseline:
         taken: Mapping[str, Mapping[str, Json]],
         process: Mapping[str, Json],
         classes: Mapping[str, type] | None = None,
+        listed: Callable[[], Mapping[str, Path]] | None = None,
     ) -> None:
         self.problem = problem
+        # the files the stages read as the directories the problem names hold them now
+        self._listed = listed
         self.files = FrozenMap(files)
         self.externals = externals
         self.taken = FrozenMap(taken)
@@ -78,11 +91,18 @@ class Baseline:
 
     @classmethod
     def take(
-        cls, problem: ResolvedProblem, binding: _Binding, named: Mapping[str, Path]
+        cls,
+        problem: ResolvedProblem,
+        binding: _Binding,
+        named: Mapping[str, Path] | Callable[[], Mapping[str, Path]],
     ) -> Baseline:
         """What a session of ``problem``, bound as ``binding``, evaluates with, taken now;
-        ``named`` are the files its stages read, by where they are named. Raises
+        ``named`` are the files its stages read, by where they are named, or what lists them as
+        the directories the problem names (a reconstruction's) hold them when it is called: then
+        :meth:`verify_inputs` refuses a file that appeared in one or went. Raises
         :class:`RunError` if k4opt's code changed since this process identified it."""
+        listed = named if callable(named) else None
+        named = named() if callable(named) else named
         # an unreadable file has no identity: its stage reports it, and a record still names it
         files = {label: (file, readable_identity(file)) for label, file in named.items()}
         externals = freeze(problem.source.external_files(problem.catalog), "geometry", RunError)
@@ -96,7 +116,7 @@ class Baseline:
         check_code()
         assert isinstance(process, Mapping)
         classes = {b.declared.declaration.name: b.implementation for b in binding.evaluators}
-        return cls(problem, files, externals, _implementations(binding), process, classes)
+        return cls(problem, files, externals, _implementations(binding), process, classes, listed)
 
     def identity(self) -> dict[str, object]:
         """What the session evaluates with, as plain JSON-compatible data
@@ -157,8 +177,26 @@ class Baseline:
 
     def verify_inputs(self) -> None:
         """Raise :class:`ProvenanceError` if a file the stages read is not the file it was when the
-        session opened: other bytes, or now readable or unreadable. A file is hashed again only
-        when its size, times or inode changed."""
+        session opened: other bytes, or now readable or unreadable, or if the directories the
+        problem names (a reconstruction's job and data) no longer hold the files they held, a
+        file added as much as one removed. A file is hashed again only when its size, times or
+        inode changed."""
+        if self._listed is not None:
+            try:
+                now_listed = self._listed()
+            except (K4OptError, OSError) as exc:  # a directory gone, a link loop made since
+                raise ProvenanceError(f"the files the stages read cannot be listed: {exc}") from exc
+            added = sorted(now_listed.keys() - self.files.keys())
+            gone = sorted(self.files.keys() - now_listed.keys())
+            if added or gone:
+                said = [
+                    *(f"{label} appeared" for label in added),
+                    *(f"{label} went" for label in gone),
+                ]
+                raise ProvenanceError(
+                    f"{'; '.join(said)} after the session opened; evaluate the candidates of a "
+                    "problem with the same files"
+                )
         for label, (file, opened) in self.files.items():
             now = readable_identity(file)
             if now != opened:

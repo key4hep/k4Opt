@@ -70,7 +70,9 @@ What the optional parts do:
   candidate's parameters alone.
 - `collections`: the EDM4hep collections it reads from the file of its stage, by role, each a
   `Collection` with the type of its elements (`"SimCalorimeterHit"`, the `edm4hep::` prefix is
-  implied). The problem's entry names the collection of each role (`hits: ECalBarrelCollection`);
+  implied), or of links between two of them, EDM4hep's associations
+  (`"Link<ReconstructedParticle,MCParticle>"`, podio's `podio::Link<...>`, whose elements have
+  `getFrom()`, `getTo()` and `getWeight()`: a reconstruction's truth matching). The problem's entry names the collection of each role (`hits: ECalBarrelCollection`);
   a role with a `default` (`Collection("MCParticle", default="MCParticles")`) needs no name,
   though the problem may give another. A role is a Python identifier. `self.events(request)`
   yields each event of the file with its collections as attributes (`event.hits`), all read from
@@ -263,7 +265,7 @@ model; the toy is a data-flow test.
 | `workdir` | where the evaluator may write, and where its artifacts must be. `k4opt evaluate` gives each evaluation its own, `<output>/samples/<sample>/evaluators/<binding>` (`<output>/evaluators/<binding>` for one of the candidate), created for the call; the request never creates or checks it |
 | `properties` | immutable JSON mapping from the measured sample, or empty for a candidate-level evaluator; k4opt records it without interpreting it |
 | `roles` | immutable mapping of role name to tuples of `RoleInput`; empty during `check()` and for evaluators without roles |
-| `events`, `seed` | those of the stage the evaluator reads, where that stage has them (a ddsim simulation); `None` otherwise. `events` is positive |
+| `events`, `seed` | those of the stage the evaluator reads, where that stage has them (a ddsim simulation), or of the simulation a reconstruction reconstructs every event of; `None` otherwise. `events` is positive |
 
 The request holds no `ProblemSpec`, geometry or stage object; the framework builds it from
 those. Nor does it hold the candidate's parameter values: an evaluator reads what the problem
@@ -429,12 +431,13 @@ twice, once with each sample's files.
 | --- | --- | --- | --- | --- |
 | `generation` | | `gun`: a particle gun, fired by `ddsim`, so no file of its own | an event file (HepMC, ...), checked and hashed | `inputs["generation"]` for a file; nothing for a gun |
 | `simulation` | `generation`, the candidate geometry | `ddsim`, with the stage's `events`, `seed` and ddsim options (those parameters set included) | not when a parameter reaches it: that file was not simulated from the candidate's values | `inputs["simulation"]`, an EDM4hep file |
+| `reconstruction` | every event of `simulation`, the candidate geometry | `k4run`, a Gaudi job (CLD's reconstruction, say) with the job's arguments ([k4run](k4run.md)) | not when a parameter reaches it | `inputs["reconstruction"]`, an EDM4hep file, and `inputs["simulation"]` |
 
 An evaluator names only the last stage it reads; the stages that stage reads are made available
-first, and it gets the files of all of them (an evaluator that reads a later reconstruction stage
-will read the simulation file too). It does not get the files of stages that only other
+first, and it gets the files of all of them (an evaluator that reads the reconstruction gets the
+simulation file too). It does not get the files of stages that only other
 evaluators need, so its request does not depend on which other evaluators the problem has.
-Reconstruction and analysis will follow the same pattern. Pipeline stages are steps; the `stage`
+An analysis stage will follow the same pattern. Pipeline stages are steps; the `stage`
 of a metric only classifies it, so an evaluator may report `analysis` metrics without an analysis
 stage. A stage has named outputs; `inputs[stage]` is its main one (`events`), and its other files
 (logs, the command) are its logs.
@@ -653,7 +656,7 @@ geometry fingerprint or a complete evaluation-cache key.
 
 An evaluator registry or lookup by name (evaluators are named on the command line), chained
 combined evaluators, branches of the stages, validating
-metric names, `k4run`, hashing stage outputs, a store of artifacts, execution cost, retries, execution on other machines (a
+metric names, an analysis stage, hashing stage outputs, a store of artifacts, execution cost, retries, execution on other machines (a
 batch system), fingerprints and caching,
 persisting or serializing the `EvaluationRecord` apart from `summary.json`, and aggregation,
 significance or constraints judged with their uncertainty.

@@ -1,0 +1,74 @@
+# How fine must the CLD ECAL barrel cells be for the particle flow to see the two photons of a
+# neutral pion? A 50 GeV pi0 decays into two photons that reach the ECAL at least about 12 mm
+# apart. CLD's reconstruction (CLDConfig, run by k4run) clusters the cells with Pandora: with fine
+# cells it finds two photons, with coarse ones it merges them into one. The example evaluator
+# pfo.pi0 measures how often each generated photon is reconstructed as a photon of its own (truth
+# matched, so split showers do not count); ecal.channels the approximate readout cost
+# (docs/evaluators.md).
+#
+#   k4opt evaluate examples/problem/cld-ecal-pi0-reco.yaml \
+#       --evaluator examples/evaluators/pfo_pi0.py:PfoPi0 \
+#       --evaluator examples/evaluators/ecal_channels.py:EcalChannels \
+#       --param ecal_cell_size=10.0 --output runs/cld-pi0-reco-10mm
+#
+# or let the optimizer search the cell size, with the same --evaluator arguments and
+# --trials 20 --seed 42 --workers 8 in place of --param (docs/optimization.md).
+#
+# Needs the Key4hep environment (ddsim, k4run, podio, $K4GEO, $CLDCONFIG).
+schema_version: k4opt.problem/v1alpha1
+name: cld-ecal-pi0-reco
+environment:
+  key4hep: {channel: nightly, version: "2026-10-20"}
+geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+parameters:
+  # CLD uses 5.1 mm
+  ecal_cell_size:
+    title: ECAL cell size
+    type: continuous
+    bounds: [2.5, 20.0]
+    unit: mm
+    targets:
+      geometry: ECal_cell_size
+      evaluators:
+        readout: cell_size
+samples:
+  pi0_50gev:
+    title: 50 GeV π⁰
+    generation:
+      executor: gun
+      particle: pi0
+      energy: {value: 50, unit: GeV}
+      direction: {distribution: uniform, theta: [80, 100], phi: [0, 360], unit: deg}
+    simulation: {executor: ddsim, events: 200, seed: 42, physics.list: FTFP_BERT}
+    reconstruction:
+      executor: k4run
+      # CLD's reconstruction runs only from (a copy of) its own directory
+      directory: $CLDCONFIG/share/CLDConfig
+      options: CLDReconstruction.py
+      # it takes the geometry as an argument of its own, not only through GeoSvc
+      geometry: compactFile
+      # any other argument of the job, as `k4run CLDReconstruction.py --help` lists it
+      cms: 240
+      truthTracking: true  # the photons need no pattern recognition
+evaluators:
+  - name: pfo.pi0
+    version: "2"
+    stage: reconstruction
+    collections: {pfos: PandoraPFOs}
+    settings:
+      min_energy: {value: 1, unit: GeV}
+  - name: ecal.channels
+    as: readout
+    version: "1"
+    settings: {layers: 40, radius: {value: 2150, unit: mm}, length: {value: 4420, unit: mm}}
+objectives:
+  - evaluator: pfo.pi0
+    stage: reconstruction
+    metric: pi0.resolved
+    title: π⁰ photons resolved
+    direction: maximize
+  - evaluator: readout
+    stage: geometry
+    metric: ecal_barrel.channels
+    title: Readout channels
+    direction: minimize

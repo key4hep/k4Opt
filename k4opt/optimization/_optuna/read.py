@@ -32,7 +32,7 @@ from k4opt.optimization._results import (
 from k4opt.optimization._study import STUDY_NAME, read_study, trial_directories, trial_directory
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import ProblemSpec
-from k4opt.problem.plan import Kind, plan_tasks
+from k4opt.problem.plan import plan_tasks, rejecting
 
 
 def _existing_study(document: Mapping[str, Any], storage: BaseStorage) -> optuna.Study:
@@ -162,10 +162,11 @@ def _rejected(
         )
     by, message = attrs["k4opt.rejected_by"], attrs["k4opt.message"]
     plan = plan_tasks(spec.samples, spec.evaluators, references=spec.references)
-    if by not in [task.id.label for task in plan.of(Kind.EVALUATOR) if task.required]:
+    if by not in [task.label for task in rejecting(plan, spec.samples, spec.parameters)]:
         raise OptimizationError(
-            f"{where} by {by!r}, which is no required evaluation of the problem, the only kind "
-            "that rejects a candidate"
+            f"{where} by {by!r}, which is neither a required evaluation of the problem nor a "
+            "required reconstruction whose arguments a parameter sets, the only kinds of task "
+            "that reject a candidate"
         )
     if not isinstance(message, str):
         raise OptimizationError(f"{where} its message is {message!r}")

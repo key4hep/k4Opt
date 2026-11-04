@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
+from k4opt import program
 from k4opt.ddsim import DdsimError
-from k4opt.ddsim import run as ddsim_run
 from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationFailed,
@@ -221,7 +221,7 @@ def test_ddsim_missing_from_the_environment_is_an_error_outcome(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     simulation.install(monkeypatch)
-    monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(program.shutil, "which", lambda name: None)
     outcome = run_stage(
         context(spec),
         "simulation",
@@ -239,7 +239,7 @@ def test_ddsim_that_cannot_start_is_an_error_outcome(
     def refuse(*args: Any, **kwargs: Any) -> None:
         raise PermissionError("denied")
 
-    monkeypatch.setattr(ddsim_run, "_execute", refuse)
+    monkeypatch.setattr(program, "execute", refuse)
     outcome = run_stage(
         context(spec),
         "simulation",
@@ -269,8 +269,8 @@ def test_a_valid_problem_passes_the_check(spec: ProblemSpec) -> None:
 
 
 def test_an_unknown_stage_is_rejected(spec: ProblemSpec) -> None:
-    with pytest.raises(EvaluationContractError, match=r"unknown stage 'reconstruction'"):
-        check_stages(context(spec), "reconstruction")
+    with pytest.raises(EvaluationContractError, match=r"unknown stage 'analysis'"):
+        check_stages(context(spec), "analysis")
 
 
 def test_simulation_needs_generation_and_provided_inputs_are_not_rerun() -> None:
@@ -1462,3 +1462,28 @@ def test_a_file_replaced_with_the_same_size_and_mtime_is_hashed_again(tmp_path: 
     second = file_identity(hepmc)
     assert first["sha256"] == hashlib.sha256(b"AAAA").hexdigest()
     assert second["sha256"] == hashlib.sha256(b"BBBB").hexdigest()
+
+
+def test_the_home_and_the_variables_of_a_stage_s_paths_are_those_of_the_session_s_opening(
+    monkeypatch: pytest.MonkeyPatch, doc: dict[str, Any], tmp_path: Path
+) -> None:
+    doc["samples"]["gamma"]["simulation"]["physics.pdgfile"] = "~/particle.tbl"
+    doc["samples"]["gamma"]["reconstruction"] = {
+        "executor": "k4run",
+        "directory": "$K4OPT_TEST_CONFIG/CLDConfig",
+        "options": "CLDReconstruction.py",
+    }
+    doc["evaluators"][0]["stage"] = "reconstruction"
+    for item in (*doc["objectives"], *doc["constraints"]):
+        item["stage"] = "reconstruction"
+    monkeypatch.setenv("HOME", str(tmp_path / "a"))
+    monkeypatch.setenv("K4OPT_TEST_CONFIG", str(tmp_path / "config-a"))
+    opened = StageContext.of(parse_problem(doc), "gamma", tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "b"))
+    monkeypatch.setenv("K4OPT_TEST_CONFIG", str(tmp_path / "config-b"))
+    assert opened.path("~/particle.tbl") == tmp_path / "a" / "particle.tbl"
+    assert opened.path("$K4OPT_TEST_CONFIG/CLDConfig", variables=True) == (
+        tmp_path / "config-a" / "CLDConfig"
+    )
+    # a variable the session did not take is left as written, never read now
+    assert opened.path("$K4OPT_TEST_OTHER/x", variables=True) == tmp_path / "$K4OPT_TEST_OTHER/x"

@@ -9,7 +9,7 @@
 > evaluation it names, and afterwards it judges the candidate against the constraints. From
 > Python, an `EvaluationSession` evaluates many candidates of a problem the same way
 > ([evaluation](execution.md#evaluating-candidates-evaluationsession)). Everything else is
-> **proposed, not implemented**: no evaluator registry, no `k4run` invocation. An optimizer
+> **proposed, not implemented**: no evaluator registry, no analysis stage. An optimizer
 > searches the parameters with `k4opt optimize` ([optimization](optimization.md)).
 > Parsing a file alone does not check that its evaluators, metrics or geometry targets exist.
 > Everything here may change.
@@ -200,7 +200,7 @@ target, or a list of them when the parameter sets several of that kind:
 | Key | Target | Written as |
 | --- | --- | --- |
 | `geometry` | a constant by its name (`ECal_cell_size`), or any other attribute by the canonical reference `k4opt geometry inspect` prints (`InnerTrackerBarrel.layer[id=1].rphi_layout.nphi`) | a DD4hep expression: `6.0*mm` with a `unit`, the bare number without, `true`/`false`, a string as it is |
-| a stage, `generation` or `simulation` | an option of that stage: the option alone (`physics.rangecut`) in a problem with one sample, otherwise `{option: physics.rangecut, samples: [gamma, pion]}` | as the stage's executor reads the option (below) |
+| a stage, `generation`, `simulation` or `reconstruction` | an option of that stage: the option alone (`physics.rangecut`) in a problem with one sample, otherwise `{option: physics.rangecut, samples: [gamma, pion]}` | as the stage's executor reads the option (below) |
 | `evaluators` | a mapping from an evaluator binding (its `as`, or its `name`) to the setting that receives the value, or to a list of them | `{value: v, unit: u}` with a `unit`, as a problem writes a quantity; the value alone without one |
 
 ```yaml
@@ -226,14 +226,17 @@ The options of a stage a parameter can set, and how each is written:
 | --- | --- | --- |
 | `gun` (`generation`) | `particle` (a categorical of strings); `energy` (continuous or integer, with a unit of `MeV`, `GeV`, `TeV`) | the string; `{value: v, unit: u}` |
 | `ddsim` (`simulation`) | any option that takes one value, named as in `ddsim --help` (`physics.rangecut`, `part.minimalKineticEnergy`) | as ddsim's command line reads it: `0.5*mm` for a number with a unit (DD4hep evaluates it, so `--physics.rangecut=0.5*mm` means what it says), the number, a string or a boolean |
+| `k4run` (`reconstruction`) | any argument of the job (`cms`) or Gaudi property (`DDCaloDigi.ECALThreshold`), named as in `k4run OPTIONS.py --help` | the value itself (`--cms=240`), a number, a string or a boolean; the parameter has no `unit`, since the job decides the unit of what it reads and k4opt cannot convert into it |
 
 Not settable, each refused with its reason: `executor`, `file`, `events`, `seed` and `timeout`
 (k4opt's own keys of a stage), the gun's `direction` and `vertex`, the options k4opt sets or refuses, a ddsim
 option that names a file (`physics.pdgfile`, identified once per session, not per candidate),
 `numberOfThreads` (how many processors the simulation keeps busy, not what is simulated), a
-flag (ddsim cannot switch one off) and an option that takes a list. A stage given as a `file:`
-is not run, so no parameter can set an option of it. A stage type added later (a reconstruction)
-is a target key like these, with the options its executor lets a parameter set.
+flag (ddsim cannot switch one off) and an option that takes a list; for k4run, `options`,
+`directory`, `geometry` and `input` (which job runs, identified once per session) and the
+arguments k4opt sets. A stage given as a `file:` is not run, so no parameter can set an option
+of it. Whether the job takes a value a parameter sets is the job's to say: each end of the
+parameter's domain is tried before anything runs (`k4run --dry-run`, below).
 
 An evaluator setting is a target only if the evaluator's implementation **declares** it in its
 `settings`, of a kind the parameter's values fit; an evaluator that declares no settings takes
@@ -321,6 +324,7 @@ A sample maps a stage to how it is made, and may also have `properties` (below) 
 | --- | --- | --- | --- |
 | `generation` | nothing | `gun`: a particle gun, fired inside ddsim | an event file (HepMC, ...) that ddsim reads |
 | `simulation` | `generation`, the candidate geometry | `ddsim` | an EDM4hep file, unless a parameter reaches the stage (see below) |
+| `reconstruction` | every event of `simulation`, the candidate geometry | `k4run`: a Gaudi job, such as CLD's reconstruction | an EDM4hep file, unless a parameter reaches the stage |
 
 Each stage has exactly one of `executor` (k4opt runs it for each candidate) and `file` (its output
 exists; a relative path is read from the directory of the problem file, and the path, size and
@@ -335,6 +339,15 @@ takes only its own keys:
 - `ddsim`: `events`, the number of events to simulate (required), `seed` (optional; ddsim's own
   default otherwise), and any other key is a ddsim option named as `ddsim --help` names it,
   such as `physics.list: FTFP_BERT` ([ddsim](ddsim.md#options-simulation)).
+- `k4run`: the job's `options` files (required; one or a list), an optional `directory` the job
+  runs from a copy of (the options files are then named relative to it), optional `geometry`
+  and `input` naming the job's own arguments that take the compact file and the input files,
+  optional `data` naming the job's arguments that name the data it reads (`{dataFolder:
+  /scratch/calibration/}`, passed by k4opt and identified file by file), and any other key is an
+  argument of the job, named as `k4run OPTIONS.py --help` names it, such
+  as `cms: 91` ([k4run](k4run.md)). It has no `events` or `seed`: the job reconstructs every
+  event of the simulation, whose `events` and `seed` made them; a seed the job itself reads is
+  one of its arguments.
 
 Every stage that runs (not one given as a `file:`) may take a `timeout`: how many seconds it may
 take, the problem's `timeout` when not given ([Time limits](#time-limits)).
@@ -385,8 +398,52 @@ same evaluator name and version with different options is a **different evaluati
 and results are not assumed comparable. Choices such as fast versus full simulation change the
 validity of the metrics and are never left to a raw option.
 
-Reconstruction and analysis are out of scope for now; they will be further stage types with
-their own executors (`k4run`, say), and the problem will name them the same way.
+A reconstruction is a Gaudi job k4opt runs with `k4run` on the candidate's geometry and every
+event of the sample's simulation:
+
+```yaml
+reconstruction:
+  executor: k4run
+  directory: $CLDCONFIG/share/CLDConfig   # runs from a copy of it; $NAME is an environment variable
+  options: CLDReconstruction.py           # one file or a list, relative to directory
+  geometry: compactFile                   # the job's own argument that takes the compact file
+  cms: 91                                 # any argument of the job: --cms=91
+  truthTracking: true                     # a flag: --truthTracking
+```
+
+Its options follow the same three rules, with what differs for a job that is a Python program
+of its own ([k4run](k4run.md)):
+
+1. *Written as k4run reads them.* A key is `--<key>=<value>`, a list `--<key> v1 v2` and `true`
+   the bare flag. `false` is refused: a flag of the job's own (`--truthTracking`) takes no value
+   and cannot be switched off, and k4opt does not know the job's default; a Gaudi property is
+   given the text `'False'`.
+2. *The job validates.* The options files define the job's arguments, so k4opt keeps no table of
+   them: before anything is simulated, the session runs `k4run --dry-run` with the arguments of
+   each reconstruction (each end of the domain of a parameter that sets one), on the problem's
+   own geometry and an input of one empty event, and refuses the problem with what k4run said
+   (`samples.gamma.reconstruction: the job does not take its arguments: k4run: error: argument
+   --cms: invalid choice: '92'`). The ends of a domain do not decide the values between them
+   (`--cms` takes four choices), so each candidate that sets an argument is tried too, and
+   rejected if the job does not take it ([k4run](k4run.md#the-dry-run)).
+3. *What an evaluation defines is protected, and verified.* k4opt gives the job the candidate's
+   geometry (`GeoSvc.detectors`, or the job's argument `geometry` names), the simulation's
+   events (`IOSvc.Input`, or the argument `input` names), the file to write (`IOSvc.Output`) and
+   every event (`--num-events=-1`; CLD's reconstruction sets 3 events itself). An option naming
+   one of these, in either of k4run's spellings (`GeoSvc.detectors`, `detectors.GeoSvc`), is an
+   error. After the job ran, its resolved options (Gaudi's `JobOptionsSvc` dump) must show that
+   it read that geometry and those events and wrote that file, or the reconstruction fails: a
+   job such as CLD's, which takes its geometry by an argument of its own and has a default
+   (CLD_o2_v07), would otherwise reconstruct the candidate's events on another geometry without
+   a word. Every file of `directory` (or each options file) and of what `data` names is
+   recorded with its hash, taken
+   when the session opens, so that a study refuses to resume with another job; a file that
+   changes while k4run runs fails the reconstruction; a file that appears in or goes from those
+   directories after the session opened stops the next candidate. An environment variable or a `~` in
+   `directory`, `options` or `data` is read when the session opens, too, so every candidate runs
+   that job.
+
+The reconstruction's output must hold every event of the simulation it read.
 
 Sample `properties` is an optional mapping of JSON facts for evaluators, for example:
 
@@ -455,7 +512,7 @@ Who measures a candidate: one or more evaluators. Each entry:
 | Key | Meaning |
 | --- | --- |
 | `name` | Logical name of a versioned evaluator, e.g. `calo.photon`. It must equal the `name` of an evaluator that `k4opt evaluate --evaluator` loads. Letters, digits, `.`, `_` and `-`, starting with a letter or digit. |
-| `as` | Optional. The name of this binding of the evaluator, `name` when not given. Objectives and constraints name a binding, and so do a run's record and the evaluator's directory in a run, so a binding name means one evaluator, and the names of a problem's bindings differ also when the case of their letters is ignored (a file system may fold it). The same grammar as `name`; not `geometry` or a stage type (`generation`, `simulation`): a run's record names those steps beside the evaluators. Needed only to bind an evaluator a second time on a sample. |
+| `as` | Optional. The name of this binding of the evaluator, `name` when not given. Objectives and constraints name a binding, and so do a run's record and the evaluator's directory in a run, so a binding name means one evaluator, and the names of a problem's bindings differ also when the case of their letters is ignored (a file system may fold it). The same grammar as `name`; not `geometry` or a stage type (`generation`, `simulation`, `reconstruction`): a run's record names those steps beside the evaluators. Needed only to bind an evaluator a second time on a sample. |
 | `version` | Version of that evaluator's contract. A string. |
 | `stage` | The pipeline stage it reads. Required when the evaluator reads one, and absent when it reads none (a cost model working from the parameters alone needs no stage). It must equal the evaluator's own `stage`, so the problem file shows what each evaluator reads. |
 | `samples` | The samples whose `stage` it measures, each on its own: one evaluation per sample, each with its own result. May be left out when the problem has one sample; an evaluator without a `stage` measures the candidate, once, and has none. The problem as k4opt records it always lists them. |
@@ -630,7 +687,7 @@ A non-empty list. Each item:
 | --- | --- |
 | `sample` | The sample the metric is measured on, for an evaluator that reads a stage; none for one that measures the candidate. It may be left out when the evaluator measures one sample. |
 | `evaluator` | The binding that measures the metric (its `as`, or its `name`). It may be left out when the sample (or, without one, the problem) has one evaluation, and an error lists the choices otherwise. The problem as k4opt records it, in every run and study, always names both. |
-| `stage` | Scientific classification of the measurement: `simulation` now; `reconstruction` and `analysis` possible later. It is not a request to run a particular pipeline step (that is the evaluator's `stage`), and it does not create separate problem types. |
+| `stage` | Scientific classification of the measurement: `simulation`, `reconstruction`, `geometry` or `analysis`. It is not a request to run a particular pipeline step (that is the evaluator's `stage`), and it does not create separate problem types. |
 | `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.angular_residual` (measured by `calo.photon`). The part before the dot names what is measured (here the ECAL barrel); collection names appear only in `collections`. |
 | `title` | Optional: what figures and the dashboard call the metric ([titles](#titles)). |
 | `direction` | `minimize` or `maximize`. |
@@ -929,13 +986,14 @@ There is no fingerprint of a problem yet.
 
 Out of scope until later increments: evaluating many candidates from the command line (`k4opt
 evaluate` takes one; an `EvaluationSession` takes many from Python); the evaluator registry (the
-evaluator is named on the command line) and metric metadata beyond units; reconstruction and
-analysis stages and running `k4run`; steering and configuration files (refused for ddsim until
-they can be captured); a problem fingerprint; a multi-objective strategy beyond the Pareto
-front; samples entering at any stage, and chained combined evaluators; branches of the stages;
-parameters that set a reconstruction option (a `reconstruction` stage would add its options as
-the gun and ddsim do, with nothing new to `targets`), a nested setting, a file option, `events`,
-`seed` or `numberOfThreads`; derived parameters and transforms (a log scale); a named baseline
+evaluator is named on the command line) and metric metadata beyond units; an analysis stage;
+steering files for ddsim (refused until they can be captured, as a reconstruction's directory
+is); a problem fingerprint; a multi-objective strategy beyond the Pareto front; samples entering
+at any stage, and chained combined evaluators; branches of the stages (truth and pattern-
+recognition tracking as two reconstructions of one simulation); a reconstruction of part of the
+events, or on several threads (a Gaudi Hive job counts as one processor); a parameter with a
+unit that sets a reconstruction option, a nested setting, a file option, `events`, `seed` or
+`numberOfThreads`; derived parameters and transforms (a log scale); a named baseline
 candidate (an evaluation of the unmodified geometry is the natural baseline for validating
 bounds and constraint limits: it would be a candidate like any other, configured as every
 candidate is, which is why a target holds no value of its own); a problem without a
