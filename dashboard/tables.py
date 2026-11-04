@@ -82,8 +82,9 @@ def _columns(
     the ``fixed`` columns before and after the rest; each parameter; each objective, with its
     uncertainty if any trial recorded one and each limit's margin (of the trials table) or how it
     changed against the reference (``trade_off``). A heading another column has too is replaced
-    by one with the whole name or label of what it shows (``Size (ecal_cell_size) [mm]``), so
-    that no column takes the place of another; a fixed one is never."""
+    by one with the whole name or label of what it shows (``Size (ecal_cell_size) [mm]``), and
+    one still alike then by a number after it (``a (2)``), so that no column ever takes the place
+    of another; a fixed one is never replaced."""
     shown, called = units(results), names(results.problem)
     uncertain = {
         value.label
@@ -104,12 +105,12 @@ def _columns(
         ]
     for o in results.problem.objectives:
         unit = shown.get(o.label)
-        headings = [_heading(called.objective(o.label), unit), _heading(o.label, unit)]
-        options["objective", o.label] = headings
+        choices = [_heading(called.objective(o.label), unit), _heading(o.label, unit)]
+        options["objective", o.label] = choices
         if trade_off:
             options["change", o.label] = [f"Δ {called.objective(o.label)} [%]", f"Δ {o.label} [%]"]
         elif o.label in uncertain:
-            options["uncertainty", o.label] = [f"{heading} ±" for heading in headings]
+            options["uncertainty", o.label] = [f"{choice} ±" for choice in choices]
     for c in () if trade_off else results.problem.constraints:
         unit = c.unit or shown.get(c.label)
         for bound in ("min", "max"):
@@ -120,7 +121,17 @@ def _columns(
                 ]
     for name in after:
         options["fixed", name] = [name]
-    headings = _distinct({key: list(dict.fromkeys(each)) for key, each in options.items()})
+    chosen = _distinct({key: list(dict.fromkeys(each)) for key, each in options.items()})
+    # the rare heading still alike (a title written as another column's whole label) numbered,
+    # the fixed columns claiming theirs first
+    taken: set[str] = set()
+    headings: dict[tuple[_Kind, str], str] = {}
+    for kind, key in sorted(options, key=lambda column: column[0] != "fixed"):
+        heading, number = chosen[kind, key], 2
+        while heading in taken:
+            heading, number = f"{chosen[kind, key]} ({number})", number + 1
+        taken.add(heading)
+        headings[kind, key] = heading
     return [_Column(headings[kind, key], key, kind) for kind, key in options]
 
 

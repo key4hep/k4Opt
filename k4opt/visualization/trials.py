@@ -36,7 +36,7 @@ from k4opt.evaluation import Scalar
 from k4opt.optimization import StudyResults, TrialResult
 from k4opt.problem import Objective, Parameter
 from k4opt.visualization.errors import VisualizationError
-from k4opt.visualization.names import names
+from k4opt.visualization.names import Names, names
 
 OBJECTIVE, PARAMETER = "objective:", "parameter:"
 TRIAL = "trial"
@@ -212,7 +212,7 @@ def trials_figure(
                     "line": {"width": 2.5},
                 },
                 customdata=[reference],
-                hovertext=[_hover(results, chosen, set(results.pareto))],
+                hovertext=[_hover(results, chosen, set(results.pareto), names(results.problem))],
                 hoverinfo="text",
             )
         )
@@ -386,6 +386,7 @@ def _mark(
     ``highlight``, if given, faint."""
     colors = _COLORS[dark]
     numbers = set(results.pareto)
+    called = names(results.problem)
     styles = {
         "front": (front, "diamond" if shade else "circle", 12 if shade else 11, colors["front"]),
         "feasible": ("feasible", "circle", 8, colors["muted"]),
@@ -418,7 +419,7 @@ def _mark(
                 name=name,
                 marker=marker,
                 customdata=[t.number for t in trials],  # which trial a point is
-                hovertext=[_hover(results, t, numbers) for t in trials],
+                hovertext=[_hover(results, t, numbers, called) for t in trials],
                 hoverinfo="text",
             )
         )
@@ -522,12 +523,11 @@ def _shown(unit: str | None) -> bool:
     return unit not in (None, "", "1")
 
 
-def _hover(results: StudyResults, trial: TrialResult, front: set[int]) -> str:
+def _hover(results: StudyResults, trial: TrialResult, front: set[int], called: Names) -> str:
     """Everything a trial was measured with and found: its candidate, its objectives with their
-    uncertainties, and the limits it violates."""
+    uncertainties, and the limits it violates, each called as ``called`` says."""
     state = trial.outcome + (", on the Pareto front" if trial.number in front else "")
     lines = [f"<b>trial {trial.number}</b>: {state}"]
-    called = names(results.problem)
     for parameter in results.problem.parameters:
         if parameter.name in trial.candidate:
             value = _number(trial.candidate[parameter.name], parameter.unit)

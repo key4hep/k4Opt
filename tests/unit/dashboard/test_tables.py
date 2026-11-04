@@ -146,3 +146,26 @@ def test_no_column_takes_the_place_of_another_whatever_the_titles(tmp_path: Path
     assert row["Message"] == trial.message and row["Message (radius)"] == trial.candidate["radius"]
     assert row["b [mm]"] == trial.objectives["test.trade_off/analysis/a"]
     assert row["margin b max [mm]"] == trial.assessment.limits[0].margin
+
+
+def test_a_heading_still_alike_after_its_whole_name_is_numbered() -> None:
+    from k4opt.frozen import FrozenMap
+    from k4opt.optimization import StudyResults, TrialResult
+    from k4opt.problem import parse_problem
+    from tests.unit.optimization.conftest import RADIUS, problem_document
+
+    import tables
+
+    # the parameter and an objective titled alike; each then takes its whole name, which are
+    # alike too: the objective's metric is named as the parameter's title and name
+    title = "test.trade_off/analysis/a"
+    document = problem_document(objectives=[("analysis", f"a ({RADIUS})", "minimize")])
+    document["parameters"][RADIUS]["title"] = title
+    document["objectives"][0]["title"] = title
+    spec = parse_problem(document)
+    trial = TrialResult(0, "valid", {RADIUS: 300.0}, record="r")
+    results = StudyResults("s", "id", "now", spec, FrozenMap({}), (trial,), ())
+    (row,) = tables.trials(results)
+    assert len(row) == 3 + 1 + 1 + 2  # the fixed columns, the parameter, the objective
+    assert row[f"{title} ({RADIUS})"] == 300.0  # the parameter's, the first column of the two
+    assert row[f"{title} ({RADIUS}) (2)"] is None  # the objective's, which the trial has not
