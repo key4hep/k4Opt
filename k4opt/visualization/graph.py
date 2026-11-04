@@ -7,7 +7,8 @@ evaluations of each sample, the evaluations of the candidate, and the objectives
 its edges are of three kinds:
 
 * ``sets``: a parameter to each task it sets something of (the geometry, an option of a stage of
-  some samples, a setting of an evaluator), labeled with what it sets;
+  some samples, a setting of an evaluator), labeled with what it sets; the task says what is
+  varied of it (``varies ECal_cell_size``), and by which parameter only where several vary it;
 * ``reads``: a task to a task that reads it, but only where no other path implies it (the
   geometry reaches an evaluation of a sample through its simulation); an item of a role of a
   combined evaluator is labeled with the role;
@@ -46,6 +47,7 @@ from k4opt.problem import (
 from k4opt.problem.plan import GEOMETRY, Kind, Plan, Task, TaskId, plan_tasks, reference_task
 from k4opt.problem.stages import executors
 from k4opt.visualization.errors import VisualizationError
+from k4opt.visualization.names import Names, names
 
 type NodeKind = Literal["parameter", "geometry", "stage", "evaluator", "objective", "constraint"]
 type EdgeKind = Literal["sets", "reads", "measures"]
@@ -152,12 +154,13 @@ def task_graph(
             times.setdefault(label, {})[trial.number] = seconds
         for label in dict.fromkeys(str(entry["task"]) for entry in trial.diagnostics):
             failures.setdefault(label, []).append(trial.number)
+    called = names(spec)
     sets: dict[TaskId, list[tuple[str, str]]] = {}  # (what, parameter) by task
     edges: list[GraphEdge] = []
-    nodes = [_parameter(parameter) for parameter in spec.parameters]
+    nodes = [_parameter(parameter, called) for parameter in spec.parameters]
     for parameter in spec.parameters:
         for target, name in _sets(plan, parameter):
-            sets.setdefault(target, []).append((name, parameter.name))
+            sets.setdefault(target, []).append((name, called.parameter(parameter.name)))
             edges.append(GraphEdge(f"parameter:{parameter.name}", target.label, "sets", name))
     nodes += [
         _task(spec, task, sets.get(task.id, []), times.get(task.id.label), failures)
@@ -180,7 +183,7 @@ def task_graph(
         )
     samples = {
         name: SampleBox(
-            name,
+            called.sample(name),
             tuple(f"{key}: {_value(value)}" for key, value in sample.properties.items()),
             (name,),
         )
@@ -192,13 +195,14 @@ def task_graph(
     return _stacked(graph, expanded) if stack else graph
 
 
-def _parameter(parameter: Parameter) -> GraphNode:
-    facts = [("type", parameter.kind), ("domain", _domain(parameter, short=False))]
+def _parameter(parameter: Parameter, called: Names) -> GraphNode:
+    facts = [("parameter", parameter.name)] if parameter.title is not None else []
+    facts += [("type", parameter.kind), ("domain", _domain(parameter, short=False))]
     facts += [("sets", destination.label) for destination in parameter.targets]
     return GraphNode(
         f"parameter:{parameter.name}",
         "parameter",
-        parameter.name,
+        called.parameter(parameter.name),
         (_domain(parameter),),
         tuple(facts),
     )
@@ -212,7 +216,7 @@ def _measured(item: Objective | Constraint) -> GraphNode:
         return GraphNode(
             f"objective:{item.label}",
             "objective",
-            item.metric,
+            item.title or item.metric,
             (f"{arrow} {item.direction}",),
             tuple(facts),
             item.sample,
@@ -231,7 +235,7 @@ def _measured(item: Objective | Constraint) -> GraphNode:
     return GraphNode(
         f"constraint:{item.label}",
         "constraint",
-        item.metric,
+        item.title or item.metric,
         (_bounds(item),),
         tuple(facts),
         item.sample,
@@ -274,7 +278,7 @@ def _task(
         facts += [("evaluator", entry.name), ("version", entry.version)]
         facts += [(f"setting {key}", _value(value)) for key, value in entry.settings.items()]
         facts += [(f"collection {role}", name) for role, name in entry.collections.items()]
-    details += [f"{what} ← {parameter}" for what, parameter in sets]
+    details += _varied(sets)
     if not task.required:
         details.append("diagnostic")
     facts.append(("reads", ", ".join(need.label for need in task.needs) or "nothing"))
@@ -296,6 +300,17 @@ def _task(
         seconds,
         tuple(failures.get(task_id.label, ())),
     )
+
+
+def _varied(sets: Sequence[tuple[str, str]]) -> list[str]:
+    """What parameters vary of a task, each ``(what, parameter)``: what alone where one parameter
+    varies it all, as the edge from that parameter says which (``varies ECal_cell_size``); with
+    the parameter of each where several do (``physics.rangecut ← Range cut``)."""
+    if not sets:
+        return []
+    if len({parameter for _, parameter in sets}) == 1:
+        return ["varies " + ", ".join(what for what, _ in sets)]
+    return [f"{what} ← {parameter}" for what, parameter in sets]
 
 
 def _making(spec: ProblemSpec, sample: str, stage: Stage) -> str:
@@ -483,7 +498,10 @@ def _stacked(graph: TaskGraph, expanded: Collection[str]) -> TaskGraph:
             renamed |= {member.id: stacked.id for member in group}
         boxes[key] = SampleBox(
             f"{len(members)} samples",
-            (_names(members), *_differences(graph, members, by_sample)),
+            (
+                _names([graph.samples[member].title for member in members]),
+                *_differences(graph, members, by_sample),
+            ),
             tuple(members),
         )
         for sample in members[1:]:
@@ -505,10 +523,10 @@ def _stacked(graph: TaskGraph, expanded: Collection[str]) -> TaskGraph:
 
 
 def _signature(graph: TaskGraph, sample: str, nodes: Sequence[GraphNode]) -> object:
-    """What ``sample`` is but for its name and its details: its nodes by group, and its edges with
-    each of its nodes named by group."""
+    """What ``sample`` is but for its name and its details: its nodes by group (and title: alike
+    samples' objectives are titled alike), and its edges with each of its nodes named by group."""
     groups = {node.id: node.group for node in nodes}
-    kinds = sorted((n.group or "", n.required, n.given) for n in nodes)
+    kinds = sorted((n.group or "", n.title, n.required, n.given) for n in nodes)
 
     def named(id: str) -> str:
         group = groups.get(id)

@@ -11,7 +11,7 @@ import streamlit as st
 
 from k4opt.errors import K4OptError
 from k4opt.optimization import RULE_KINDS, Rule, StudyResults, TradeOffs, trade_offs
-from k4opt.visualization import trials_figure
+from k4opt.visualization import names, trials_figure
 
 import labels
 import tables
@@ -66,7 +66,7 @@ def _trade_offs(results: StudyResults) -> TradeOffs | None:
     if key not in state:
         state[key] = linked
     outcome = {t.number: t.outcome for t in results.trials}
-    named, shown = labels.names(results), tables.units(results)
+    called, shown = names(results.problem), tables.units(results)
     with st.container(border=True):
         st.markdown("**Compare against a trial**")
         reference = st.selectbox(
@@ -85,7 +85,7 @@ def _trade_offs(results: StudyResults) -> TradeOffs | None:
             kind0, amount0, relative0 = held_rules.get(index, (ANY, 0.0, True))
             arrow = "▼" if objective.direction == "minimize" else "▲"
             st.markdown(
-                f"{arrow} **{labels.plain(named[objective.label])}**",
+                f"{arrow} **{labels.plain(called.metric(objective.label))}**",
                 help=labels.plain(f"{objective.label}, {objective.direction}"),
             )
             how, much, scale = st.columns([4, 3, 2], vertical_alignment="center")
@@ -168,9 +168,9 @@ def _matches(results: StudyResults, found: TradeOffs, *, noisy: bool) -> None:
     """How many trials meet the trade-off, and each with how it changed; why none, if none."""
     reference = found.reference.number
     if not found.matches:
-        named = labels.names(results)
+        called = names(results.problem)
         hardest = ", ".join(
-            f"{labels.plain(named.get(label, label))} excludes {count}"
+            f"{labels.plain(called.metric(label))} excludes {count}"
             for label, count in sorted(found.excludes.items(), key=lambda item: -item[1])
         )
         noise = " Differences within the uncertainties count as none." if noisy else ""

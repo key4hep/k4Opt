@@ -28,8 +28,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from k4opt.optimization import StudyResults, TrialResult
-from k4opt.problem import Objective, Parameter
+from k4opt.problem import Parameter
 from k4opt.visualization.errors import VisualizationError
+from k4opt.visualization.names import Names, names
 from k4opt.visualization.trials import (
     _COLORS,
     _RAMPS,
@@ -54,14 +55,15 @@ def parallel_figure(
     have, and for values of one recorded in different units."""
     shade = _objective(results, objective)
     spec = results.problem
+    called = names(spec)
     drawn = [t for t in results.trials if t.outcome == "feasible"]
     left_out = Counter(t.outcome for t in results.trials if t.outcome != "feasible")
-    dimensions: list[dict[str, Any]] = [_dimension(p, drawn) for p in spec.parameters]
+    dimensions: list[dict[str, Any]] = [_dimension(p, drawn, called) for p in spec.parameters]
     for index, o in enumerate(spec.objectives):
         unit = _unit(_axis(results, f"{OBJECTIVE}{o.label}"), drawn)
         dimensions.append(
             {
-                "label": _heading(_short(o, spec.objectives), unit),
+                "label": _heading(called.metric(o.label), unit),
                 "values": [_measured(t, index) for t in drawn],
             }
         )
@@ -72,7 +74,9 @@ def parallel_figure(
             name = f"{constraint.label}:{bound}"
             dimensions.append(
                 {
-                    "label": _heading(f"margin {constraint.metric} {bound}", constraint.unit),
+                    "label": _heading(
+                        f"margin {called.metric(constraint.label)} {bound}", constraint.unit
+                    ),
                     "values": [_margin(t, name) for t in drawn],
                 }
             )
@@ -87,14 +91,14 @@ def parallel_figure(
                 # the better end far from the background, in either direction
                 "reversescale": shade.objective.direction == "minimize",
                 "showscale": bool(drawn),
-                "colorbar": {"title": {"text": _short(shade.objective, spec.objectives)}},
+                "colorbar": {"title": {"text": html.escape(shade.called)}},
             },
             labelangle=0,
             labelside="top",
         )
     )
     notes = [
-        f"Each feasible trial, colored by {html.escape(shade.objective.metric)} "
+        f"Each feasible trial, colored by {html.escape(shade.called)} "
         f"({shade.objective.direction}): the stronger, the better"
     ]
     notes += _left_out(left_out, "Not drawn, not feasible")
@@ -128,6 +132,7 @@ def slice_figure(
     drawn, left_out = _valid(results, axis)
     unit = _unit(axis, drawn)
     parameters = results.problem.parameters
+    called = names(results.problem)
     columns, rows = _grid(len(parameters))
     figure = make_subplots(
         rows=rows, cols=columns, shared_yaxes=True, horizontal_spacing=0.03, vertical_spacing=0.18
@@ -166,7 +171,7 @@ def slice_figure(
                 col=column,
             )
         figure.update_xaxes(
-            title_text=_heading(parameter.name, parameter.unit),
+            title_text=_heading(called.parameter(parameter.name), parameter.unit),
             row=row,
             col=column,
             **_category(parameter),
@@ -205,6 +210,7 @@ def rank_figure(
     signed = {t.number: axis.signed(t) for t in feasible}
     others = max(len(feasible) - 1, 1)
     rank = {n: sum(v < s for s in signed.values()) / others for n, v in signed.items()}
+    called = names(results.problem)
     pairs = list(combinations(parameters, 2))
     columns, rows = _grid(len(pairs))
     figure = make_subplots(rows=rows, cols=columns, horizontal_spacing=0.08, vertical_spacing=0.18)
@@ -242,12 +248,18 @@ def rank_figure(
                 col=column,
             )
         figure.update_xaxes(
-            title_text=_heading(across.name, across.unit), row=row, col=column, **_category(across)
+            title_text=_heading(called.parameter(across.name), across.unit),
+            row=row,
+            col=column,
+            **_category(across),
         )
         figure.update_yaxes(
-            title_text=_heading(up.name, up.unit), row=row, col=column, **_category(up)
+            title_text=_heading(called.parameter(up.name), up.unit),
+            row=row,
+            col=column,
+            **_category(up),
         )
-    scale = _scale(dark, f"rank in {html.escape(axis.objective.metric)}")
+    scale = _scale(dark, f"rank in {html.escape(axis.called)}")
     scale |= {"cmin": 0, "cmax": 1}
     scale["colorbar"] |= {"tickvals": [0, 1], "ticktext": ["worst", "best"]}
     figure.update_layout(
@@ -282,7 +294,7 @@ def edf_figure(results: StudyResults, *, dark: bool = False) -> go.Figure:
                 y=[(k + 1) / len(values) for k in range(len(values))],
                 mode="lines",
                 line={"shape": "hv", "width": 2, "color": colors["front"]},
-                name=_short(o, objectives),
+                name=html.escape(axis.called),
                 showlegend=False,
                 hovertemplate="%{x:.6g}: %{y:.0%} of the trials at most<extra></extra>",
             ),
@@ -326,10 +338,12 @@ def _margin(trial: TrialResult, name: str) -> float | None:
     return next((limit.margin for limit in limits if limit.name == name), None)
 
 
-def _dimension(parameter: Parameter, trials: Sequence[TrialResult]) -> dict[str, Any]:
+def _dimension(
+    parameter: Parameter, trials: Sequence[TrialResult], called: Names
+) -> dict[str, Any]:
     """The axis of ``parameter``: its bounds, or its choices in their order."""
     values = [t.candidate.get(parameter.name) for t in trials]
-    label = _heading(parameter.name, parameter.unit)
+    label = _heading(called.parameter(parameter.name), parameter.unit)
     if parameter.choices is not None:
         choices = list(parameter.choices)
         return {
@@ -341,16 +355,6 @@ def _dimension(parameter: Parameter, trials: Sequence[TrialResult]) -> dict[str,
         }
     assert parameter.bounds is not None
     return {"label": label, "values": values, "range": list(parameter.bounds)}
-
-
-def _short(objective: Objective, objectives: Sequence[Objective]) -> str:
-    """An objective's metric, with its sample where another objective has the same metric."""
-    alike = sum(o.metric == objective.metric for o in objectives) > 1
-    return (
-        f"{objective.metric} · {objective.sample}"
-        if alike and objective.sample
-        else objective.metric
-    )
 
 
 def _heading(name: str, unit: str | None) -> str:

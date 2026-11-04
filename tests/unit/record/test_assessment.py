@@ -394,6 +394,16 @@ def test_a_record_of_a_problem_that_differs_only_in_its_name_is_accepted(
     assert Assessment.from_summary(session.spec, data).feasible is True
 
 
+def test_a_record_of_a_problem_that_differs_only_in_its_titles_is_accepted(
+    session: EvaluationSession, tmp_path: Path
+) -> None:
+    data = summary_of(session, 450.0, tmp_path / "run")
+    definition = data["problem"]["definition"]
+    next(iter(definition["parameters"].values()))["title"] = "Radius"  # what a reader is shown
+    definition["objectives"][0]["title"] = "Echo"
+    assert Assessment.from_summary(session.spec, data).feasible is True
+
+
 def _set(path: str, value: Any) -> Callable[[dict[str, Any]], None]:
     """Set the item at a ``path`` of a summary, its keys separated by ``/`` (list indices as
     numbers): ``evaluations/test.echo/status``."""

@@ -15,6 +15,7 @@ from k4opt.visualization import (
     GraphNode,
     TaskGraph,
     collapsed,
+    names,
     pipeline_figure,
     task_graph,
 )
@@ -227,7 +228,9 @@ def _selected(results: StudyResults, graph: TaskGraph) -> None:
     st.divider()
     title, clear = st.columns([5, 1], vertical_alignment="center")
     with title:
-        where = node.kind if node.sample is None else f"{node.kind} of {node.sample}"
+        box = None if node.sample is None else graph.samples.get(node.sample)
+        on = node.sample if box is None else box.title
+        where = node.kind if on is None else f"{node.kind} of {on}"
         st.markdown(
             f"**{labels.plain(node.title)}** · "
             + labels.plain(where + ("" if node.required else ", a diagnostic"))
@@ -255,7 +258,7 @@ def _problem(results: StudyResults) -> None:
     """The parameters, objectives and constraints in one card, a column each: an item a line, its
     name with what it is in badges, and under it what else the problem says of it."""
     spec = results.problem
-    named, shown = labels.names(results), tables.units(results)
+    called, shown = names(spec), tables.units(results)
     with st.container(border=True):
         columns = st.columns(3 if spec.constraints else 2, gap="large")
         with columns[0]:
@@ -264,7 +267,9 @@ def _problem(results: StudyResults) -> None:
                 unit = labels.unit(p.unit)
                 badges = [(p.kind, "blue")] + ([(unit, "gray")] if unit else [])
                 sets = "; ".join(destination.label for destination in p.targets)
-                _item(p.name, badges, f"{tables.domain(p)} · sets {sets}")
+                said = f"{tables.domain(p)} · sets {sets}"
+                titled = p.title is not None  # its name too, as the problem writes it
+                _item(called.parameter(p.name), badges, f"{p.name} · {said}" if titled else said)
         with columns[1]:
             _heading("Objectives", ":material/flag:", len(spec.objectives))
             for o in spec.objectives:
@@ -272,7 +277,7 @@ def _problem(results: StudyResults) -> None:
                 arrow = "▲" if o.direction == "maximize" else "▼"
                 way = "green" if o.direction == "maximize" else "red"  # as the model says it
                 badges = [(f"{arrow} {o.direction}", way)] + ([(unit, "gray")] if unit else [])
-                _item(named[o.label], badges, o.label)
+                _item(called.metric(o.label), badges, o.label)
         if spec.constraints:
             with columns[2]:
                 _heading("Constraints", ":material/rule:", len(spec.constraints))
@@ -281,7 +286,7 @@ def _problem(results: StudyResults) -> None:
                     bounds = [f"{s} {v}" for s, v in (("≥", c.min), ("≤", c.max)) if v is not None]
                     bound = " and ".join(bounds) + (f" {unit}" if unit else "")
                     scale = "" if c.scale is None else f" · scale {c.scale}"
-                    _item(named[c.label], [(bound, "red")], c.label + scale)
+                    _item(called.metric(c.label), [(bound, "red")], c.label + scale)
 
 
 def _heading(title: str, icon: str, count: int) -> None:

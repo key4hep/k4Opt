@@ -190,6 +190,20 @@ def test_a_problem_that_only_has_another_name_resumes(
     assert len(run(problem, output, 1, resume=True).trials) == 2
 
 
+def test_a_problem_that_only_has_other_titles_resumes(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1)
+
+    def titled(document: dict[str, Any]) -> None:
+        document["parameters"][RADIUS]["title"] = "Inner radius"
+        document["objectives"][0]["title"] = "First"
+
+    _edit(problem, titled)
+    assert len(run(problem, output, 1, resume=True).trials) == 2
+
+
 def test_a_study_resumes_only_with_the_files_its_geometry_reads_outside_its_root(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

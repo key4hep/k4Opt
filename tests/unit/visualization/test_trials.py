@@ -169,7 +169,7 @@ def test_infeasible_trials_and_those_without_a_result_are_told_apart() -> None:
     shown = traces(figure)
     infeasible = shown["infeasible (a limit violated)"]
     assert numbers(infeasible) == [1] and infeasible.marker.symbol == "x-thin-open"
-    assert "violates test.trade_off/analysis/m0 max 4 mm by 2 mm" in infeasible.hovertext[0]
+    assert "violates m0 max 4 mm by 2 mm" in infeasible.hovertext[0]
     assert numbers(shown["feasible"]) == [2]
     assert "Not shown, without a value on these axes: 1 failed, 1 invalid, 1 running" in notes(
         figure
@@ -188,7 +188,7 @@ def test_the_axes_carry_their_units_and_the_hover_every_value() -> None:
     )
     hover = traces(figure)["on the Pareto front"].hovertext[0]
     assert hover.startswith("<b>trial 0</b>: feasible, on the Pareto front")
-    assert f"{RADIUS} = 100" in hover and "test.trade_off/analysis/m0 = 1.5 mm" in hover
+    assert f"{RADIUS} = 100" in hover and "m0 = 1.5 mm" in hover
 
 
 def test_values_in_two_units_are_not_drawn_on_one_axis() -> None:

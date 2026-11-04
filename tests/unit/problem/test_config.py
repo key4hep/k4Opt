@@ -21,6 +21,7 @@ from k4opt.problem import (
     load_problem,
     parse_problem,
 )
+from k4opt.problem.models import essential
 
 Write = Callable[..., Path]
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "problem" / "cld-ecal-granularity.yaml"
@@ -191,6 +192,45 @@ def test_a_scale_is_a_positive_finite_number(doc: dict[str, Any], scale: object)
 def test_objective_and_constraint_may_share_a_metric(doc: dict[str, Any]) -> None:
     doc["constraints"] = [{"stage": "simulation", "metric": "a.rms", "max": 2}]
     assert parse_problem(doc).constraints[0].metric == "a.rms"
+
+
+def titled(doc: dict[str, Any]) -> dict[str, Any]:
+    """``doc`` with a title on its parameter, sample, objective and constraint."""
+    doc["parameters"]["ecal_cell_size"]["title"] = "ECAL cell size"
+    doc["samples"]["gamma"]["title"] = "10 GeV γ"
+    doc["objectives"][0]["title"] = "σ(E)/E"
+    doc["constraints"][0]["title"] = "Fired cells"
+    return doc
+
+
+def test_titles_are_kept_and_change_nothing_but_what_a_reader_is_shown(
+    doc: dict[str, Any],
+) -> None:
+    plain = parse_problem(copy.deepcopy(doc))
+    spec = parse_problem(titled(doc))
+    assert spec.parameters[0].title == "ECAL cell size"
+    assert spec.samples["gamma"].title == "10 GeV γ"
+    assert (spec.objectives[0].title, spec.constraints[0].title) == ("σ(E)/E", "Fired cells")
+    assert plain.parameters[0].title is None and plain.samples["gamma"].title is None
+    assert parse_problem(spec.to_dict()) == spec
+    assert spec != plain
+    assert essential(spec.to_dict()) == essential(plain.to_dict())
+
+
+@pytest.mark.parametrize(
+    ("title", "message"),
+    [
+        ("two\nlines", "must be one line"),
+        ("  ", "must be a non-empty string"),
+        (3, "must be a non-empty string"),
+    ],
+)
+def test_a_title_is_one_line_of_text(doc: dict[str, Any], title: object, message: str) -> None:
+    doc["parameters"]["ecal_cell_size"]["title"] = title
+    reject(doc, f"parameters.ecal_cell_size.title: {message}")
+    del doc["parameters"]["ecal_cell_size"]["title"]
+    doc["objectives"][0]["title"] = title
+    reject(doc, f"objectives[0].title: {message}")
 
 
 def test_several_objectives_keep_their_order(doc: dict[str, Any]) -> None:

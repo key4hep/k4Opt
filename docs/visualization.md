@@ -137,7 +137,7 @@ with its boxes and never runs over them, and the figure fills the width it is gi
 
 | Drawn as | What it is |
 | --- | --- |
-| white card, blue dot | a parameter, with its domain; a dashed edge to each task it sets something of, and the task names what (`ECal_cell_size ← ecal_cell_size`) |
+| white card, blue dot | a parameter, with its domain; a dashed edge to each task it sets something of, and the task names what it varies (`varies ECal_cell_size`), and by which parameter only where several vary it (`physics.rangecut ← range_cut`) |
 | white card, slate dot | the geometry, made once per candidate from the compact file |
 | gray panel, violet dots | a sample and its stages: how each is made (`ddsim · 1000 events`), what tells the samples apart (`energy: 10 GeV`) |
 | white card, teal dot | an evaluation: of a sample inside its panel, of the candidate or combining samples outside; an item of a role reaches it by an edge labeled with the role |
@@ -179,12 +179,33 @@ in the SVG, since an image keeps its own colors whatever the page around it does
 dashboard, a theme chosen against the system's in Streamlit's menu leaves the drawing in the
 system's. `pipeline_graph(study, dark=True)` writes the DOT text in the dark colors.
 
+## Names
+
+Every figure, the pipeline graph and the dashboard call the things of a problem alike, by
+`names(problem)`: a parameter or a sample by its [title](problem.md#titles), or its name; an
+objective or a constrained metric by its title, or its metric. Only where two objectives or
+constraints would be called alike is more said, the sample (by its own title or name), then the
+whole label:
+
+```python
+from k4opt.visualization import names
+
+called = names(study.problem)
+called.parameter("ecal_cell_size")  # 'ECAL cell size', its title
+called.metric("gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual")
+# 'Angular residual · 10 GeV γ': the other sample's objective has the same title
+```
+
+What is called by a title still shows its name somewhere, so that the problem file can be read
+beside it: under a parameter's axis title, in a node's hover, in a card's caption.
+
 ## Adding a figure
 
 A new figure is a function of `StudyResults` (and its own options) returning a Plotly `Figure`,
 in a module of its own in `k4opt/visualization/`, exported from `k4opt.visualization`, with its
 tests in `tests/unit/visualization/`. It reads what the study holds (`study.problem`,
-`study.trials`, each trial's `assessment`, `study.pareto`) and judges nothing again; anything a
+`study.trials`, each trial's `assessment`, `study.pareto`) and judges nothing again, and calls
+what it shows by `names`; anything a
 figure needs that the study does not hold belongs in the study's records first. The dashboard
 then shows it with `st.plotly_chart`; nothing about it is specific to Streamlit.
 

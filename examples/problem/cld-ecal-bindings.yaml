@@ -36,6 +36,7 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 parameters:
   # CLD uses 5.1 mm; 20 mm is about the width of a photon shower
   ecal_cell_size:
+    title: ECAL cell size
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
@@ -43,6 +44,7 @@ parameters:
       geometry: ECal_cell_size
   # ddsim's default is 0.7 mm; written as --physics.rangecut=<value>*mm in both simulations
   range_cut:
+    title: Range cut
     type: continuous
     bounds: [0.1, 1.0]
     unit: mm
@@ -53,6 +55,7 @@ parameters:
   # half the most probable energy a MIP leaves in 0.5 mm of silicon is about 70 keV; the
   # evaluator receives it in GeV, the unit it declares. No simulation depends on it
   cell_threshold:
+    title: Cell threshold
     type: continuous
     bounds: [30.0, 150.0]
     unit: keV
@@ -77,11 +80,13 @@ stages:
 
 samples:
   gamma_10gev:
+    title: 10 GeV γ
     generation:
       energy: {value: 10, unit: GeV}
     simulation:
       seed: 42
   gamma_50gev:
+    title: 50 GeV γ
     generation:
       energy: {value: 50, unit: GeV}
     simulation:
@@ -103,8 +108,10 @@ objectives:
   - sample: gamma_10gev
     stage: simulation
     metric: ecal_barrel.angular_residual
+    title: Angular residual
     direction: minimize
   - sample: gamma_50gev
     stage: simulation
     metric: ecal_barrel.angular_residual
+    title: Angular residual
     direction: minimize

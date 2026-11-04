@@ -32,6 +32,7 @@ from k4opt.visualization import (
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
 GRAPHVIZ = pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz is not installed")
 SAMPLES = ("gamma_50gev", "pi0_50gev")
+RESIDUAL = "calo.photon/simulation/ecal_barrel.angular_residual"
 
 
 # a Graphviz built without fonts, as the Key4hep stack's, estimates text widths and says so
@@ -89,7 +90,7 @@ def test_each_task_parameter_objective_and_constraint_is_one_node_in_order() -> 
         "constraint:readout/geometry/ecal_barrel.channels",
     ]
     objective, constraint = graph.nodes[-2:]
-    assert (objective.title, objective.details) == ("background_rejection", ("▲ maximize",))
+    assert (objective.title, objective.details) == ("π⁰ rejection", ("▲ maximize",))  # its title
     assert (constraint.title, constraint.details) == ("ecal_barrel.channels", ("≤ 5e+07",))
     assert set(graph.samples) == set(SAMPLES)  # read in other roles: not alike, not stacked
     assert graph.node("gamma_50gev/simulation").group == "stage:simulation"
@@ -125,10 +126,54 @@ def test_a_parameter_reaches_what_it_sets_and_the_task_names_it() -> None:
         **{("parameter:range_cut", f"{s}/simulation"): "physics.rangecut" for s in samples},
         **{("parameter:cell_threshold", f"{s}/calo.photon"): "threshold" for s in samples},
     }
-    assert "ECal_cell_size ← ecal_cell_size" in graph.node("geometry").details
-    assert "physics.rangecut ← range_cut" in graph.node("gamma_10gev/simulation").details
-    assert "threshold ← cell_threshold" in graph.node("gamma_50gev/calo.photon").details
+    # one parameter varies each: its edge says which, the task only what
+    assert "varies ECal_cell_size" in graph.node("geometry").details
+    assert "varies physics.rangecut" in graph.node("gamma_10gev/simulation").details
+    assert "varies threshold" in graph.node("gamma_50gev/calo.photon").details
     assert graph.node("parameter:range_cut").details == ("[0.1, 1] mm",)
+
+
+def test_a_task_several_parameters_vary_says_which_varies_what() -> None:
+    document = example("cld-ecal-bindings")
+    document["parameters"]["ecal_cell_size"]["title"] = "ECAL cell size"
+    document["parameters"]["ecal_depth"] = {
+        "type": "continuous",
+        "bounds": [100.0, 200.0],
+        "unit": "mm",
+        "targets": {"geometry": "ECalBarrel_outer_radius"},
+    }
+    details = task_graph(parse_problem(document)).node("geometry").details
+    assert "ECal_cell_size ← ECAL cell size" in details
+    assert "ECalBarrel_outer_radius ← ecal_depth" in details
+
+
+def test_parameters_samples_and_measured_metrics_are_drawn_by_their_titles() -> None:
+    document = example("cld-ecal-bindings")
+    document["parameters"]["ecal_cell_size"]["title"] = "ECAL cell size"
+    document["samples"]["gamma_10gev"]["title"] = "10 GeV γ"
+    document["samples"]["gamma_50gev"]["title"] = "50 GeV γ"
+    for objective in document["objectives"]:
+        objective["title"] = "Angular residual"
+    graph = task_graph(parse_problem(document))
+    parameter = graph.node("parameter:ecal_cell_size")
+    assert (
+        parameter.title == "ECAL cell size" and ("parameter", "ecal_cell_size") in parameter.facts
+    )
+    (box,) = graph.samples.values()
+    assert box.lines[0] == "10 GeV γ, 50 GeV γ"
+    objective = graph.node(f"stack:gamma_10gev|objective:{RESIDUAL}")
+    assert objective.title == "Angular residual"
+    alone = task_graph(parse_problem(document), stack=False)
+    assert [box.title for box in alone.samples.values()] == ["10 GeV γ", "50 GeV γ"]
+
+
+def test_samples_whose_objectives_are_titled_otherwise_are_not_stacked() -> None:
+    document = example("cld-ecal-bindings")
+    document["objectives"][0]["title"] = "Residual at 10 GeV"
+    document["objectives"][1]["title"] = "Residual at 50 GeV"
+    graph = task_graph(parse_problem(document))
+    assert [box.is_stack for box in graph.samples.values()] == [False, False]
+    assert graph.node(f"objective:gamma_10gev/{RESIDUAL}").title == "Residual at 10 GeV"
 
 
 def test_a_stage_shows_how_it_is_made_and_what_tells_the_samples_apart() -> None:
@@ -245,7 +290,7 @@ def test_samples_alike_but_for_their_options_are_stacked_until_expanded() -> Non
     assert box.title == "2 samples" and "energy: 10 GeV, 50 GeV" in box.lines
     simulation = graph.node("stack:gamma_10gev|stage:simulation")
     assert simulation.samples == box.members and simulation.sample == "gamma_10gev"
-    assert "physics.rangecut ← range_cut" in simulation.details  # shared by both
+    assert "varies physics.rangecut" in simulation.details  # shared by both
     assert not any(
         "energy" in detail for detail in graph.node("stack:gamma_10gev|stage:generation").details
     )
@@ -288,14 +333,14 @@ def test_each_kind_has_its_own_color() -> None:
     )
     # white cards alike, each kind told by the dot before its title
     marker = '<font color="{}" point-size="10">●</font>'.format
-    assert 'color="#dfe4ec", fillcolor="#ffffff"' in line("background_rejection")
-    assert marker("#3b82f6") in line("ecal_cell_size")  # parameter: blue
+    assert 'color="#dfe4ec", fillcolor="#ffffff"' in line("π⁰ rejection")
+    assert marker("#3b82f6") in line("ECAL cell size")  # parameter: blue
     assert marker("#8b5cf6") in line("gamma_50gev/simulation")  # a sample's stage: violet
     assert marker("#14b8a6") in line("pi0_rejection")  # evaluation: teal
-    assert marker("#f97316") in line("background_rejection")  # objective: orange
+    assert marker("#f97316") in line("π⁰ rejection")  # objective: orange
     # a direction in green, up, or red, down: its text and its arrow alone
-    assert '<font point-size="10" color="#16a34a">▲ maximize</font>' in line("background_rejection")
-    assert '<font point-size="10" color="#dc2626">▼ minimize</font>' in line("ecal_barrel.channels")
+    assert '<font point-size="10" color="#16a34a">▲ maximize</font>' in line("π⁰ rejection")
+    assert '<font point-size="10" color="#dc2626">▼ minimize</font>' in line("Readout channels")
 
 
 def test_a_folded_sample_is_one_node_joined_as_its_tasks_were() -> None:

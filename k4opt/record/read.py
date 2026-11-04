@@ -35,7 +35,7 @@ from k4opt.geometry import parse_reference
 from k4opt.problem.candidate import Configuration, configure, validate_candidate
 from k4opt.problem.contract import Demands, MetricKey, check_bindings, check_entries, check_result
 from k4opt.problem.errors import CandidateError
-from k4opt.problem.models import MetricRef, ProblemSpec, ordered
+from k4opt.problem.models import MetricRef, ProblemSpec, essential
 from k4opt.problem.plan import (
     GEOMETRY,
     Kind,
@@ -96,15 +96,16 @@ def _list(value: object, where: str) -> list[object]:
 
 
 def _check_problem(spec: ProblemSpec, record: Mapping[str, object]) -> None:
-    """The record must have been made for ``spec``; its ``name`` (a label) may differ."""
+    """The record must have been made for ``spec``; its ``name`` and titles (what a reader is
+    shown) may differ."""
     definition = _mapping(
         _mapping(record.get("problem"), "problem").get("definition"), "definition"
     )
     plain = _plain(spec.to_dict())
     assert isinstance(plain, dict)
-    expected, definition = ordered(plain), ordered(definition)  # in the order the problem defines
+    expected, definition = essential(plain), essential(definition)  # in the problem's order
     keys = dict.fromkeys([*expected, *definition])
-    differ = [k for k in keys if k != "name" and definition.get(k) != expected.get(k)]
+    differ = [k for k in keys if definition.get(k) != expected.get(k)]
     if differ:
         raise RecordError(f"it was made for another problem: its {', '.join(differ)} differ")
 

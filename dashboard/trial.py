@@ -11,6 +11,7 @@ from __future__ import annotations
 import streamlit as st
 
 from k4opt.optimization import StudyResults, TrialResult
+from k4opt.visualization import names
 
 import labels
 import tables
@@ -68,7 +69,7 @@ def _compare(results: StudyResults, number: int) -> None:
 
 
 def _sheet(results: StudyResults, trial: TrialResult) -> None:
-    named = labels.names(results)
+    called = names(results.problem)
     badges, action = st.columns([3, 2], vertical_alignment="center")
     with badges, st.container(horizontal=True, gap="small"):
         st.badge(trial.outcome, color=BADGES.get(trial.outcome, "red"))  # type: ignore[arg-type]
@@ -96,7 +97,7 @@ def _sheet(results: StudyResults, trial: TrialResult) -> None:
     arrows = {"minimize": "▼", "maximize": "▲"}
     tiles = [
         (
-            f"{arrows[direction]} {named.get(value.label, value.label)}",
+            f"{arrows[direction]} {called.metric(value.label)}",
             labels.number(value.value, value.unit, value.uncertainty),
             f"{value.label}, to {direction}",
         )
@@ -104,7 +105,11 @@ def _sheet(results: StudyResults, trial: TrialResult) -> None:
             measured, (o.direction for o in results.problem.objectives), strict=False
         )
     ] + [
-        (p.name, labels.number(trial.candidate[p.name], p.unit), f"{p.name}, a parameter")
+        (
+            called.parameter(p.name),
+            labels.number(trial.candidate[p.name], p.unit),
+            f"{p.name}, a parameter",
+        )
         for p in results.problem.parameters
         if p.name in trial.candidate
     ]

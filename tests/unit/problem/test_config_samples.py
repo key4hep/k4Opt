@@ -109,7 +109,7 @@ def test_parsing_never_runs_a_subprocess(
         (
             lambda s: s.update(reconstruction={"executor": "k4run"}),
             "samples.gamma: unknown key(s) ['reconstruction']; allowed: ['generation', "
-            "'properties', 'simulation']",
+            "'properties', 'simulation', 'title']",
         ),
         (
             lambda s: s.update(simulation="ddsim"),

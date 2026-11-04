@@ -158,7 +158,8 @@ and its **targets** say which software settings receive its value. The name is w
 it everywhere else: a candidate maps each name to a value (`k4opt evaluate --param
 ecal_cell_size=6.0`), and records, study reports, exports and the optimizer key the values by it.
 It starts with a lowercase letter and holds only lowercase letters, digits and `_`, at most 64
-characters. The optimizer searches the domain alone and never sees the targets.
+characters. The optimizer searches the domain alone and never sees the targets. An optional
+[`title`](#titles) is what figures and the dashboard show instead of the name.
 
 ```yaml
 parameters:
@@ -313,8 +314,8 @@ lowercase letters, digits and `_`, starting with a letter, at most 64 characters
 (`gamma_10gev`), so that no two names differ only in case. Objectives, constraints and records
 refer to a sample by it, and a run directory holds each sample's work in `samples/<name>`.
 
-A sample maps a stage to how it is made, and may also have `properties` (below). Its stage
-keys may be in any order:
+A sample maps a stage to how it is made, and may also have `properties` (below) and a
+[`title`](#titles). Its stage keys may be in any order:
 
 | Stage | Reads | Run by `executor:` | Or given as `file:` |
 | --- | --- | --- | --- |
@@ -631,6 +632,7 @@ A non-empty list. Each item:
 | `evaluator` | The binding that measures the metric (its `as`, or its `name`). It may be left out when the sample (or, without one, the problem) has one evaluation, and an error lists the choices otherwise. The problem as k4opt records it, in every run and study, always names both. |
 | `stage` | Scientific classification of the measurement: `simulation` now; `reconstruction` and `analysis` possible later. It is not a request to run a particular pipeline step (that is the evaluator's `stage`), and it does not create separate problem types. |
 | `metric` | Metric name defined by the selected evaluator and version, e.g. `ecal_barrel.angular_residual` (measured by `calo.photon`). The part before the dot names what is measured (here the ECAL barrel); collection names appear only in `collections`. |
+| `title` | Optional: what figures and the dashboard call the metric ([titles](#titles)). |
 | `direction` | `minimize` or `maximize`. |
 
 `stage` and `metric` are separate fields, not a combined `simulation.some_metric` string.
@@ -640,9 +642,9 @@ combined (priorities, weights, scalarization) is deferred.
 
 ### `constraints`
 
-Optional hard limits on measured quantities. Each item has `sample`, `evaluator`, `stage` and
-`metric` as above, plus `min` and/or `max` (inclusive), `unit` where the metric has one, and
-`scale` where the problem has constraints on more than one metric (below).
+Optional hard limits on measured quantities. Each item has `sample`, `evaluator`, `stage`,
+`metric` and an optional `title` as above, plus `min` and/or `max` (inclusive), `unit` where the
+metric has one, and `scale` where the problem has constraints on more than one metric (below).
 
 A constraint is judged on the central value of the measurement: `max` is satisfied when the
 value is at most the limit, `min` when it is at least the limit, and equality satisfies both.
@@ -686,6 +688,40 @@ constraints:
   - {stage: simulation, metric: ecal_barrel.angular_residual, max: 1.0, unit: mrad, scale: 0.2}
   - {evaluator: readout, stage: geometry, metric: ecal_barrel.channels, max: 5.0e+7, unit: "1", scale: 1.0e+6}
 ```
+
+### Titles
+
+A parameter, a sample, an objective and a constraint may have a `title`: one line of text that
+figures, the pipeline graph and the dashboard show instead of the name (or, of an objective or a
+constraint, the metric). Units are added to it where a value is shown (`ECAL cell size [mm]`), so
+a title holds none. It is plain text: Greek letters and other Unicode characters show everywhere,
+LaTeX does not. Without one, the name is shown. The name stays what identifies the thing
+everywhere else: `--param`, records, exports and the optimizer never read a title.
+
+```yaml
+parameters:
+  ecal_cell_size:
+    title: ECAL cell size
+    # type, bounds, unit, targets as above
+
+samples:
+  gamma_10gev:
+    title: 10 GeV γ
+    # its stages
+
+objectives:
+  - sample: gamma_10gev
+    metric: ecal_barrel.angular_residual
+    title: Angular residual
+    direction: minimize
+```
+
+An objective's title names what is measured, not the sample it is measured on: the sample has
+a title of its own. Where two objectives or constraints would be called alike, a figure adds the
+sample (`Angular residual · 10 GeV γ`), and where even that is alike, the whole label
+([`names`](visualization.md#names)). A title is no part of the problem's identity: a study whose
+problem gained or changed titles resumes, and keeps its records. A study shows the titles its
+problem had when the study was made (its `study.json` is written once).
 
 ## Time limits
 
@@ -764,7 +800,8 @@ adjudicate the user's scientific choices.
 
 Three identities are kept separate, even though the draft YAML shows them in one file:
 
-1. **Problem identity**: parameters (domains and targets), objectives, constraints.
+1. **Problem identity**: parameters (domains and targets), objectives, constraints; not the
+   problem's `name` or any [title](#titles), which only name things for a reader.
 2. **Evaluation context identity**: everything that can change what a measurement means
    for the same candidate: the pinned and resolved Key4hep stack, geometry, the
    evaluators' names, versions, `collections` and `settings`, and each sample's stages: their

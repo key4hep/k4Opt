@@ -1,10 +1,11 @@
 """The rows of the dashboard's tables, from a catalog and a study alone: no Streamlit here.
 
 Each function returns a list of rows, one ``dict`` each, column by column, with every value as the
-study records it (``None`` where it has none: an empty cell, never 0), headed by the names
-:func:`labels.names` gives (each column's whole label is in :func:`helps`). What a value means is
-the study's to say: outcomes, feasibility and the Pareto front are read, never judged again; a
-best value is the best the study's feasible trials reached of one objective, by its direction.
+study records it (``None`` where it has none: an empty cell, never 0), headed by what
+:func:`~k4opt.visualization.names` calls each (each column's whole label is in :func:`helps`).
+What a value means is the study's to say: outcomes, feasibility and the Pareto front are read,
+never judged again; a best value is the best the study's feasible trials reached of one
+objective, by its direction.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import Any
 from k4opt.optimization import StudyResults, TradeOffs, TrialResult
 from k4opt.problem import Parameter
 from k4opt.record import Limit, ObjectiveValue
-from k4opt.visualization import GraphNode
+from k4opt.visualization import GraphNode, names
 
 import labels
 
@@ -59,7 +60,7 @@ def _heading(name: str, unit: str | None) -> str:
 def _columns(results: StudyResults) -> list[tuple[str, str, str]]:
     """Each column of a trial's measurements: its heading, the whole label it shows (``± `` for
     an uncertainty, ``margin `` for a limit's margin) and what it is."""
-    shown, named = units(results), labels.names(results)
+    shown, called = units(results), names(results.problem)
     uncertain = {
         value.label
         for trial in results.trials
@@ -69,14 +70,15 @@ def _columns(results: StudyResults) -> list[tuple[str, str, str]]:
     }
     columns = []
     for o in results.problem.objectives:
-        heading = _heading(named[o.label], shown.get(o.label))
+        heading = _heading(called.metric(o.label), shown.get(o.label))
         columns.append((heading, o.label, "objective"))
         if o.label in uncertain:
             columns.append((f"{heading} ±", o.label, "uncertainty"))
     for c in results.problem.constraints:
         for bound in ("min", "max"):
             if getattr(c, bound) is not None:
-                heading = _heading(f"margin {named[c.label]} {bound}", c.unit or shown.get(c.label))
+                name = f"margin {called.metric(c.label)} {bound}"
+                heading = _heading(name, c.unit or shown.get(c.label))
                 columns.append((heading, f"{c.label}:{bound}", "margin"))
     return columns
 
@@ -98,6 +100,7 @@ def trials(results: StudyResults, numbers: Iterable[int] | None = None) -> list[
     columns = _columns(results)
     chosen = None if numbers is None else set(numbers)
     front = set(results.pareto)
+    called = names(results.problem)
     rows = []
     for trial in results.trials:
         if chosen is not None and trial.number not in chosen:
@@ -108,7 +111,7 @@ def trials(results: StudyResults, numbers: Iterable[int] | None = None) -> list[
             "Pareto": trial.number in front,
         }
         for p in results.problem.parameters:
-            row[_heading(p.name, p.unit)] = trial.candidate.get(p.name)
+            row[_heading(called.parameter(p.name), p.unit)] = trial.candidate.get(p.name)
         row |= _measured(trial, columns)
         row["Time [s]"] = trial.elapsed_seconds
         row["Message"] = trial.message
@@ -150,7 +153,7 @@ class Best:
 
 def bests(results: StudyResults) -> list[Best]:
     """The best of each objective that a feasible trial measured; none of one that none did."""
-    named = labels.names(results)
+    called = names(results.problem)
     found = []
     for index, objective in enumerate(results.problem.objectives):
         sign = -1 if objective.direction == "maximize" else 1
@@ -168,7 +171,7 @@ def bests(results: StudyResults) -> list[Best]:
             found.append(
                 Best(
                     objective.label,
-                    named[objective.label],
+                    called.metric(objective.label),
                     objective.direction,
                     best.value,
                     best.uncertainty,
@@ -262,10 +265,10 @@ def trial_record(trial: TrialResult) -> list[Row]:
 def trial_limits(results: StudyResults, trial: TrialResult) -> list[Row]:
     """Each limit of ``trial``: the value, the bound, its margin (zero or below when satisfied)."""
     assessment = trial.assessment
-    named = labels.names(results)
+    called = names(results.problem)
     return [
         {
-            "Constraint": named.get(limit.label, limit.label),
+            "Constraint": called.metric(limit.label),
             "Bound": limit.bound,
             "Limit": limit.limit,
             "Value": limit.value,
@@ -298,7 +301,7 @@ def trade_offs(results: StudyResults, found: TradeOffs) -> list[Row]:
     """A row for the reference and each trial that meets the trade-off: its candidate, each
     objective's value and how it changed against the reference, in percent of the reference's
     value (``None`` where that is zero)."""
-    shown, named = units(results), labels.names(results)
+    shown, called = units(results), names(results.problem)
     front = set(results.pareto)
     reference = found.reference
     assert reference.objectives is not None
@@ -312,11 +315,11 @@ def trade_offs(results: StudyResults, found: TradeOffs) -> list[Row]:
             "Pareto": number in front,
         }
         for p in results.problem.parameters:
-            row[_heading(p.name, p.unit)] = trial.candidate.get(p.name)
+            row[_heading(called.parameter(p.name), p.unit)] = trial.candidate.get(p.name)
         for o in results.problem.objectives:
-            row[_heading(named[o.label], shown.get(o.label))] = trial.objectives[o.label]
+            row[_heading(called.metric(o.label), shown.get(o.label))] = trial.objectives[o.label]
             base = reference.objectives[o.label]
             change = 0.0 if number == reference.number else found.change[number][o.label]
-            row[f"Δ {named[o.label]} [%]"] = None if base == 0 else 100 * change / abs(base)
+            row[f"Δ {called.metric(o.label)} [%]"] = None if base == 0 else 100 * change / abs(base)
         rows.append(row)
     return rows

@@ -21,6 +21,7 @@ geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 
 parameters:
   ecal_cell_size:
+    title: ECAL cell size
     type: continuous
     bounds: [2.5, 20.0]
     unit: mm
@@ -46,11 +47,13 @@ stages:
 # each sample completes the shared stages; a value given here replaces the shared one whole
 samples:
   gamma_10gev:
+    title: 10 GeV γ
     generation:
       energy: {value: 10, unit: GeV}
     simulation:
       seed: 42
   gamma_50gev:
+    title: 50 GeV γ
     generation:
       energy: {value: 50, unit: GeV}
     simulation:
@@ -72,14 +75,17 @@ objectives:
   - sample: gamma_10gev
     stage: simulation
     metric: ecal_barrel.angular_residual
+    title: Angular residual
     direction: minimize
 
   - sample: gamma_50gev
     stage: simulation
     metric: ecal_barrel.angular_residual
+    title: Angular residual
     direction: minimize
 
   - sample: gamma_50gev
     stage: simulation
     metric: ecal_barrel.fired_cells
+    title: Fired cells
     direction: minimize

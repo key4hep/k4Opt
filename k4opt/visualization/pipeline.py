@@ -6,7 +6,7 @@ stages and evaluations (samples alike stacked in one box), the evaluations of th
 the objectives and constraints. Each kind has a color of its own: the parameters blue, the samples
 and their stages violet, the evaluations aqua, the objectives and constraints orange, the geometry
 neutral. A parameter reaches each task it sets something of by a dashed edge, and the task names
-what it sets (``ECal_cell_size ← ecal_cell_size``); a diagnostic is dotted; of a study, each stage
+what it varies (``varies ECal_cell_size``); a diagnostic is dotted; of a study, each stage
 shows the median of its recorded times, and each diagnostic that did not succeed in some trials in
 how many, in red.
 

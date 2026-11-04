@@ -127,6 +127,8 @@ select = [
     "RUF",      # ruff-specific
 ]
 ignore = ["RUF012"]
+# a title is shown as it is written, and physicists write γ for a photon, σ for a resolution
+allowed-confusables = ["γ", "σ"]
 
 [tool.ruff.lint.isort]
 # the dashboard's own modules, which Streamlit imports from dashboard/ as top-level modules

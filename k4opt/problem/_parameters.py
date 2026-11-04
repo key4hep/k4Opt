@@ -34,6 +34,7 @@ from k4opt.problem._fields import (
     _sequence,
     _show,
     _text,
+    _title,
 )
 from k4opt.problem._samples import _Place
 from k4opt.problem.candidate import EXPRESSION_UNITS
@@ -52,7 +53,7 @@ from k4opt.problem.stages import STAGE_TYPES, executors
 
 _KINDS = ("continuous", "integer", "categorical")
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
-_KEYS = ("type", "bounds", "choices", "unit", "targets")
+_KEYS = ("title", "type", "bounds", "choices", "unit", "targets")
 # the kinds of target, each the key of ``targets`` that names it: the stage types in between
 _TARGETS = ("geometry", *STAGE_TYPES, "evaluators")
 
@@ -85,6 +86,7 @@ class _Declared:
     choices: tuple[str | bool | Number, ...] | None
     unit: str | None
     targets: tuple[tuple[str, _Draft], ...]
+    title: str | None
 
 
 def _parameters(raw: object) -> list[_Declared]:
@@ -108,6 +110,7 @@ def _parameter(name: str, raw: object, path: str) -> _Declared:
     m = _mapping(raw, path, _KEYS, ("type", "targets"))
     kind = cast(ParameterKind, _choice(m["type"], f"{path}.type", _KINDS))
     unit = _optional_text(m, "unit", path)
+    title = _title(m, path)
     targets = _targets(m["targets"], f"{path}.targets")
     if kind == "categorical":
         for key in ("bounds", "unit"):
@@ -116,12 +119,13 @@ def _parameter(name: str, raw: object, path: str) -> _Declared:
         if "choices" not in m:
             raise _fail(path, "categorical parameter needs 'choices'")
         choices = _choices(m["choices"], f"{path}.choices")
-        return _Declared(name, kind, None, choices, None, targets)
+        return _Declared(name, kind, None, choices, None, targets, title)
     if "choices" in m:
         raise _fail(path, f"'choices' is only allowed for a categorical parameter, not {kind}")
     if "bounds" not in m:
         raise _fail(path, f"{kind} parameter needs 'bounds'")
-    return _Declared(name, kind, _bounds(m["bounds"], f"{path}.bounds", kind), None, unit, targets)
+    bounds = _bounds(m["bounds"], f"{path}.bounds", kind)
+    return _Declared(name, kind, bounds, None, unit, targets, title)
 
 
 def _bounds(raw: object, path: str, kind: str) -> tuple[Number, Number]:
@@ -258,7 +262,15 @@ def _destinations(
                 first[key] = item.name
             targets.append(destination)
         parameters.append(
-            Parameter(item.name, item.kind, tuple(targets), item.bounds, item.choices, item.unit)
+            Parameter(
+                item.name,
+                item.kind,
+                tuple(targets),
+                item.bounds,
+                item.choices,
+                item.unit,
+                item.title,
+            )
         )
     return tuple(parameters)
 
