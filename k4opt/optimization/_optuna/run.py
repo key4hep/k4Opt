@@ -61,7 +61,7 @@ from k4opt.optimization._optuna.tell import (
     _settle,
     _Study,
 )
-from k4opt.optimization._results import StudyResults, limit_names
+from k4opt.optimization._results import StudyResults, limit_names, recorded_problem
 from k4opt.optimization._study import (
     JOURNAL_NAME,
     LOCK_NAME,
@@ -265,8 +265,9 @@ def _run_study(
                 seed=seed_now, n_startup_trials=STARTUP_TRIALS, constant_liar=CONSTANT_LIAR
             )
             _run_trials(run, session, space, seed_now, trials, progress, activity)
-            # read back as load_study reads it, from the study still open
-            return results_of(directory, document, spec, study)
+            # read back as load_study reads it, from the study still open: with the problem
+            # study.json records, whose titles a resume with other titles leaves as they were
+            return results_of(directory, document, recorded_problem(document), study)
     except Exception as exc:
         replacement, secret = leaving(exc, storage)
         if replacement is None:

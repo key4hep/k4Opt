@@ -120,7 +120,7 @@ def axis(key: str, results: StudyResults) -> str:
     if not name:
         return key
     called = names(results.problem)
-    return f"{called.metric(name) if kind == 'objective' else called.parameter(name)} · {kind}"
+    return f"{called.objective(name) if kind == 'objective' else called.parameter(name)} · {kind}"
 
 
 def detector(geometry: str) -> str:

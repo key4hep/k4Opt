@@ -70,14 +70,14 @@ def _columns(results: StudyResults) -> list[tuple[str, str, str]]:
     }
     columns = []
     for o in results.problem.objectives:
-        heading = _heading(called.metric(o.label), shown.get(o.label))
+        heading = _heading(called.objective(o.label), shown.get(o.label))
         columns.append((heading, o.label, "objective"))
         if o.label in uncertain:
             columns.append((f"{heading} ±", o.label, "uncertainty"))
     for c in results.problem.constraints:
         for bound in ("min", "max"):
             if getattr(c, bound) is not None:
-                name = f"margin {called.metric(c.label)} {bound}"
+                name = f"margin {called.constraint(c.label)} {bound}"
                 heading = _heading(name, c.unit or shown.get(c.label))
                 columns.append((heading, f"{c.label}:{bound}", "margin"))
     return columns
@@ -171,7 +171,7 @@ def bests(results: StudyResults) -> list[Best]:
             found.append(
                 Best(
                     objective.label,
-                    called.metric(objective.label),
+                    called.objective(objective.label),
                     objective.direction,
                     best.value,
                     best.uncertainty,
@@ -268,7 +268,7 @@ def trial_limits(results: StudyResults, trial: TrialResult) -> list[Row]:
     called = names(results.problem)
     return [
         {
-            "Constraint": called.metric(limit.label),
+            "Constraint": called.constraint(limit.label),
             "Bound": limit.bound,
             "Limit": limit.limit,
             "Value": limit.value,
@@ -317,9 +317,11 @@ def trade_offs(results: StudyResults, found: TradeOffs) -> list[Row]:
         for p in results.problem.parameters:
             row[_heading(called.parameter(p.name), p.unit)] = trial.candidate.get(p.name)
         for o in results.problem.objectives:
-            row[_heading(called.metric(o.label), shown.get(o.label))] = trial.objectives[o.label]
+            row[_heading(called.objective(o.label), shown.get(o.label))] = trial.objectives[o.label]
             base = reference.objectives[o.label]
             change = 0.0 if number == reference.number else found.change[number][o.label]
-            row[f"Δ {called.metric(o.label)} [%]"] = None if base == 0 else 100 * change / abs(base)
+            row[f"Δ {called.objective(o.label)} [%]"] = (
+                None if base == 0 else 100 * change / abs(base)
+            )
         rows.append(row)
     return rows

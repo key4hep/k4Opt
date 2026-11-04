@@ -23,7 +23,7 @@ import optuna
 from optuna.trial import TrialState
 
 from k4opt.evaluation import evaluator_source, load_evaluator
-from k4opt.optimization import OptimizationError, optimize
+from k4opt.optimization import OptimizationError, load_study, optimize
 from k4opt.optimization._optuna import tell as adapter
 from k4opt.optimization._optuna.space import search_space
 from k4opt.problem import load_problem
@@ -201,7 +201,11 @@ def test_a_problem_that_only_has_other_titles_resumes(
         document["objectives"][0]["title"] = "First"
 
     _edit(problem, titled)
-    assert len(run(problem, output, 1, resume=True).trials) == 2
+    resumed = run(problem, output, 1, resume=True)
+    assert len(resumed.trials) == 2
+    # the study's own titles, as study.json records them: what load_study reads back too
+    assert resumed.problem == load_study(output).problem
+    assert resumed.problem.parameters[0].title is None
 
 
 def test_a_study_resumes_only_with_the_files_its_geometry_reads_outside_its_root(

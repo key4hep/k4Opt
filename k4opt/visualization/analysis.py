@@ -63,7 +63,7 @@ def parallel_figure(
         unit = _unit(_axis(results, f"{OBJECTIVE}{o.label}"), drawn)
         dimensions.append(
             {
-                "label": _heading(called.metric(o.label), unit),
+                "label": _heading(called.objective(o.label), unit),
                 "values": [_measured(t, index) for t in drawn],
             }
         )
@@ -75,7 +75,7 @@ def parallel_figure(
             dimensions.append(
                 {
                     "label": _heading(
-                        f"margin {called.metric(constraint.label)} {bound}", constraint.unit
+                        f"margin {called.constraint(constraint.label)} {bound}", constraint.unit
                     ),
                     "values": [_margin(t, name) for t in drawn],
                 }

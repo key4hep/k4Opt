@@ -183,16 +183,17 @@ system's. `pipeline_graph(study, dark=True)` writes the DOT text in the dark col
 
 Every figure, the pipeline graph and the dashboard call the things of a problem alike, by
 `names(problem)`: a parameter or a sample by its [title](problem.md#titles), or its name; an
-objective or a constrained metric by its title, or its metric. Only where two objectives or
-constraints would be called alike is more said, the sample (by its own title or name), then the
-whole label:
+objective or a constraint by its title, or its metric. No two of a kind are called alike: where
+two objectives (or two constraints) would be, the sample is said too (by its own title or name),
+then the whole label; two parameters titled alike are each called by the title and the name.
+An objective and a constraint on one metric are each called by their own title:
 
 ```python
 from k4opt.visualization import names
 
 called = names(study.problem)
 called.parameter("ecal_cell_size")  # 'ECAL cell size', its title
-called.metric("gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual")
+called.objective("gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual")
 # 'Angular residual · 10 GeV γ': the other sample's objective has the same title
 ```
 

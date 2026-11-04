@@ -85,7 +85,7 @@ def _trade_offs(results: StudyResults) -> TradeOffs | None:
             kind0, amount0, relative0 = held_rules.get(index, (ANY, 0.0, True))
             arrow = "▼" if objective.direction == "minimize" else "▲"
             st.markdown(
-                f"{arrow} **{labels.plain(called.metric(objective.label))}**",
+                f"{arrow} **{labels.plain(called.objective(objective.label))}**",
                 help=labels.plain(f"{objective.label}, {objective.direction}"),
             )
             how, much, scale = st.columns([4, 3, 2], vertical_alignment="center")
@@ -170,7 +170,7 @@ def _matches(results: StudyResults, found: TradeOffs, *, noisy: bool) -> None:
     if not found.matches:
         called = names(results.problem)
         hardest = ", ".join(
-            f"{labels.plain(called.metric(label))} excludes {count}"
+            f"{labels.plain(called.objective(label))} excludes {count}"
             for label, count in sorted(found.excludes.items(), key=lambda item: -item[1])
         )
         noise = " Differences within the uncertainties count as none." if noisy else ""

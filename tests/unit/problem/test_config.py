@@ -221,6 +221,7 @@ def test_titles_are_kept_and_change_nothing_but_what_a_reader_is_shown(
     ("title", "message"),
     [
         ("two\nlines", "must be one line"),
+        ("ends in a line break\n", "must be one line"),  # as a YAML | block does
         ("  ", "must be a non-empty string"),
         (3, "must be a non-empty string"),
     ],

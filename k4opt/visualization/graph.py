@@ -155,15 +155,15 @@ def task_graph(
         for label in dict.fromkeys(str(entry["task"]) for entry in trial.diagnostics):
             failures.setdefault(label, []).append(trial.number)
     called = names(spec)
-    sets: dict[TaskId, list[tuple[str, str]]] = {}  # (what, parameter) by task
+    sets: dict[TaskId, list[tuple[str, str]]] = {}  # (what, parameter name) by task
     edges: list[GraphEdge] = []
     nodes = [_parameter(parameter, called) for parameter in spec.parameters]
     for parameter in spec.parameters:
         for target, name in _sets(plan, parameter):
-            sets.setdefault(target, []).append((name, called.parameter(parameter.name)))
+            sets.setdefault(target, []).append((name, parameter.name))
             edges.append(GraphEdge(f"parameter:{parameter.name}", target.label, "sets", name))
     nodes += [
-        _task(spec, task, sets.get(task.id, []), times.get(task.id.label), failures)
+        _task(spec, task, sets.get(task.id, []), called, times.get(task.id.label), failures)
         for task in plan.tasks
     ]
     roles = _roles(spec)
@@ -247,10 +247,12 @@ def _task(
     spec: ProblemSpec,
     task: Task,
     sets: Sequence[tuple[str, str]],
+    called: Names,
     seconds: Mapping[int, float] | None,
     failures: Mapping[str, list[int]],
 ) -> GraphNode:
-    """One task: what it is, how it is made and what parameters set of it."""
+    """One task: what it is, how it is made and what parameters set of it (``sets``: what, and
+    the name of the parameter that sets it)."""
     task_id = task.id
     details: list[str] = []
     facts: list[tuple[str, str]] = [("task", task_id.label)]
@@ -278,7 +280,7 @@ def _task(
         facts += [("evaluator", entry.name), ("version", entry.version)]
         facts += [(f"setting {key}", _value(value)) for key, value in entry.settings.items()]
         facts += [(f"collection {role}", name) for role, name in entry.collections.items()]
-    details += _varied(sets)
+    details += _varied(sets, called)
     if not task.required:
         details.append("diagnostic")
     facts.append(("reads", ", ".join(need.label for need in task.needs) or "nothing"))
@@ -302,15 +304,16 @@ def _task(
     )
 
 
-def _varied(sets: Sequence[tuple[str, str]]) -> list[str]:
-    """What parameters vary of a task, each ``(what, parameter)``: what alone where one parameter
-    varies it all, as the edge from that parameter says which (``varies ECal_cell_size``); with
-    the parameter of each where several do (``physics.rangecut ← Range cut``)."""
+def _varied(sets: Sequence[tuple[str, str]], called: Names) -> list[str]:
+    """What parameters vary of a task, each ``(what, parameter name)``: what alone where one
+    parameter varies it all, as the edge from that parameter says which (``varies
+    ECal_cell_size``); with what each parameter is called where several do (``physics.rangecut ←
+    Range cut``)."""
     if not sets:
         return []
     if len({parameter for _, parameter in sets}) == 1:
         return ["varies " + ", ".join(what for what, _ in sets)]
-    return [f"{what} ← {parameter}" for what, parameter in sets]
+    return [f"{what} ← {called.parameter(parameter)}" for what, parameter in sets]
 
 
 def _making(spec: ProblemSpec, sample: str, stage: Stage) -> str:

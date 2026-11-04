@@ -97,7 +97,7 @@ def _sheet(results: StudyResults, trial: TrialResult) -> None:
     arrows = {"minimize": "▼", "maximize": "▲"}
     tiles = [
         (
-            f"{arrows[direction]} {called.metric(value.label)}",
+            f"{arrows[direction]} {called.objective(value.label)}",
             labels.number(value.value, value.unit, value.uncertainty),
             f"{value.label}, to {direction}",
         )

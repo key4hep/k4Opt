@@ -277,7 +277,7 @@ def _problem(results: StudyResults) -> None:
                 arrow = "▲" if o.direction == "maximize" else "▼"
                 way = "green" if o.direction == "maximize" else "red"  # as the model says it
                 badges = [(f"{arrow} {o.direction}", way)] + ([(unit, "gray")] if unit else [])
-                _item(called.metric(o.label), badges, o.label)
+                _item(called.objective(o.label), badges, o.label)
         if spec.constraints:
             with columns[2]:
                 _heading("Constraints", ":material/rule:", len(spec.constraints))
@@ -286,7 +286,7 @@ def _problem(results: StudyResults) -> None:
                     bounds = [f"{s} {v}" for s, v in (("≥", c.min), ("≤", c.max)) if v is not None]
                     bound = " and ".join(bounds) + (f" {unit}" if unit else "")
                     scale = "" if c.scale is None else f" · scale {c.scale}"
-                    _item(called.metric(c.label), [(bound, "red")], c.label + scale)
+                    _item(called.constraint(c.label), [(bound, "red")], c.label + scale)
 
 
 def _heading(title: str, icon: str, count: int) -> None:

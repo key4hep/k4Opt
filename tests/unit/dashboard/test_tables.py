@@ -99,3 +99,24 @@ def test_a_trade_off_lists_the_reference_and_each_match_with_its_changes(tmp_pat
         base = reference.objectives["test.trade_off/analysis/a"]
         change = trial.objectives["test.trade_off/analysis/a"] - base
         assert row["Δ a [%]"] == pytest.approx(100 * change / abs(base))
+
+
+def test_parameters_titled_alike_each_keep_a_column_of_their_own() -> None:
+    import yaml
+
+    from k4opt.frozen import FrozenMap
+    from k4opt.optimization import StudyResults, TrialResult
+    from k4opt.problem import parse_problem
+
+    import tables
+
+    examples = Path(__file__).resolve().parents[3] / "examples" / "problem"
+    document = yaml.safe_load((examples / "cld-ecal-bindings.yaml").read_text())
+    document["parameters"]["ecal_cell_size"]["title"] = "Size"
+    document["parameters"]["range_cut"]["title"] = "Size"  # in mm too: one heading but for names
+    spec = parse_problem(document)
+    candidate = {"ecal_cell_size": 5.0, "range_cut": 0.5, "cell_threshold": 70.0}
+    trial = TrialResult(0, "valid", candidate, record="r")
+    results = StudyResults("s", "id", "now", spec, FrozenMap({}), (trial,), ())
+    (row,) = tables.trials(results)
+    assert row["Size (ecal_cell_size) [mm]"] == 5.0 and row["Size (range_cut) [mm]"] == 0.5

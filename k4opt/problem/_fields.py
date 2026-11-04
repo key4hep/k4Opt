@@ -66,7 +66,7 @@ def _optional_text(m: Mapping[str, Any], key: str, path: str) -> str | None:
 def _title(m: Mapping[str, Any], path: str) -> str | None:
     """The ``title`` of ``m``, if it has one: one line a reader is shown instead of a name."""
     title = _optional_text(m, "title", path)
-    if title is not None and len(title.splitlines()) > 1:
+    if title is not None and title.splitlines() != [title]:  # a line break, also at its end
         raise _fail(_join(path, "title"), f"must be one line, got {_show(title)}")
     return title
 

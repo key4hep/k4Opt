@@ -716,12 +716,16 @@ objectives:
     direction: minimize
 ```
 
+A title is one line: a line break, also one at its end (as a YAML `|` block leaves), is refused.
 An objective's title names what is measured, not the sample it is measured on: the sample has
-a title of its own. Where two objectives or constraints would be called alike, a figure adds the
-sample (`Angular residual · 10 GeV γ`), and where even that is alike, the whole label
-([`names`](visualization.md#names)). A title is no part of the problem's identity: a study whose
-problem gained or changed titles resumes, and keeps its records. A study shows the titles its
-problem had when the study was made (its `study.json` is written once).
+a title of its own. Where two objectives (or two constraints) would be called alike, a figure adds
+the sample (`Angular residual · 10 GeV γ`), and where even that is alike, the whole label; two
+parameters titled alike are each called by the title and the name (`Cell size
+(ecal_barrel_size)`). An objective and a constraint on one metric are each called by their own
+title ([`names`](visualization.md#names)). A title is no part of the problem's identity: a study
+whose problem gained or changed titles resumes, and keeps its records. A study shows the titles
+its problem had when the study was made (its `study.json` is written once), also the results a
+resume with other titles returns.
 
 ## Time limits
 

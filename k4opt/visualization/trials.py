@@ -131,7 +131,7 @@ def _axis(results: StudyResults, key: str) -> _Axis:
     called = names(spec)
     for index, objective in enumerate(spec.objectives):
         if key == f"{OBJECTIVE}{objective.label}":
-            return _Axis(key, called.metric(objective.label), objective=objective, index=index)
+            return _Axis(key, called.objective(objective.label), objective=objective, index=index)
     for parameter in spec.parameters:
         if key == f"{PARAMETER}{parameter.name}":
             return _Axis(key, called.parameter(parameter.name), parameter=parameter)
@@ -536,9 +536,9 @@ def _hover(results: StudyResults, trial: TrialResult, front: set[int]) -> str:
     if assessment is not None and assessment.objectives is not None:
         for objective in assessment.objectives:
             value = _number(objective.value, objective.unit, objective.uncertainty)
-            lines.append(f"{html.escape(called.metric(objective.label))} = {value}")
+            lines.append(f"{html.escape(called.objective(objective.label))} = {value}")
         lines.extend(
-            f"violates {html.escape(called.metric(limit.label))} {limit.bound} "
+            f"violates {html.escape(called.constraint(limit.label))} {limit.bound} "
             f"{_number(limit.limit, limit.unit)} by {_number(limit.margin, limit.unit)}"
             for limit in assessment.limits
             if limit.satisfied is False and limit.margin is not None

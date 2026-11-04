@@ -145,6 +145,10 @@ def test_a_task_several_parameters_vary_says_which_varies_what() -> None:
     details = task_graph(parse_problem(document)).node("geometry").details
     assert "ECal_cell_size ← ECAL cell size" in details
     assert "ECalBarrel_outer_radius ← ecal_depth" in details
+    document["parameters"]["ecal_depth"]["title"] = "ECAL cell size"  # two parameters, one title
+    details = task_graph(parse_problem(document)).node("geometry").details
+    assert "ECal_cell_size ← ECAL cell size (ecal_cell_size)" in details
+    assert "ECalBarrel_outer_radius ← ECAL cell size (ecal_depth)" in details
 
 
 def test_parameters_samples_and_measured_metrics_are_drawn_by_their_titles() -> None:
