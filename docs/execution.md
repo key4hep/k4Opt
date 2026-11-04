@@ -46,7 +46,9 @@ runs and no output is written, so it is the quick way to see what a parameter ch
 expensive simulation. It does load the evaluators and calls their `check()`, and it does not show
 that the simulation or the evaluation will succeed. In particular, k4opt checks how a ddsim option
 is written, not that the installed ddsim knows it: a misspelt `physics.rangecuut` passes the dry
-run, and ddsim refuses it when it starts, which fails the simulation. For
+run, and ddsim refuses it when it starts, which fails the simulation. A reconstruction's job is
+asked, though: opening the session dry-runs `k4run` with its arguments, so a misspelt argument
+of the job refuses the problem before anything runs ([k4run](k4run.md#the-dry-run)). For
 [`cld-ecal-bindings.yaml`](../examples/problem/cld-ecal-bindings.yaml), a target of each kind on
 two samples:
 
@@ -118,7 +120,9 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
    `load_problem()` discovered;
 2. for each sample, in the order of the problem, the stages its evaluators or roles read are made
    available once each: a generation `file` is checked and hashed, and the `simulation` stage
-   runs `ddsim` on that snapshot in `<output>/samples/<sample>/simulation`. Then each evaluator
+   runs `ddsim` on that snapshot in `<output>/samples/<sample>/simulation`, and a
+   `reconstruction` stage `k4run` on it and the simulation in
+   `<output>/samples/<sample>/reconstruction` ([k4run](k4run.md)). Then each evaluator
    that measures the sample, in the order of the problem, reads the files of the sample's stages
    it needs and may write in `<output>/samples/<sample>/evaluators/<binding>`; last, each
    evaluator of the candidate runs in `<output>/evaluators/<binding>`; combined evaluators read
@@ -194,8 +198,8 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git
      checkout (`null` when it is installed rather than checked out), `KEY4HEP_STACK` and `K4GEO`
-     (those the session opened with, checked before each candidate) and the `ddsim` that was
-     started; the pin and the stack are not compared).
+     (those the session opened with, checked before each candidate) and the `ddsim` and `k4run`
+     that were started; the pin and the stack are not compared).
 
 The command prints the candidate's values, its status, each evaluation's status and metrics with their
 uncertainty (a binding named with `as` beside its evaluator, and the sample it measures:

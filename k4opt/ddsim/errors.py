@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from k4opt.errors import K4OptError
+from k4opt.program import ProgramError
 
 
-class DdsimError(K4OptError):
+class DdsimError(ProgramError):
     """The generation settings or arguments for ``ddsim`` are unsupported or conflict.
 
     Raised before anything is run. A ``ddsim`` that fails is reported by

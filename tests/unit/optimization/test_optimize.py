@@ -616,7 +616,7 @@ def test_a_trial_whose_sample_fails_is_failed_and_keeps_the_other_samples_values
         simulated += 1
         return 2 if simulated == 4 else code  # the pions of the second trial
 
-    monkeypatch.setattr(simulation.ddsim_run, "_execute", second_pions_crash)
+    monkeypatch.setattr(simulation.program, "execute", second_pions_crash)
     report = study(sampled_problem, tmp_path / "s", trials=3, evaluators=[cell_count()])
     assert len(fake.calls) == 6  # two samples, one simulation each, every trial
     assert [t.status for t in report.trials] == ["valid", "failed", "valid"]
@@ -644,7 +644,7 @@ def test_a_combined_evaluator_is_optimized_and_a_trial_without_its_background_fa
         simulated += 1
         return 2 if simulated == 4 else code  # the background of the second trial
 
-    monkeypatch.setattr(simulation.ddsim_run, "_execute", second_background_crashes)
+    monkeypatch.setattr(simulation.program, "execute", second_background_crashes)
     evaluators = [toy_significance(), yields()]
     report = study(combined_problem, tmp_path / "s", trials=3, evaluators=evaluators)
     assert tuple(o.label for o in report.problem.objectives) == (

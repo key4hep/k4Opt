@@ -14,6 +14,7 @@ PACKAGE = Path(__file__).resolve().parents[2] / "k4opt"
 ORDER = (
     "geometry",
     "ddsim",
+    "k4run",
     "evaluation",
     "problem",
     "record",

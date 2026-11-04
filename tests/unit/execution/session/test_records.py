@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import yaml
 
-from k4opt.ddsim import run as ddsim_run
+from k4opt import program
 from k4opt.evaluation import (
     Artifact,
     EvaluationRequest,
@@ -564,7 +564,7 @@ def crash_pions(monkeypatch: pytest.MonkeyPatch) -> None:
         code = fake(argv, **kwargs)
         return 2 if particle(argv) == "pi-" else code
 
-    monkeypatch.setattr(ddsim_run, "_execute", pions_crash)
+    monkeypatch.setattr(program, "execute", pions_crash)
 
 
 def test_a_diagnostic_that_does_not_succeed_is_recorded_and_leaves_the_candidate_valid(

@@ -189,7 +189,7 @@ def test_the_normalized_form_writes_one_form_of_each_target(doc: dict[str, Any])
     [
         ({}, "parameters.x.targets: must name at least one target: geometry, generation"),
         ({"stage": "simulation"}, "parameters.x.targets: unknown key(s) ['stage']"),
-        ({"reconstruction": "x"}, "unknown key(s) ['reconstruction']"),
+        ({"analysis": "x"}, "unknown key(s) ['analysis']"),
         ({"geometry": []}, "parameters.x.targets.geometry: must name at least one target"),
         ({"geometry": {"constant": "X"}}, "parameters.x.targets.geometry: must be a non-empty"),
         ({"simulation": {"samples": ["gamma"]}}, "targets.simulation: missing required key(s)"),

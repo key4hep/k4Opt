@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
+from k4opt import program
 from k4opt.ddsim import DdsimError
-from k4opt.ddsim import run as ddsim_run
 from k4opt.evaluation import (
     EvaluationContractError,
     EvaluationFailed,
@@ -221,7 +221,7 @@ def test_ddsim_missing_from_the_environment_is_an_error_outcome(
     spec: ProblemSpec, geometry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     simulation.install(monkeypatch)
-    monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(program.shutil, "which", lambda name: None)
     outcome = run_stage(
         context(spec),
         "simulation",
@@ -239,7 +239,7 @@ def test_ddsim_that_cannot_start_is_an_error_outcome(
     def refuse(*args: Any, **kwargs: Any) -> None:
         raise PermissionError("denied")
 
-    monkeypatch.setattr(ddsim_run, "_execute", refuse)
+    monkeypatch.setattr(program, "execute", refuse)
     outcome = run_stage(
         context(spec),
         "simulation",
@@ -269,8 +269,8 @@ def test_a_valid_problem_passes_the_check(spec: ProblemSpec) -> None:
 
 
 def test_an_unknown_stage_is_rejected(spec: ProblemSpec) -> None:
-    with pytest.raises(EvaluationContractError, match=r"unknown stage 'reconstruction'"):
-        check_stages(context(spec), "reconstruction")
+    with pytest.raises(EvaluationContractError, match=r"unknown stage 'analysis'"):
+        check_stages(context(spec), "analysis")
 
 
 def test_simulation_needs_generation_and_provided_inputs_are_not_rerun() -> None:

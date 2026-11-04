@@ -12,12 +12,11 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from k4opt.ddsim.errors import DdsimError
 from k4opt.frozen import Json
+from k4opt.program import Settable
 
 # ddsim's own --gun.distribution values that are driven by theta and phi ranges
 DIRECTION_DISTRIBUTIONS = ("cos(theta)", "uniform")
@@ -440,24 +439,6 @@ def ddsim_arguments(
     if seed is not None:
         managed.append(f"--random.seed={seed}")
     return (*managed, *user)
-
-
-@dataclass(frozen=True, slots=True)
-class Settable:
-    """How a parameter's value is written into an option of an executor that it sets: as
-    ``text`` (a particle name), as a ``quantity`` ``{value, unit}`` with a unit of ``units``, or
-    as an ``expression``, the text ddsim's command line reads (a number, ``<value>*<unit>`` for a
-    number with a unit, a text or a boolean).
-
-    Whether a value is valid is decided by the check of that option alone, a test of its one
-    value that an interval or a set decides (positive, finite, a unit of a list, a nonblank
-    name): the ends of a parameter's domain decide it for every value between them, so a
-    problem is checked at those ends, before any candidate. An option whose check is not of
-    that kind is not settable.
-    """
-
-    form: Literal["text", "quantity", "expression"]
-    units: tuple[str, ...] = ()
 
 
 _SETTABLE_GUN: Mapping[str, Settable] = {

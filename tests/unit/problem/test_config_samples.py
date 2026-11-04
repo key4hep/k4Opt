@@ -107,9 +107,9 @@ def test_parsing_never_runs_a_subprocess(
     ("edit", "message"),
     [
         (
-            lambda s: s.update(reconstruction={"executor": "k4run"}),
-            "samples.gamma: unknown key(s) ['reconstruction']; allowed: ['generation', "
-            "'properties', 'simulation', 'title']",
+            lambda s: s.update(analysis={"executor": "fccanalysis"}),
+            "samples.gamma: unknown key(s) ['analysis']; allowed: ['generation', "
+            "'properties', 'reconstruction', 'simulation', 'title']",
         ),
         (
             lambda s: s.update(simulation="ddsim"),
@@ -212,9 +212,9 @@ def test_stage_errors(
     ("edit", "message"),
     [
         (
-            lambda d: d["evaluators"][0].update(stage="reconstruction"),
-            "evaluators[0].stage: must be one of ['generation', 'simulation'], "
-            "got 'reconstruction'",
+            lambda d: d["evaluators"][0].update(stage="analysis"),
+            "evaluators[0].stage: must be one of ['generation', 'simulation', 'reconstruction'], "
+            "got 'analysis'",
         ),
         (
             lambda d: d["samples"]["gamma"].pop("simulation"),
@@ -639,8 +639,8 @@ def test_the_checked_in_examples_share_their_stages(
         (lambda d: d.update(stages={}), "stages: must name at least one stage"),
         (lambda d: d.update(stages=[]), "stages: must be a mapping, got list"),
         (
-            lambda d: d["stages"].update(reconstruction={"executor": "k4run"}),
-            "stages: unknown key(s) ['reconstruction']",
+            lambda d: d["stages"].update(analysis={"executor": "fccanalysis"}),
+            "stages: unknown key(s) ['analysis']",
         ),
         (
             lambda d: d["stages"]["simulation"].pop("executor"),

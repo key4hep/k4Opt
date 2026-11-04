@@ -13,6 +13,7 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 CALO_PHOTON = f"{EXAMPLES / 'evaluators' / 'calo_photon.py'}:CaloPhoton"
 CELL_COUNT = f"{Path(__file__).with_name('cell_count.py')}:CellCount"
 HIT_ENERGY = f"{Path(__file__).with_name('hit_energy.py')}:HitEnergy"
+RECO_CELLS = f"{Path(__file__).with_name('reco_cells.py')}:RecoCells"
 PARAMETER_ECHO = f"{Path(__file__).with_name('parameter_echo.py')}:ParameterEcho"
 TRADE_OFF = f"{Path(__file__).with_name('trade_off.py')}:TradeOff"
 CANDIDATE_CHECK = f"{Path(__file__).with_name('candidate_check.py')}:CandidateCheck"
@@ -30,6 +31,11 @@ def calo_photon() -> type[Evaluator]:
 def cell_count() -> type[Evaluator]:
     """The class of the test evaluator ``test.cell_count``."""
     return load_evaluator(CELL_COUNT)
+
+
+def reco_cells() -> type[Evaluator]:
+    """The class of the test evaluator ``test.reco_cells``, which reads the reconstruction."""
+    return load_evaluator(RECO_CELLS)
 
 
 def hit_energy() -> type[Evaluator]:

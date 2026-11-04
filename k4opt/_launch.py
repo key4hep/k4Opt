@@ -1,7 +1,7 @@
 """Internal: start a program that dies with the thread that started this launcher (Linux).
 
 Run by its file path, ``python -I _launch.py PARENT PROGRAM ARGS...``, from the thread of the
-process PARENT that starts the program (:func:`k4opt.ddsim.run._execute`). It has the kernel send
+process PARENT that starts the program (:func:`k4opt.program.execute`). It has the kernel send
 it SIGKILL once that thread ends (``PR_SET_PDEATHSIG``), checks that PARENT is still its parent
 and becomes PROGRAM: ``exec`` keeps the process, its group and that signal. So no code runs
 between fork and exec in PARENT, whose libraries (ROOT) may have started threads of their own.

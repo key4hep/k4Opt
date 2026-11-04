@@ -12,7 +12,6 @@ import pytest
 
 from k4opt.ddsim import (
     DdsimError,
-    Settable,
     check_arguments,
     check_options,
     check_particle_gun,
@@ -23,6 +22,7 @@ from k4opt.ddsim import (
 )
 from k4opt.ddsim.command import ddsim_arguments, managed_conflict, option_args, particle_gun_args
 from k4opt.frozen import freeze
+from k4opt.program import Settable
 
 GENERATOR: dict[str, Any] = {
     "particle": "gamma",

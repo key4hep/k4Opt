@@ -17,7 +17,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 
-from k4opt.ddsim import Settable
 from k4opt.evaluation import (
     CandidateKey,
     Scalar,
@@ -35,6 +34,7 @@ from k4opt.problem.models import (
     StageDestination,
 )
 from k4opt.problem.stages import executors
+from k4opt.program import Settable
 
 
 def _is_number(value: object) -> bool:

@@ -30,7 +30,6 @@ Typical use::
 from k4opt.ddsim.command import (
     DIRECTION_DISTRIBUTIONS,
     FILE_OPTIONS,
-    Settable,
     check_arguments,
     check_options,
     check_particle_gun,
@@ -47,7 +46,6 @@ __all__ = [
     "FILE_OPTIONS",
     "LOG_FILES",
     "DdsimError",
-    "Settable",
     "SimulationRun",
     "check_arguments",
     "check_options",

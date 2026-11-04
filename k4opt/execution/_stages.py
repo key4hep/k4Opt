@@ -12,6 +12,9 @@ evaluator therefore never builds a command, starts a tool or handles that tool's
   ``inputs["generation"]``.
 * ``simulation``: ``ddsim`` on the prepared geometry. Its output, run or given, is checked to
   hold its events (the requested number, when it ran), so no evaluator has to.
+* ``reconstruction``: a Gaudi job (``k4run``) on the prepared geometry and every event of the
+  simulation, from a copy of the job's directory. Its resolved options are checked to show that
+  it read them, and its output, run or given, to hold every event it read.
 
 Each stage of a candidate is one task (:mod:`k4opt.problem.plan`), whose work
 :func:`make_stage` does in the task's own directory: a stage that fails blocks only the tasks
@@ -29,11 +32,14 @@ supplied stage that the parameters change was not made from the candidate.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
-from collections.abc import Callable, Collection, Mapping
+import re
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from k4opt import k4run
 from k4opt.ddsim import (
     FILE_OPTIONS,
     check_arguments,
@@ -44,15 +50,17 @@ from k4opt.ddsim import (
 )
 from k4opt.evaluation import EvaluationContractError, EvaluationFailed, count_events
 from k4opt.execution._files import file_identity, readable_identity
-from k4opt.frozen import Json
+from k4opt.frozen import Json, thaw
 from k4opt.geometry import Catalog
-from k4opt.problem.models import ProblemSpec, Stage
+from k4opt.problem.candidate import edges, stage_value
+from k4opt.problem.models import Parameter, ProblemSpec, Stage, StageDestination
 from k4opt.problem.stages import (
     executors,
     graph,
     plan_stages,
     reads_geometry,
     stage_output,
+    stage_reads,
     stage_type,
     writes_files,
 )
@@ -101,9 +109,11 @@ class StageContext:
         """Where the problem defines ``stage``: ``samples.<sample>.<stage>``."""
         return stage if self.sample is None else f"samples.{self.sample}.{stage}"
 
-    def path(self, value: str) -> Path:
-        """The absolute path ``value`` stands for, a relative one taken from ``directory``."""
-        path = Path(value).expanduser()
+    def path(self, value: str, variables: bool = False) -> Path:
+        """The absolute path ``value`` stands for, a relative one taken from ``directory``; with
+        ``variables``, ``$NAME`` and ``${NAME}`` stand for environment variables
+        (``$CLDCONFIG/share/CLDConfig``)."""
+        path = Path(os.path.expandvars(value) if variables else value).expanduser()
         if path.is_absolute():
             return path
         return Path(os.path.abspath((self.directory or Path.cwd()) / path))
@@ -117,9 +127,17 @@ class StageContext:
         }
 
     def conditions(self, name: str | None) -> tuple[int | None, int | None]:
-        """``(events, seed)`` of the stage ``name``, ``None`` where it has none."""
+        """``(events, seed)`` of the stage ``name``, ``None`` where it has none: those of the
+        stage whose every event it processes, for an executor that takes none of its own (a
+        reconstruction, of the simulation)."""
         stage = None if name is None else self.stages.get(name)
-        return (None, None) if stage is None else (stage.events, stage.seed)
+        if stage is None or name is None:
+            return None, None
+        if stage.executor is not None:
+            executor = executors(name)[stage.executor]
+            if not executor.events and executor.inside is None:
+                return self.conditions(stage_reads(name)[0])
+        return stage.events, stage.seed
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,7 +276,9 @@ def _run_simulation(
     return StageOutcome({"events": run.output}, logs, provenance, peak_memory_bytes=peak)
 
 
-def _inspect_simulation(context: StageContext, path: Path) -> tuple[dict[str, Json], str | None]:
+def _inspect_simulation(
+    context: StageContext, path: Path, inputs: Mapping[str, Path]
+) -> tuple[dict[str, Json], str | None]:
     """``(observations, error)`` for the EDM4hep file of the simulation stage."""
     try:
         count = count_events(path)
@@ -273,6 +293,203 @@ def _inspect_simulation(context: StageContext, path: Path) -> tuple[dict[str, Js
     return observed, None
 
 
+def _variable_hint(value: str) -> str:
+    """Why the path ``value`` may not exist: an environment variable in it that is not set."""
+    unset = [
+        name
+        for name in re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", value)
+        if name not in os.environ
+    ]
+    if not unset:
+        return ""
+    return f" (${', $'.join(unset)} not set: is the Key4hep environment set up?)"
+
+
+def _job(context: StageContext, stage: Stage) -> tuple[list[Path], Path | None]:
+    """``(files, directory)``: the absolute options files of the reconstruction ``stage`` and the
+    directory the job runs from a copy of, ``None`` if it has none."""
+    raw = stage.options.get(k4run.DIRECTORY)
+    directory = None if raw is None else context.path(str(raw), variables=True)
+    names = k4run.options_files(stage.options)
+    if directory is not None:
+        return [directory / name for name in names], directory
+    return [context.path(name, variables=True) for name in names], None
+
+
+def _job_files(context: StageContext, stage: Stage) -> dict[str, Path]:
+    """The files the reconstruction ``stage`` runs, by where it names them: each file of its
+    ``directory`` (``directory/PandoraSettingsCLD/PandoraSettingsDefault.xml``), which the job
+    runs a copy of, or its ``options`` files (``options``, ``options[1]``)."""
+    files, directory = _job(context, stage)
+    if directory is not None:
+        return {f"directory/{name}": path for name, path in k4run.job_files(directory).items()}
+    if len(files) == 1 and not isinstance(stage.options.get(k4run.OPTIONS), (list, tuple)):
+        return {"options": files[0]}
+    return {f"options[{index}]": path for index, path in enumerate(files)}
+
+
+def _check_reconstruction(context: StageContext, provided: Collection[str]) -> None:
+    stage = context.stages.get("reconstruction")
+    where = context.where("reconstruction")
+    if stage is None or stage.executor is None:
+        raise EvaluationContractError(f"{where}: the sample has no reconstruction to run")
+    k4run.check_options(stage.options, context.pending.get("reconstruction", ()))
+    files, directory = _job(context, stage)
+    if directory is not None and not directory.is_dir():
+        raw = str(stage.options[k4run.DIRECTORY])
+        raise EvaluationContractError(
+            f"{where}.directory: {directory} is not a directory{_variable_hint(raw)}"
+        )
+    for name, path in zip(k4run.options_files(stage.options), files, strict=True):
+        if not path.is_file():
+            within = f" in {directory}" if directory is not None else _variable_hint(name)
+            raise EvaluationContractError(f"{where}.options: {path} is not a file{within}")
+
+
+def _run_reconstruction(
+    context: StageContext, inputs: Mapping[str, Path], workdir: Path | None
+) -> StageOutcome:
+    stage = context.stages["reconstruction"]
+    assert workdir is not None  # checked by check_run_inputs
+    files, directory = _job(context, stage)
+    read = {label: readable_identity(path) for label, path in _job_files(context, stage).items()}
+    run = k4run.reconstruct(
+        files=files,
+        directory=directory,
+        compact=inputs["geometry"],
+        input_file=inputs["simulation"],
+        workdir=workdir,
+        options=stage.options,
+        timeout=context.timeout,
+        started=context.started,
+        die_with_parent=context.die_with_parent,
+    )
+    # it ran in workdir/job, a copy of the directory; the record names workdir relative to the run
+    provenance: dict[str, Json] = {
+        "argv": run.argv,
+        "returncode": run.returncode,
+        "timeout": context.timeout,
+    }
+    error = run.error
+    recorded: dict[str, Json] = {}
+    changed = []
+    for label, path in _job_files(context, stage).items():
+        identity = read.get(label)
+        recorded[label] = {"path": str(path), **(identity or {})}
+        if identity is None:
+            changed.append(f"{label}: {path} cannot be read")
+        elif readable_identity(path) != identity:
+            changed.append(f"{label}: {path}")
+    changed.extend(f"{label}: gone" for label in sorted(read.keys() - recorded.keys()))
+    if changed:
+        note = (
+            "the job's files changed or could not be read while k4run ran, so the record cannot "
+            "say what it ran: " + ", ".join(changed)
+        )
+        error = note if error is None else f"{error}\n{note}"
+    provenance["files"] = recorded
+    logs = {role: path for role, path in run.files.items() if role != "edm4hep"}
+    peak = run.peak_memory_bytes
+    if error is not None:
+        return StageOutcome(
+            artifacts=logs, provenance=provenance, error=error, peak_memory_bytes=peak
+        )
+    return StageOutcome({"events": run.output}, logs, provenance, peak_memory_bytes=peak)
+
+
+def _inspect_reconstruction(
+    context: StageContext, path: Path, inputs: Mapping[str, Path]
+) -> tuple[dict[str, Json], str | None]:
+    """``(observations, error)`` for the EDM4hep file of the reconstruction stage: it holds every
+    event of the simulation it read, if it read one here (not given as a file)."""
+    try:
+        count = count_events(path)
+        read = None if "simulation" not in inputs else count_events(inputs["simulation"])
+    except EvaluationFailed as exc:
+        return {}, str(exc)
+    observed: dict[str, Json] = {"events_read": count}
+    if read is not None and count != read:
+        return observed, (
+            f"incomplete reconstruction: {count} of the {read} simulated events in {path.name}"
+        )
+    if count == 0:
+        return observed, f"{path.name} contains no events"
+    return observed, None
+
+
+def _variants(
+    context: StageContext, stage: Stage, parameters: Sequence[Parameter]
+) -> list[tuple[str, Mapping[str, Json]]]:
+    """The options of the reconstruction ``stage`` that a dry run tries, each with what it
+    writes in, for messages: with the options that parameters set at the first end of each
+    one's domain, then each other end of each, one at a time; as the problem writes them if no
+    parameter sets one."""
+    executor = executors("reconstruction")[stage.executor or "k4run"]
+    set_by = {
+        destination.option: parameter
+        for parameter in parameters
+        for destination in parameter.targets
+        if isinstance(destination, StageDestination)
+        and destination.stage == "reconstruction"
+        and context.sample in destination.samples
+    }
+    values = {
+        option: [stage_value(executor.settable(option), parameter, e) for e in edges(parameter)]
+        for option, parameter in set_by.items()
+    }
+    first = {option: ends[0] for option, ends in values.items()}
+    variants: list[tuple[str, Mapping[str, Json]]] = [("", {**stage.options, **first})]
+    variants.extend(
+        (
+            f"{option} = {value!r}, as parameters.{set_by[option].name} sets it",
+            {**stage.options, **first, option: value},
+        )
+        for option, ends in values.items()
+        for value in ends[1:]
+    )
+    if first:
+        shown = ", ".join(f"{option} = {value!r}" for option, value in first.items())
+        variants[0] = (f"{shown}, as the parameters set them", variants[0][1])
+    return variants
+
+
+def try_reconstruction(
+    context: StageContext,
+    parameters: Sequence[Parameter],
+    compact: Path,
+    scratch: Path,
+    tried: set[str],
+) -> None:
+    """Raise :class:`EvaluationContractError` if the job of the reconstruction of ``context``'s
+    sample does not take its arguments: ``k4run --dry-run`` (:func:`k4opt.k4run.dry_run`) on the
+    geometry ``compact``, once for each of its variants (each end of the domain of a parameter
+    that sets one of its options). Each runs in a new directory in ``scratch``, whose
+    placeholder input they share; ``tried`` holds the jobs tried before, which are not tried
+    again."""
+    stage = context.stages["reconstruction"]
+    files, directory = _job(context, stage)
+    where = context.where("reconstruction")
+    for written, options in _variants(context, stage, parameters):
+        key = json.dumps(
+            [[str(file) for file in files], str(directory), thaw(options)], sort_keys=True
+        )
+        if key in tried:
+            continue
+        tried.add(key)
+        reason = k4run.dry_run(
+            files=files,
+            directory=directory,
+            compact=compact,
+            workdir=scratch / f"dry-run-{len(tried)}",
+            options=options,
+            placeholder=scratch / "placeholder.edm4hep.root",
+        )
+        if reason is not None:
+            raise EvaluationContractError(
+                f"{where}: {reason}" + (f" (with {written})" if written else "")
+            )
+
+
 def _simulation_cpus(stage: Stage) -> int:
     return threads(stage.options) if stage.executor == "ddsim" else 1
 
@@ -285,15 +502,21 @@ def _simulated_collections(stage: Stage, catalog: Catalog) -> list[str] | None:
 class _Runner:
     """How a stage type runs: what checks that it can run in a context (``check``, given the
     stages the caller supplies), what runs it (``run``, given the files it reads and its
-    directory), what checks its main output, whether it ran or was given (``inspect``), how many
-    processors running a stage keeps busy (``cpus``) and which collections it is expected to
-    write for a geometry, if anything predicts them (``collections``)."""
+    directory), what checks its main output, whether it ran or was given (``inspect``, given the
+    files the stage read, none if it was given), how many processors running a stage keeps busy
+    (``cpus``), which collections it is expected to write for a geometry, if anything predicts
+    them (``collections``), and which files the problem names in a stage that runs, by where
+    (``files``: ``physics.pdgfile``, ``directory/...``)."""
 
     check: Callable[[StageContext, Collection[str]], None]
     run: Callable[[StageContext, Mapping[str, Path], Path | None], StageOutcome]
-    inspect: Callable[[StageContext, Path], tuple[dict[str, Json], str | None]] | None = None
+    inspect: (
+        Callable[[StageContext, Path, Mapping[str, Path]], tuple[dict[str, Json], str | None]]
+        | None
+    ) = None
     cpus: Callable[[Stage], int] = lambda stage: 1
     collections: Callable[[Stage, Catalog], list[str] | None] = lambda stage, catalog: None
+    files: Callable[[StageContext, Stage], dict[str, Path]] = lambda context, stage: {}
 
 
 _RUNNERS: Mapping[str, _Runner] = {
@@ -304,6 +527,13 @@ _RUNNERS: Mapping[str, _Runner] = {
         _inspect_simulation,
         cpus=_simulation_cpus,
         collections=_simulated_collections,
+        files=lambda context, stage: _option_files(context, stage.options),
+    ),
+    "reconstruction": _Runner(
+        _check_reconstruction,
+        _run_reconstruction,
+        _inspect_reconstruction,
+        files=_job_files,
     ),
 }
 
@@ -399,8 +629,8 @@ def input_files(
         stage = context.stages.get(name)  # each one is defined once check_stages() passed
         if name in files:
             named[f"{context.where(name)}.file"] = files[name]
-        elif name not in provided and stage is not None:
-            options = _option_files(context, stage.options)
+        elif name not in provided and stage is not None and stage.executor is not None:
+            options = _RUNNERS[name].files(context, stage)
             named |= {f"{context.where(name)}.{key}": path for key, path in options.items()}
     return named
 
@@ -461,7 +691,7 @@ def make_stage(
     main = outcome.outputs.get(output)
     if outcome.error is not None or main is None or inspect is None:
         return outcome, None if outcome.error is not None else main
-    observed, error = inspect(context, main)
+    observed, error = inspect(context, main, inputs if path is None and supplied is None else {})
     provenance = {**outcome.provenance, **observed}
     outcome = replace(outcome, provenance=provenance, error=error)
     return outcome, None if error is not None else main

@@ -166,8 +166,40 @@ record names the producer of each role. This shows how the cell size limits the 
 separation of the showers themselves; it is not a validated pi0 identification or particle-flow
 study.
 
+## Reconstructed pi0 example
+
+The photon/pi0 example asks the showers; this one asks the reconstruction: does the particle flow
+see the two photons of a neutral pion as two? The
+[example](../examples/problem/cld-ecal-pi0-reco.yaml) simulates 200 neutral pions of 50 GeV in
+the barrel on each candidate geometry and reconstructs them with CLD's reconstruction
+(CLDConfig's `CLDReconstruction.py`, run by k4run, [k4run](k4run.md)). The example evaluator
+`pfo.pi0` version 1 ([`pfo_pi0.py`](../examples/evaluators/pfo_pi0.py)) reads the
+reconstruction's particle-flow objects (`PandoraPFOs`) and its generated particles, and keeps the
+events whose pion decayed into two photons, neither converted in the tracker (165 of the 200):
+
+| Metric | Unit | Definition |
+| --- | --- | --- |
+| `reconstruction` / `pi0.resolved` | 1 | the fraction of these events with at least two reconstructed photons (PDG 22) of at least `min_energy`, with its standard error |
+| `reconstruction` / `pi0.photons` | 1 | the mean number of such photons per event, with its standard error |
+
+`ecal.channels` weighs it against the readout cost, as in the photon/pi0 example. On the nightly
+2026-10-20, seed 42, `min_energy` 1 GeV:
+
+| `ECal_cell_size` [mm] | 2.5 | 4.0 | 5.1 | 7.0 | 10 | 14 | 20 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `pi0.resolved` | 0.16 ± 0.03 | 0.67 ± 0.04 | 0.47 ± 0.04 | 0.18 ± 0.03 | 0 | 0 | 0 |
+| `pi0.photons` | 1.15 | 1.66 | 1.47 | 1.18 | 0.99 | 0.99 | 0.99 |
+
+From 4 mm up, coarser cells merge the photons, as their separation (at least about 12 mm) says,
+and from 10 mm on the particle flow always sees one photon. Below 4 mm the reconstruction finds
+fewer photons again: its digitization and Pandora settings were tuned for CLD's 5.1 mm cells
+(an energy threshold per cell, for one, keeps less of a shower spread over smaller cells). The
+metric is therefore that of the reconstruction as configured, not of the cells alone; a
+parameter can set an argument of the job as well ([problem](problem.md#parameters)), and a
+reconstruction tuned for each candidate is not done. It is a demonstration of a study that needs
+reconstruction, not a validated pi0 identification.
+
 ## Not done
 
-Reconstruction, evaluator lookup by name, chained combined evaluators, stage configuration
-shared by samples, branches of the stages, aggregation over seeds, retries, a persistent store of runs and
+Evaluator lookup by name, chained combined evaluators, branches of the stages, aggregation over seeds, retries, a persistent store of runs and
 an environment check against the pin.

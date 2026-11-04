@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TextIO
 
 from k4opt.evaluation import CandidateRejected, Status, load_evaluator
@@ -227,19 +228,23 @@ def _report(outcome: RunOutcome, out: TextIO) -> None:
     if needed := [entry for entry in measured if entry[0] is not None]:
         most, label, memory = max(needed, key=lambda entry: entry[0] or 0)
         parts = [f"k4opt {size(memory.process)}"] if memory.process is not None else []
-        parts += [f"ddsim {size(memory.program)}"] if memory.program is not None else []
+        if memory.program is not None:
+            ran = [r for r in candidate.results.values() if r.id.label == label]
+            argv = ran[0].provenance.get("argv") if ran else None
+            program = Path(str(argv[0])).name if isinstance(argv, (list, tuple)) and argv else ""
+            parts += [f"{program or 'program'} {size(memory.program)}"]
         print(
             f"memory:      {size(most or 0)} per task (estimate), for {label} ({', '.join(parts)})",
             file=out,
         )
     print(f"summary:     {outcome.summary_path}", file=out)
-    for simulation in (candidate.results[t.id] for t in stages if t.id.name == "simulation"):
-        files, at = dict(simulation.artifacts), simulation.id.sample
-        if "events" in simulation.made:
-            files["edm4hep"] = simulation.made["events"].path
+    for made in (candidate.results[t.id] for t in stages if t.given is None):
+        files = dict(made.artifacts)
+        if "events" in made.made:
+            files["edm4hep"] = made.made["events"].path
         for role in ("stdout", "stderr", "edm4hep"):
             if role in files:
-                print(f"{role + ':':12} {at}: {files[role]}", file=out)
+                print(f"{role + ':':12} {made.id.label}: {files[role]}", file=out)
 
 
 def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from k4opt.ddsim import run as ddsim_run
+from k4opt import program
 from k4opt.evaluation import edm4hep
 
 COLLECTION = "ECalBarrelCollection"
@@ -107,7 +107,7 @@ def events_with(*cells_per_event: Sequence[int]) -> list[Event]:
 
 @dataclass
 class FakeDdsim:
-    """Replaces the ddsim process (``k4opt.ddsim.run._execute``); records the call and writes
+    """Replaces the ddsim process (:func:`k4opt.program.execute`); records the call and writes
     the files ddsim would."""
 
     returncode: int = 0
@@ -137,8 +137,16 @@ def install(
     Without ``events`` the file holds as many one-hit events as the last run requested.
     """
     fake = FakeDdsim(**ddsim)
-    monkeypatch.setattr(ddsim_run, "_execute", fake)
-    monkeypatch.setattr(ddsim_run.shutil, "which", lambda name: DDSIM)
+    real, which = program.execute, program.shutil.which
+
+    def execute(argv: list[str], **kwargs: Any) -> int | None:
+        # only ddsim is faked: another program (the fake k4run of fake_stack) runs as it is
+        return fake(argv, **kwargs) if Path(argv[0]).name == "ddsim" else real(argv, **kwargs)
+
+    monkeypatch.setattr(program, "execute", execute)
+    monkeypatch.setattr(
+        program.shutil, "which", lambda name, *a, **k: DDSIM if name == "ddsim" else which(name)
+    )
 
     def read(path: Path) -> list[Any]:
         if events is not None:
