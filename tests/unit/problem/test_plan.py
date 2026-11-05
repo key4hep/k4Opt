@@ -345,7 +345,7 @@ def test_three_levels_multiply_their_budgets() -> None:
     }
 
 
-def test_each_study_proposes_its_own_values_though_the_level_above_does_not_reach_the_stage() -> None:
+def test_each_study_proposes_its_own_values_where_the_level_above_reaches_nothing() -> None:
     inner = Level(("energy",), trials=3, objective=TUNED)
     spec = problem(CUT, GUN_ENERGY, optimization=Level(("cut",), inner=inner))
     assert costs_of(spec, 5)["gamma/simulation"] == 5 * 3 + 5
