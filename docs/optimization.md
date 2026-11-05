@@ -333,7 +333,7 @@ directory itself is fine: a trial's record names the files of its run directory 
 | Optuna | its exact version; the study's directions, id, identity digest and limit names; the storage | |
 
 The `identity` digest covers the compared column only, but for the programs, which are compared
-apart (a study made before k4opt recorded them is read as before, and cannot be resumed). Both
+apart, so that a refusal names the program that differs. Both
 ddsim and k4run are Python scripts: the same script with another `PYTHONPATH` (a local build
 layered over the release) runs other code, which only the warning about the search variables
 shows; the libraries behind the scripts are identified as far as `KEY4HEP_STACK` names an

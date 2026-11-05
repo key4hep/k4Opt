@@ -13,10 +13,10 @@ another commit).
 
 The programs of the stack the stages run (ddsim, k4run) are compared apart
 (:func:`program_differences`), by where their executable is (a release of the stack is told
-apart by its path) as much as by its content: they are recorded since the study's digest was
-fixed, so that studies made before stay readable, and must be the same for a study to resume and
-for each of its records. The variables that decide what those programs load
-(:func:`search_warnings`) only warn: two shells differ in them for reasons of their own.
+apart by its path) as much as by its content and its interpreter, so that a refusal names the
+program that differs, and must be the same for a study to resume and for each of its records.
+The variables that decide what those programs load (:func:`search_warnings`) only warn: two
+shells differ in them for reasons of their own.
 """
 
 from __future__ import annotations
