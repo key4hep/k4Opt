@@ -19,10 +19,11 @@ from k4opt.evaluation import edm4hep
 from k4opt.optimization import OptimizationError, StudyResults, load_study, optimize
 from k4opt.optimization._optuna import marks, tree
 from k4opt.optimization._show import render_results
+from k4opt.optimization._study import trial_directory
 from k4opt.problem.candidate import replicate_seed
 from tests.support import simulation, stack
 from tests.support.evaluators import candidate_check, cell_count, trade_off
-from tests.unit.optimization.conftest import GUN, RADIUS, optuna_study
+from tests.unit.optimization.conftest import GUN, RADIUS, optuna_study, summary
 
 SEED = 1  # the simulation's
 CELLS = ("test.cell_count", "simulation", "ecal_barrel.mean_hit_cells", "minimize")
@@ -640,3 +641,69 @@ def test_an_empty_inner_directory_is_a_study_not_made_yet(
     assert (output / "inner" / "trial-000000").is_dir()
     assert load_study(output).trials[0].inner is None
     assert run(nested, output, 0, resume=True).trials[0].status == "valid"
+
+
+@pytest.fixture
+def shared(nested: Path) -> Path:
+    """:func:`nested`, whose inner studies tune ``x`` of ``test.candidate_check`` (required, so
+    that it runs) by the cells of the simulation, which ``x`` does not reach: all the trials of an
+    inner study share it."""
+    document = yaml.safe_load(nested.read_text())
+    document["evaluators"][1]["required"] = True
+    cells = dict(zip(("evaluator", "stage", "metric", "direction"), CELLS, strict=True))
+    document["optimization"]["inner"]["objective"] = cells
+    nested.write_text(yaml.safe_dump(document))
+    return nested
+
+
+def asked(study: Path) -> list[tuple[Any, Any]]:
+    """When each trial of ``study`` was asked for and told, in number order."""
+    trials = sorted(optuna_study(study).trials, key=lambda t: t.number)
+    return [(t.datetime_start, t.datetime_complete) for t in trials]
+
+
+def test_an_inner_study_asks_for_more_once_a_trial_made_what_they_share(
+    tmp_path: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch, **{"*": {"sleep": 1}})
+    output = tmp_path / "s"
+    study = run(shared, output, 2, workers=2)
+    assert [t.status for t in study.trials] == ["valid", "valid"]
+    first, second = (asked(output / "inner" / trial_directory(n)) for n in (0, 1))
+    for times in (first, second):
+        (_, told), *later = times
+        assert all(start >= told for start, _ in later)  # after the first ended
+    # meanwhile the slot went to the other study, whose first trial began before
+    assert second[0][0] < first[1][0]
+    # one simulation for each inner study, which its other trials reused, and one on new events
+    made = [
+        summary(directory, number)["samples"]["gamma"]["stages"]["simulation"]
+        for directory in (
+            output / "inner" / trial_directory(0),
+            output / "inner" / trial_directory(1),
+        )
+        for number in range(3)
+    ]
+    assert sum("reused" not in stage for stage in made) == 2
+
+
+def test_an_inner_study_that_shares_no_stage_asks_for_its_trials_at_once(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = yaml.safe_load(nested.read_text())
+    document["parameters"]["x"] = {  # the energy of the gun: each trial simulates its own
+        "type": "continuous",
+        "bounds": [5.0, 10.0],
+        "unit": "GeV",
+        "targets": {"generation": "energy"},
+    }
+    del document["samples"]["gamma"]["generation"]["energy"]
+    document["evaluators"] = document["evaluators"][:1]  # x reaches no evaluator now
+    cells = dict(zip(("evaluator", "stage", "metric", "direction"), CELLS, strict=True))
+    document["optimization"]["inner"]["objective"] = cells
+    nested.write_text(yaml.safe_dump(document))
+    stack.install(monkeypatch, **{"*": {"sleep": 1}})
+    output = tmp_path / "s"
+    optimize(nested, [cell_count()], output, trials=1, seed=1, workers=2)
+    (_, told), (start, _), _ = asked(output / "inner" / trial_directory(0))
+    assert start < told  # nothing to wait for: the second ran beside the first

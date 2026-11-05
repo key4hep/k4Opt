@@ -8,6 +8,11 @@ otherwise be idle, from the open studies below first, then a new trial of a stud
 ``WAIT`` while what it could do next waits for what runs. Each study's trials are asked for and
 told as those of any study (:mod:`~k4opt.optimization._optuna.tell`).
 
+A study below the top whose trials share a stage (:func:`_shares`) asks for one trial, then
+holds back until something it started ended: the others would wait for that stage, each holding a
+slot, and their proposals would know nothing yet. Meanwhile the slots go to the other studies, and
+to new trials above. The top study is never held back: nothing else would use the slots.
+
 A trial of a study with a level below (a *parent* trial) goes through these states, each decided
 from what is stored, so that a run stopped anywhere goes on from where it was:
 
@@ -76,6 +81,7 @@ from k4opt.optimization._study import (
     write_study,
 )
 from k4opt.optimization.errors import OptimizationError
+from k4opt.problem.plan import Kind, level_plan
 
 
 @dataclass(slots=True)
@@ -90,10 +96,31 @@ class _Node:
     budget: int
     in_flight: dict[int, tuple[Trial, Path]] = field(default_factory=dict)
     open: dict[int, tuple[Trial, _Node]] = field(default_factory=dict)
+    # asks for no more while something of it is under way, until something it started ended
+    held: bool = False
+    parent: _Node | None = None
 
     @property
     def finished(self) -> bool:
         return self.budget == 0 and not self.in_flight and not self.open
+
+
+def _shares(scope: StudyScope) -> bool:
+    """Whether the candidates a study of ``scope`` below the top has evaluated share a stage that
+    makes files: one that no parameter it or a level below it searches reaches, which the first
+    candidate makes and the others reuse (or would wait for)."""
+    spec = scope.spec
+    searched = {
+        n for level in range(scope.level, spec.depth + 1) for n in spec.parameters_of(level)
+    }
+    searched -= set(scope.fixed)
+    return any(
+        task.id.kind is Kind.STAGE
+        and task.given is None
+        and task.directory is not None
+        and not searched & set(task.varies)
+        for task in level_plan(spec, spec.depth).tasks
+    )
 
 
 class Tree:
@@ -145,7 +172,9 @@ class Tree:
         run.study.sampler = optuna.samplers.TPESampler(
             seed=seed, n_startup_trials=STARTUP_TRIALS, constant_liar=CONSTANT_LIAR
         )
-        node = _Node(run, space, seed, budget)
+        # a study that ran a trial before (a resume) has made what its trials share, or tried
+        held = run.scope.level > 0 and not run.study.trials and _shares(run.scope)
+        node = _Node(run, space, seed, budget, held=held)
         self._nodes[run.document["id"]] = node
         for frozen in run.study.get_trials(deepcopy=False):
             if frozen.state != TrialState.RUNNING or not run.scope.nested:
@@ -207,6 +236,7 @@ class Tree:
             _recover(child, lambda result: None)
             self._session.reuse([directory])  # every trial's record held up: their stages serve
         opened = self._node(child, space, run.scope.child_trials, resume, total=True)
+        opened.parent = node
         node.open[number] = (trial, opened)
 
     def requests(self) -> Iterator[RunRequest | Wait]:
@@ -231,7 +261,8 @@ class Tree:
                 request = self._score(node, trial, child)
                 if request is not None:
                     return request
-        if node.budget > 0:
+        held = node.held and bool(node.in_flight or node.open)
+        if node.budget > 0 and not held:
             node.budget -= 1
             return self._ask(node)
         return WAIT if waiting or node.in_flight else None
@@ -310,6 +341,9 @@ class Tree:
         node, number = self._nodes[str(request.run["study"])], request.run["trial"]
         assert isinstance(number, int)
         trial, output = node.in_flight.pop(number)  # settled by _settle, whatever it raises
+        above: _Node | None = node
+        while above is not None:  # what it shares with the others of each study above it ended
+            above.held, above = False, above.parent
         told = _settle(node.run, trial, output, result)
         self._release(node, number)
         if node is self._root:
