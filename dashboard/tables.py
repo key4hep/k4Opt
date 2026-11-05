@@ -24,7 +24,7 @@ import labels
 
 type Row = dict[str, object]
 
-WITHOUT_RESULT = ("invalid", "failed", "rejected", "interrupted", "error")
+WITHOUT_RESULT = ("invalid", "failed", "rejected", "unscored", "interrupted", "error")
 """The outcomes of trials without objective values, but for the running ones."""
 
 

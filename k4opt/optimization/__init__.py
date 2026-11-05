@@ -97,7 +97,9 @@ def optimize(
     sampler, one is drawn and recorded without it. ``resume`` continues the study in
     ``output``: it must have been made with the same problem, files, evaluators, geometry,
     Key4hep stack, k4opt code and Optuna version, and is refused otherwise; trials an
-    interrupted session left running are finished first and do not count among ``trials``.
+    interrupted session left running are finished first and do not count among ``trials``,
+    which may then be 0 (only those are finished). For a problem with inner levels, each trial
+    stands for a study of the level below (``docs/optimization.md``), in ``output/inner``.
     ``storage`` is an Optuna database URL in place of the journal file in ``output``, given
     again on every resume. ``workers`` says where the tasks run, as for
     :meth:`~k4opt.execution.EvaluationSession.open`: ``"inline"``, one after another in this

@@ -35,6 +35,7 @@ STUDY_NAME = "study.json"
 STUDY_SCHEMA = "k4opt.study/1"
 LOCK_NAME = ".lock"
 JOURNAL_NAME = "study.journal"
+INNER_NAME = "inner"
 CONSTRAINT_VALUES = "margin / scale"  # how a limit's margin becomes the optimizer's value
 
 _TRIAL = re.compile(r"trial-[0-9]{6,}")
@@ -43,6 +44,12 @@ _TRIAL = re.compile(r"trial-[0-9]{6,}")
 def trial_directory(number: int) -> str:
     """The directory of trial ``number``, relative to the study: ``trial-000007``."""
     return f"trial-{number:06d}"
+
+
+def inner_directory(directory: Path, number: int) -> Path:
+    """The directory of the study of the level below that trial ``number`` of the study in
+    ``directory`` stands for: beside the trial directories, each of them as any study keeps."""
+    return directory / INNER_NAME / trial_directory(number)
 
 
 def trial_directories(directory: Path) -> list[str]:
@@ -219,16 +226,21 @@ def check_record(
     params: Mapping[str, Any],
     replicate: int = 0,
     level: int = 0,
+    selected: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Refuse a record that is not the one trial ``number`` of ``study`` asked for with the
     complete candidate ``params``, as its ``replicate`` and judged by the criteria of its
     ``level`` (the study's scope), or was made with something the study does not compare equal;
-    return the warnings of :func:`revision_warnings`. Its assessment is checked apart, by
+    a trial that stands for a study of the level below names the trial ``selected`` of it. Return
+    the warnings of :func:`revision_warnings`. Its assessment is checked apart, by
     :meth:`k4opt.record.Assessment.from_summary`."""
     where = f"trial {number}: {trial_directory(number)}/summary.json"
     if not isinstance(summary, Mapping):
         raise OptimizationError(f"{where} is not a run record")
-    if summary.get("run") != {"study": study["id"], "trial": number}:
+    made_for: dict[str, Any] = {"study": study["id"], "trial": number}
+    if selected is not None:
+        made_for["selected"] = {"study": selected["study"], "trial": selected["trial"]}
+    if summary.get("run") != made_for:
         raise OptimizationError(f"{where} was made for {summary.get('run')!r}, not this trial")
     candidate = summary.get("candidate")
     # as given, type and value: 1, 1.0 and True are different candidates

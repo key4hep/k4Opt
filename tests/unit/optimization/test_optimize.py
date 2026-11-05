@@ -445,7 +445,7 @@ def test_a_bug_of_k4opt_is_not_dressed_up_as_a_study_error(
 ) -> None:
     from k4opt.optimization._optuna import run
 
-    def buggy(*args: Any) -> Any:
+    def buggy(*args: Any, **kwargs: Any) -> Any:
         return 1 / 0
 
     monkeypatch.setattr(run, "results_of", buggy)
@@ -746,28 +746,3 @@ def test_a_candidate_a_reconstruction_does_not_take_is_rejected_and_read_back(
     (rejected,) = {t.message for t in report.trials if t.status == "rejected"}
     assert rejected.startswith("gamma/reconstruction: the job does not take its arguments")
     assert load_study(tmp_path / "s") == report  # the reader takes a reconstruction's rejection
-
-
-def test_a_nested_problem_is_refused_before_anything_is_created(
-    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    simulation.install(monkeypatch)
-    document = yaml.safe_load(sampled_problem.read_text())
-    document["parameters"]["cut"] = {
-        "type": "continuous",
-        "bounds": [0.1, 1.0],
-        "unit": "mm",
-        "targets": {"simulation": {"option": "physics.rangecut", "samples": ["gamma", "pion"]}},
-    }
-    document["optimization"] = {
-        "parameters": [RADIUS],
-        "inner": {
-            "parameters": ["cut"],
-            "trials": 2,
-            "objective": "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
-        },
-    }
-    sampled_problem.write_text(yaml.safe_dump(document))
-    with pytest.raises(OptimizationError, match=r"nested studies are not run yet"):
-        optimize(sampled_problem, [cell_count()], tmp_path / "s", trials=2, seed=1)
-    assert not (tmp_path / "s").exists()

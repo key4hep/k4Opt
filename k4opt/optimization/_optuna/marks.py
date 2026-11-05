@@ -31,12 +31,21 @@ REJECTED_BY = "k4opt.rejected_by"
 """The evaluation that rejected its candidate."""
 ERROR = "k4opt.error"
 """What stopped the study at this trial."""
+CHILD = "k4opt.child"
+"""A trial that stands for a study of the level below: that study's id and directory, set
+before the study is made; the trial stays RUNNING until the study's result is told."""
+SELECTED = "k4opt.selected"
+"""The best trial of its study of the level below (study, trial, the values it adds): set once,
+before that trial is evaluated again on new events."""
+
+UNSCORED = (MESSAGE, STATUS)
+"""What a trial whose study of the level below has no feasible trial is told, in this order."""
 
 REJECTION = (REJECTED_BY, MESSAGE, STATUS)
 """What a rejected trial is told, in this order: ``STATUS`` last, so a trial interrupted before
 it has no status and reads as interrupted."""
 
-UNRECORDED = frozenset({DIR, SAMPLER_SEED, RECOVERED, ERROR})
+UNRECORDED = frozenset({DIR, SAMPLER_SEED, RECOVERED, ERROR, CHILD, SELECTED})
 """What a trial without a record carries of k4opt's: an interrupted one, or one that stopped the
 study before its record was told."""
 

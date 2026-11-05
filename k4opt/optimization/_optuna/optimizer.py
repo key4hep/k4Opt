@@ -48,13 +48,17 @@ def new_document(
     names: Sequence[str],
     seed: int | None,
     storage: str | None,
+    study_id: str | None = None,
 ) -> dict[str, Any]:
-    study_id = str(uuid.uuid4())
+    """``study.json`` of a new study of ``scope``; ``study_id`` is its id if it has one already
+    (a study of a level below the top, whose id its parent trial decides)."""
+    study_id = study_id or str(uuid.uuid4())
     document: dict[str, Any] = {"schema": STUDY_SCHEMA, "id": study_id, "created": now()}
     document |= dict(identity)
     document["identity"] = digest(identity)
     seed = secrets.randbelow(2**32) if seed is None else seed
-    name = f"{scope.spec.name}-{study_id[:8]}"
+    # the studies below the top are many, and may share a database: their whole id
+    name = f"{scope.spec.name}-{study_id if scope.parent else study_id[:8]}"
     document["scope"] = scope.to_dict()
     document["optimizer"] = _optimizer(scope, space, names, name=name, seed=seed, storage=storage)
     return document

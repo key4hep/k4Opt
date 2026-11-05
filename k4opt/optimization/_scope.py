@@ -100,6 +100,18 @@ class StudyScope:
         return tuple(name for name in _own(self.spec, self.level) if name not in self.fixed)
 
     @property
+    def nested(self) -> bool:
+        """Whether each trial of the study stands for a study of the level below."""
+        return self.level < self.spec.depth
+
+    @property
+    def child_trials(self) -> int:
+        """How many trials each study of the level below runs (only of a :attr:`nested` scope)."""
+        trials = self.spec.levels[self.level + 1].trials
+        assert trials is not None  # parse_problem: every inner level has them
+        return trials
+
+    @property
     def criteria(self) -> Criteria:
         """What the study's trials are judged by and the optimizer is told."""
         return self.spec.criteria(self.level)
@@ -108,7 +120,7 @@ class StudyScope:
     def replicate(self) -> int:
         """The replicate of its trials' records: 0 for a study whose trials are evaluated as
         they are, the levels below for one whose trials stand for a study of the next level."""
-        return 0 if self.level == self.spec.depth else self.spec.depth - self.level
+        return self.spec.depth - self.level
 
     @property
     def directions(self) -> list[str]:

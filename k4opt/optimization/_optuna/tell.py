@@ -70,8 +70,10 @@ def _report(
     that does not hold up.
     """
     number = trial.number
+    recovered = recovered or trial.user_attrs.get(marks.RECOVERED) is True  # a parent reopened
+    selected = trial.user_attrs.get(marks.SELECTED)  # of a trial that stands for a study below
     result, warnings = record_of(
-        run.directory, run.document, run.scope, number, trial.params, run.read
+        run.directory, run.document, run.scope, number, trial.params, run.read, selected
     )
     assessment = result.assessment
     assert assessment is not None
@@ -120,6 +122,17 @@ def _reject(run: _Study, trial: Trial, rejected: Rejected) -> TrialResult:
         marks.STATUS: "rejected",
     }
     for key in marks.REJECTION:
+        trial.set_user_attr(key, told[key])
+    frozen = run.study.tell(trial, state=TrialState.FAIL)
+    result, _ = trial_result(run.directory, run.document, run.scope, frozen, run.read)
+    return result
+
+
+def _unscore(run: _Study, trial: Trial, message: str) -> TrialResult:
+    """Tell the optimizer that the study of the level below that ``trial`` stands for has no
+    feasible trial: FAIL, without values, its status written last; no value is invented."""
+    told = {marks.MESSAGE: message[:_MESSAGE], marks.STATUS: "unscored"}
+    for key in marks.UNSCORED:
         trial.set_user_attr(key, told[key])
     frozen = run.study.tell(trial, state=TrialState.FAIL)
     result, _ = trial_result(run.directory, run.document, run.scope, frozen, run.read)
@@ -175,6 +188,8 @@ def _failed(run: _Study, trial: Trial, error: str) -> str:
     if stored.state != TrialState.RUNNING:
         return f"{name} is {stored.state.name}"
     attrs = stored.user_attrs
+    if run.scope.nested:  # its study of the level below stays: a resume goes on from it
+        return f"{name} was left running; k4opt optimize --resume goes on with it"
     if marks.RECORD in attrs or attrs.get(marks.STATUS) not in (None, "rejected"):
         # stopped while its record was told (_report): FAIL with part of those marks would not
         # read back, so it stays RUNNING, and a resume tells it its record again
@@ -202,6 +217,8 @@ def _close_interrupted(run: _Study, trial: Trial, output: Path) -> None:
             return
         except K4OptError as exc:  # a record that does not hold up is no result
             run.warn(f"trial {trial.number}: its record does not hold up ({exc}); interrupted")
+    if run.scope.nested:  # it stands for a study of the level below, which a resume goes on with
+        return
     if marks.DIR not in stored.user_attrs:
         trial.set_user_attr(marks.DIR, output.name)
     _fail(run, trial)
@@ -210,7 +227,9 @@ def _close_interrupted(run: _Study, trial: Trial, output: Path) -> None:
 def _recover(run: _Study, progress: Progress) -> None:
     """Finish the trials a session left running, before any new one: one without a record is
     FAIL, its directory left as it is, and one with a record is told it; ``progress`` is called
-    with each as it is finished. Before anything changes, the resume refuses if a trial
+    with each as it is finished. A trial that stands for a study of the level below stays
+    RUNNING, without a record: :mod:`~k4opt.optimization._optuna.tree` goes on with that study.
+    Before anything changes, the resume refuses if a trial
     directory belongs to no trial, or if a finished trial does not hold what its record gives,
     checked as :func:`~k4opt.optimization.load_study` checks it: its record is gone or was
     changed, its state, status, candidate, values or constraint values are not the record's, or
@@ -239,6 +258,8 @@ def _recover(run: _Study, progress: Progress) -> None:
         if (run.directory / trial_directory(frozen.number) / SUMMARY_NAME).is_file():
             progress(_report(run, trial, frozen.constraints, recovered=True))
             continue
+        if run.scope.nested:
+            continue  # it stands for a study of the level below: the run goes on with that
         trial.set_user_attr(marks.RECOVERED, True)
         finished = run.study.tell(trial, state=TrialState.FAIL)
         progress(trial_result(run.directory, run.document, run.scope, finished, run.read)[0])

@@ -15,6 +15,7 @@ from typing import TextIO
 
 from k4opt.optimization._render import _counts, _paint, _value
 from k4opt.optimization._results import StudyResults, TrialResult
+from k4opt.optimization._study import INNER_NAME, trial_directory
 from k4opt.problem import MetricRef, Parameter, ProblemSpec
 from k4opt.terminal import Style, printable
 
@@ -93,6 +94,27 @@ def _roles(spec: ProblemSpec, out: TextIO, style: Style) -> None:
         _print(out, style, "roles", lines)
 
 
+def _inner_line(trial: TrialResult, style: Style) -> str:
+    """What the study of the level below a trial stands for found: where it is, its best trial
+    with what it measured there and the values it gives, or why it has none."""
+    where = style.dim(f"{INNER_NAME}/{trial_directory(trial.number)}")
+    inner, selected = trial.inner, trial.selected
+    if inner is None or selected is None:
+        return f"trial {trial.number}:  {printable(trial.message or trial.status)}  {where}"
+    best = inner.trial(int(str(selected["trial"])))
+    assert best.assessment is not None
+    assert best.assessment.objectives
+    (tuned,) = best.assessment.objectives
+    assert isinstance(selected["values"], Mapping)
+    values = [
+        style.dim(f"{printable(name)}=") + style.cyan(printable(repr(value)))
+        for name, value in selected["values"].items()
+    ]
+    measured = _measured(tuned.value, tuned.unit, exact=False)
+    head = f"trial {trial.number}:  best trial {best.number}, {printable(tuned.label)}={measured}"
+    return f"{head}  " + "  ".join(values) + f"  {where}"
+
+
 def _front_line(trial: TrialResult, results: StudyResults, style: Style) -> str:
     """A trial of the Pareto front: its candidate and objectives, to 6 significant digits."""
     assert trial.assessment is not None
@@ -144,10 +166,13 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
         _print(out, style, "pareto", [numbers, *(_front_line(t, results, style) for t in front)])
     else:
         _print(out, style, "pareto", ["none yet" if not results.trials else "none feasible yet"])
+    if results.scope.nested and results.trials:
+        _print(out, style, "inner studies", [_inner_line(t, style) for t in results.trials])
 
 
 _NO_RECORD = {
     "running": "none yet: the optimizer has not been told the trial's result",
+    "unscored": "none: the study of the level below it stands for has no feasible trial",
     "interrupted": "none: the trial ended before its record was written",
     "error": "none: the trial stopped the study before its record was written",
 }

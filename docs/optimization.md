@@ -311,10 +311,9 @@ keeps its geometry and its EDM4hep file.
 - k4opt's version, the SHA-256 of its code and its git checkout;
 - the `identity` digest;
 - `scope`: what the study searches (`searched`, the parameters the optimizer proposes), the
-  values it `fixed` for every trial, and the `level` and `replicate` of its trials' records (0
-  and 0 for every study k4opt runs today), and the trial of another study it was started for
-  (`parent`, none today);
-- the optimizer: `optuna` and its version, the study name (`<problem name>-<8 hex>`), the
+  values it `fixed` for every trial, the `level` and `replicate` of its trials' records, and the
+  trial of another study it was started for (`parent`; [nested studies](#nested-studies));
+- the optimizer: `optuna` and its version, the study name (`<problem name>-<8 hex>`, its whole id for a study below the top), the
   storage (a URL without its password), the sampler and its seed, the objectives it is told by
   label with their directions, the searched parameters' distributions, the limits and the
   constraint-value policy.
@@ -325,6 +324,51 @@ include the role wiring. Changing sample properties, role wiring or declared rol
 refuses resume, just as changing evaluator settings does. A failed or invalid upstream input
 blocks the combined evaluation; when an objective or constraint reads it, the trial is FAIL (the
 candidate `failed` or `invalid`), with no partial objective vector.
+
+## Nested studies
+
+A problem with an [`optimization` block](problem.md#optimization) with `inner` levels runs as a tree
+of studies, in one session, with the same `k4opt optimize` (`--trials` is the budget of the top
+level). For each trial of a level, a study of the level below searches its parameters with the
+trial's values fixed. Once it ran its `trials`, its best feasible trial by its `objective` (the
+lowest number among equals) is *selected*, and that candidate is evaluated once more, on new events
+(its seeds derived: [replicate](execution.md#k4opt-evaluate) = the levels below), for the level's
+own criteria. That record is the trial's: its objectives and limits are judged on those new events,
+so a selection that is infeasible there makes the trial infeasible.
+
+```text
+runs/nested/
+├── study.json, study.journal
+├── trial-000002/summary.json      trial 2's record: the selected candidate, on new events
+└── inner/
+    └── trial-000002/              the study trial 2 stands for, laid out as any study
+        ├── study.json             scope: level 1, the values of the level above, parent
+        └── trial-000007/summary.json
+```
+
+- A study whose level below has **no feasible trial** leaves its trial `unscored`: FAIL for the
+  optimizer, no record and no value, and its message says why (`no feasible trial among 20: 3
+  invalid, 17 infeasible`).
+- The trials of all open studies run side by side on the session's workers
+  ([`--workers`](#trials-at-once---workers)): a study of the level below is asked first, a new trial
+  of the level above only when no open study has a candidate. Their stages are reused as any
+  stages are: a geometry the trials of a study share is simulated once.
+- **Interrupted** at any point, the run goes on with `--resume`, from what is stored. Before
+  anything new runs, it reads the tree as `load_study` does, and refuses one that does not hold
+  up. A trial of a level above stays RUNNING, its study of the level below is resumed (`--trials 0` adds no new
+  trial of the top), its selection is made or checked again, and a selection that no longer is the
+  study's best stops the run. What an interrupted evaluation of the new events left in a trial
+  directory is moved to `inner/interrupted-trial-NNNNNN-*`. A study of a level below is resumed
+  through its top study alone, whose lock covers the tree.
+- `load_study` reads the tree: `trial.inner` is the study of the level below, `trial.selected` the
+  trial chosen and the values it adds, each link checked (the study was started for this trial,
+  with its values, it ran all its trials, the selected trial is its best by its records, and the
+  trial's candidate is those values with that trial's). The JSON form holds the
+  inner studies. `k4opt study show` lists them; `k4opt study show DIR/inner/trial-000002` shows one.
+
+The new events keep a level from being judged by the luck of its own tuning, but the top level
+still chooses among its values: the best of them is optimistic in turn. `k4opt evaluate --replicate
+N` of the winner (`N` above the number of inner levels) gives an independent check.
 
 ## Resuming a study
 
