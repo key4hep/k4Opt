@@ -7,8 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from k4opt.execution._files import Made, Observed, Tree, changed_files
-from k4opt.problem.plan import GEOMETRY, evaluator_task, stage_task
+from k4opt.execution._files import (
+    Made,
+    Observed,
+    Tree,
+    changed_files,
+    file_identity,
+    snapshot,
+    stat_of,
+)
+from k4opt.execution._reuse import Reuse, Source, reused
+from k4opt.problem.plan import GEOMETRY, Task, evaluator_task, stage_task
 
 SIMULATION = stage_task("simulation", "gamma")
 
@@ -95,3 +104,29 @@ def test_a_tree_is_changed_by_any_file_in_it_that_changes_goes_or_is_added(
     assert tree.changed() == ["b.xml", "compact/a.xml", "c.xml"]
     observed = {GEOMETRY: Observed(tree=tree)}
     assert changed_files(observed) == ["geometry/b.xml", "geometry/compact/a.xml", "geometry/c.xml"]
+
+
+def test_a_snapshot_is_the_hash_of_the_file_at_its_stat(tmp_path: Path) -> None:
+    path = tmp_path / "events.root"
+    path.write_bytes(b"events")
+    stat, identity = snapshot(path)
+    assert stat == stat_of(path) and identity == file_identity(path)
+    with pytest.raises(OSError, match="is no file"):
+        snapshot(tmp_path / "missing")
+
+
+def test_a_reused_output_replaced_after_it_was_checked_is_seen_changed(tmp_path: Path) -> None:
+    path = tmp_path / "events.root"
+    path.write_bytes(b"events")
+    identity = file_identity(path)
+    reuse = Reuse()
+    size, sha256 = identity["bytes"], identity["sha256"]
+    assert isinstance(size, int) and isinstance(sha256, str)
+    reuse.add("signature", Source(path, size, sha256, "record", "gamma/simulation", tmp_path))
+    found = reuse.find("signature")
+    assert found is not None
+    source, stat = found
+    path.write_bytes(b"other events")  # between the check and the watch
+    _, observed = reused(Task(SIMULATION, (GEOMETRY,), "samples/gamma/simulation"), source, stat)
+    # watched from the stat at which its hash was checked, so the other bytes are seen
+    assert changed_files({SIMULATION: observed}) == ["gamma/simulation#events"]

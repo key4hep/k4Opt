@@ -85,6 +85,19 @@ def readable_identity(path: Path) -> dict[str, Json] | None:
         return None
 
 
+def snapshot(path: Path) -> tuple[Stat, dict[str, Json]]:
+    """The stat of the file at ``path`` and its :func:`file_identity` at that stat: one version
+    of it, so that a later equal stat vouches for its hash. Raises :class:`OSError` if it cannot
+    be read, or if it changes while it is hashed (a size and a hash of other versions)."""
+    stat = stat_of(path)
+    if stat is None:
+        raise OSError(f"{path} is no file")
+    identity = file_identity(path)
+    if stat_of(path) != stat:
+        raise OSError(f"{path} changed while it was hashed")
+    return stat, identity
+
+
 @dataclass(frozen=True, slots=True)
 class Made:
     """A file a task made in its own directory: its ``artifact`` as the record names it, and its
@@ -101,10 +114,12 @@ class Made:
         stat = stat_of(path)
         if stat is None or not path.is_file():
             raise OSError(f"{path} is no file")
-        sha256 = file_identity(path)["sha256"] if hashed else None
-        assert sha256 is None or isinstance(sha256, str)
-        if hashed and stat_of(path) != stat:
-            raise OSError(f"{path} changed while it was hashed")
+        sha256: str | None = None
+        if hashed:
+            stat, identity = snapshot(path)
+            digest = identity["sha256"]
+            assert isinstance(digest, str)
+            sha256 = digest
         return cls(Artifact(f"{task.label}#{name}", path, stat[0], sha256), stat)
 
     def changed(self) -> bool:

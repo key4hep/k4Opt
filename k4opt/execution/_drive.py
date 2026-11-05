@@ -236,10 +236,11 @@ def _drive(
         digest = str(signature["sha256"])
         if reuse is None:
             submit(run, task)
-        elif (source := reuse.find(digest)) is not None:
+        elif (found := reuse.find(digest)) is not None:
+            source, stat = found
             if source.record != key and reuse.pending(source.record):
                 run.relies.add(source.record)
-            result, run.observed[task.id] = reused(task, source)
+            result, run.observed[task.id] = reused(task, source, stat)
             complete(run, task, result)
         elif reuse.running(digest):
             reuse.wait(digest, key, task, (run, task))

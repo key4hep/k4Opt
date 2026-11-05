@@ -32,7 +32,7 @@ from pathlib import Path
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import Artifact
-from k4opt.execution._files import Made, Observed, readable_identity, stat_of
+from k4opt.execution._files import Made, Observed, Stat, readable_identity, snapshot
 from k4opt.frozen import FrozenMap, Json
 from k4opt.problem.config import parse_problem
 from k4opt.problem.plan import Task
@@ -102,17 +102,22 @@ class Reuse:
     _unpublished: dict[str, set[str]] = field(default_factory=dict)
     _published: set[str] = field(default_factory=set)  # this session's records published
 
-    def find(self, signature: str) -> Source | None:
-        """The output that stands in for a stage with ``signature``, checked now: ``None`` if
-        there is none, or if it changed or went since it was recorded (then it is forgotten)."""
+    def find(self, signature: str) -> tuple[Source, Stat] | None:
+        """The output that stands in for a stage with ``signature``, checked now, with the stat
+        it was checked at: watched from that stat (:func:`reused`), a file replaced since the
+        check is told apart. ``None`` if there is none, or if it changed or went since it was
+        recorded (then it is forgotten)."""
         source = self._sources.get(signature)
         if source is None:
             return None
-        now = readable_identity(source.path)  # hashed again only if its stat changed
+        try:
+            stat, now = snapshot(source.path)  # hashed again only if its stat changed
+        except OSError:
+            now = None
         if now != {"bytes": source.bytes, "sha256": source.sha256}:
             del self._sources[signature]
             return None
-        return source
+        return source, stat
 
     def add(self, signature: str, source: Source) -> None:
         """Keep ``source`` for the stages with ``signature``; one kept already stays."""
@@ -264,13 +269,14 @@ def made(task: Task, result: TaskResult, record: str, run_dir: Path | None) -> S
     return Source(output.path, output.bytes, output.sha256, record, task.id.label, run_dir, events)
 
 
-def reused(task: Task, source: Source) -> tuple[TaskResult, Observed]:
+def reused(task: Task, source: Source, stat: Stat) -> tuple[TaskResult, Observed]:
     """The result of the stage ``task`` whose output ``source`` stands in for it, and what the
-    coordinator watches of that file until the candidate ends, as of a file the stage made."""
+    coordinator watches of that file until the candidate ends, as of a file the stage made: from
+    ``stat``, at which :meth:`Reuse.find` checked its hash, never one taken later, which could be
+    that of another version of the file."""
     name = stage_output(task.id.name)
     artifact = Artifact(f"{task.id.label}#{name}", source.path, source.bytes, source.sha256)
-    stat = stat_of(source.path)
-    watched = Observed(FrozenMap({} if stat is None else {name: Made(artifact, stat)}))
+    watched = Observed(FrozenMap({name: Made(artifact, stat)}))
     result = TaskResult(
         task.id,
         DONE,
