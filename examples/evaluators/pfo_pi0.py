@@ -49,7 +49,7 @@ def origin(particle, photons):
 
 class PfoPi0(Evaluator):
     name = "pfo.pi0"
-    version = "2"
+    version = "1"
     stage = "reconstruction"
     # the particle-flow objects the problem names; the generated particles and the links between
     # the two, which CLD's reconstruction writes under these names

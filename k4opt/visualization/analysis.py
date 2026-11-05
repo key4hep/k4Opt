@@ -28,9 +28,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from k4opt.optimization import StudyResults, TrialResult
-from k4opt.problem import Parameter
+from k4opt.problem import Names, Parameter, names
 from k4opt.visualization.errors import VisualizationError
-from k4opt.visualization.names import Names, names
 from k4opt.visualization.trials import (
     _COLORS,
     _RAMPS,

@@ -22,7 +22,7 @@ from k4opt.evaluation import Scalar
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import CandidateError, Criteria, ProblemSpec
-from k4opt.problem.candidate import validate_value
+from k4opt.problem.candidate import check_fixed
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +56,6 @@ class StudyScope:
         except ValueError as exc:
             raise OptimizationError(str(exc)) from None
         given = dict(fixed or {})
-        own = _own(spec, level)
         above = [name for each in spec.levels[:level] for name in each.parameters]
         missing = [name for name in above if name not in given]
         if missing:
@@ -64,29 +63,10 @@ class StudyScope:
                 f"fixed: a study of level {level} is started for a candidate of the levels "
                 f"above, so it needs the value of {', '.join(missing)}"
             )
-        below = [name for each in spec.levels[level + 1 :] for name in each.parameters]
-        for name in given:
-            if name in below:
-                raise OptimizationError(
-                    f"fixed: {name} is searched by a level below this one (by the study of each "
-                    "of its candidates), so this study does not give it a value"
-                )
-            if name not in own and name not in above:
-                raise OptimizationError(
-                    f"fixed: {name} is no parameter of the problem; this study searches "
-                    f"{', '.join(own)}"
-                )
-        by_name = {parameter.name: parameter for parameter in spec.parameters}
-        for name, value in given.items():
-            try:
-                validate_value(by_name[name], value)
-            except CandidateError as exc:
-                raise OptimizationError(f"fixed: {exc}") from None
-        if all(name in given for name in own):
-            raise OptimizationError(
-                "fixed: every parameter the study searches is fixed, so there is nothing to "
-                "search; evaluate the candidate with k4opt evaluate"
-            )
+        try:
+            check_fixed(spec, given, level)
+        except CandidateError as exc:
+            raise OptimizationError(str(exc)) from None
         ordered = {p.name: given[p.name] for p in spec.parameters if p.name in given}
         plain = freeze(ordered, "fixed", OptimizationError)
         parent_json = None if parent is None else freeze(parent, "parent", OptimizationError)
@@ -97,7 +77,7 @@ class StudyScope:
     @property
     def searched(self) -> tuple[str, ...]:
         """The parameters the optimizer proposes, in problem order."""
-        return tuple(name for name in _own(self.spec, self.level) if name not in self.fixed)
+        return tuple(n for n in self.spec.parameters_of(self.level) if n not in self.fixed)
 
     @property
     def nested(self) -> bool:
@@ -170,12 +150,12 @@ class StudyScope:
         return scope
 
 
-def _own(spec: ProblemSpec, level: int) -> tuple[str, ...]:
-    """The parameters a study at ``level`` searches before any is fixed: those of its level, or
-    every parameter of an ordinary problem."""
-    if not spec.levels:
-        return tuple(parameter.name for parameter in spec.parameters)
-    return spec.levels[level].parameters
+def check_trials(trials: object, resume: bool = False) -> None:
+    """Raise :class:`OptimizationError` unless ``trials`` is a run's budget: at least one trial,
+    or none on a resume, which then goes on with the trials an interrupted session left."""
+    if isinstance(trials, bool) or not isinstance(trials, int) or trials < (0 if resume else 1):
+        kind = "a non-negative" if resume else "a positive"
+        raise OptimizationError(f"trials must be {kind} integer, got {trials!r}")
 
 
 def limit_names(criteria: Criteria) -> list[str]:

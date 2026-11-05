@@ -9,7 +9,8 @@
 Thin wrappers over :func:`k4opt.optimization.optimize` and :func:`k4opt.optimization.load_study`;
 :func:`register` plugs them into the top-level ``k4opt`` command (:mod:`k4opt.cli`). ``optimize``
 exits 0 when every trial asked for has ended, whatever its candidate's status, and 1 when the
-study cannot start or resume, a trial stops it, or it is interrupted. ``study`` exits 0 once it
+study cannot start or resume, a trial stops it, or it is interrupted; a new study first prints
+what it will do, as ``k4opt problem explain`` does. ``study`` exits 0 once it
 has printed or exported the study, and 1 when the study cannot be read; it changes nothing in the
 study, and an export writes only the data to its output, any warning to stderr.
 """
@@ -24,9 +25,11 @@ from k4opt.execution.cli import workers
 from k4opt.optimization import StudyResults, load_study, optimize
 from k4opt.optimization._export import FORMATS, export
 from k4opt.optimization._render import Progress, render_study
+from k4opt.optimization._scope import check_trials
 from k4opt.optimization._show import render_results, render_trial
 from k4opt.problem import load_problem
 from k4opt.problem.candidate import parse_candidate
+from k4opt.problem.outline import render_outline
 from k4opt.terminal import color, interactive, printable
 
 
@@ -178,7 +181,11 @@ def _register_study(commands: argparse._SubParsersAction[argparse.ArgumentParser
 
 def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     implementations = [load_evaluator(reference) for reference in args.evaluator]
-    fixed = parse_candidate(load_problem(args.problem), args.fix, "--fix") if args.fix else None
+    spec = load_problem(args.problem)
+    fixed = parse_candidate(spec, args.fix, "--fix") if args.fix else None
+    if not args.resume:
+        check_trials(args.trials)
+        render_outline(spec, args.trials, out, fixed=fixed, color=color(out))
     try:
         with Progress(args.trials, out, err, bar=interactive(out), color=color(out)) as progress:
             report = optimize(

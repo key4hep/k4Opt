@@ -37,7 +37,7 @@ def test_the_command_prints_each_trial_and_the_study(
     assert code == 0
     # a warning only if this checkout has uncommitted changes
     assert all("has uncommitted changes" in line for line in err.splitlines())
-    lines = out.splitlines()
+    lines = out.splitlines()[2:]  # after the outline
     assert [line.split()[:2] for line in lines[:3]] == [
         ["trial", "0:"],
         ["trial", "1:"],
@@ -68,7 +68,7 @@ def test_failed_candidates_are_reported_and_the_command_succeeds(
         str(problem), "--trials", "2", "--seed", "1", "--output", str(tmp_path / "s")
     )
     assert code == 0  # the budget was spent, whatever the candidates were
-    first, _, *summary = out.splitlines()
+    first, _, *summary = out.splitlines()[2:]  # after the outline
     assert first.startswith("trial 0:   failed   test.trade_off failed: x = ")
     assert first.endswith("trial-000000/summary.json")
     assert summary[1] == "trials:   2: 0 valid (0 feasible, 0 infeasible), 2 failed"
@@ -112,7 +112,7 @@ def test_workers_run_trials_at_once_and_are_no_part_of_the_study(
         str(problem), "--trials", "3", "--workers", "2", "--output", str(output)
     )
     assert code == 0, err
-    assert [line.split()[2] for line in out.splitlines()[:3]] == ["valid"] * 3
+    assert [line.split()[2] for line in out.splitlines()[2:5]] == ["valid"] * 3
     code, _, err = optimize(
         str(problem), "--trials", "1", "--workers", "1", "--resume", "--output", str(output)
     )
@@ -120,7 +120,7 @@ def test_workers_run_trials_at_once_and_are_no_part_of_the_study(
     code, out, err = optimize(
         str(problem), "--trials", "1", "--workers", "0", "--output", str(output)
     )
-    assert (code, out) == (1, "")
+    assert code == 1
     assert "workers must be a positive integer, 'auto' or 'inline', got 0" in err
 
 

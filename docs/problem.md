@@ -751,15 +751,15 @@ constraints:
 ### `optimization`
 
 Optional: a *nested* optimization, for when the best setting of some parameters depends on others.
-For each ECAL cell size, say, the photon finding is tuned anew, and the cell sizes are then compared
-each at its best:
+For each ECAL cell size, say, the reconstruction is tuned anew, and the cell sizes are then compared
+each at its best ([the example](../examples/nested/cld-pi0-nested.yaml)):
 
 ```yaml
 optimization:
   parameters: [ecal_cell_size]            # the top level searches these
   inner:                                  # for each of its candidates, a study of these:
-    parameters: [merge_distance, min_photon_energy]
-    trials: 20                            # trials of each such study
+    parameters: [ecal_mip_threshold]
+    trials: 12                            # trials of each such study
     objective: pi0.resolved               # what picks its best trial
 ```
 
@@ -785,8 +785,8 @@ are diagnostics, recorded but deciding nothing. At a level below, only what its 
 evaluators marked `required: true` read runs, with the stages they read: its studies run many
 trials each, and an expensive analysis only the top level reads would otherwise run in every one
 of them. In the ECAL study, say, the readout cost only the top level compares is not computed in
-the inner trials, while the simulation and reconstruction the photon finding reads are: once per
-geometry, every other trial reusing them.
+the inner trials, while the reconstruction the threshold reaches is, in each of them, on a simulation
+made once per geometry, every other trial reusing it.
 An evaluation runs as a whole: one that measures both a cheap metric an inner level reads and an
 expensive one only the top reads runs whole at the inner level too, so split such work into two
 evaluators to keep the expensive part at the top.
@@ -797,6 +797,8 @@ best of many trials on the same events looks better than it is. So every sample 
 from its seeds: a stage given as a `file` (HepMC generation, a given simulation) is refused under
 `inner`.
 
+`k4opt problem explain PROBLEM --trials N` says all this for a problem, and at most what it runs if
+every stage succeeds, with nothing run and no Key4hep needed ([optimization](optimization.md#what-a-study-will-do-k4opt-problem-explain)).
 [Nested studies](optimization.md#nested-studies) says how they run, resume and read back.
 
 ### Titles

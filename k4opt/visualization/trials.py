@@ -34,9 +34,8 @@ import plotly.graph_objects as go
 
 from k4opt.evaluation import Scalar
 from k4opt.optimization import StudyResults, TrialResult
-from k4opt.problem import Objective, Parameter
+from k4opt.problem import Names, Objective, Parameter, names
 from k4opt.visualization.errors import VisualizationError
-from k4opt.visualization.names import Names, names
 
 OBJECTIVE, PARAMETER = "objective:", "parameter:"
 TRIAL = "trial"
@@ -72,7 +71,7 @@ _RAMPS = {
 @dataclass(frozen=True, slots=True)
 class _Axis:
     """What an axis shows: an objective (``index`` in the problem's) or a parameter, ``called``
-    as the figures call it (:func:`~k4opt.visualization.names`)."""
+    as the figures call it (:func:`~k4opt.problem.names`)."""
 
     key: str
     called: str

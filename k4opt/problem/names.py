@@ -1,5 +1,6 @@
-"""What the figures and the dashboard call the parameters, samples, objectives and constraints of a
-problem: the ``title`` the problem gives one, its name otherwise, and never two of a kind alike.
+"""What the parameters, samples, objectives and constraints of a problem are called, wherever they
+are shown to a person (a study's outline, the figures, the dashboard): the ``title`` the problem
+gives one, its name otherwise, and never two of a kind alike.
 
 A parameter or a sample is called by its title, or its name; two parameters (or two samples)
 titled alike are each called by the title and the name (``Cell size (ecal_barrel_size)``). An
@@ -18,7 +19,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from k4opt.problem import Constraint, Objective, ProblemSpec
+from k4opt.problem.models import Constraint, Objective, ProblemSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,9 +51,15 @@ def names(spec: ProblemSpec) -> Names:
     return Names(
         _distinct({p.name: _titled(p.name, p.title) for p in spec.parameters}),
         samples,
-        _distinct(_measured(spec.objectives, samples)),
+        _distinct(_measured(_objectives(spec), samples)),
         _distinct(_measured(spec.constraints, samples)),
     )
+
+
+def _objectives(spec: ProblemSpec) -> list[Objective]:
+    """The objectives of ``spec``, then those only an inner level names."""
+    inner = [level.objective for level in spec.levels if level.objective is not None]
+    return list({o.label: o for o in [*inner, *spec.objectives]}.values())
 
 
 def _titled(name: str, title: str | None) -> list[str]:

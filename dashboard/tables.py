@@ -2,7 +2,7 @@
 
 Each function returns a list of rows, one ``dict`` each, column by column, with every value as the
 study records it (``None`` where it has none: an empty cell, never 0), headed by what
-:func:`~k4opt.visualization.names` calls each (each column's whole label is in :func:`helps`).
+:func:`~k4opt.problem.names` calls each (each column's whole label is in :func:`helps`).
 What a value means is the study's to say: outcomes, feasibility and the Pareto front are read,
 never judged again; a best value is the best the study's feasible trials reached of one
 objective, by its direction.

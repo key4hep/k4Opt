@@ -279,6 +279,38 @@ class Configuration:
         object.__setattr__(self, "evaluators", tuple(self.evaluators))
 
 
+def check_fixed(spec: ProblemSpec, fixed: Mapping[str, Scalar], level: int = 0) -> None:
+    """Raise :class:`CandidateError` unless a study of ``spec`` at ``level`` can give the
+    parameters ``fixed`` their value: each must be one of its level or of the levels above, not
+    of a level below, whose studies search it, and in its domain, and something must be left to
+    search."""
+    own = spec.parameters_of(level)
+    above = [name for each in spec.levels[:level] for name in each.parameters]
+    below = [name for each in spec.levels[level + 1 :] for name in each.parameters]
+    for name in fixed:
+        if name in below:
+            raise CandidateError(
+                f"fixed: {name} is searched by a level below this one (by the study of each "
+                "of its candidates), so this study does not give it a value"
+            )
+        if name not in own and name not in above:
+            raise CandidateError(
+                f"fixed: {name} is no parameter of the problem; this study searches "
+                f"{', '.join(own)}"
+            )
+    by_name = {parameter.name: parameter for parameter in spec.parameters}
+    for name, value in fixed.items():
+        try:
+            validate_value(by_name[name], value)
+        except CandidateError as exc:
+            raise CandidateError(f"fixed: {exc}") from None
+    if all(name in fixed for name in own):
+        raise CandidateError(
+            "fixed: every parameter the study searches is fixed, so there is nothing to "
+            "search; evaluate the candidate with k4opt evaluate"
+        )
+
+
 REPLICATES = 2**31
 """How many replicates a candidate has (0 to ``REPLICATES - 1``): as many as there are seeds of
 31 bits, which every program takes, so that each has seeds of its own."""
