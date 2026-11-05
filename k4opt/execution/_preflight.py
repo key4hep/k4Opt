@@ -91,7 +91,8 @@ def _preflight(
     required by the criteria of ``level``, the level of the optimization it is evaluated for.
 
     Checks that each evaluator class declares what it did when the session bound it, the stages
-    of each sample with what the candidate sets in them, complete, the settings of each
+    of each sample that its level runs with what the candidate sets in them, complete (a stage
+    the problem defines is checked as a whole when the session opens), the settings of each
     evaluation, with what the candidate sets in them, and its collections; then calls
     each evaluator class's ``check`` once with the request its evaluation would get for this
     candidate (its settings and collections resolved, the events, seed and properties of its
@@ -109,11 +110,15 @@ def _preflight(
         sample: context.configured(configuration.samples[sample].stages)
         for sample, context in binding.contexts.items()
     }
+    # what its level runs: every evaluation at the top, what its criteria read below, and the
+    # stages these read; a stage the level does not run is not checked for this candidate
+    plan = binding.plans[level]
     for sample, configured in contexts.items():
-        check_stages(configured, *binding.targets[sample], provided=_supplied(binding, sample))
+        targets = [task.id.name for task in plan.of(Kind.STAGE) if task.id.sample == sample]
+        if targets:
+            check_stages(configured, *targets, provided=_supplied(binding, sample))
     entries = dict(evaluations(configuration.samples, configuration.evaluators))
-    # the evaluations its level runs: every one at the top, what its criteria read below
-    ids = {task.id for task in binding.plans[level].tasks}
+    ids = {task.id for task in plan.tasks}
     planned = [(task, bound) for task, bound in binding.evaluations if task in ids]
     for task, bound in planned:  # before any check(), which may use the candidate
         _check_unchanged(bound)  # the requests are made from what the class declares

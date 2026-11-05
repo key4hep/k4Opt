@@ -787,6 +787,9 @@ trials each, and an expensive analysis only the top level reads would otherwise 
 of them. In the ECAL study, say, the readout cost only the top level compares is not computed in
 the inner trials, while the simulation and reconstruction the photon finding reads are: once per
 geometry, every other trial reusing them.
+An evaluation runs as a whole: one that measures both a cheap metric an inner level reads and an
+expensive one only the top reads runs whole at the inner level too, so split such work into two
+evaluators to keep the expensive part at the top.
 
 **New events.** The best trial of each inner study is evaluated once more on new events (its seeds
 derived, [replicates](execution.md#k4opt-evaluate)) before its level above is told it, since the

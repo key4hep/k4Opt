@@ -5,14 +5,15 @@ and a reader judges it by the level it says it was made for."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from k4opt.evaluation import CandidateRejected
-from k4opt.execution import EvaluationSession, Rejected, RunOutcome, RunRequest
+from k4opt.evaluation import CandidateRejected, EvaluationContractError
+from k4opt.execution import EvaluationSession, Rejected, RunOutcome, RunRequest, _stages
 from k4opt.problem import CandidateError
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from tests.support import simulation
@@ -195,3 +196,21 @@ def test_check_and_evaluate_reject_a_candidate_at_the_levels_that_require_its_re
         top = session.evaluate(candidate, tmp_path / "top")
     assert isinstance(rejected, Rejected) and not (tmp_path / "inner").exists()
     assert isinstance(top, RunOutcome) and top.candidate.status == "valid"
+
+
+def test_a_stage_a_level_does_not_run_is_not_checked_for_its_candidates(
+    tmp_path: Path, nested_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(context: object, given: object) -> None:
+        raise EvaluationContractError("this simulation cannot run")
+
+    with EvaluationSession.open(nested_file, [cell_count(), trade_off()]) as session:
+        # the candidate's simulation would not run: only the top level runs it
+        monkeypatch.setitem(
+            _stages._RUNNERS, "simulation", replace(_stages._RUNNERS["simulation"], check=refuse)
+        )
+        inner = session.evaluate({RADIUS: 450.0, "x": 0.8}, tmp_path / "inner", level=1)
+        assert isinstance(inner, RunOutcome) and inner.candidate.status == "valid"
+        with pytest.raises(EvaluationContractError, match="this simulation cannot run"):
+            session.evaluate({RADIUS: 450.0, "x": 0.8}, tmp_path / "top")
+    assert not (tmp_path / "top").exists()
