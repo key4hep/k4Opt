@@ -305,7 +305,10 @@ class Baseline:
     def _verify_environment(self) -> None:
         """``KEY4HEP_STACK`` and ``K4GEO`` are what they were when the session opened: the stages
         would run in another environment than the geometry was discovered in, and than the
-        records say."""
+        records say. So are the variables that decide what the programs load
+        (:func:`~k4opt.program.search_environment`), which the records and the stages'
+        signatures give as they were then; all but ``PATH``, through which the session found its
+        programs once, when it opened: it runs those whatever ``PATH`` says later."""
         opened = self.process["environment"]
         assert isinstance(opened, Mapping)
         for name, then in opened.items():
@@ -315,6 +318,18 @@ class Baseline:
                     f"{name} changed after the session opened ({then!r} then, {now!r} now); the "
                     "candidates of a session run in one environment"
                 )
+        searched = self.process["search"]
+        assert isinstance(searched, Mapping)
+        changed = [
+            name
+            for name, now in search_environment().items()
+            if name != "PATH" and searched.get(name) != now
+        ]
+        if changed:
+            raise ProvenanceError(
+                f"{', '.join(changed)} changed after the session opened; the candidates of a "
+                "session run their programs with what these find"
+            )
 
 
 def candidate_reads(geometry: TaskResult) -> dict[str, dict[str, Json]]:

@@ -1033,6 +1033,23 @@ def test_a_session_runs_its_candidates_in_the_environment_it_opened_in(
     assert not (tmp_path / "b").exists() and len(fake.calls) == 1
 
 
+@pytest.mark.parametrize("name", ["PYTHONPATH", "LD_LIBRARY_PATH", "ROOT_INCLUDE_PATH"])
+def test_a_session_runs_its_programs_with_the_search_variables_it_opened_with(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    # what the records and the stages' signatures say the programs loaded with
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    monkeypatch.setenv(name, "/somewhere/else")
+    with pytest.raises(RunError, match=rf"{name} changed after the session opened"):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and len(fake.calls) == 1
+
+
 def test_a_session_does_not_open_once_k4opt_changed_on_disk(
     problem_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
