@@ -121,7 +121,7 @@ class Tree:
         self._progress = progress
         self._warn = warn
         self._nodes: dict[str, _Node] = {}
-        self._journals: list[BaseStorage] = []  # of the studies below, each in its directory
+        self._journals: dict[str, BaseStorage] = {}  # of the open studies below, by study id
         self._root = self._node(root, space, trials, resume)
 
     def _node(
@@ -198,7 +198,7 @@ class Tree:
         database = self._database
         if self._storage is None:
             database = open_storage(directory, None)
-            self._journals.append(database)
+            self._journals[document["id"]] = database
         study = open_optuna(directory, document, database, resume)
         child = _Study(directory, document, scope, study, self._warn)
         if resume:
@@ -273,7 +273,7 @@ class Tree:
                     "feasible trial any more"
                 )
             told = _unscore(run, trial, no_best_trial(results))
-            del node.open[trial.number]
+            self._release(node, trial.number)
             if node is self._root:
                 self._progress(told)
             return None
@@ -310,9 +310,21 @@ class Tree:
         assert isinstance(number, int)
         trial, output = node.in_flight.pop(number)  # settled by _settle, whatever it raises
         told = _settle(node.run, trial, output, result)
-        node.open.pop(number, None)
+        self._release(node, number)
         if node is self._root:
             self._progress(told)
+
+    def _release(self, node: _Node, number: int) -> None:
+        """Trial ``number`` of ``node`` was told: the study it stood for ended, and what is kept
+        of it is on disk, so that a run holds its open studies, however many it made."""
+        opened = node.open.pop(number, None)
+        if opened is None:
+            return
+        study = opened[1].run.document["id"]
+        del self._nodes[study]
+        journal = self._journals.pop(study, None)
+        if journal is not None:
+            close(journal)
 
     def close(self) -> None:
         """Nothing runs any more: close the trials still under way as interrupted, in number
@@ -322,5 +334,5 @@ class Tree:
             for number in sorted(node.in_flight):
                 with contextlib.suppress(Exception):  # one that cannot be told: --resume
                     _close_interrupted(node.run, *node.in_flight[number])
-        for journal in self._journals:
+        for journal in self._journals.values():
             close(journal)

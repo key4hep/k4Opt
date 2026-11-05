@@ -446,9 +446,10 @@ def no_best_trial(trials: Sequence[TrialResult]) -> str:
     return f"no feasible trial among {len(trials)}: {held}"
 
 
-def check_inner(study: str, scope: StudyScope, trial: TrialResult) -> None:
-    """Refuse a trial of the study ``study`` of ``scope`` whose link to its study of the level
-    below does not hold: that study must be the one started for this trial, with its values. Once
+def check_inner(document: Mapping[str, Any], scope: StudyScope, trial: TrialResult) -> None:
+    """Refuse a trial of the study ``document`` of ``scope`` whose link to its study of the level
+    below does not hold: that study must be the one started for this trial, of the same problem
+    with the same files, code and stack (its identity digest) and programs, with its values. Once
     the trial selected, or is ``unscored``, that study must have ended: every one of its trials
     run (those an interruption stopped not counted), none running; the selected trial must be the
     best of it by its records, and the trial's candidate its values with those of that trial."""
@@ -457,11 +458,20 @@ def check_inner(study: str, scope: StudyScope, trial: TrialResult) -> None:
     if inner is None:
         raise OptimizationError(f"{where} stands for a study of the level below, but has none")
     below = inner.scope
-    if below.level != scope.level + 1 or below.parent != {"study": study, "trial": trial.number}:
+    made_for = {"study": document["id"], "trial": trial.number}
+    if below.level != scope.level + 1 or below.parent != made_for:
         raise OptimizationError(
             f"{where}: its inner study was started for {below.parent!r} at level {below.level}, "
             "not for this trial"
         )
+    if inner.document.get("identity") != document.get("identity"):
+        raise OptimizationError(
+            f"{where}: its inner study is not of the study's problem, files, code and stack (its "
+            "identity differs)"
+        )
+    theirs, ours = inner.document.get("programs"), document.get("programs")
+    if json.dumps(thaw(theirs), sort_keys=True) != json.dumps(thaw(ours), sort_keys=True):
+        raise OptimizationError(f"{where}: its inner study ran other programs than the study")
     for name, value in below.fixed.items():
         given = trial.candidate.get(name, _MISSING)
         if (type(given), given) != (type(value), value):
@@ -620,7 +630,7 @@ def _from_dict(data: object) -> StudyResults:
         if trials and trial.number <= trials[-1].number:
             _refuse(f"trials[{index}]", f"is trial {trial.number}, after trial {trials[-1].number}")
         if scope.nested and (trial.inner is not None or trial.status in (*_RECORDED, "unscored")):
-            check_inner(document["id"], scope, trial)
+            check_inner(document, scope, trial)
         elif not scope.nested and (trial.inner is not None or trial.selected is not None):
             _refuse(f"trial {trial.number}", "has an inner study, of a study that has none")
         trials.append(trial)

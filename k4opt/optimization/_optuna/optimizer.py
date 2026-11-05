@@ -57,7 +57,8 @@ def new_document(
     document |= dict(identity)
     document["identity"] = digest(identity)
     seed = secrets.randbelow(2**32) if seed is None else seed
-    name = f"{scope.spec.name}-{study_id[:8]}"
+    # the studies below the top are many, and may share a database: their whole id
+    name = f"{scope.spec.name}-{study_id if scope.parent else study_id[:8]}"
     document["scope"] = scope.to_dict()
     document["optimizer"] = _optimizer(scope, space, names, name=name, seed=seed, storage=storage)
     return document

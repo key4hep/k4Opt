@@ -479,3 +479,78 @@ def test_a_resume_refuses_a_tree_that_does_not_hold_up_before_anything_new_runs(
         run(nested, output, 1, resume=True)
     assert len(optuna_study(output).trials) == 1 and len(fake.calls) == calls
     assert not (output / "inner" / "trial-000001").exists()
+
+
+def test_a_running_trial_does_not_hide_an_inner_study_that_does_not_hold_up(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    with monkeypatch.context() as patched:
+        stop_at_settle(1, 2)(patched)
+        with pytest.raises(Stop):
+            run(nested, output, 1)
+    (output / ".lock").unlink(missing_ok=True)
+    assert load_study(output).trials[0].inner is not None  # as it stands, it reads back
+    path = output / "inner" / "trial-000000" / "trial-000000" / "summary.json"
+    path.write_text(path.read_text() + " ")
+    with pytest.raises(OptimizationError, match="is not the record the optimizer was told"):
+        load_study(output)
+
+
+def test_an_inner_study_whose_making_was_cut_short_is_no_error_and_is_made_on_resume(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+
+    def stopping(*args: Any) -> Any:
+        raise Stop
+
+    with monkeypatch.context() as patched:
+        patched.setattr(tree, "open_optuna", stopping)  # its study.json written, no storage
+        with pytest.raises(Stop):
+            run(nested, output, 1)
+    (output / ".lock").unlink(missing_ok=True)
+    assert (output / "inner" / "trial-000000" / "study.json").is_file()
+    read = load_study(output)
+    assert read.trials[0].status == "running" and read.trials[0].inner is None
+    study = run(nested, output, 0, resume=True)
+    assert study.trials[0].status == "valid" and len(study.trials[0].inner.trials) == 3
+
+
+def test_an_inner_study_of_another_problem_or_other_programs_is_refused(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    data = json.loads(run(nested, tmp_path / "a", 1).to_json())
+    document = yaml.safe_load(nested.read_text())
+    document["samples"]["gamma"]["simulation"]["events"] = 3
+    other = tmp_path / "other.yaml"
+    other.write_text(yaml.safe_dump(document))
+    theirs = json.loads(run(other, tmp_path / "b", 1).to_json())["trials"][0]["inner"]
+    theirs["study"]["scope"]["parent"]["study"] = data["study"]["id"]  # linked, each valid alone
+    edited = copy.deepcopy(data)
+    edited["trials"][0]["inner"] = theirs
+    with pytest.raises(OptimizationError, match="its inner study is not of the study's problem"):
+        StudyResults.from_dict(edited)
+    edited = copy.deepcopy(data)
+    edited["trials"][0]["inner"]["study"]["programs"] = {"ddsim": None}
+    with pytest.raises(OptimizationError, match="its inner study ran other programs"):
+        StudyResults.from_dict(edited)
+
+
+def test_a_run_keeps_only_its_open_studies(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    held: list[int] = []
+    close = tree.Tree.close
+
+    def closing(self: Any) -> None:
+        held.append(len(self._nodes) + len(self._journals))
+        close(self)
+
+    monkeypatch.setattr(tree.Tree, "close", closing)
+    run(nested, tmp_path / "s", 3)
+    assert held == [1]  # the top study: those of its three trials were let go as they ended

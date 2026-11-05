@@ -313,7 +313,7 @@ keeps its geometry and its EDM4hep file.
 - `scope`: what the study searches (`searched`, the parameters the optimizer proposes), the
   values it `fixed` for every trial, the `level` and `replicate` of its trials' records, and the
   trial of another study it was started for (`parent`; [nested studies](#nested-studies));
-- the optimizer: `optuna` and its version, the study name (`<problem name>-<8 hex>`), the
+- the optimizer: `optuna` and its version, the study name (`<problem name>-<8 hex>`, its whole id for a study below the top), the
   storage (a URL without its password), the sampler and its seed, the objectives it is told by
   label with their directions, the searched parameters' distributions, the limits and the
   constraint-value policy.

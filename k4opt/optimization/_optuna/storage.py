@@ -262,6 +262,11 @@ def _check_set_up(url: str, options: Mapping[str, Any]) -> None:
         )
 
 
+class NotSetUpError(OptimizationError):
+    """The storage does not hold the study (yet): the process that made its ``study.json`` stopped
+    before setting it up. Nothing of it can have run, unlike a study that does not hold up."""
+
+
 def existing_storage(directory: Path, document: Mapping[str, Any], url: str | None) -> BaseStorage:
     """The storage that holds the study's trials, opened so that nothing is written to it: the
     journal in its directory, or the database ``url``, which ``study.json`` names redacted."""
@@ -277,7 +282,7 @@ def existing_storage(directory: Path, document: Mapping[str, Any], url: str | No
             raise OptimizationError(f"{STUDY_NAME} names a storage k4opt does not read: {named!r}")
         journal = directory / JOURNAL_NAME
         if not journal.is_file():
-            raise OptimizationError(
+            raise NotSetUpError(
                 f"{journal} does not exist: the study's trials were never stored, or the file was "
                 "moved away"
             )

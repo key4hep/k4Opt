@@ -26,7 +26,7 @@ from k4opt.optimization._optuna.optimizer import (
     study_attributes,
 )
 from k4opt.optimization._optuna.space import constraint_values, objective_values
-from k4opt.optimization._optuna.storage import close, existing_storage, leaving
+from k4opt.optimization._optuna.storage import NotSetUpError, close, existing_storage, leaving
 from k4opt.optimization._results import (
     StudyResults,
     TrialResult,
@@ -54,13 +54,13 @@ def _existing_study(document: Mapping[str, Any], storage: BaseStorage) -> optuna
     try:
         study = optuna.load_study(study_name=name, storage=storage)
     except KeyError:
-        raise OptimizationError(
+        raise NotSetUpError(
             f"the optimizer's storage holds no study {name!r}: the process that made the study "
             "stopped before setting it up; k4opt optimize --resume sets it up"
         ) from None
     missing = [key for key in study_attributes(document) if key not in study.user_attrs]
     if missing:
-        raise OptimizationError(
+        raise NotSetUpError(
             f"the optimizer's study {name!r} lacks {', '.join(missing)}: the process that made it "
             "stopped while setting it up; k4opt optimize --resume finishes that"
         )
@@ -228,7 +228,7 @@ def results_of(
     for frozen in held:
         result, found = trial_result(directory, document, scope, frozen, read)
         if scope.nested:
-            result = _with_inner(directory, document["id"], scope, frozen, result, storage)
+            result = _with_inner(directory, document, scope, frozen, result, storage)
         trials.append(result)
         notes += found
     known = {frozen.user_attrs.get(marks.DIR, trial_directory(frozen.number)) for frozen in held}
@@ -254,7 +254,7 @@ def results_of(
 
 def _with_inner(
     directory: Path,
-    study: str,
+    document: Mapping[str, Any],
     scope: StudyScope,
     frozen: FrozenTrial,
     result: TrialResult,
@@ -263,12 +263,13 @@ def _with_inner(
     """``result`` with the study of the level below that its trial stands for, read as any study
     and its link checked (:func:`~k4opt.optimization._results.check_inner`): every trial that
     ended with a record, or unscored, has one; a trial that was stopped may have none yet, or one
-    that cannot be read yet (a run opens that study again, and checks it then)."""
+    whose making was cut short (:class:`NotSetUpError`). Whatever else is wrong with it is refused,
+    of a trial still running too."""
     path = inner_directory(directory, frozen.number)
     if (path / STUDY_NAME).is_file():
         try:
             inner = load(path, storage)
-        except OptimizationError:
+        except NotSetUpError:
             if frozen.state == TrialState.RUNNING:
                 return result
             raise
@@ -279,7 +280,7 @@ def _with_inner(
             )
         result = replace(result, inner=inner)
     if result.inner is not None or result.record is not None or result.status == "unscored":
-        check_inner(study, scope, result)
+        check_inner(document, scope, result)
     return result
 
 
