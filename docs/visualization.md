@@ -146,11 +146,16 @@ with its boxes and never runs over them, and the figure fills the width it is gi
 | red frame, ⚠ line | a diagnostic that did not succeed in some trials, and in how many |
 | dashed gray frames, nested | the loops of a [nested study](optimization.md#nested-studies): what runs once for each trial of a level is in that level's frame (`for each ECAL cell size`), inside those of the levels above, and a sample's box holds the frames of its tasks that repeat for a level below (`for each Pandora ECAL hit threshold trial`, with its budget, what picks its best and that the best is evaluated again). An evaluation of a level below reaches what the study is judged by through an edge labeled `best, on new events` |
 
-Each task is in the frame of the deepest level whose searched parameters reach it: the geometry
-and the simulation the cell size reaches run once per cell size, the reconstruction the threshold
-reaches once per threshold trial (`task_graph(study).node(id).loop`). A study of a level below
+A stage is in the frame of the deepest level whose searched parameters reach it, among the levels
+that run it, since it is reused otherwise: the geometry and the simulation the cell size reaches
+run once per cell size, the reconstruction the threshold reaches once per threshold trial. An
+evaluation runs for every trial of the levels that run it, so it is in the frame of the deepest
+of them, whatever reaches it: a diagnostic only the top runs is drawn there even if the threshold
+reaches it (`task_graph(study).node(id).loop`). A study of a level below
 draws what that level runs, judged by its own criteria, with the values of the levels above
-fixed (`fixed: 2.501 mm`); a study without levels below draws no frame.
+fixed (`fixed: 2.501 mm`); a study without levels below draws no frame. The figures of a study
+take the parameters it searches first, as axes and in its analysis, and leave a fixed one, which
+has one value, out of the analysis figures.
 
 **Folding** keeps a large graph readable: `folded` names samples (or stacks, by key) whose box is
 drawn as one node, listing its tasks in order (`generation → simulation → calo.photon`) with each

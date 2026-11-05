@@ -38,6 +38,7 @@ from k4opt.visualization.trials import (
     _axis,
     _hover,
     _unit,
+    searched,
 )
 
 _COLUMNS = 3  # panels side by side at most
@@ -57,7 +58,7 @@ def parallel_figure(
     called = names(spec)
     drawn = [t for t in results.trials if t.outcome == "feasible"]
     left_out = Counter(t.outcome for t in results.trials if t.outcome != "feasible")
-    dimensions: list[dict[str, Any]] = [_dimension(p, drawn, called) for p in spec.parameters]
+    dimensions: list[dict[str, Any]] = [_dimension(p, drawn, called) for p in searched(results)]
     for index, o in enumerate(results.scope.criteria.objectives):
         unit = _unit(_axis(results, f"{OBJECTIVE}{o.label}"), drawn)
         dimensions.append(
@@ -130,7 +131,7 @@ def slice_figure(
     colors = _COLORS[dark]
     drawn, left_out = _valid(results, axis)
     unit = _unit(axis, drawn)
-    parameters = results.problem.parameters
+    parameters = searched(results)
     called = names(results.problem)
     columns, rows = _grid(len(parameters))
     figure = make_subplots(
@@ -195,11 +196,11 @@ def rank_figure(
     they rank in ``objective`` (the share of the other feasible trials each is better than), the
     infeasible ones marked apart. Raises :class:`VisualizationError` for fewer than two
     parameters, and for an objective the study does not have."""
-    parameters = results.problem.parameters
+    parameters = searched(results)
     if len(parameters) < 2:
         raise VisualizationError(
             "ranking trials over pairs of parameters needs two parameters at least; "
-            f"the study has {len(parameters)}"
+            f"the study searches {len(parameters)}"
         )
     axis = _objective(results, objective)
     assert axis.objective is not None

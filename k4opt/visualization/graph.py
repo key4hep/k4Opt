@@ -257,17 +257,33 @@ def _looped(
 ) -> tuple[list[GraphNode], list[GraphEdge]]:
     """``nodes`` each in its loop (:attr:`GraphNode.loop`), from the study's ``level`` down, and
     ``edges``, what an evaluation of a level below measures for this one labeled: its best,
-    measured again on new events. A task that does no work of its own (the particle gun, fired
-    by ddsim) runs in the outermost loop of the working tasks of its sample."""
+    measured again on new events. An evaluation is in the loop of the deepest level whose plan
+    runs it (:func:`~k4opt.problem.plan.level_plan`), whatever reaches it: a diagnostic only the
+    top runs is drawn there, and an evaluation a level below requires there, even if none of its
+    parameters reaches it. A stage, reused otherwise, is in the loop of the deepest level whose
+    parameters reach it, of those that run it. A task that does no work of its own (the particle
+    gun, fired by ddsim) runs in the outermost loop of the working tasks of its sample."""
     searched = {
         name: at
         for at in range(level, spec.depth + 1)
         for name in spec.parameters_of(at)
         if name not in fixed
     }
+    # the levels whose studies run each task: an evaluation runs for every trial of the deepest
+    # one; a stage is reused otherwise, so it runs anew only for the trials of the deepest level
+    # whose parameters reach it, of those that run it
+    runs: dict[str, list[int]] = {}
+    for at in range(level, spec.depth + 1):
+        for each in level_plan(spec, at).tasks:
+            runs.setdefault(each.id.label, []).append(at)
     loops: dict[str, int | None] = {}
     for task in plan.tasks:
+        deepest = max(runs.get(task.id.label, [level]))
+        if task.id.kind is Kind.EVALUATOR:
+            loops[task.id.label] = deepest
+            continue
         reached = [searched[name] for name in task.varies if name in searched]
+        reached = [at for at in reached if at <= deepest]
         loops[task.id.label] = max(reached) if reached else None
     for task in plan.tasks:
         if task.directory is None and task.id.sample is not None:

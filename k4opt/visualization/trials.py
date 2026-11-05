@@ -116,12 +116,24 @@ class _Axis:
         return f"{called}{shown}, {objective.direction}<br><sup>{source}</sup>"
 
 
+def searched(results: StudyResults) -> tuple[Parameter, ...]:
+    """The parameters the study searches, in problem order: not those the levels above or
+    ``--fix`` give one value for every trial, whose axis would hold a single value."""
+    return tuple(p for p in results.problem.parameters if p.name in results.scope.searched)
+
+
+def _parameters(results: StudyResults) -> tuple[Parameter, ...]:
+    """Every parameter of the study, those it searches first."""
+    found = searched(results)
+    return found + tuple(p for p in results.problem.parameters if p not in found)
+
+
 def axis_choices(results: StudyResults) -> tuple[str, ...]:
-    """The axes a figure of ``results`` can have: each objective, then each parameter."""
-    spec = results.problem
+    """The axes a figure of ``results`` can have: each objective, then each parameter, those the
+    study searches first."""
     return tuple(
         [f"{OBJECTIVE}{o.label}" for o in results.scope.criteria.objectives]
-        + [f"{PARAMETER}{p.name}" for p in spec.parameters]
+        + [f"{PARAMETER}{p.name}" for p in _parameters(results)]
     )
 
 
@@ -141,7 +153,7 @@ def _axis(results: StudyResults, key: str) -> _Axis:
 
 def default_axes(results: StudyResults) -> tuple[str, str]:
     """The axes :func:`trials_figure` shows unless told others: the first two objectives, or, for
-    one objective, the first parameter against it."""
+    one objective, the first parameter the study searches against it."""
     choices = axis_choices(results)
     objectives = len(results.scope.criteria.objectives)
     return (choices[0], choices[1]) if objectives >= 2 else (choices[1], choices[0])
@@ -149,12 +161,11 @@ def default_axes(results: StudyResults) -> tuple[str, str]:
 
 def color_choices(results: StudyResults) -> tuple[str, ...]:
     """What :func:`trials_figure` can color its trials by: the trial number (:data:`TRIAL`), each
-    objective, and each parameter that is not categorical."""
-    spec = results.problem
+    objective, and each parameter that is not categorical, those the study searches first."""
     return (
         TRIAL,
         *(f"{OBJECTIVE}{o.label}" for o in results.scope.criteria.objectives),
-        *(f"{PARAMETER}{p.name}" for p in spec.parameters if p.kind != "categorical"),
+        *(f"{PARAMETER}{p.name}" for p in _parameters(results) if p.kind != "categorical"),
     )
 
 

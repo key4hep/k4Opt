@@ -87,15 +87,18 @@ def _header(entry: CatalogEntry) -> None:
 def _descend(top: StudyResults) -> tuple[StudyResults, list[int]]:
     """The study the URL leads to from ``top`` (``&inner=2.5``: the study of the level below trial
     2, then that of its trial 5), and the trials that lead there; as far as the trials named
-    have studies below them."""
+    have studies below them; a URL whose path is no path of trials shows the top study."""
     results, path = top, list[int]()
-    for number in trial.inner_path():
+    asked = trial.inner_path()
+    if asked is None:
+        st.warning("The link names no study of a level below; the study itself is shown.")
+    for number in asked or []:
         held = {each.number: each for each in results.trials}.get(number)
         if held is None or held.inner is None:
             st.warning(f"Trial {number} has no study of a level below; the study above is shown.")
             break
         results, path = held.inner, [*path, number]
-    if path != trial.inner_path():
+    if path != asked:  # the URL says what is shown
         trial.open_study(path)
     return results, path
 

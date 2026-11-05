@@ -57,11 +57,18 @@ def sheet(results: StudyResults) -> None:
     dialog(_sheet)(results, results.trial(number))
 
 
-def inner_path() -> list[int]:
+def inner_path() -> list[int] | None:
     """The trials, from the top, whose studies of the level below lead to the study shown: none
-    for the top study."""
+    for the top study; ``None`` for a URL whose ``inner`` is no such path (a part that is no
+    number), which leads nowhere rather than somewhere else."""
     held = st.query_params.get(INNER, "")
-    return [int(part) for part in held.split(".") if part.isdigit()]
+    if not held:
+        return []
+    parts = held.split(".")
+    # an ASCII digit each: str.isdigit() takes digits int() does not ("²")
+    if not all(part.isascii() and part.isdigit() for part in parts):
+        return None
+    return [int(part) for part in parts]
 
 
 def open_study(path: list[int]) -> None:
@@ -184,6 +191,6 @@ def _tuning(results: StudyResults, trial: TrialResult) -> None:
         icon=":material/account_tree:",
         key=f"trial-inner-{trial.number}",
         on_click=open_study,
-        args=([*inner_path(), trial.number],),
+        args=([*(inner_path() or []), trial.number],),
         help="Show the study of the level below as a study of its own, with every tab",
     )

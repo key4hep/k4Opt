@@ -441,3 +441,27 @@ def test_graphviz_lays_out_the_loops_and_the_figure_draws_each_node() -> None:
     figure = pipeline_figure(spec)
     drawn = {str(item[0]) for trace in figure.data for item in (trace.customdata or ())}
     assert {node.id for node in task_graph(spec).nodes} <= drawn
+
+
+def nested(change: Any) -> ProblemSpec:
+    document = yaml.safe_load(NESTED.read_text())
+    change(document)
+    return parse_problem(document)
+
+
+def test_an_evaluation_is_in_the_loop_of_the_deepest_level_that_runs_it() -> None:
+    def diagnosed(document: dict[str, Any]) -> None:
+        # a diagnostic of the reconstruction the threshold reaches, which only the top runs
+        document["evaluators"].append(
+            document["evaluators"][0] | {"as": "pfo.diagnostic", "settings": {}}
+        )
+
+    loops = {n.id: n.loop for n in task_graph(nested(diagnosed), stack=False).nodes}
+    assert loops["pi0_50gev/reconstruction"] == 1
+    assert loops["pi0_50gev/pfo.diagnostic"] == 0  # after the tuning, on its best only
+
+    def required(document: dict[str, Any]) -> None:
+        document["evaluators"][1]["required"] = True  # the readout, in every inner trial too
+
+    loops = {n.id: n.loop for n in task_graph(nested(required), stack=False).nodes}
+    assert loops["readout"] == 1 and loops["geometry"] == 0  # no inner parameter reaches either

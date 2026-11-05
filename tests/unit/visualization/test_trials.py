@@ -337,9 +337,31 @@ def test_a_study_of_a_level_below_is_drawn_by_the_objective_it_is_judged_by(
     seen = "objective:test.candidate_check/analysis/seen"
     objectives = [key for key in axis_choices(inner) if key.startswith("objective:")]
     assert objectives == [seen]  # not the cells the level above compares
-    assert default_axes(inner) == ("parameter:radius", seen)
+    # the parameter it searches first, the one the level above fixed after it
+    assert [key for key in axis_choices(inner) if key.startswith("parameter:")] == [
+        "parameter:x",
+        "parameter:radius",
+    ]
+    assert default_axes(inner) == ("parameter:x", seen)
     trials_figure(inner)
     history_figure(inner)
+
+
+def test_the_analysis_of_a_study_of_a_level_below_is_over_what_it_searches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("optuna")
+    from k4opt.optimization import load_study
+    from k4opt.visualization import VisualizationError, parallel_figure, rank_figure, slice_figure
+    from tests.support.studies import nested_study
+
+    inner = load_study(nested_study(tmp_path / "s", monkeypatch)).trial(0).inner
+    assert inner is not None
+    (dimension, *_) = parallel_figure(inner).data[0].dimensions
+    assert dimension.label == "x" and len(parallel_figure(inner).data[0].dimensions) == 2
+    assert len([axis for axis in slice_figure(inner).layout if axis.startswith("xaxis")]) == 1
+    with pytest.raises(VisualizationError, match="the study searches 1"):
+        rank_figure(inner)
 
 
 def test_the_model_of_a_study_of_a_level_below_is_what_that_level_runs(

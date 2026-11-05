@@ -371,3 +371,19 @@ def test_a_trade_off_in_the_url_highlights_the_trials_that_meet_it(
         monkeypatch, tmp_path, results, view="Trade-offs", ref="999", rules="0:keep:0:%"
     )
     assert not at.exception and "ref" not in at.query_params  # a trial the study lacks: none
+
+
+def test_a_study_of_a_level_below_opens_by_the_url_and_a_bad_path_is_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.support.studies import nested_study
+
+    results = load_study(nested_study(tmp_path / "s", monkeypatch))
+    publish(results, tmp_path / "pub")
+    at = study_page(monkeypatch, tmp_path, results, inner="1")
+    assert not at.exception
+    assert "The study of level 1 for trial 1" in texts(at)
+    for held in ("²", "1.x", "7", "-1"):  # no such trial, or no number at all
+        at = study_page(monkeypatch, tmp_path, results, inner=held)
+        assert not at.exception, held
+        assert "The study of level 1" not in texts(at)

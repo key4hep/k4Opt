@@ -204,3 +204,20 @@ def test_the_tuned_value_stands_beside_the_objective_it_tuned(
     assert trial.inner is not None and trial.selected is not None and found is not None
     assert found == trial.inner.trial(int(str(trial.selected["trial"]))).assessment.objectives[0]
     assert row["seen, tuned"] == found.value
+
+
+def test_the_tuned_value_is_headed_with_the_unit_the_tuning_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.optimization import StudyResults
+    from tests.support.studies import nested_study
+
+    import tables
+
+    data = load_study(nested_study(tmp_path / "s", monkeypatch)).to_dict()
+    for trial in data["trials"]:  # an inner-only metric measured in mm
+        for inner in trial["inner"]["trials"]:
+            for value in inner["assessment"]["objectives"]:
+                value["unit"] = "mm"
+    (row, *_) = tables.trials(StudyResults.from_dict(data))
+    assert "seen, tuned [mm]" in row

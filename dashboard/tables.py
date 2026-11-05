@@ -108,8 +108,11 @@ def _columns(
     if results.scope.nested and not trade_off:
         (below,) = results.problem.criteria(results.scope.level + 1).objectives
     tuned_options: list[str] = []
-    if below is not None:
-        unit = shown.get(below.label)
+    if below is not None:  # its unit as the tuning recorded it, if this study measures it not
+        unit = shown.get(below.label) or next(
+            (found.unit for t in results.trials if (found := tuned(t)) is not None and found.unit),
+            None,
+        )
         tuned_options = [
             _heading(f"{called.objective(below.label)}, tuned", unit),
             _heading(f"{below.label}, tuned", unit),
