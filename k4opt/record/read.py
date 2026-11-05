@@ -195,7 +195,8 @@ def _check_candidate(spec: ProblemSpec, record: Mapping[str, object]) -> Configu
     candidate = _mapping(record.get("candidate"), "candidate")
     try:  # the values are checked for their types and domains here
         values, key = validate_candidate(spec, cast(Mapping[str, Scalar], candidate))
-        configuration = configure(spec, values)
+        # the seeds of its replicate: a stage's definition must then hold that seed
+        configuration = configure(spec, values, cast(int, record.get("replicate")))
     except CandidateError as exc:
         raise RecordError(f"its candidate is not one of the problem's: {exc}") from None
     expected = [list(part) for part in key]

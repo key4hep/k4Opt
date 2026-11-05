@@ -58,10 +58,12 @@ def preview_candidate(
     implementations: Sequence[type[EvaluatorProtocol]],
     inputs: Sequence[str] = (),
     warn: Callable[[str], None] | None = None,
+    replicate: int = 0,
 ) -> Preview:
     """Check the candidate given as ``NAME=VALUE`` strings as :func:`run_candidate` does before it
     creates anything (:meth:`EvaluationSession.check`), and stop there: ``k4opt evaluate
-    --dry-run``. ``warn`` is called with each of the session's warnings, as there. Raises
+    --dry-run``, with the seeds of ``replicate``. ``warn`` is called with each of the session's
+    warnings, as there. Raises
     :class:`~k4opt.evaluation.CandidateRejected` if an evaluator's ``check`` rejects it."""
     with EvaluationSession.open(
         problem_path, implementations, inputs=_parse_inputs(inputs)
@@ -71,7 +73,7 @@ def preview_candidate(
         if warn is not None:
             for warning in session.warnings:
                 warn(warning)
-        configuration = session.check(checked)
+        configuration = session.check(checked, replicate)
         return Preview(session.spec, checked, configuration, session.targets)
 
 
@@ -85,6 +87,7 @@ def run_candidate(
     workers: int | Literal["auto", "inline"] = "inline",
     warn: Callable[[str], None] | None = None,
     reuse: Sequence[str | os.PathLike[str]] = (),
+    replicate: int = 0,
 ) -> RunOutcome | Rejected:
     """Evaluate the candidate given as ``NAME=VALUE`` strings; ``output`` must not exist. An
     evaluator's ``check`` may reject it instead (:class:`~k4opt.execution.Rejected`), with
@@ -93,7 +96,8 @@ def run_candidate(
     :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
     ``SAMPLE/STAGE=FILE`` strings, ``workers`` that of
     :meth:`EvaluationSession.open`, and ``reuse`` the runs or studies whose stages a stage with
-    the same signature reuses (:meth:`EvaluationSession.reuse`). ``warn``
+    the same signature reuses (:meth:`EvaluationSession.reuse`), ``replicate`` that of
+    :meth:`EvaluationSession.evaluate`. ``warn``
     is called with each of the session's warnings once the candidate is known to be valid, before
     anything is created, and with its :attr:`~EvaluationSession.notice` of diagnostics; the
     warnings are also kept in the summary.
@@ -113,4 +117,4 @@ def run_candidate(
                 warn(warning)
             if session.notice is not None:
                 warn(session.notice)
-        return session.evaluate(values, output)
+        return session.evaluate(values, output, replicate=replicate)

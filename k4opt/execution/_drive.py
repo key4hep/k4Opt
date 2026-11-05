@@ -25,6 +25,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 
 from k4opt.evaluation import (
@@ -49,6 +50,7 @@ from k4opt.execution._tasks import (
     Workspace,
 )
 from k4opt.execution._work import asked
+from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json
 from k4opt.problem.plan import Kind, Task, TaskId, represents_candidate
 from k4opt.record.results import CandidateRecord, TaskResult
@@ -87,6 +89,7 @@ class _Run:
     values: Mapping[str, Scalar] = field(default_factory=dict)
     reference: object = None
     signatures: dict[TaskId, Mapping[str, Json]] = field(default_factory=dict)
+    replicate: int = 0  # the request's: the seeds its stages were configured with
     relies: set[str] = field(default_factory=set)
 
 
@@ -132,11 +135,23 @@ that has none (:mod:`k4opt.record.signature`): what the coordinator attaches to 
 _WAIT = 0.2  # seconds the coordinator waits for a task to end before it looks around again
 
 
+class Wait(Enum):
+    """What a source of candidates gives when it has none now but may have one once a candidate
+    under way ended (:data:`WAIT`)."""
+
+    WAIT = "wait"
+
+
+WAIT = Wait.WAIT
+"""Nothing now: ask again once a candidate ended (an optimizer whose next proposal waits for
+the results of those under way, a study whose next step waits for its trials)."""
+
+
 def _drive(
     scheduler: Scheduler,
     backend: Backend,
     runs: dict[str, _Run],
-    pull: Callable[[], _Run | None],
+    pull: Callable[[], _Run | Wait | None],
     check: Check | None = None,
     activity: Callable[[Activity], None] | None = None,
     sign: Sign | None = None,
@@ -147,10 +162,13 @@ def _drive(
 
     ``pull`` gives the next candidate, or ``None`` once there is none; it is called only when the
     scheduler is idle, after every candidate that ended was yielded, so with one slot the
-    candidates run one after another, each in plan order. ``runs`` holds the candidates under
-    way, by workspace. Leaving the loop early (``close()``, an exception) stops every task still
-    running. ``activity`` is told what runs whenever that changed. ``sign`` gives the signature
-    of a task before it is handed out, which its result then carries in its provenance. With
+    candidates run one after another, each in plan order. It may give :data:`WAIT` instead: none
+    now, but maybe once a candidate under way ended; it is then not called again until one was
+    yielded; the loop raises :class:`~k4opt.execution.RunError` if none is under way then (none
+    would end). ``runs`` holds the candidates under way, by workspace. Leaving the loop early
+    (``close()``, an exception) stops every task still running. ``activity`` is told what runs
+    whenever that changed. ``sign`` gives the signature of a task before it is handed out, which
+    its result then carries in its provenance. With
     ``reuse``, a stage whose signature already made an output reuses it and is not run, and one
     whose signature runs for another stage waits for it, holding its slot
     (:mod:`k4opt.execution._reuse`); a candidate that reused the output of another that was not
@@ -162,6 +180,7 @@ def _drive(
     (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`), which the backend enforces.
     """
     pulling = True
+    paused = False  # the source waits for a candidate to end before it gives another
     told: Activity | None = None
     ended: list[_Run] = []
     held: list[_Run] = []  # ended, but relying on a candidate not yet yielded
@@ -301,12 +320,21 @@ def _drive(
                     continue
                 complete(run, task, result, outcome)
             tell()
+            if ended:
+                paused = False  # what the source waited for may have ended
             yield from ended
             ended.clear()
-            if pulling and scheduler.idle:
+            if pulling and not paused and scheduler.idle:
                 pulled = pull()
                 if pulled is None:
                     pulling = False
+                elif pulled is WAIT:
+                    if not runs and not held:
+                        raise RunError(
+                            "the candidates' source waits for a candidate to end, but none is "
+                            "under way"
+                        )
+                    paused = True
                 elif pulled.prepared is None:  # rejected or failed before anything was created
                     yield pulled
                 else:
@@ -316,9 +344,13 @@ def _drive(
                     costs = {t.id: backend.cost(task_cpus(contexts, t)) for t in plan.tasks}
                     scheduler.add(pulled.workspace.id, plan, costs)
                 continue
-            if not runs:  # and nothing more to pull: a free slot would have pulled
+            if not runs:  # and nothing more to pull now: a free slot would have pulled
                 # those held for each other: none that relies on an unpublished one is published
                 yield from held
+                if pulling and held:  # what the paused source waited for
+                    held.clear()
+                    paused = False
+                    continue
                 return
             # each candidate under way has a task running, ready or waiting for its twin
             assert scheduler.running or not scheduler.idle

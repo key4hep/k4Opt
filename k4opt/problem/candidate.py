@@ -7,10 +7,16 @@ problem-aware, so that ``True``, ``1`` and ``1.0`` are told apart where the para
 exactly. :func:`configure` writes each value wherever its parameter sends it, into a
 :class:`Configuration`: the geometry's attributes (as overrides, :func:`geometry_overrides`),
 the options of stages and the settings of evaluators.
+
+A *replicate* of a candidate is the same candidate on other events: replicate ``r > 0`` gives
+each stage with a seed the seed :func:`replicate_seed` derives from it, and so new events where
+the events come from that seed alone (a particle gun fired by ddsim). Replicate 0 is the
+problem's own seeds.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -31,6 +37,7 @@ from k4opt.problem.models import (
     ProblemSpec,
     ResolvedProblem,
     Sample,
+    Stage,
     StageDestination,
 )
 from k4opt.problem.stages import executors
@@ -269,15 +276,48 @@ class Configuration:
         object.__setattr__(self, "evaluators", tuple(self.evaluators))
 
 
-def configure(spec: ProblemSpec, values: Mapping[str, Scalar]) -> Configuration:
+def replicate_seed(seed: int, replicate: int) -> int:
+    """The seed of replicate ``replicate`` of a stage whose problem seed is ``seed``: ``seed``
+    itself for replicate 0, otherwise a number derived from both (31 bits, so that any program
+    takes it), the same on every machine."""
+    if replicate == 0:
+        return seed
+    digest = hashlib.sha256(f"{seed}:{replicate}".encode()).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
+
+def check_replicate(spec: ProblemSpec, replicate: object) -> int:
+    """``replicate`` as a replicate of the candidates of ``spec``: a non-negative integer, and
+    above 0 only if every sample makes its events from its seeds, its generation fired by the
+    particle gun inside ddsim and no stage given as a file: a new seed of events read from a file
+    is not new events. Raises :class:`CandidateError`."""
+    if isinstance(replicate, bool) or not isinstance(replicate, int) or replicate < 0:
+        raise CandidateError(f"replicate must be a non-negative integer, got {replicate!r}")
+    if replicate == 0:
+        return 0
+    for name, sample in spec.samples.items():
+        given = [stage for stage, entry in sample.stages.items() if entry.file is not None]
+        if given:
+            raise CandidateError(
+                f"replicate {replicate}: samples.{name} reads its {', '.join(given)} from a file, "
+                "so another seed would not make new events; only samples that make their events "
+                "from a seed (the particle gun, fired by ddsim) have replicates"
+            )
+    return replicate
+
+
+def configure(spec: ProblemSpec, values: Mapping[str, Scalar], replicate: int = 0) -> Configuration:
     """The configuration of the candidate ``values`` (valid: :func:`validate_candidate`): each
-    value written into every destination of its parameter, in the form the destination reads.
+    value written into every destination of its parameter, in the form the destination reads,
+    and, for ``replicate`` above 0 (checked: :func:`check_replicate`), each stage's seed replaced
+    by the one :func:`replicate_seed` derives from it.
 
     Nothing of ``spec`` changes; the stages and entries the candidate completes are new.
     Raises :class:`CandidateError` for a number no double holds exactly where a destination
     reads it as text that is evaluated as a double (the geometry, a stage option), so that no
-    record says a value the tool never used.
+    record says a value the tool never used, and for a replicate the problem cannot have.
     """
+    replicate = check_replicate(spec, replicate)
     geometry: list[str] = []
     options: dict[tuple[str, str], dict[str, Json]] = {}
     settings: dict[str, dict[str, Json]] = {}
@@ -302,9 +342,12 @@ def configure(spec: ProblemSpec, values: Mapping[str, Scalar]) -> Configuration:
         name: replace(
             sample,
             stages={
-                stage_name: replace(stage, options={**stage.options, **set_by})
-                if (set_by := options.get((name, stage_name)))
-                else stage
+                stage_name: _replicated(
+                    replace(stage, options={**stage.options, **set_by})
+                    if (set_by := options.get((name, stage_name)))
+                    else stage,
+                    replicate,
+                )
                 for stage_name, stage in sample.stages.items()
             },
         )
@@ -317,6 +360,13 @@ def configure(spec: ProblemSpec, values: Mapping[str, Scalar]) -> Configuration:
         for entry in spec.evaluators
     )
     return Configuration(tuple(geometry), samples, evaluators)
+
+
+def _replicated(stage: Stage, replicate: int) -> Stage:
+    """``stage`` with the seed of ``replicate``."""
+    if replicate == 0 or stage.seed is None:
+        return stage
+    return replace(stage, seed=replicate_seed(stage.seed, replicate))
 
 
 def geometry_overrides(problem: ResolvedProblem, configuration: Configuration) -> list[Override]:

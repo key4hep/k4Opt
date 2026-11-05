@@ -1,7 +1,8 @@
 """Command-line interface of the problem component: ``k4opt evaluate``.
 
     k4opt evaluate PROBLEM --evaluator FILE.py:Class [--evaluator ...] [--param NAME=VALUE ...]
-        [--input SAMPLE/STAGE=FILE ...] [--workers N|auto|inline] (--output DIR | --dry-run)
+        [--input SAMPLE/STAGE=FILE ...] [--replicate N] [--workers N|auto|inline]
+        (--output DIR | --dry-run)
 
 A thin wrapper over :func:`k4opt.execution._command.run_candidate`, or with ``--dry-run``
 :func:`~k4opt.execution._command.preview_candidate`; :func:`register` plugs it into the top-level
@@ -61,6 +62,17 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         default=[],
         metavar="NAME=VALUE",
         help="value of a parameter of the problem, e.g. ecal_cell_size=6.0 (repeatable)",
+    )
+    evaluate.add_argument(
+        "--replicate",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "evaluate the candidate on other events: every seed of the problem replaced by one "
+            "derived from it and N, the same on every machine (default 0: the problem's seeds); "
+            "for samples that make their events from their seeds, without --input"
+        ),
     )
     evaluate.add_argument(
         "--input",
@@ -279,6 +291,7 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 implementations=implementations,
                 inputs=args.input,
                 warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
+                replicate=args.replicate,
             )
         except CandidateRejected as exc:
             print(f"k4opt: candidate {exc}; nothing would be created", file=err)
@@ -294,6 +307,7 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         workers="inline" if args.workers is None else args.workers,
         reuse=args.reuse,
         warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
+        replicate=args.replicate,
     )
     if isinstance(outcome, Rejected):
         print(f"k4opt: candidate {outcome}; nothing was created", file=err)

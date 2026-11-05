@@ -37,6 +37,15 @@ cannot verify that it is the output of the stage the problem defines; the comman
 and the record lists it under `supplied`. Only a record with `supplied: []` is determined by the
 problem, the candidate and the identified files alone, which is why a study supplies none.
 
+`--replicate N` evaluates the candidate on other events: every seed of the problem (each ddsim
+stage's `seed`) is replaced by one derived from it and `N` (`k4opt.problem.candidate.replicate_seed`:
+the same on every machine; `N = 0`, the default, keeps the problem's seeds). The record holds
+`replicate: N`, and its stages the seeds they ran with, which a reader checks against `N`. Only a
+problem whose samples make their events from their seeds has replicates: a sample whose
+generation or simulation is given as a `file` (a HepMC file, say) would see the same collisions
+again with another seed, so it is refused, as is a replicate with `--input`. The stages of two
+replicates never reuse each other's outputs (their seeds differ); those of one replicate do.
+
 `--dry-run`, instead of `--output`, checks the candidate as an evaluation checks it before it
 simulates (its values, the options of every stage it runs and its files, every evaluator's
 settings and `check()`) and shows what each parameter sets, below its value: each attribute of
@@ -357,6 +366,10 @@ with session.evaluate_each(requests) as evaluations:
 
 The next request is taken only once the candidates under way leave a slot idle, and every
 outcome that ended is given back before it; `evaluate()` is one request through the same path.
+A request may carry a `replicate` (above). A source that has nothing to give now, but may have
+once a candidate under way ended (an optimizer that waits for results), gives `WAIT`
+(`from k4opt.execution import WAIT`): it is asked again only once a candidate was given back,
+and the evaluation raises `RunError` if none is under way, since none would end.
 Close what `evaluate_each` returns (`with`): that stops whatever still runs, which leaving the
 loop early does not by itself.
 
