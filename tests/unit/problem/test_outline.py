@@ -73,6 +73,18 @@ def test_each_level_below_is_a_loop_inside_the_one_above_with_events_of_its_own(
     ]
 
 
+def test_an_inner_objective_is_called_by_its_own_title() -> None:
+    def titled(document: dict[str, Any]) -> None:
+        top = document["objectives"][0]
+        keys = ("evaluator", "stage", "metric", "direction")
+        objective = {key: top[key] for key in keys} | {"title": "Tuned π⁰ photons"}
+        document["optimization"]["inner"]["objective"] = objective
+
+    lines, _ = outline(example(change=titled), 8)
+    assert lines[1].endswith("12 trials maximizing Tuned π⁰ photons")
+    assert lines[3].startswith("compare them by π⁰ photons resolved (maximize)")
+
+
 def test_an_ordinary_study_is_one_line_and_the_cost_of_its_trials() -> None:
     lines, _ = outline(example(ORDINARY), 1)
     assert lines == [

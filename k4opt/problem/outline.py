@@ -54,7 +54,8 @@ def _inner(spec: ProblemSpec, called: Names, level: int) -> list[str]:
     assert trials is not None  # parse_problem: every inner level has them
     (objective,) = spec.criteria(level).objectives
     verb = "maximizing" if objective.direction == "maximize" else "minimizing"
-    budget = f"{_trials(trials)} {verb} {called.objective(objective.label)}"
+    # its own title, which may differ from that of the problem's objective on the same metric
+    budget = f"{_trials(trials)} {verb} {objective.title or called.objective(objective.label)}"
     if level == spec.depth:
         lines = [f"{indent}tune {searched}: {budget}"]
     else:
