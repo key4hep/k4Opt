@@ -232,7 +232,9 @@ def _run_study(
                 check_optuna_study(study, document)
                 _recover(run, progress)
                 session.reuse([directory])  # every trial's record held up: their stages serve
-            tree = Tree(session, run, space, trials, identity, storage, database, progress, warn)
+            tree = Tree(
+                session, run, space, trials, identity, storage, database, progress, warn, resume
+            )
             _run_trials(tree, session, activity)
             # read back as load_study reads it, from the study still open: with the problem
             # study.json records, whose titles a resume with other titles leaves as they were

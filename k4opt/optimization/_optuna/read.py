@@ -262,10 +262,16 @@ def _with_inner(
 ) -> TrialResult:
     """``result`` with the study of the level below that its trial stands for, read as any study
     and its link checked (:func:`~k4opt.optimization._results.check_inner`): every trial that
-    ended with a record, or unscored, has one; a trial that was stopped may have none yet."""
+    ended with a record, or unscored, has one; a trial that was stopped may have none yet, or one
+    that cannot be read yet (a run opens that study again, and checks it then)."""
     path = inner_directory(directory, frozen.number)
     if (path / STUDY_NAME).is_file():
-        inner = load(path, storage)
+        try:
+            inner = load(path, storage)
+        except OptimizationError:
+            if frozen.state == TrialState.RUNNING:
+                return result
+            raise
         if inner.id != frozen.user_attrs.get(marks.CHILD):
             raise OptimizationError(
                 f"trial {frozen.number} stands for the study "

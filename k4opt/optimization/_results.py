@@ -448,8 +448,10 @@ def no_best_trial(trials: Sequence[TrialResult]) -> str:
 
 def check_inner(study: str, scope: StudyScope, trial: TrialResult) -> None:
     """Refuse a trial of the study ``study`` of ``scope`` whose link to its study of the level
-    below does not hold: that study must be the one started for this trial, with its values,
-    and the trial it selected (or none, if it is ``unscored``) the best of it, by its records."""
+    below does not hold: that study must be the one started for this trial, with its values. Once
+    the trial selected, or is ``unscored``, that study must have ended: every one of its trials
+    run (those an interruption stopped not counted), none running; the selected trial must be the
+    best of it by its records, and the trial's candidate its values with those of that trial."""
     where = f"trial {trial.number}"
     inner = trial.inner
     if inner is None:
@@ -467,6 +469,14 @@ def check_inner(study: str, scope: StudyScope, trial: TrialResult) -> None:
                 f"{where}: its inner study fixes {name} at {value!r}, but the trial gives {given!r}"
             )
     best = best_trial(inner.trials, below.criteria)
+    if trial.status == "unscored" or trial.selected is not None:
+        ran = sum(t.status not in ("interrupted", "running") for t in inner.trials)
+        running = [t.number for t in inner.trials if t.status == "running"]
+        if running or ran != scope.child_trials:
+            raise OptimizationError(
+                f"{where} rests on its inner study, which ran {ran} of its "
+                f"{scope.child_trials} trials and has {len(running)} still running"
+            )
     if trial.status == "unscored":
         if best is not None:
             raise OptimizationError(
@@ -487,6 +497,13 @@ def check_inner(study: str, scope: StudyScope, trial: TrialResult) -> None:
         raise OptimizationError(
             f"{where} selected the values {values!r}, but its inner study's best trial has "
             f"{added!r}"
+        )
+    complete = {**below.fixed, **added}
+    given = dict(trial.candidate)
+    if json.dumps(given, sort_keys=True) != json.dumps(complete, sort_keys=True):
+        raise OptimizationError(
+            f"{where} gives the candidate {given!r}, but its inner study's fixed values and "
+            f"selected trial make it {complete!r}"
         )
 
 

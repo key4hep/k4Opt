@@ -353,15 +353,17 @@ runs/nested/
   ([`--workers`](#trials-at-once---workers)): a study of the level below is asked first, a new trial
   of the level above only when no open study has a candidate. Their stages are reused as any
   stages are: a geometry the trials of a study share is simulated once.
-- **Interrupted** at any point, the run goes on with `--resume`, from what is stored: a trial of a
-  level above stays RUNNING, its study of the level below is resumed (`--trials 0` adds no new
+- **Interrupted** at any point, the run goes on with `--resume`, from what is stored. Before
+  anything new runs, it reads the tree as `load_study` does, and refuses one that does not hold
+  up. A trial of a level above stays RUNNING, its study of the level below is resumed (`--trials 0` adds no new
   trial of the top), its selection is made or checked again, and a selection that no longer is the
   study's best stops the run. What an interrupted evaluation of the new events left in a trial
   directory is moved to `inner/interrupted-trial-NNNNNN-*`. A study of a level below is resumed
   through its top study alone, whose lock covers the tree.
 - `load_study` reads the tree: `trial.inner` is the study of the level below, `trial.selected` the
   trial chosen and the values it adds, each link checked (the study was started for this trial,
-  with its values, and the selected trial is its best by its records). The JSON form holds the
+  with its values, it ran all its trials, the selected trial is its best by its records, and the
+  trial's candidate is those values with that trial's). The JSON form holds the
   inner studies. `k4opt study show` lists them; `k4opt study show DIR/inner/trial-000002` shows one.
 
 The new events keep a level from being judged by the luck of its own tuning, but the top level

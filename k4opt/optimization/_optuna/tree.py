@@ -52,7 +52,7 @@ from k4opt.optimization._optuna.optimizer import (
     new_document,
     open_optuna,
 )
-from k4opt.optimization._optuna.read import trial_result
+from k4opt.optimization._optuna.read import results_of, trial_result
 from k4opt.optimization._optuna.space import search_space
 from k4opt.optimization._optuna.storage import close, open_storage
 from k4opt.optimization._optuna.tell import (
@@ -112,6 +112,7 @@ class Tree:
         database: BaseStorage,
         progress: Progress,
         warn: Warn,
+        resume: bool = False,
     ) -> None:
         self._session = session
         self._identity = identity
@@ -121,11 +122,25 @@ class Tree:
         self._warn = warn
         self._nodes: dict[str, _Node] = {}
         self._journals: list[BaseStorage] = []  # of the studies below, each in its directory
-        self._root = self._node(root, space, trials)
+        self._root = self._node(root, space, trials, resume)
 
-    def _node(self, run: _Study, space: Mapping[str, BaseDistribution], budget: int) -> _Node:
-        """The node of ``run``, whose sampler is seeded for this session; each trial it left
-        standing for a study of the level below is opened again."""
+    def _node(
+        self,
+        run: _Study,
+        space: Mapping[str, BaseDistribution],
+        budget: int,
+        resume: bool,
+        total: bool = False,
+    ) -> _Node:
+        """The node of ``run``, whose sampler is seeded for this session, with ``budget`` trials
+        to ask for: new ones, or with ``total`` as many as the study runs in all, those that ran
+        or go on counted (those an interruption stopped not). A resumed study is read first, so
+        that nothing new runs on a tree that does not hold up: every trial that ended and its
+        study of the level below, checked to their records (one left running is checked when it
+        is opened). Each trial it left standing for a study of the level below is opened again,
+        one stopped while it was proposed told FAIL, as interrupted."""
+        if resume and run.scope.nested:
+            results_of(run.directory, run.document, run.scope, run.study, storage=self._storage)
         seed = session_seed(run.document["optimizer"]["sampler"]["seed"], len(run.study.trials))
         run.study.sampler = optuna.samplers.TPESampler(
             seed=seed, n_startup_trials=STARTUP_TRIALS, constant_liar=CONSTANT_LIAR
@@ -141,6 +156,12 @@ class Tree:
                 run.study.tell(trial, state=TrialState.FAIL)
                 continue
             self._open(node, trial)
+        if total:
+            for frozen in run.study.get_trials(deepcopy=False):
+                if frozen.state != TrialState.RUNNING:
+                    result, _ = trial_result(run.directory, run.document, run.scope, frozen, {})
+                    node.budget -= result.status != "interrupted"
+            node.budget = max(node.budget - len(node.open), 0)
         return node
 
     def _open(self, node: _Node, trial: Trial) -> None:
@@ -180,21 +201,12 @@ class Tree:
             self._journals.append(database)
         study = open_optuna(directory, document, database, resume)
         child = _Study(directory, document, scope, study, self._warn)
-        settled = 0
         if resume:
             check_optuna_study(study, document)
             _recover(child, lambda result: None)
             self._session.reuse([directory])  # every trial's record held up: their stages serve
-            for frozen in study.get_trials(deepcopy=False):
-                if frozen.state == TrialState.RUNNING:
-                    settled += 1  # goes on, and counts
-                    continue
-                result, _ = trial_result(directory, document, scope, frozen, {})
-                settled += result.status != "interrupted"
-        node.open[number] = (
-            trial,
-            self._node(child, space, max(run.scope.child_trials - settled, 0)),
-        )
+        opened = self._node(child, space, run.scope.child_trials, resume, total=True)
+        node.open[number] = (trial, opened)
 
     def requests(self) -> Iterator[RunRequest | Wait]:
         """The candidates of the tree, each when a slot would otherwise be idle."""

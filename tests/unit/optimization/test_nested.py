@@ -129,6 +129,13 @@ def test_each_top_trial_is_its_inner_studys_best_trial_on_new_events(
     assert read.to_dict() == study.to_dict()
 
 
+def drop_inner_trial(trial: dict[str, Any], number: int) -> None:
+    """The form of ``trial`` whose inner study ran one trial less, which holds together."""
+    inner = trial["inner"]
+    inner["trials"] = [t for t in inner["trials"] if t["number"] != number]
+    inner["outcomes"]["feasible"] -= 1
+
+
 def test_the_json_form_holds_the_inner_studies_and_checks_their_links(
     tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -144,7 +151,9 @@ def test_the_json_form_holds_the_inner_studies_and_checks_their_links(
     for change, message in (
         (lambda t: t["selected"].update(trial=other), "the best trial of its inner study"),
         (lambda t: t["selected"]["values"].update(x=1.5), "selected the values"),
+        (lambda t: t["candidate"].update(x=1.5), "selected trial make it"),
         (lambda t: t.update(inner=None), "stands for a study of the level below"),
+        (lambda t: drop_inner_trial(t, other), "ran 2 of its 3 trials"),
     ):
         edited = copy.deepcopy(data)
         change(edited["trials"][0])
@@ -210,10 +219,8 @@ def test_a_selection_infeasible_on_new_events_makes_its_top_trial_infeasible(
     assert study.pareto == ()
 
 
-def test_three_levels_each_select_on_events_the_level_below_did_not_tune_on(
-    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    simulation.install(monkeypatch)
+def three_levels(nested: Path) -> Path:
+    """The problem with a third level below the second: the setting of ``test.trade_off``."""
     document = yaml.safe_load(nested.read_text())
     document["parameters"]["z"] = {
         "type": "continuous",
@@ -234,10 +241,16 @@ def test_three_levels_each_select_on_events_the_level_below_did_not_tune_on(
     }
     document["objectives"][0]["sample"] = "gamma"
     nested.write_text(yaml.safe_dump(document))
+    return nested
+
+
+def test_three_levels_each_select_on_events_the_level_below_did_not_tune_on(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
     output = tmp_path / "s"
-    study = optimize(
-        nested, [cell_count(), candidate_check(), trade_off()], output, trials=1, seed=1
-    )
+    implementations = [cell_count(), candidate_check(), trade_off()]
+    study = optimize(three_levels(nested), implementations, output, trials=1, seed=1)
     (top,) = study.trials
     assert top.status == "valid" and set(top.candidate) == {RADIUS, "x", "z"}
     middle = top.inner
@@ -424,5 +437,45 @@ def test_a_selection_that_later_differs_stops_the_run(
     selected = dict(trial.user_attrs[marks.SELECTED]) | {"trial": 99}
     storage = optuna_study(output)._storage
     storage.set_trial_user_attr(trial._trial_id, marks.SELECTED, selected)
-    with pytest.raises(OptimizationError, match="the study changed"):
+    with pytest.raises(OptimizationError, match="but the best trial of its inner study"):
         run(nested, output, 0, resume=True)
+
+
+def test_a_trial_stopped_while_it_was_proposed_takes_no_part_of_a_studys_budget(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    problem, output = three_levels(nested), tmp_path / "s"
+    implementations = [cell_count(), candidate_check(), trade_off()]
+    with monkeypatch.context() as patched:
+        stop_at_settle(1)(patched)  # the first middle trial has its record, not yet told
+        with pytest.raises(Stop):
+            optimize(problem, implementations, output, trials=1, seed=1)
+    (output / ".lock").unlink(missing_ok=True)
+    optuna_study(output / "inner" / "trial-000000").ask()  # a proposal cut short: no parameters
+    study = optimize(problem, implementations, output, trials=0, resume=True)
+    middle = study.trials[0].inner
+    assert [t.status for t in middle.trials] == ["valid", "interrupted", "valid"]
+    assert study.trials[0].status == "valid"
+    assert load_study(output).to_dict() == study.to_dict()
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        pytest.param(lambda path: path.unlink(), id="record gone"),
+        pytest.param(lambda path: path.write_text(path.read_text() + " "), id="record changed"),
+    ],
+)
+def test_a_resume_refuses_a_tree_that_does_not_hold_up_before_anything_new_runs(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, corrupt: Callable[[Path], object]
+) -> None:
+    fake = simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    run(nested, output, 1)
+    corrupt(output / "inner" / "trial-000000" / "trial-000001" / "summary.json")
+    calls = len(fake.calls)
+    with pytest.raises(OptimizationError, match="trial 1"):
+        run(nested, output, 1, resume=True)
+    assert len(optuna_study(output).trials) == 1 and len(fake.calls) == calls
+    assert not (output / "inner" / "trial-000001").exists()
