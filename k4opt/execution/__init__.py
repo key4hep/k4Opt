@@ -22,13 +22,14 @@ Typical use::
 """
 
 from k4opt.execution._command import run_candidate
-from k4opt.execution._drive import Activity
+from k4opt.execution._drive import WAIT, Activity, Wait
 from k4opt.execution._preflight import Rejected
 from k4opt.execution._publish import RunOutcome
 from k4opt.execution._session import Evaluations, EvaluationSession, RunRequest
 from k4opt.execution.errors import ProvenanceError, RunError
 
 __all__ = [
+    "WAIT",
     "Activity",
     "EvaluationSession",
     "Evaluations",
@@ -37,5 +38,6 @@ __all__ = [
     "RunError",
     "RunOutcome",
     "RunRequest",
+    "Wait",
     "run_candidate",
 ]

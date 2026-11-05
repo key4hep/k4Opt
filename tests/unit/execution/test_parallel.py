@@ -30,10 +30,12 @@ import yaml
 from k4opt.cli import main
 from k4opt.evaluation import EvaluationContractError, load_evaluator
 from k4opt.execution import (
+    WAIT,
     EvaluationSession,
     RunError,
     RunOutcome,
     RunRequest,
+    Wait,
     _backends,
     _process,
     _session,
@@ -1138,3 +1140,69 @@ def test_concurrent_candidates_each_run_with_their_own_stage_options(
             assert [a for a in stage["argv"] if a.startswith("--physics.rangecut")] == [
                 f"--physics.rangecut={radius!r}*mm"
             ]
+
+
+# --- a source of candidates that waits for one to end (WAIT) -----------------------------------
+
+
+def test_a_source_that_waits_is_asked_again_only_once_a_candidate_ended(
+    tmp_path: Path, marks: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch, marks)
+    asked: list[str] = []
+    ended: list[str] = []
+
+    def source() -> Iterator[RunRequest | Wait]:
+        asked.append("a")
+        yield RunRequest({RADIUS: 300.0}, tmp_path / "a", {"name": "a"})
+        asked.append("wait")
+        yield WAIT  # a slot is idle while a makes its geometry: nothing more until a ended
+        assert ended == ["a"]
+        asked.append("b")
+        yield RunRequest({RADIUS: 400.0}, tmp_path / "b", {"name": "b"})
+
+    with session_of(2).evaluate_each(source()) as evaluations:
+        for request, outcome in evaluations:
+            assert isinstance(outcome, RunOutcome), outcome
+            ended.append(request.run["name"])  # type: ignore[index]
+    assert asked == ["a", "wait", "b"] and ended == ["a", "b"]
+
+
+def test_closing_while_the_source_waits_stops_what_runs(
+    tmp_path: Path, marks: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch, marks)
+
+    def source() -> Iterator[RunRequest | Wait]:
+        yield RunRequest({RADIUS: 300.0}, tmp_path / "a", {"name": "a"})
+        yield RunRequest({RADIUS: 400.0}, tmp_path / "b", {"name": "b"})
+        while True:
+            yield WAIT
+
+    with session_of(2).evaluate_each(source()) as evaluations:
+        request, outcome = next(evaluations)
+        assert isinstance(outcome, RunOutcome), outcome
+    # the first that ended was yielded; the other one was stopped, and has no record
+    finished = [name for name in "ab" if (tmp_path / name / SUMMARY_NAME).is_file()]
+    assert finished == [request.run["name"]]  # type: ignore[index]
+
+
+def test_an_error_of_a_waiting_source_stops_the_evaluation_after_what_ended(
+    tmp_path: Path, marks: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch, marks)
+
+    def source() -> Iterator[RunRequest | Wait]:
+        yield RunRequest({RADIUS: 300.0}, tmp_path / "a")
+        yield WAIT
+        raise ValueError("the optimizer broke")
+
+    ended: list[object] = []
+    with (
+        pytest.raises(ValueError, match="the optimizer broke"),
+        session_of(2).evaluate_each(source()) as evaluations,
+    ):
+        ended.extend(outcome for _, outcome in evaluations)
+    # it ended, and was published, before the source was asked again
+    assert [type(outcome) for outcome in ended] == [RunOutcome]
+    assert (tmp_path / "a" / SUMMARY_NAME).is_file()

@@ -129,6 +129,7 @@ def assemble(
     process: Mapping[str, Json],
     configuration: Configuration,
     execution: Mapping[str, Json],
+    replicate: int = 0,
 ) -> dict[str, object]:
     """The summary of a candidate, made from its task results and nothing else that ran.
 
@@ -141,7 +142,8 @@ def assemble(
     what it recorded of each implementation (``taken``: its version, stage, source and metrics)
     and of the process (``process``), the candidate's ``configuration`` (each stage and each
     evaluator's settings as its parameters set them) and how it executed the tasks
-    (``execution``: provenance, which no identity or comparison of records reads).
+    (``execution``: provenance, which no identity or comparison of records reads), and the
+    ``replicate`` its seeds are of (:func:`k4opt.problem.configure`).
     """
     plan, results = candidate.plan, candidate.results
     environment = thaw(process["environment"])
@@ -168,6 +170,8 @@ def assemble(
         "problem": {"path": str(problem_path), "name": spec.name, "definition": spec.to_dict()},
         "candidate": dict(values),
         "candidate_key": [list(part) for part in candidate.candidate_key],
+        # 0, or the replicate whose seeds its stages ran with: the same candidate on other events
+        "replicate": replicate,
         "status": candidate.status,
         "message": candidate.message,
         # the tasks the status is decided by: what the objectives, constraints and the evaluators

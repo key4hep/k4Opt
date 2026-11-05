@@ -22,7 +22,8 @@ peak_memory(summary)  # by task label, PeakMemory(process, program)
 
 **A record is checked before anything trusts it.** `Assessment.from_summary(spec, summary)`
 checks the record against its problem: its form, that it was made for this problem and
-candidate, what each implementation declared and each binding gave it, each task's part against
+candidate (with the seeds of its `replicate`: 0, or the replicate of the candidate it was
+evaluated on, see [execution](execution.md)), what each implementation declared and each binding gave it, each task's part against
 the plan the problem gives (what it reads, whether and by what it is blocked, the files it made,
 named relative to the run directory in its own directory), and the candidate's status, message,
 required tasks, diagnostics and metrics recomputed from them; then it recomputes the assessment

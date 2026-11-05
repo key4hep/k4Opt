@@ -21,6 +21,7 @@ from optuna.exceptions import StorageInternalError
 from optuna.trial import TrialState
 
 from k4opt.evaluation import Measurement, load_evaluator
+from k4opt.execution import EvaluationSession
 from k4opt.optimization import OptimizationError, StudyResults, TrialResult, load_study, optimize
 from k4opt.optimization._optuna.space import search_space
 from k4opt.optimization._results import OUTCOMES, pareto_front, recorded, recorded_problem
@@ -484,6 +485,29 @@ def test_a_record_must_be_the_trials_own_and_hold_up(
     told = _told(path) | told  # the bytes on disk, as if the optimizer had been told them
     with pytest.raises(OptimizationError, match=message):
         recorded(output, document, spec, 0, params, told, {})
+
+
+def test_a_replicate_of_the_trials_candidate_does_not_stand_in_for_its_record(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch, simulation.events_with([1, 2], [3]))
+    output = tmp_path / "s"
+    run(sampled_problem, output, 1, seed=1, evaluators=[cell_count()])
+    document = read_study(output)
+    spec = recorded_problem(document)
+    params = dict(optuna_study(output).trials[0].params)
+    # the same candidate, made for the same trial, on other events: a record that holds up
+    replicated = tmp_path / "replicate"
+    with EvaluationSession.open(sampled_problem, [cell_count()]) as session:
+        outcome = session.evaluate(
+            params, replicated, run={"study": document["id"], "trial": 0}, replicate=1
+        )
+        Assessment.from_summary(session.spec, dict(outcome.summary))
+    shutil.rmtree(output / "trial-000000")
+    shutil.copytree(replicated, output / "trial-000000")
+    path = output / "trial-000000" / "summary.json"
+    with pytest.raises(OptimizationError, match="is replicate 1 of its candidate"):
+        recorded(output, document, spec, 0, params, _told(path), {})
 
 
 STUDY_CHANGES: dict[str, tuple[Callable[[Path], None], str]] = {

@@ -38,7 +38,7 @@ from k4opt.execution._backends import Backend, InlineBackend
 from k4opt.execution._baseline import Baseline, candidate_reads
 from k4opt.execution._binding import _bind_problem, _Binding, _context, task_cpus
 from k4opt.execution._cpus import AUTO, INLINE, usable_cpus, usable_memory
-from k4opt.execution._drive import Activity, _drive, _Run
+from k4opt.execution._drive import WAIT, Activity, Wait, _drive, _Run
 from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._process import ProcessBackend
 from k4opt.execution._publish import RunOutcome, publish
@@ -58,6 +58,7 @@ from k4opt.problem.candidate import (
     validate_candidate,
 )
 from k4opt.problem.config import resolve_problem
+from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES, executors, plan_stages
@@ -136,6 +137,8 @@ class RunRequest:
     candidate: Mapping[str, Scalar]
     output: str | os.PathLike[str]
     run: Mapping[str, Json] | None = None
+    # the same candidate on other events: every seed derived (:func:`k4opt.problem.configure`)
+    replicate: int = 0
 
 
 class Evaluations:
@@ -473,9 +476,10 @@ class EvaluationSession:
         """
         self._baseline.verify_inputs()
 
-    def check(self, candidate: Mapping[str, Scalar]) -> Configuration:
+    def check(self, candidate: Mapping[str, Scalar], replicate: int = 0) -> Configuration:
         """Check ``candidate`` as :meth:`evaluate` does before it creates anything, and stop there;
-        what the candidate configures, each value written where its parameter sends it.
+        what the candidate configures, each value written where its parameter sends it, with the
+        seeds of ``replicate``.
 
         ``candidate`` maps the name of each parameter to its value. Raises
         :class:`~k4opt.problem.CandidateError` for a value outside its domain, what creating an
@@ -483,7 +487,7 @@ class EvaluationSession:
         :class:`~k4opt.execution.RunError` for a file the stages or the geometry read, the
         environment or k4opt's code that changed since the session opened.
         """
-        _, _, prepared, _ = self._prepare(candidate)
+        _, _, prepared, _ = self._prepare(candidate, replicate)
         if isinstance(prepared, Rejected):
             raise CandidateRejected(str(prepared))
         return prepared.configuration
@@ -494,22 +498,27 @@ class EvaluationSession:
         output: str | os.PathLike[str],
         *,
         run: Mapping[str, Json] | None = None,
+        replicate: int = 0,
     ) -> RunOutcome | Rejected:
         """Evaluate ``candidate`` into the new directory ``output`` and write its summary there;
         :class:`Rejected`, with nothing created, if an evaluator's ``check`` rejects it.
 
         ``candidate`` maps the name of each parameter to its value. ``run`` is recorded
         as the summary's ``run``: JSON-compatible data that says what the record was made for
-        (a study and a trial, say). Raises a :class:`~k4opt.errors.K4OptError` before anything
-        is created for what :meth:`check` refuses, an existing ``output`` or an unusable
-        location. Execution problems are ``failed`` or ``invalid`` results in the outcome; a
-        result that breaks the evaluation contract raises an
+        (a study and a trial, say). ``replicate`` above 0 evaluates the candidate on other events:
+        each stage's seed derived from the problem's
+        (:func:`k4opt.problem.candidate.replicate_seed`), for a problem whose samples make their
+        events from their seeds and with no stage supplied. Raises a
+        :class:`~k4opt.errors.K4OptError` before anything is created for what :meth:`check`
+        refuses, an existing ``output`` or an unusable location. Execution problems are
+        ``failed`` or ``invalid`` results in the outcome; a result that breaks the evaluation
+        contract raises an
         :class:`~k4opt.evaluation.EvaluationContractError` after the stages ran, and no summary
         is written. Nor is one written if what :meth:`check` verifies changed while the
         candidate ran: that raises a :class:`~k4opt.execution.RunError`, since the record could not
         say which files or code the candidate was evaluated with.
         """
-        with self.evaluate_each([RunRequest(candidate, output, run)]) as evaluations:
+        with self.evaluate_each([RunRequest(candidate, output, run, replicate)]) as evaluations:
             for _, result in evaluations:
                 if isinstance(result, Exception):
                     raise result
@@ -518,7 +527,7 @@ class EvaluationSession:
 
     def evaluate_each(
         self,
-        requests: Iterable[RunRequest],
+        requests: Iterable[RunRequest | Wait],
         *,
         activity: Callable[[Activity], None] | None = None,
     ) -> Evaluations:
@@ -529,13 +538,15 @@ class EvaluationSession:
 
         The next request is taken from ``requests`` only once the candidates under way leave a
         slot idle (none of their tasks is ready to take it), and every candidate that ended was
-        yielded before, so whatever makes the requests (an optimizer) learns from every outcome
-        it can before it proposes again. With one slot, that is one candidate at a time, each
-        yielded before the next is taken; with more, the candidates end in any order, each
-        with its own record. Close what this returns (``with``) when done with it: that stops
-        whatever still runs, as leaving the loop early does not by itself. One at a time per
-        session. ``activity`` is told what runs (:class:`~k4opt.execution.Activity`) whenever that
-        changes, in this thread.
+        yielded before; :data:`~k4opt.execution.WAIT` in place of a request says there is none
+        now, and the next is taken only once a candidate under way was yielded (it raises a
+        :class:`~k4opt.execution.RunError` if none is under way), so whatever makes the
+        requests (an optimizer) learns from every outcome it can before it proposes again. With
+        one slot, that is one candidate at a time, each yielded before the next is taken; with
+        more, the candidates end in any order, each with its own record. Close what this
+        returns (``with``) when done with it: that stops whatever still runs, as leaving the
+        loop early does not by itself. One at a time per session. ``activity`` is told what runs
+        (:class:`~k4opt.execution.Activity`) whenever that changes, in this thread.
         """
         if self._open is not None:
             raise RunError("the session is evaluating already; close that evaluation first")
@@ -567,17 +578,19 @@ class EvaluationSession:
         self.close()
 
     def _evaluations(
-        self, requests: Iterator[RunRequest], activity: Callable[[Activity], None] | None
+        self, requests: Iterator[RunRequest | Wait], activity: Callable[[Activity], None] | None
     ) -> Generator[tuple[RunRequest, RunOutcome | Rejected | Exception]]:
         runs: dict[str, _Run] = {}
         backend: Backend = self._backend or InlineBackend(
             self._context, dict(self._binding.evaluations)
         )
 
-        def pull() -> _Run | None:
+        def pull() -> _Run | Wait | None:
             request = next(requests, _END)
             if request is _END:
                 return None
+            if request is WAIT:
+                return WAIT
             if not isinstance(request, RunRequest):  # the caller's mistake, not a candidate's
                 raise RunError(f"expected a RunRequest, got {type(request).__name__}")
             try:
@@ -636,7 +649,7 @@ class EvaluationSession:
         with no workspace."""
         reference = _run_reference(request.run)
         started = time.perf_counter()
-        values, key, prepared, overrides = self._prepare(request.candidate)
+        values, key, prepared, overrides = self._prepare(request.candidate, request.replicate)
         if isinstance(prepared, Rejected):
             return _Run(
                 Workspace("", None), None, key, rejected=prepared, request=request, values=values
@@ -654,6 +667,7 @@ class EvaluationSession:
             request=request,
             values=values,
             reference=reference,
+            replicate=request.replicate,
         )
 
     def _checked(self, run: _Run, outcome: TaskOutcome | None, result: TaskResult) -> None:
@@ -726,13 +740,20 @@ class EvaluationSession:
         return signature
 
     def _prepare(
-        self, candidate: Mapping[str, Scalar]
+        self, candidate: Mapping[str, Scalar], replicate: int = 0
     ) -> tuple[dict[str, Scalar], CandidateKey, _Prepared | Rejected, list[Override]]:
         """The checked candidate, its key, what its preflight prepared (its configuration and
-        the requests made for it, or why an evaluator rejected it) and its overrides."""
+        the requests made for it, or why an evaluator rejected it) and its overrides; with the
+        seeds of ``replicate``, which a stage the caller supplies would not follow."""
         spec = self._baseline.spec
         values, key = validate_candidate(spec, candidate)
-        configuration = configure(spec, values)
+        if replicate and self._inputs:
+            supplied = ", ".join(sorted(task.label for task in self._inputs))
+            raise CandidateError(
+                f"replicate {replicate}: the stages {supplied} are supplied, so another seed would "
+                "not make new events for them; a replicate makes every stage from its seeds"
+            )
+        configuration = configure(spec, values, replicate)
         self._baseline.verify()  # first: a file that is gone changed, more than it is missing
         prepared = _preflight(self._binding, configuration, self._dry_runs)
         if isinstance(prepared, Rejected):
