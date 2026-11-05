@@ -11,7 +11,8 @@ told as those of any study (:mod:`~k4opt.optimization._optuna.tell`).
 A study below the top whose trials share a stage (:func:`_shares`) asks for one trial, then
 holds back until something it started ended: the others would wait for that stage, each holding a
 slot, and their proposals would know nothing yet. Meanwhile the slots go to the other studies, and
-to new trials above. The top study is never held back: nothing else would use the slots.
+to new trials above; a slot nothing else would use goes to a study held back all the same. The top
+study is never held back: nothing else would use the slots.
 
 A trial of a study with a level below (a *parent* trial) goes through these states, each decided
 from what is stored, so that a run stopped anywhere goes on from where it was:
@@ -242,17 +243,20 @@ class Tree:
     def requests(self) -> Iterator[RunRequest | Wait]:
         """The candidates of the tree, each when a slot would otherwise be idle."""
         while (request := self._next(self._root)) is not None:
+            if request is WAIT:  # nothing else would use the slot: a study held back may
+                request = self._next(self._root, eager=True) or WAIT
             yield request
 
-    def _next(self, node: _Node) -> RunRequest | Wait | None:
+    def _next(self, node: _Node, eager: bool = False) -> RunRequest | Wait | None:
         """What ``node`` and the studies below it have to evaluate next: a candidate, ``WAIT``
-        while all of that waits for what runs, or ``None`` once all of it ended."""
+        while all of that waits for what runs, or ``None`` once all of it ended. A study held
+        back asks for a new trial only if ``eager``."""
         waiting = False
         for number, (trial, child) in list(node.open.items()):
             if number in node.in_flight:
                 waiting = True  # the selected candidate is evaluated on new events
                 continue
-            below = self._next(child)
+            below = self._next(child, eager)
             if below is WAIT:
                 waiting = True
             elif below is not None:
@@ -261,7 +265,7 @@ class Tree:
                 request = self._score(node, trial, child)
                 if request is not None:
                     return request
-        held = node.held and bool(node.in_flight or node.open)
+        held = node.held and bool(node.in_flight or node.open) and not eager
         if node.budget > 0 and not held:
             node.budget -= 1
             return self._ask(node)

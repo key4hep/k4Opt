@@ -392,7 +392,9 @@ runs/nested/
   asks for one trial first, and for the others once that ended: they would only wait for the
   shared stage, each holding a worker, and would be proposed knowing nothing. Meanwhile the
   workers go to the other studies, so the geometries of as many top trials as there are workers
-  are simulated at once.
+  are simulated at once; a worker nothing else would use takes a further trial of a study held
+  back all the same. This decides when trials are proposed, so it changes what the optimizer
+  proposes, never how a candidate is evaluated.
 - **Interrupted** at any point, the run goes on with `--resume`, from what is stored. Before
   anything new runs, it reads the tree as `load_study` does, and refuses one that does not hold
   up. A trial of a level above stays RUNNING, its study of the level below is resumed (`--trials 0` adds no new

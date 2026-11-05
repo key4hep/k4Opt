@@ -662,7 +662,7 @@ def asked(study: Path) -> list[tuple[Any, Any]]:
     return [(t.datetime_start, t.datetime_complete) for t in trials]
 
 
-def test_an_inner_study_asks_for_more_once_a_trial_made_what_they_share(
+def test_a_slot_goes_to_another_study_before_one_whose_trials_wait_for_what_they_share(
     tmp_path: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stack.install(monkeypatch, **{"*": {"sleep": 1}})
@@ -670,10 +670,7 @@ def test_an_inner_study_asks_for_more_once_a_trial_made_what_they_share(
     study = run(shared, output, 2, workers=2)
     assert [t.status for t in study.trials] == ["valid", "valid"]
     first, second = (asked(output / "inner" / trial_directory(n)) for n in (0, 1))
-    for times in (first, second):
-        (_, told), *later = times
-        assert all(start >= told for start, _ in later)  # after the first ended
-    # meanwhile the slot went to the other study, whose first trial began before
+    # while the first study's first trial made what its trials share, the other study began
     assert second[0][0] < first[1][0]
     # one simulation for each inner study, which its other trials reused, and one on new events
     made = [
@@ -685,6 +682,16 @@ def test_an_inner_study_asks_for_more_once_a_trial_made_what_they_share(
         for number in range(3)
     ]
     assert sum("reused" not in stage for stage in made) == 2
+
+
+def test_a_slot_no_other_study_would_use_goes_to_a_study_held_back(
+    tmp_path: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch, **{"*": {"sleep": 1}})
+    output = tmp_path / "s"
+    run(shared, output, 1, workers=2)  # one study below: nothing else to run
+    (_, told), (start, _), _ = asked(output / "inner" / trial_directory(0))
+    assert start < told
 
 
 def test_an_inner_study_that_shares_no_stage_asks_for_its_trials_at_once(
