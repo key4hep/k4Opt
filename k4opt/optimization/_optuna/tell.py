@@ -166,13 +166,19 @@ def _settle(
 
 
 def _failed(run: _Study, trial: Trial, error: str) -> str:
-    """Tell ``trial`` FAIL with ``error`` unless the storage holds it ended; what became of it."""
+    """Tell ``trial`` FAIL with ``error`` unless the storage holds it ended, or it was stopped
+    while its record was told; what became of it."""
     name = trial_directory(trial.number)
     stored = _stored(run, trial.number)
     if stored is None:
         return f"the state of {name} could not be read; k4opt optimize --resume settles it"
     if stored.state != TrialState.RUNNING:
         return f"{name} is {stored.state.name}"
+    attrs = stored.user_attrs
+    if marks.RECORD in attrs or attrs.get(marks.STATUS) not in (None, "rejected"):
+        # stopped while its record was told (_report): FAIL with part of those marks would not
+        # read back, so it stays RUNNING, and a resume tells it its record again
+        return f"{name} was left running; k4opt optimize --resume settles it"
     try:
         _fail(run, trial, error)
     except Exception:

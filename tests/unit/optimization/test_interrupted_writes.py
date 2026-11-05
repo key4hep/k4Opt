@@ -2,8 +2,9 @@
 
 Each trial is told in several writes (its marks, its constraint values, then ``tell``). The tests
 run a study once to count them, then once for each write, interrupted there: by Ctrl-C or
-SIGTERM (a ``KeyboardInterrupt``, after which k4opt closes the trials still running), or by a
-SIGKILL (nothing more is written, so the trial is left as far as it got). Every such study must
+SIGTERM (a ``KeyboardInterrupt``, after which k4opt closes the trials still running), by a
+SIGKILL (nothing more is written, so the trial is left as far as it got), or by an ordinary
+error of that one write (after which k4opt stops the study). Every such study must
 then be read by ``load_study`` and resumed, each trial reading as its own kind or as
 ``interrupted``.
 """
@@ -28,6 +29,11 @@ TRIALS = 4
 class Killed(BaseException):
     """What a SIGKILL is to the test: nothing of the process runs after it, so neither does any
     write to the storage."""
+
+
+class StorageError(Exception):
+    """An ordinary error of one write to the storage (a database that is busy): k4opt goes on,
+    tells the trial what it can and stops the study."""
 
 
 def _graded(write_problem: Callable[..., Path]) -> Path:
@@ -107,11 +113,17 @@ def _count(problem: Path, output: Path, kind: str) -> list[str]:
     return seen
 
 
-@pytest.mark.parametrize("how", [KeyboardInterrupt, Killed], ids=["sigterm", "sigkill"])
+@pytest.mark.parametrize(
+    "how", [KeyboardInterrupt, Killed, StorageError], ids=["sigterm", "sigkill", "error"]
+)
 @pytest.mark.parametrize("name", list(PROBLEMS))
 def test_an_interrupt_at_any_write_leaves_a_readable_and_resumable_study(
     tmp_path: Path, write_problem: Callable[..., Path], name: str, how: type[BaseException]
 ) -> None:
+    # an ordinary error stops the study with an error of its own (OptimizationError)
+    stops = Exception if how is StorageError else how
+    # ... and the trial it stopped at may read as such
+    stopped = {"error"} if how is StorageError else set()
     make, kind = PROBLEMS[name]
     problem = make(write_problem)
     writes = _count(problem, tmp_path / "clean", kind)
@@ -120,7 +132,7 @@ def test_an_interrupt_at_any_write_leaves_a_readable_and_resumable_study(
     assert statuses >= ({"rejected", "valid"} if name == "rejecting" else {"valid", "invalid"})
     for at, what in enumerate(writes):
         output = tmp_path / f"at-{at}"
-        with _writes(at, how), pytest.raises(how):
+        with _writes(at, how), pytest.raises(stops):
             _study(problem, output, kind, seed=2)
         where = f"interrupted at write {at} ({what})"
         try:
@@ -129,6 +141,7 @@ def test_an_interrupt_at_any_write_leaves_a_readable_and_resumable_study(
             pytest.fail(f"{where}: load_study refuses the study: {exc}")
         assert {t.status for t in read.trials} <= {
             *statuses,
+            *stopped,
             "interrupted",
             "running",
         }, where
@@ -137,4 +150,8 @@ def test_an_interrupt_at_any_write_leaves_a_readable_and_resumable_study(
         except Exception as exc:  # pragma: no cover - the failure is the message
             pytest.fail(f"{where}: the resume refuses the study: {exc}")
         assert "running" not in {t.status for t in resumed.trials}, where
-        assert {t.status for t in load_study(output).trials} <= {*statuses, "interrupted"}, where
+        assert {t.status for t in load_study(output).trials} <= {
+            *statuses,
+            *stopped,
+            "interrupted",
+        }, where
