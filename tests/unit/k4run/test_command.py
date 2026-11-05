@@ -11,6 +11,7 @@ from k4opt.k4run import (
     K4runError,
     check_options,
     k4run_arguments,
+    map_keys,
     options_files,
     settable_option,
     wiring,
@@ -237,3 +238,39 @@ def test_data_that_cannot_be_passed_is_refused(
     assert message in str(raised.value)
     with pytest.raises(K4runError, match="it says which job runs"):
         settable_option("data")
+
+
+PANDORA = "MyDDMarlinPandora_10ns.Parameters[ECalMipThreshold]"
+
+
+def test_a_key_of_a_map_is_no_argument_of_the_job_and_is_set_as_texts() -> None:
+    options = {"options": "job.py", PANDORA: 2.0, "Alg.Parameters[Layers]": [41, 100], "cms": 91}
+    check_options(options)
+    assert job_arguments(options) == ("--cms=91",)
+    assert map_keys(options) == {
+        ("MyDDMarlinPandora_10ns.Parameters", "ECalMipThreshold"): ("2.0",),
+        ("Alg.Parameters", "Layers"): ("41", "100"),
+    }
+
+
+def test_a_parameter_sets_a_key_of_a_map_as_its_value() -> None:
+    assert settable_option(PANDORA).form == "value"
+    check_options({"options": "job.py"}, pending=[PANDORA])
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("Parameters[ECalMipThreshold]", 1, "<component>.<property>\\[<key>\\]"),
+        ("Alg.Parameters[a][b]", 1, "no k4run argument name"),
+        ("Alg.Parameters[]", 1, "no k4run argument name"),
+        ("IOSvc.Input[x]", 1, "k4opt sets this argument itself"),
+        (PANDORA, [], "an empty list sets nothing"),
+        (PANDORA, True, "the text the job's map holds"),
+        (PANDORA, None, "must be a number, a text"),
+        (PANDORA, {"a": 1}, "must be a number, a text"),
+    ],
+)
+def test_keys_of_maps_k4opt_cannot_set_are_refused(key: str, value: Any, message: str) -> None:
+    with pytest.raises(K4runError, match=message):
+        check_options({"options": "job.py", key: value})

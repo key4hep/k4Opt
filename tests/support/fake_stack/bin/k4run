@@ -19,9 +19,11 @@ is its exit status after the run; ``stderr`` a text it writes there; ``sleep`` h
 it sleeps first; ``no_output`` and ``no_dump`` leave the output or the dump out; ``geometry``
 and ``input`` replace what the dump says the job read; ``drop`` leaves that many events of a
 JSON input out of the output; ``write`` writes, in the working directory, the text of each file
-it maps.
+it maps; ``keep_maps`` ignores the keys of map properties k4opt's options file sets, as a job
+that sets its map again would.
 """
 
+import ast
 import json
 import os
 import re
@@ -76,6 +78,12 @@ if match is not None and not control.get("no_dump"):
         f"IOSvc.Output = {output!r};",
         *(f"Job.{key} = {value!r};" for key, value in sorted(options.items())),
     ]
+    if not control.get("keep_maps"):
+        maps: dict[str, dict[str, list[str]]] = {}
+        for call in re.findall(r"^_set\((.*)\)$", mine, re.MULTILINE):
+            component, name, key, values = ast.literal_eval(f"({call})")
+            maps.setdefault(f"{component}.{name}", {})[key] = values
+        lines += [f"{name} = {held!r};" for name, held in maps.items()]
     Path(match.group(1)).write_text("\n".join(lines) + "\n")
 if not control.get("no_output"):
     source = Path(options.get("IOSvc.Input", options.get("inputFiles", [""]))[0])

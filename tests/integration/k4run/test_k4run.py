@@ -31,6 +31,9 @@ GUN = {
 }
 
 
+PANDORA = "MyDDMarlinPandora_10ns.Parameters"
+
+
 @pytest.fixture(scope="module")
 def cld() -> tuple[Path, Path]:
     """``(compact, CLDConfig)`` of the stack."""
@@ -81,6 +84,47 @@ def test_the_job_takes_its_arguments_and_refuses_one_it_does_not_know(
     assert said is not None and "argument --cms: invalid choice: '92'" in said
     said = dry_run(workdir=tmp_path / "c", **job(cld, truthTraking=True), **common)
     assert said is not None and "unrecognized arguments: --truthTraking" in said
+
+
+def test_a_key_the_job_does_not_set_is_refused_with_those_it_resembles(
+    cld: tuple[Path, Path], tmp_path: Path
+) -> None:
+    compact, _ = cld
+    common = {"compact": compact, "placeholder": tmp_path / "placeholder.edm4hep.root"}
+    wiring = {"geometry": "compactFile", "cms": 91, "truthTracking": True}
+    good = job(cld, **wiring, **{f"{PANDORA}[ECalMipThreshold]": 2.0})
+    assert dry_run(workdir=tmp_path / "a", **good, **common) is None
+    bad = job(cld, **wiring, **{f"{PANDORA}[ECalMipTreshold]": 2.0})
+    said = dry_run(workdir=tmp_path / "b", **bad, **common)
+    assert said is not None and "has no key ECalMipTreshold" in said
+    assert "ECalMipThreshold" in said
+    bad = job(cld, **wiring, **{"NoSuchAlg.Parameters[x]": 2.0})
+    said = dry_run(workdir=tmp_path / "c", **bad, **common)
+    assert said is not None and "the job has no component NoSuchAlg" in said
+    bad = job(cld, **wiring, **{"MyDDMarlinPandora_10ns.ParameterMap[ECalMipThreshold]": 2.0})
+    said = dry_run(workdir=tmp_path / "d", **bad, **common)
+    assert said is not None and "has no map property ParameterMap" in said and "Parameters" in said
+    bad = job(cld, **wiring, **{"MyDDMarlinPandora_10ns.OutputLevel[x]": 2.0})
+    said = dry_run(workdir=tmp_path / "e", **bad, **common)
+    assert said is not None and "has no map property OutputLevel" in said
+
+
+def test_a_key_of_a_map_reaches_the_job_and_leaves_the_others_as_it_set_them(
+    cld: tuple[Path, Path], simulated: Path, tmp_path: Path
+) -> None:
+    compact, _ = cld
+    wiring = {"geometry": "compactFile", "cms": 91, "truthTracking": True}
+    run = reconstruct(
+        compact=compact,
+        input_file=simulated,
+        workdir=tmp_path / "reconstruction",
+        **job(cld, **wiring, **{f"{PANDORA}[ECalMipThreshold]": 2.0}),
+    )
+    assert run.error is None, run.error
+    held = properties(run.files["joboptions"].read_text())[PANDORA]
+    assert isinstance(held, dict)
+    assert held["ECalMipThreshold"] == ["2.0"]
+    assert held["ClusterCollectionName"] == ["PandoraClusters"]
 
 
 def test_every_simulated_event_is_reconstructed_on_the_geometry_k4opt_gave(

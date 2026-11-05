@@ -12,7 +12,7 @@ from __future__ import annotations
 import ast
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 _LINE = re.compile(r"(?P<key>[^\s=]+)\s*=\s*(?P<value>.*?);?\s*")
@@ -50,6 +50,11 @@ def _shown(value: object) -> str:
     return "nothing" if value is None else repr(value)
 
 
+def _texts(value: object) -> list[str]:
+    """A value of a map as the texts k4opt sets it to."""
+    return [str(item) for item in (value if isinstance(value, (list, tuple)) else [value])]
+
+
 def verify(
     text: str,
     *,
@@ -58,11 +63,13 @@ def verify(
     output: Path,
     geometry: str | None = None,
     input_argument: str | None = None,
+    keys: Mapping[tuple[str, str], Sequence[str]] | None = None,
 ) -> str | None:
     """Why the job whose resolved options are ``text`` did not read the candidate's geometry
-    ``compact`` (``GeoSvc.detectors``), the events ``input_file`` (``IOSvc.Input``) or write
-    ``output`` (``IOSvc.Output``); ``None`` if it did. ``geometry`` and ``input_argument`` name the
-    job's own arguments k4opt gave them to, for the message."""
+    ``compact`` (``GeoSvc.detectors``), the events ``input_file`` (``IOSvc.Input``), write
+    ``output`` (``IOSvc.Output``) or hold what ``keys`` sets each key of a map property to
+    (:func:`~k4opt.k4run.command.map_keys`); ``None`` if it did. ``geometry`` and
+    ``input_argument`` name the job's own arguments k4opt gave them to, for the message."""
     found = properties(text)
     problems = []
     detectors = found.get("GeoSvc.detectors")
@@ -88,6 +95,11 @@ def verify(
     written = found.get("IOSvc.Output")
     if not _same(written, output):
         problems.append(f"IOSvc.Output is {_shown(written)}, not {output}")
+    for (name, key), values in (keys or {}).items():
+        held = found.get(name)
+        value = held.get(key) if isinstance(held, dict) else None
+        if value is None or _texts(value) != list(values):
+            problems.append(f"{name}[{key}] is {_shown(value)}, not {list(values)!r}")
     if not problems:
         return None
     return "the job did not run on what k4opt gave it: " + "; ".join(problems)

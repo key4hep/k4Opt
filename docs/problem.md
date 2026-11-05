@@ -227,7 +227,7 @@ The options of a stage a parameter can set, and how each is written:
 | --- | --- | --- |
 | `gun` (`generation`) | `particle` (a categorical of strings); `energy` (continuous or integer, with a unit of `MeV`, `GeV`, `TeV`) | the string; `{value: v, unit: u}` |
 | `ddsim` (`simulation`) | any option that takes one value, named as in `ddsim --help` (`physics.rangecut`, `part.minimalKineticEnergy`) | as ddsim's command line reads it: `0.5*mm` for a number with a unit (DD4hep evaluates it, so `--physics.rangecut=0.5*mm` means what it says), the number, a string or a boolean |
-| `k4run` (`reconstruction`) | any argument of the job (`cms`) or Gaudi property (`DDCaloDigi.ECALThreshold`), named as in `k4run OPTIONS.py --help` | the value itself (`--cms=240`), a number, a string or a boolean; the parameter has no `unit`, since the job decides the unit of what it reads and k4opt cannot convert into it |
+| `k4run` (`reconstruction`) | any argument of the job (`cms`) or Gaudi property (`GeoSvc.OutputLevel`), named as in `k4run OPTIONS.py --help`, or a key of a map property (`MyDDMarlinPandora_10ns.Parameters[ECalMipThreshold]`, [k4run](k4run.md#the-job)) | the value itself (`--cms=240`), a number, a string or a boolean; the parameter has no `unit`, since the job decides the unit of what it reads and k4opt cannot convert into it |
 
 Not settable, each refused with its reason: `executor`, `file`, `events`, `seed` and `timeout`
 (k4opt's own keys of a stage), the gun's `direction` and `vertex`, the options k4opt sets or refuses, a ddsim
