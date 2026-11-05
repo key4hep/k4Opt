@@ -16,8 +16,8 @@ import yaml
 
 from k4opt.cli import main
 from k4opt.execution import WAIT, EvaluationSession, RunError, RunRequest, Wait
-from k4opt.problem import CandidateError, load_problem
-from k4opt.problem.candidate import check_replicate, configure, replicate_seed
+from k4opt.problem import CandidateError, load_problem, parse_problem
+from k4opt.problem.candidate import REPLICATES, check_replicate, configure, replicate_seed
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from k4opt.record.signature import digest
 from tests.support import simulation
@@ -50,6 +50,15 @@ def seeds(fake: simulation.FakeDdsim) -> list[int]:
 # --- the seeds of a replicate -------------------------------------------------------------------
 
 
+def test_no_two_replicates_of_a_seed_share_their_seed() -> None:
+    # once the same with a hash cut to 31 bits; the stride makes each replicate's seed its own
+    assert replicate_seed(SEED, 3367) != replicate_seed(SEED, 20785)
+    many = range(200_000)
+    assert len({replicate_seed(SEED, replicate) for replicate in many}) == len(many)
+    last = REPLICATES - 1  # the seed of replicate 0 comes back only after every other one
+    assert replicate_seed(SEED, last) != SEED and 0 <= replicate_seed(SEED, last) < 2**31
+
+
 def test_replicate_0_keeps_the_seed_and_others_derive_one_alike_everywhere() -> None:
     assert replicate_seed(SEED, 0) == SEED
     derived = [replicate_seed(SEED, replicate) for replicate in (1, 2, 3)]
@@ -72,10 +81,41 @@ def test_a_replicate_changes_the_seeds_and_nothing_else(problem_file: Path) -> N
     assert (other.geometry, other.evaluators) == (problem.geometry, problem.evaluators)
 
 
-@pytest.mark.parametrize("replicate", [-1, True, 1.0, "1"])
-def test_a_replicate_is_a_non_negative_integer(problem_file: Path, replicate: object) -> None:
-    with pytest.raises(CandidateError, match="replicate must be a non-negative integer"):
+@pytest.mark.parametrize("replicate", [-1, True, 1.0, "1", 2**31])
+def test_a_replicate_is_an_integer_of_31_bits(problem_file: Path, replicate: object) -> None:
+    with pytest.raises(CandidateError, match=r"replicate must be an integer from 0 to 2147483647"):
         check_replicate(load_problem(problem_file), replicate)
+
+
+def test_a_problem_that_makes_no_events_from_a_seed_has_no_replicate() -> None:
+    # it measures the geometry alone: another replicate would be the candidate itself
+    spec = parse_problem(
+        {
+            "schema_version": "k4opt.problem/v1alpha1",
+            "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
+            "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
+            "parameters": {
+                "cell": {
+                    "type": "continuous",
+                    "bounds": [2.5, 20],
+                    "unit": "mm",
+                    "targets": {"geometry": "ECal_cell_size"},
+                }
+            },
+            "evaluators": [{"name": "ecal.channels", "version": "1"}],
+            "objectives": [
+                {
+                    "evaluator": "ecal.channels",
+                    "stage": "geometry",
+                    "metric": "ecal_barrel.channels",
+                    "direction": "minimize",
+                }
+            ],
+        }
+    )
+    assert check_replicate(spec, 0) == 0
+    with pytest.raises(CandidateError, match="the problem makes no events from a seed"):
+        check_replicate(spec, 1)
 
 
 def test_a_sample_that_reads_its_events_from_a_file_has_no_replicate(
@@ -121,7 +161,7 @@ def test_a_record_whose_replicate_is_not_its_seeds_is_refused(
         outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a", replicate=1)
         data = summary(outcome.run_dir)
         data["replicate"] = replicate
-        with pytest.raises(RecordError, match=r"definition|replicate must be"):
+        with pytest.raises(RecordError, match=r"definition|replicate must be an integer"):
             Assessment.from_summary(session.spec, data)
 
 

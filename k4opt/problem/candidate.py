@@ -16,7 +16,6 @@ problem's own seeds.
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -276,23 +275,38 @@ class Configuration:
         object.__setattr__(self, "evaluators", tuple(self.evaluators))
 
 
+REPLICATES = 2**31
+"""How many replicates a candidate has (0 to ``REPLICATES - 1``): as many as there are seeds of
+31 bits, which every program takes, so that each has seeds of its own."""
+
+_STRIDE = 0x9E3779B1  # odd, so that replicate -> seed is one-to-one modulo 2**31
+
+
 def replicate_seed(seed: int, replicate: int) -> int:
     """The seed of replicate ``replicate`` of a stage whose problem seed is ``seed``: ``seed``
-    itself for replicate 0, otherwise a number derived from both (31 bits, so that any program
-    takes it), the same on every machine."""
+    itself for replicate 0, otherwise ``seed + replicate * K`` modulo 2**31 for an odd ``K``, the
+    same on every machine. Two replicates below :data:`REPLICATES` never share a seed: the stride
+    is odd, so ``replicate * K`` takes each value modulo 2**31 once."""
     if replicate == 0:
         return seed
-    digest = hashlib.sha256(f"{seed}:{replicate}".encode()).digest()
-    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+    return (seed + replicate * _STRIDE) % REPLICATES
 
 
 def check_replicate(spec: ProblemSpec, replicate: object) -> int:
-    """``replicate`` as a replicate of the candidates of ``spec``: a non-negative integer, and
-    above 0 only if every sample makes its events from its seeds, its generation fired by the
-    particle gun inside ddsim and no stage given as a file: a new seed of events read from a file
-    is not new events. Raises :class:`CandidateError`."""
-    if isinstance(replicate, bool) or not isinstance(replicate, int) or replicate < 0:
-        raise CandidateError(f"replicate must be a non-negative integer, got {replicate!r}")
+    """``replicate`` as a replicate of the candidates of ``spec``: an integer from 0 to
+    :data:`REPLICATES` - 1, and above 0 only if the problem makes events from seeds (a stage with
+    a seed: a simulation by ddsim) and every sample makes its events from its seeds, its
+    generation fired by the particle gun inside ddsim and no stage given as a file: a new seed of
+    events read from a file is not new events, and without a seed no replicate differs. Raises
+    :class:`CandidateError`."""
+    if (
+        isinstance(replicate, bool)
+        or not isinstance(replicate, int)
+        or not 0 <= replicate < REPLICATES
+    ):
+        raise CandidateError(
+            f"replicate must be an integer from 0 to {REPLICATES - 1}, got {replicate!r}"
+        )
     if replicate == 0:
         return 0
     for name, sample in spec.samples.items():
@@ -303,6 +317,13 @@ def check_replicate(spec: ProblemSpec, replicate: object) -> int:
                 "so another seed would not make new events; only samples that make their events "
                 "from a seed (the particle gun, fired by ddsim) have replicates"
             )
+    if not any(
+        stage.seed is not None for s in spec.samples.values() for stage in s.stages.values()
+    ):
+        raise CandidateError(
+            f"replicate {replicate}: the problem makes no events from a seed (no sample "
+            "simulates any), so a replicate would be the candidate itself"
+        )
     return replicate
 
 
