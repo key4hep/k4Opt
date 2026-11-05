@@ -68,7 +68,8 @@ class _Run:
     case nothing of it was created and it has no ``prepared``. ``request``, ``values`` and
     ``reference`` (what its record says it was made for) are the caller's. ``signatures`` holds
     the signature of each stage handed out (:mod:`k4opt.record.signature`), which its result
-    carries."""
+    carries. ``relies`` holds the records of the other candidates of the session whose outputs
+    it reused before they were published: it is published only if they were."""
 
     workspace: Workspace
     prepared: _Prepared | None
@@ -86,6 +87,7 @@ class _Run:
     values: Mapping[str, Scalar] = field(default_factory=dict)
     reference: object = None
     signatures: dict[TaskId, Mapping[str, Json]] = field(default_factory=dict)
+    relies: set[str] = field(default_factory=set)
 
 
 def _result(run: _Run, task: Task, outcome: TaskOutcome, observed: Observations) -> TaskResult:
@@ -151,12 +153,30 @@ def _drive(
     of a task before it is handed out, which its result then carries in its provenance. With
     ``reuse``, a stage whose signature already made an output reuses it and is not run, and one
     whose signature runs for another stage waits for it, holding its slot
-    (:mod:`k4opt.execution._reuse`). Each task may run as long as its description says
+    (:mod:`k4opt.execution._reuse`); a candidate that reused the output of another that was not
+    published yet is yielded only after that one, so that the caller publishes it first, or
+    not. Candidates never rely on each other: one is added only when no task is ready, and ready
+    tasks start in the order of their candidates, so a stage of a later candidate never runs
+    before the same stage of an earlier one, which it reuses. Each task may run as long as its
+    description says
     (:attr:`~k4opt.execution._tasks.TaskSpec.timeout`), which the backend enforces.
     """
     pulling = True
     told: Activity | None = None
     ended: list[_Run] = []
+    held: list[_Run] = []  # ended, but relying on a candidate not yet yielded
+
+    def release() -> None:
+        """Yield, after them, the candidates held for others that are no longer under way."""
+        waiting = {run.workspace.id for run in (*runs.values(), *held)}
+        while True:
+            free = [run for run in held if not (run.relies - {run.workspace.id}) & waiting]
+            if not free:
+                return
+            for run in free:
+                held.remove(run)
+                ended.append(run)
+                waiting.discard(run.workspace.id)
 
     def tell() -> None:
         nonlocal told
@@ -173,6 +193,7 @@ def _drive(
         backend.close_workspace(key)
         runs.pop(key, None)
         ended.append(run)
+        release()
         if reuse is not None:  # what waited for its stages runs itself
             for item in reuse.forget(key):
                 assert isinstance(item, tuple)
@@ -216,6 +237,8 @@ def _drive(
         if reuse is None:
             submit(run, task)
         elif (source := reuse.find(digest)) is not None:
+            if source.record != key and reuse.pending(source.record):
+                run.relies.add(source.record)
             result, run.observed[task.id] = reused(task, source)
             complete(run, task, result)
         elif reuse.running(digest):
@@ -252,7 +275,8 @@ def _drive(
             run.results = scheduler.remove(key)
             backend.close_workspace(key)
             del runs[key]
-            ended.append(run)
+            held.append(run)
+            release()
 
     try:
         while True:
@@ -292,6 +316,8 @@ def _drive(
                     scheduler.add(pulled.workspace.id, plan, costs)
                 continue
             if not runs:  # and nothing more to pull: a free slot would have pulled
+                # those held for each other: none that relies on an unpublished one is published
+                yield from held
                 return
             # each candidate under way has a task running, ready or waiting for its twin
             assert scheduler.running or not scheduler.idle
@@ -300,6 +326,10 @@ def _drive(
             key = run.workspace.id
             backend.cancel([Handle(key, task) for task in scheduler.drop(key)])
             backend.close_workspace(key)
+        if reuse is not None:  # none of these is published now: a later evaluation waits for
+            # none of their stages, and reuses none of their outputs
+            for run in (*runs.values(), *held, *ended):
+                reuse.forget(run.workspace.id)
         runs.clear()
 
 

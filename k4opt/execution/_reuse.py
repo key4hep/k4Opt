@@ -12,8 +12,11 @@ own stages that ended ``done``, and of the stages that the records it is given h
 output whose SHA-256 is known is kept, and it is checked before each use: a file that changed or
 went is dropped, and the stage runs. A record is published only once every task of its candidate
 ended, so an output listed in one was complete; an output of a stage of this session is kept once
-the stage ended ``done``. While a stage runs, another with its signature waits for it
-(:meth:`Reuse.wait`) and then reuses its output, or runs itself if it did not succeed.
+the stage ended ``done``, pending until its candidate is published: it is dropped if the
+candidate stops or is not published (:meth:`Reuse.withdraw`), and a candidate that reused it is
+handed on only after that candidate ended, and published only if it was. While a stage runs,
+another with its signature waits for it (:meth:`Reuse.wait`) and then reuses its output, or runs
+itself if it did not succeed.
 
 A reused stage's result names the file where it is, outside the candidate's directory, as a file
 the caller supplies is named, and says where it comes from (``reused``: the record, the stage, its
@@ -27,12 +30,14 @@ from collections.abc import Hashable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from k4opt.errors import K4OptError
 from k4opt.evaluation import Artifact
 from k4opt.execution._files import Made, Observed, readable_identity, stat_of
 from k4opt.frozen import FrozenMap, Json
+from k4opt.problem.config import parse_problem
 from k4opt.problem.plan import Task
 from k4opt.problem.stages import stage_output
-from k4opt.record.read import SUMMARY_SCHEMA
+from k4opt.record.read import SUMMARY_SCHEMA, check_summary
 from k4opt.record.results import DONE, TaskResult
 from k4opt.record.signature import SIGNATURE, digest
 from k4opt.record.write import SUMMARY_NAME
@@ -93,6 +98,9 @@ class Reuse:
     _sources: dict[str, Source] = field(default_factory=dict)
     _running: dict[str, Hashable] = field(default_factory=dict)  # signature: candidate key
     _waiting: dict[str, list[_Waiting]] = field(default_factory=dict)
+    # the signatures of the sources of this session's candidates not yet published, by record
+    _unpublished: dict[str, set[str]] = field(default_factory=dict)
+    _published: set[str] = field(default_factory=set)  # this session's records published
 
     def find(self, signature: str) -> Source | None:
         """The output that stands in for a stage with ``signature``, checked now: ``None`` if
@@ -128,11 +136,38 @@ class Reuse:
         self._running.pop(signature, None)
         if source is not None:
             self.add(signature, source)
+            if self._sources.get(signature) is source:  # pending until its record is published
+                self._unpublished.setdefault(source.record, set()).add(signature)
         return [waiting.item for waiting in self._waiting.pop(signature, [])]
 
+    def pending(self, record: str) -> bool:
+        """Whether ``record`` is of a candidate of this session whose outputs stand in for
+        stages, but which is not published yet (and may never be)."""
+        return record in self._unpublished
+
+    def published(self, record: str) -> None:
+        """The candidate whose record is ``record`` was published: its outputs stand for good."""
+        self._unpublished.pop(record, None)
+        self._published.add(record)
+
+    def is_published(self, record: str) -> bool:
+        """Whether this session published the record ``record``."""
+        return record in self._published
+
+    def withdraw(self, record: str) -> None:
+        """The candidate whose record is ``record`` will not be published: its outputs stand in
+        for no stage any more, since no record would say where they come from."""
+        for signature in self._unpublished.pop(record, set()):
+            source = self._sources.get(signature)
+            if source is not None and source.record == record:
+                del self._sources[signature]
+
     def forget(self, key: Hashable) -> list[object]:
-        """The candidate ``key`` stopped: its stages wait no more, and the items of the stages of
-        other candidates that waited for one of its stages, which now run themselves."""
+        """The candidate ``key`` stopped: its stages wait no more, its outputs stand in for none
+        (it will have no record), and the items of the stages of other candidates that waited
+        for one of its stages, which now run themselves."""
+        if isinstance(key, str):
+            self.withdraw(key)
         for signature, waiting in list(self._waiting.items()):
             left = [each for each in waiting if each.key != key]
             if left:
@@ -148,9 +183,10 @@ class Reuse:
     def index(self, run_dirs: Iterable[Path]) -> int:
         """Keep the outputs of the stages that the records in ``run_dirs`` hold, each a run
         directory with a ``summary.json``; how many were kept. A stage is kept if its record
-        holds its signature, whose SHA-256 is that of its document, and its output, hashed and
-        still there with that hash. Records that cannot be read, of another schema, and stages
-        without these are left out."""
+        holds up as any record is read (against the problem it records: each signature is then
+        what the record says its stage was made from, and its SHA-256 that of its document) and
+        its output, hashed, is still there with that hash. Records that cannot be read, of
+        another schema or that do not hold up, and stages without these are left out."""
         kept = 0
         for run_dir in run_dirs:
             for signature, source in _recorded(Path(run_dir)):
@@ -173,6 +209,13 @@ def _recorded(run_dir: Path) -> list[tuple[str, Source]]:
     except (OSError, ValueError):
         return []
     if not isinstance(summary, Mapping) or summary.get("schema") != SUMMARY_SCHEMA:
+        return []
+    # read as any record is read, against the problem it was made for: each stage's signature is
+    # then what the record says it was made from, not only a document with its own hash
+    try:
+        definition = summary["problem"]["definition"]
+        check_summary(parse_problem(definition), summary)
+    except (K4OptError, LookupError, TypeError, ValueError):
         return []
     record, samples = summary.get("id"), summary.get("samples")
     if not isinstance(record, str) or not isinstance(samples, Mapping):

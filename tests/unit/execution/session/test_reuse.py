@@ -111,6 +111,24 @@ def test_a_session_does_not_reuse_a_record_whose_signature_does_not_hold(
     assert len(fake.calls) == 2
 
 
+def test_a_session_does_not_reuse_a_record_whose_signature_is_not_its_stage(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    from k4opt.record.signature import digest
+
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    record = summary(tmp_path / "a")
+    signature = simulated(record)["signature"]
+    signature["document"]["definition"]["seed"] = 99  # hashed again: it holds by itself
+    signature["sha256"] = digest(signature["document"])
+    (tmp_path / "a" / SUMMARY_NAME).write_text(json.dumps(record))
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        assert session.reuse([tmp_path / "a"]) == 0  # but its stage was made with another seed
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert len(fake.calls) == 2
+
+
 def test_two_candidates_at_once_with_one_simulation_simulate_it_once(
     tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -156,6 +174,62 @@ def test_a_stage_that_waited_for_one_that_failed_runs_itself(
     assert outcomes["a"].candidate.status == "failed"  # type: ignore[union-attr]
     assert outcomes["b"].candidate.status == "valid"  # type: ignore[union-attr]
     assert "reused" not in simulated(summary(tmp_path / "b"))
+
+
+def _unpublished(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """The candidate in the run directory ``name`` is not published (its record does not hold
+    up when it ends)."""
+    from k4opt.execution import ProvenanceError, _session
+
+    publish = _session.publish
+
+    def refusing(run: Any, *args: Any) -> Any:
+        if run.workspace.root.name == name:
+            raise ProvenanceError(f"{name} is not published")
+        return publish(run, *args)
+
+    monkeypatch.setattr(_session, "publish", refusing)
+
+
+def test_what_a_candidate_that_was_not_published_made_is_not_reused(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.execution import ProvenanceError
+
+    _unpublished(monkeypatch, "a")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        with pytest.raises(ProvenanceError, match="a is not published"):
+            session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert len(fake.calls) == 2  # no record would say where a's simulation comes from
+    assert "reused" not in simulated(summary(tmp_path / "b"))
+
+
+def test_a_candidate_that_reused_what_one_not_published_made_is_not_published(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.execution import ProvenanceError
+    from tests.support import stack
+
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    stack.install(monkeypatch, marks, **{"*": {"sleep": 1}})
+    _unpublished(monkeypatch, "a")
+    with (
+        EvaluationSession.open(problem_file, [cell_count()], workers=2) as session,
+        session.evaluate_each(
+            [
+                RunRequest({RADIUS: 450.0}, tmp_path / "a"),
+                RunRequest({RADIUS: 450.0}, tmp_path / "b"),
+            ]
+        ) as evaluations,
+    ):
+        outcomes = [(Path(request.output).name, outcome) for request, outcome in evaluations]
+    assert sorted(stack.started(marks)) == ["a.gamma"]  # b reused a's simulation
+    assert [name for name, _ in outcomes] == ["a", "b"]  # b is handed on after a
+    assert all(isinstance(outcome, ProvenanceError) for _, outcome in outcomes)
+    assert "were not published" in str(outcomes[1][1])
+    assert not (tmp_path / "b" / SUMMARY_NAME).exists()  # it would name a record that is not
 
 
 def _reused_record(tmp_path: Path, problem_file: Path) -> tuple[EvaluationSession, dict[str, Any]]:

@@ -47,7 +47,7 @@ from k4opt.execution._schedule import Scheduler
 from k4opt.execution._stages import DryRuns, input_files, try_reconstruction
 from k4opt.execution._tasks import GeometryWork, TaskOutcome, Workspace
 from k4opt.execution._worker import session_spec
-from k4opt.execution.errors import RunError
+from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.geometry import Parameter as GeometryParameter
@@ -606,15 +606,29 @@ class EvaluationSession:
                     yield request, run.rejected
                     continue
                 try:
+                    self._check_relied(run)
                     outcome = publish(run, self._baseline, self._execution)
                 except Exception as exc:
+                    self._reuse.withdraw(run.workspace.id)  # no record says where they come from
                     yield request, exc
                     continue
+                self._reuse.published(run.workspace.id)
                 yield request, outcome
         finally:
             driven.close()
             if backend is not self._backend:  # the session's workers serve its next evaluation
                 backend.close()
+
+    def _check_relied(self, run: _Run) -> None:
+        """Raise :class:`ProvenanceError` if ``run`` reused the output of another candidate of
+        this session that was not published: its record would name one that does not exist."""
+        missing = sorted(record for record in run.relies if not self._reuse.is_published(record))
+        if missing:
+            raise ProvenanceError(
+                f"a stage reused the output of the candidate(s) {', '.join(missing)}, which were "
+                f"not published, so the record could not say where it comes from (in "
+                f"{run.workspace.root}, which has no {SUMMARY_NAME})"
+            )
 
     def _start(self, request: RunRequest, under_way: Collection[Path | None] = ()) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory
