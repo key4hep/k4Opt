@@ -24,11 +24,11 @@ environment:
   key4hep: {channel: nightly, version: "2026-10-20"}
 geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 parameters:
-  # CLD uses 5.1 mm
+  # CLD uses 5.1 mm; from 10 mm on the particle flow sees one photon at any threshold
   ecal_cell_size:
     title: ECAL cell size
     type: continuous
-    bounds: [2.5, 20.0]
+    bounds: [2.5, 10.0]
     unit: mm
     targets:
       geometry: ECal_cell_size
