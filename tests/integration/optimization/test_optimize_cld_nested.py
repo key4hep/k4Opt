@@ -79,7 +79,7 @@ def test_each_cell_size_is_judged_at_its_best_threshold_on_new_events(
     output = tmp_path / "nested"
     first = optimize(problem, output, "--trials", "1", "--seed", "3", "--workers", "4")
     assert first.startswith("For each ECAL cell size (1 trial):"), first
-    assert "at most: simulation 2 · reconstruction 4 · pfo.pi0 4 · readout 1" in first, first
+    assert "simulation 2 · reconstruction 4 · pfo.pi0 4 · readout 1" in first, first
     resumed = optimize(problem, output, "--trials", "1", "--resume", "--workers", "4")
     assert "For each" not in resumed, resumed
     study = load_study(output)

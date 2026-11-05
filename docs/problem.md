@@ -797,8 +797,8 @@ best of many trials on the same events looks better than it is. So every sample 
 from its seeds: a stage given as a `file` (HepMC generation, a given simulation) is refused under
 `inner`.
 
-`k4opt problem explain PROBLEM --trials N` says all this for a problem, and at most what it runs,
-with nothing run ([optimization](optimization.md#what-a-study-will-do-k4opt-problem-explain)).
+`k4opt problem explain PROBLEM --trials N` says all this for a problem, and at most what it runs if
+every stage succeeds, with nothing run and no Key4hep needed ([optimization](optimization.md#what-a-study-will-do-k4opt-problem-explain)).
 [Nested studies](optimization.md#nested-studies) says how they run, resume and read back.
 
 ### Titles

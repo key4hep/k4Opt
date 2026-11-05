@@ -20,7 +20,7 @@ from tests.support.evaluators import EXAMPLES, TRADE_OFF
 from tests.support.geometry import MINI_GEO
 from tests.unit.optimization.conftest import problem_document
 
-NESTED = EXAMPLES / "nested" / "cld-pi0-nested.yaml"
+NESTED = EXAMPLE = EXAMPLES / "nested" / "cld-pi0-nested.yaml"
 ORDINARY = EXAMPLES / "problem" / "cld-ecal-pi0-reco.yaml"
 
 
@@ -40,7 +40,8 @@ def test_the_levels_read_as_loops_with_what_picks_and_what_judges() -> None:
         "  tune Pandora ECAL hit threshold: 12 trials maximizing π⁰ photons resolved",
         f"  evaluate the best again on new events (seed 42 → {replicate_seed(42, 1)})",
         "compare them by π⁰ photons resolved (maximize) and Readout channels (minimize)",
-        "at most: simulation 16 · reconstruction 104 · pfo.pi0 104 · readout 8",
+        "at most, if every stage succeeds: simulation 16 · reconstruction 104 · pfo.pi0 104 · "
+        "readout 8",
     ]
     assert warnings == []
 
@@ -77,7 +78,7 @@ def test_an_ordinary_study_is_one_line_and_the_cost_of_its_trials() -> None:
     assert lines == [
         "Search ECAL cell size: 1 trial by π⁰ photons resolved (maximize) and Readout channels "
         "(minimize)",
-        "at most: simulation 1 · reconstruction 1 · pfo.pi0 1 · readout 1",
+        "at most, if every stage succeeds: simulation 1 · reconstruction 1 · pfo.pi0 1 · readout 1",
     ]
 
 
@@ -89,7 +90,7 @@ def test_a_fixed_parameter_is_said_and_not_counted() -> None:
     assert lines == [
         "Search Pandora ECAL hit threshold, with ECAL cell size = 5.1: 6 trials by π⁰ photons "
         "resolved (maximize) and Readout channels (minimize)",
-        "at most: simulation 1 · reconstruction 6 · pfo.pi0 6 · readout 6",
+        "at most, if every stage succeeds: simulation 1 · reconstruction 6 · pfo.pi0 6 · readout 6",
     ]
 
 
@@ -154,8 +155,41 @@ def test_explain_needs_the_problem_and_the_budget_and_makes_nothing(
     monkeypatch.chdir(tmp_path)
     code, out, err = command("problem", "explain", problem, "--trials", "3")
     assert (code, err) == (0, "")
-    assert out.startswith("Search ") and "3 trials" in out and "at most: " in out
+    assert out.startswith("Search ") and "3 trials" in out and "at most, " in out
     assert [path.name for path in tmp_path.iterdir()] == ["problem.yaml"]
+
+
+def test_explain_needs_no_key4hep(problem: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("K4GEO")
+    code, out, err = command("problem", "explain", str(EXAMPLE), "--trials", "8")
+    assert (code, err) == (0, "")
+    assert out.startswith("For each ECAL cell size (8 trials):")
+
+
+def test_explain_says_what_a_study_with_fixed_parameters_does(tmp_path: Path) -> None:
+    document = yaml.safe_load(NESTED.read_text())
+    document["optimization"] = {"parameters": ["ecal_cell_size", "ecal_mip_threshold"]}
+    path = tmp_path / "one-level.yaml"
+    path.write_text(yaml.safe_dump(document, allow_unicode=True), encoding="utf-8")
+    argv = ("problem", "explain", str(path), "--trials", "6", "--fix", "ecal_cell_size=5.1")
+    code, out, err = command(*argv)
+    assert (code, err) == (0, "")
+    assert "with ECAL cell size = 5.1: 6 trials" in out and "simulation 1 " in out
+
+
+@pytest.mark.parametrize(
+    ("fix", "says"),
+    [
+        ("ecal_cell_size=5.1", "nothing to search"),
+        ("ecal_mip_threshold=1.0", "is searched by a level below this one"),
+        ("ecal_cell_size=99", "ecal_cell_size"),
+        ("nothing=1", "is no parameter of the problem"),
+    ],
+)
+def test_explain_refuses_what_a_study_would(fix: str, says: str) -> None:
+    code, out, err = command("problem", "explain", str(NESTED), "--trials", "6", "--fix", fix)
+    assert (code, out) == (1, "")
+    assert says in err
 
 
 @pytest.mark.parametrize("trials", ["0", "-1"])

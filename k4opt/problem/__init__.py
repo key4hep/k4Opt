@@ -9,7 +9,8 @@ bindings of evaluator implementations, each measuring its samples or the candida
 the evaluations of several samples by role, :class:`Reference`) and the
 objectives and constraints, each on a metric of one evaluation (:class:`MetricRef`).
 ``load_problem`` also resolves the geometry and every geometry destination in the active k4geo
-tree (``$K4GEO``); ``parse_problem`` is the pure variant that needs no geometry. Evaluators and
+tree (``$K4GEO``); ``read_problem`` and ``parse_problem`` (of a decoded document) only validate,
+and need no geometry. Evaluators and
 metrics are not checked. See ``docs/problem.md``.
 
 Typical use::
@@ -24,7 +25,7 @@ Candidates of a problem are evaluated by :class:`k4opt.execution.EvaluationSessi
 their records say is read back by :mod:`k4opt.record`.
 """
 
-from k4opt.problem.config import load_problem, parse_problem
+from k4opt.problem.config import load_problem, parse_problem, read_problem
 from k4opt.problem.errors import CandidateError, ProblemConfigError
 from k4opt.problem.models import (
     SCHEMA_VERSION,
@@ -73,4 +74,5 @@ __all__ = [
     "load_problem",
     "names",
     "parse_problem",
+    "read_problem",
 ]

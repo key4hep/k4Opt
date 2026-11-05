@@ -599,6 +599,13 @@ class ProblemSpec:
         """How many levels lie below the top one: 0 for an ordinary optimization."""
         return max(len(self.levels) - 1, 0)
 
+    def parameters_of(self, level: int = 0) -> tuple[str, ...]:
+        """The parameters a study at ``level`` searches: those of the level, or every parameter
+        of a problem without levels."""
+        if not self.levels:
+            return tuple(parameter.name for parameter in self.parameters)
+        return self.levels[level].parameters
+
     def check_level(self, level: object) -> int:
         """``level`` as a level of the problem: an integer from 0 (the top) to :attr:`depth`.
         Raises :class:`ValueError` for anything else (``True`` is no level)."""

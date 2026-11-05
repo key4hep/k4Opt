@@ -6,10 +6,10 @@ what picks its best trial, what judges the top level, and at most how many stage
 run (:func:`~k4opt.problem.plan.level_costs`)::
 
     For each ECAL cell size (8 trials):
-      tune Merging distance and Energy cut: 20 trials maximizing π⁰ photons resolved
+      tune Pandora ECAL hit threshold: 12 trials maximizing π⁰ photons resolved
       evaluate the best again on new events (seed 42 → 506952155)
     compare them by π⁰ photons resolved (maximize) and Readout channels (minimize)
-    at most: simulation 16 · reconstruction 16 · pfo.pi0 168 · readout 8
+    at most, if every stage succeeds: simulation 16 · reconstruction 104 · pfo.pi0 104 · readout 8
 
 Everything is called as the problem titles it (:func:`~k4opt.problem.names`).
 """
@@ -21,7 +21,7 @@ from collections.abc import Iterable, Mapping
 from typing import TextIO
 
 from k4opt.evaluation import Scalar
-from k4opt.problem.candidate import replicate_seed
+from k4opt.problem.candidate import check_fixed, replicate_seed
 from k4opt.problem.models import ProblemSpec
 from k4opt.problem.names import Names, names
 from k4opt.problem.plan import Kind, level_costs, level_plan
@@ -99,12 +99,14 @@ def outline(
     spec: ProblemSpec, trials: int, fixed: Mapping[str, Scalar] | None = None
 ) -> tuple[list[str], list[str]]:
     """What a new study of ``spec`` of ``trials`` trials with the parameters ``fixed`` does, line
-    by line, and the warnings about it. Something must be left to search."""
+    by line, and the warnings about it. Raises :class:`~k4opt.problem.CandidateError` for values
+    such a study refuses."""
     given = dict(fixed or {})
+    check_fixed(spec, given)
     called = names(spec)
-    own = spec.levels[0].parameters if spec.levels else [p.name for p in spec.parameters]
-    searched = _listed(called.parameter(name) for name in own if name not in given)
-    values = [f"{called.parameter(name)} = {value}" for name, value in given.items()]
+    searched = _listed(called.parameter(n) for n in spec.parameters_of() if n not in given)
+    held_at = [p.name for p in spec.parameters if p.name in given]
+    values = [f"{called.parameter(name)} = {given[name]}" for name in held_at]
     held = f", with {_listed(values)}" if values else ""
     if spec.depth:
         lines = [
@@ -117,7 +119,8 @@ def outline(
     costs: Counter[str] = Counter()
     for task, count in level_costs(spec, trials, given).items():
         costs[task.name] += count
-    lines.append("at most: " + " · ".join(f"{name} {count}" for name, count in costs.items()))
+    counted = " · ".join(f"{name} {count}" for name, count in costs.items())
+    lines.append(f"at most, if every stage succeeds: {counted}")
     return lines, _resimulated(spec, called)
 
 

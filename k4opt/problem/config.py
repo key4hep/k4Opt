@@ -98,6 +98,14 @@ def resolve_problem(path: str | os.PathLike[str]) -> ResolvedProblem:
     """:func:`load_problem`, keeping what it resolved: the discovered geometry and the attribute
     each parameter sets."""
     problem_path = Path(path).expanduser()
+    return _resolve_geometry(read_problem(problem_path), problem_path)
+
+
+def read_problem(path: str | os.PathLike[str]) -> ProblemSpec:
+    """Read the UTF-8 YAML file ``path`` and validate it, as :func:`parse_problem` does: no geometry
+    is read, so no Key4hep is needed, and a geometry destination that does not resolve is not
+    noticed. Raises :class:`ProblemConfigError` for an invalid document."""
+    problem_path = Path(path).expanduser()
     if not problem_path.is_file():
         raise ProblemConfigError(f"{problem_path}: problem file not found")
     try:
@@ -111,7 +119,7 @@ def resolve_problem(path: str | os.PathLike[str]) -> ResolvedProblem:
         raise ProblemConfigError(f"{problem_path}: invalid YAML: {exc}") from exc
     except RecursionError as exc:
         raise ProblemConfigError(f"{problem_path}: YAML is nested too deeply") from exc
-    return _resolve_geometry(parse_problem(data, source=problem_path), problem_path)
+    return parse_problem(data, source=problem_path)
 
 
 def parse_problem(data: object, *, source: str | os.PathLike[str] | None = None) -> ProblemSpec:

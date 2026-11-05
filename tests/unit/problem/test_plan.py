@@ -343,3 +343,42 @@ def test_three_levels_multiply_their_budgets() -> None:
         "gamma/tuned": 2 * 3 * 4 + 2 * 3 + 2,
         "cost": 2,
     }
+
+
+def test_each_study_proposes_its_own_values_though_the_level_above_does_not_reach_the_stage() -> None:
+    inner = Level(("energy",), trials=3, objective=TUNED)
+    spec = problem(CUT, GUN_ENERGY, optimization=Level(("cut",), inner=inner))
+    assert costs_of(spec, 5)["gamma/simulation"] == 5 * 3 + 5
+
+
+def test_a_level_between_two_that_reach_a_stage_multiplies_it_too() -> None:
+    other = continuous("other", SettingDestination("tuned", "other"))
+    last = Level(("energy",), trials=4, objective=TUNED)
+    middle = Level(("other",), trials=3, objective=TUNED, inner=last)
+    spec = problem(CELL, other, GUN_ENERGY, optimization=Level(("cell",), inner=middle))
+    assert costs_of(spec, 2)["gamma/simulation"] == 2 * 3 * 4 + 2 * 3 + 2
+
+
+def test_a_fixed_top_parameter_leaves_the_studies_that_tune_below_it() -> None:
+    other = continuous("other", SettingDestination("cost", "other"))
+    inner = Level(("cut",), trials=3, objective=TUNED)
+    spec = problem(CELL, other, CUT, optimization=Level(("cell", "other"), inner=inner))
+    # the cell is fixed: one simulation for the tuning, shared by all, one on new events
+    assert costs_of(spec, 4, ("cell",)) == {
+        "gamma/simulation": 1 + 1,
+        "gamma/tuned": 4 * 3 + 4,
+        "cost": 4,
+    }
+
+
+def test_each_sample_is_counted_by_what_reaches_it() -> None:
+    samples = {**GAMMA, "pion": Sample("pion", {"generation": GUN, "simulation": DDSIM})}
+    energy = continuous("energy", StageDestination("generation", "energy", ("pion",)))
+    spec = replace(
+        problem(energy),
+        samples=samples,
+        evaluators=(ev("tuned", "simulation", "gamma", "pion"), ev("cost")),
+    )
+    costs = costs_of(spec, 4)
+    assert (costs["gamma/simulation"], costs["pion/simulation"]) == (1, 4)
+    assert (costs["gamma/tuned"], costs["pion/tuned"]) == (4, 4)

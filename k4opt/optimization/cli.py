@@ -25,7 +25,7 @@ from k4opt.execution.cli import workers
 from k4opt.optimization import StudyResults, load_study, optimize
 from k4opt.optimization._export import FORMATS, export
 from k4opt.optimization._render import Progress, render_study
-from k4opt.optimization._scope import StudyScope, check_trials
+from k4opt.optimization._scope import check_trials
 from k4opt.optimization._show import render_results, render_trial
 from k4opt.problem import load_problem
 from k4opt.problem.candidate import parse_candidate
@@ -185,8 +185,7 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     fixed = parse_candidate(spec, args.fix, "--fix") if args.fix else None
     if not args.resume:
         check_trials(args.trials)
-        scope = StudyScope.of(spec, fixed)  # what it would refuse, before saying what it does
-        render_outline(spec, args.trials, out, fixed=scope.fixed, color=color(out))
+        render_outline(spec, args.trials, out, fixed=fixed, color=color(out))
     try:
         with Progress(args.trials, out, err, bar=interactive(out), color=color(out)) as progress:
             report = optimize(
