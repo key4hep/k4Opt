@@ -99,7 +99,7 @@ def run_candidate(
     the same signature reuses (:meth:`EvaluationSession.reuse`), ``replicate`` that of
     :meth:`EvaluationSession.evaluate`. ``warn``
     is called with each of the session's warnings once the candidate is known to be valid, before
-    anything is created, and with its :attr:`~EvaluationSession.notice` of diagnostics; the
+    anything is created, and with its :meth:`~EvaluationSession.notice` of diagnostics; the
     warnings are also kept in the summary.
     """
     with EvaluationSession.open(
@@ -115,6 +115,6 @@ def run_candidate(
         if warn is not None:
             for warning in session.warnings:
                 warn(warning)
-            if session.notice is not None:
-                warn(session.notice)
+            if (notice := session.notice()) is not None:
+                warn(notice)
         return session.evaluate(values, output, replicate=replicate)

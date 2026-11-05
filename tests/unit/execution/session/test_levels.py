@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 import yaml
 
-from k4opt.execution import EvaluationSession
+from k4opt.execution import EvaluationSession, RunOutcome, RunRequest
 from k4opt.problem import CandidateError
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from tests.support import simulation
@@ -113,3 +113,35 @@ def test_a_level_the_problem_does_not_have_is_refused_before_anything_is_created
     ):
         session.evaluate({RADIUS: 450.0, "x": 0.8}, tmp_path / "a", level=level)  # type: ignore[arg-type]
     assert not (tmp_path / "a").exists() and fake.calls == []
+
+
+def test_the_diagnostics_of_a_session_are_those_of_a_level(
+    nested_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    with EvaluationSession.open(nested_file, [cell_count(), trade_off()]) as session:
+        assert session.diagnostics() == session.diagnostics(0) == ("test.trade_off",)
+        assert session.diagnostics(1) == ("gamma/test.cell_count",)
+        notice = session.notice(1)
+        assert notice is not None and "gamma/test.cell_count" in notice
+
+
+def test_candidates_of_two_levels_in_one_evaluation_share_their_stages(
+    tmp_path: Path, nested_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    requests = [
+        RunRequest({RADIUS: 450.0, "x": 0.8}, tmp_path / name, {"name": name}, level=level)
+        for name, level in (("top", 0), ("inner", 1))
+    ]
+    with (
+        EvaluationSession.open(nested_file, [cell_count(), trade_off()]) as session,
+        session.evaluate_each(requests) as evaluations,
+    ):
+        ended = {request.run["name"]: outcome for request, outcome in evaluations}  # type: ignore[index]
+        for outcome in ended.values():
+            assert isinstance(outcome, RunOutcome), outcome
+            Assessment.from_summary(session.spec, dict(outcome.summary))
+    top, inner = (ended[name].summary for name in ("top", "inner"))
+    assert len(fake.calls) == 1  # one simulation: the stages do not depend on the level
+    assert inner["samples"]["gamma"]["stages"]["simulation"]["reused"]["record"] == top["id"]
+    assert [m["label"] for m in top["metrics"]] == [CELLS]
+    assert [m["label"] for m in inner["metrics"]] == [A]

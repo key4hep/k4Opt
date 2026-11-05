@@ -232,8 +232,8 @@ def _run_study(
     names = limit_names(spec)
     for warning in session.warnings:
         warn(warning)
-    if session.notice is not None:
-        warn(session.notice)
+    if (notice := session.notice()) is not None:
+        warn(notice)
     if not resume:
         for warning in dirty_checkouts(identity["implementations"]):
             warn(warning)

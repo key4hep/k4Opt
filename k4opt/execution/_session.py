@@ -386,24 +386,26 @@ class EvaluationSession:
         identified, not verified to be the stage it stands for (no summary keeps these)."""
         return self._warnings
 
-    @property
-    def diagnostics(self) -> tuple[str, ...]:
-        """The evaluations that no objective, constraint or required evaluator reads, by label
-        (``zz/calo.occupancy``), in plan order: each is run and recorded, but whatever its
-        result, the candidate's status does not depend on it."""
+    def diagnostics(self, level: int = 0) -> tuple[str, ...]:
+        """The evaluations that no objective, constraint or required evaluator of ``level`` (of
+        a nested optimization; 0, the top, for any other) reads, by label (``zz/calo.occupancy``),
+        in plan order: each is run and recorded, but whatever its result, the status of a
+        candidate evaluated for that level does not depend on it."""
         return tuple(
-            task.id.label for task in self._binding.plan.of(Kind.EVALUATOR) if not task.required
+            task.id.label
+            for task in self._binding.plans[level].of(Kind.EVALUATOR)
+            if not task.required
         )
 
-    @property
-    def notice(self) -> str | None:
-        """What to tell someone who starts the session of its :attr:`diagnostics`, ``None``
-        without one: a check meant to veto candidates that is not marked ``required: true``
-        would otherwise veto nothing, unnoticed."""
-        if not self.diagnostics:
+    def notice(self, level: int = 0) -> str | None:
+        """What to tell someone who starts the session of its :meth:`diagnostics` at ``level``,
+        ``None`` without one: a check meant to veto candidates that is not marked
+        ``required: true`` would otherwise veto nothing, unnoticed."""
+        diagnostics = self.diagnostics(level)
+        if not diagnostics:
             return None
         return (
-            f"diagnostics (recorded, do not affect the result): {', '.join(self.diagnostics)}; "
+            f"diagnostics (recorded, do not affect the result): {', '.join(diagnostics)}; "
             "mark an evaluator required: true if its result must count"
         )
 
