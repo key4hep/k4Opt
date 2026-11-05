@@ -71,6 +71,40 @@ def test_a_study_reads_back_from_its_json_form_as_it_is(
     assert back.to_json() == study.to_json()  # the same form again
 
 
+def test_the_programs_of_the_stack_leave_by_content_and_read_back(
+    tmp_path: Path, mixed_problem: Path
+) -> None:
+    run(mixed_problem, tmp_path / "s", 2)
+    document = json.loads((tmp_path / "s" / "study.json").read_text())
+    python = {"path": "/opt/stack/venv/bin/python3", "bytes": 20, "sha256": "b" * 64}
+    document["programs"] = {
+        "ddsim": {
+            "path": "/opt/stack/bin/ddsim",
+            "bytes": 10,
+            "sha256": "a" * 64,
+            "interpreter": python,
+        },
+        "k4run": None,  # not found when the session opened
+    }
+    kept = portable(document)["programs"]
+    # where the program and its interpreter are is left out, what they are is kept
+    assert kept == {
+        "ddsim": {
+            "bytes": 10,
+            "sha256": "a" * 64,
+            "interpreter": {"bytes": 20, "sha256": "b" * 64},
+        },
+        "k4run": None,
+    }
+    data = load_study(tmp_path / "s").to_dict()
+    data["study"]["programs"] = kept
+    back = StudyResults.from_dict(copy.deepcopy(data))
+    assert back.to_dict() == data
+    data["study"]["programs"]["ddsim"]["path"] = "/opt/stack/bin/ddsim"
+    with pytest.raises(OptimizationError, match=r"holds more of study\.json"):
+        StudyResults.from_dict(data)
+
+
 def test_an_active_study_reads_back_with_what_its_running_trials_hold(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:

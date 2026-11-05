@@ -553,7 +553,8 @@ or the number 1: the JSON export is the typed one.
 leave the machine: what a [publication](publication.md) holds is exactly these bytes. `study` is
 `study.json` without its locations: the problem file's path, the paths of the files it names, of
 the evaluators' files and of the files the geometry's external references resolve to, the
-geometry's source root, `K4GEO` and the optimizer's storage (a journal name, or a database URL
+geometry's source root, `K4GEO`, the paths of the programs of the stack and of their interpreters
+(each kept by size and SHA-256) and the optimizer's storage (a journal name, or a database URL
 with its host and user) are left out, and so is anything else not on the list in
 `k4opt/optimization/_study.py` (`PORTABLE`). Locations are no part of a study's identity, so its
 `identity` digest still holds. The study directory and the read warnings are not part of it

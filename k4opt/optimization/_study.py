@@ -100,7 +100,10 @@ PORTABLE: Mapping[str, _Kept] = {
         "externals": {"*": {"sha256": True, "files": True, "unresolved": True}},
     },
     "environment": {"KEY4HEP_STACK": True},
-    "programs": {"*": {"path": True, "bytes": True, "sha256": True}},
+    # by content: where a program and its interpreter are is a location, as any other
+    "programs": {
+        "*": {"bytes": True, "sha256": True, "interpreter": {"bytes": True, "sha256": True}}
+    },
     "search": True,
     "k4opt": {"version": True, "sha256": True, "git": True},
     "optimizer": {
@@ -117,7 +120,8 @@ PORTABLE: Mapping[str, _Kept] = {
 """What of ``study.json`` leaves the study directory (:func:`portable`), key by key; ``*`` stands
 for every key of a mapping keyed by name. Left out: every location (the problem file, the files
 the problem names, the evaluators' files, the geometry's source root and the files its external
-references resolve to, ``K4GEO``) and the optimizer's storage (a journal name, or a database URL
+references resolve to, ``K4GEO``, the programs of the stack and their interpreters, which are
+kept by size and SHA-256) and the optimizer's storage (a journal name, or a database URL
 with its host and user), and any key not named here."""
 
 
