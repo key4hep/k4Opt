@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 import shutil
 from collections import Counter
 from collections.abc import Callable
@@ -564,13 +565,22 @@ def test_a_study_json_that_is_missing_or_does_not_hold_together_is_refused(
     assert tree_digest(tmp_path / "s") == before
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("k4opt.identity", "0" * 64),
+        ("k4opt.parameters", ["other"]),
+        ("k4opt.objectives", ["other"]),
+        ("k4opt.constraints", ["other:max"]),
+    ],
+)
 def test_an_optimizer_study_that_is_not_the_one_described_is_refused(
-    tmp_path: Path, write_problem: Callable[..., Path]
+    tmp_path: Path, write_problem: Callable[..., Path], attribute: str, value: object
 ) -> None:
     run(write_problem(), tmp_path / "s", 1, seed=1)
-    optuna_study(tmp_path / "s").set_user_attr("k4opt.identity", "0" * 64)
+    optuna_study(tmp_path / "s").set_user_attr(attribute, value)
     with pytest.raises(
-        OptimizationError, match=r"is not the one .* describes: its k4opt\.identity"
+        OptimizationError, match=rf"is not the one .* describes: its {re.escape(attribute)}"
     ):
         load_study(tmp_path / "s")
 

@@ -13,6 +13,7 @@ complete candidate (:meth:`StudyScope.candidate`).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -149,7 +150,7 @@ class StudyScope:
         if not isinstance(fixed, Mapping) or not (parent is None or isinstance(parent, Mapping)):
             raise OptimizationError(f"study.json records no scope k4opt reads: {recorded!r}")
         scope = cls.of(spec, fixed, level=recorded.get("level"), parent=parent)  # type: ignore[arg-type]
-        if thaw(recorded) != scope.to_dict():
+        if json.dumps(thaw(recorded)) != json.dumps(scope.to_dict()):  # type and value
             raise OptimizationError(
                 f"study.json records the scope {thaw(recorded)!r}, but its problem makes it "
                 f"{scope.to_dict()!r}"

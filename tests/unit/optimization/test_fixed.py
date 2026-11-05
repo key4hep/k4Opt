@@ -156,3 +156,16 @@ def test_a_json_form_whose_trial_breaks_a_fixed_value_is_refused(
         change(edited["trials"][0]["candidate"])
         with pytest.raises(OptimizationError, match=r"fixes it at 300\.0|not the parameters"):
             StudyResults.from_dict(edited)
+
+
+@pytest.mark.parametrize(("made", "resumed"), [(300, 300.0), (300.0, 300)])
+def test_a_resume_needs_the_fixed_values_of_the_same_type(
+    tmp_path: Path, two_parameters: Path, monkeypatch: pytest.MonkeyPatch, made: Any, resumed: Any
+) -> None:
+    # 300 and 300.0 are equal numbers, but another candidate, as its records say
+    simulation.install(monkeypatch)
+    _optimize(two_parameters, tmp_path / "s", 1, seed=1, fixed={RADIUS: made})
+    with pytest.raises(OptimizationError, match=r"give the same --fix as when it was made"):
+        _optimize(two_parameters, tmp_path / "s", 1, fixed={RADIUS: resumed}, resume=True)
+    resumed_study = _optimize(two_parameters, tmp_path / "s", 1, fixed={RADIUS: made}, resume=True)
+    assert [type(t.candidate[RADIUS]) for t in resumed_study.trials] == [type(made)] * 2

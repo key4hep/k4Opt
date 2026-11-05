@@ -100,7 +100,8 @@ def check_resume(
     one whose recorded optimizer is not the one this k4opt would run it with."""
     optimizer = document["optimizer"]
     found = differences(document, identity) + program_differences(document, identity)
-    if document.get("scope") != scope.to_dict():
+    # as JSON text: type and value, as a record's candidate is compared (300 is not 300.0)
+    if json.dumps(document.get("scope")) != json.dumps(scope.to_dict()):
         found.append(
             f"it searches with {document.get('scope')!r}, not {scope.to_dict()!r} (give the same "
             "--fix as when it was made)"
@@ -185,14 +186,8 @@ def study_attributes(document: Mapping[str, Any]) -> dict[str, Any]:
 
 def check_optuna_study(study: optuna.Study, document: Mapping[str, Any]) -> None:
     """The Optuna study is the one ``study.json`` describes."""
-    optimizer = document["optimizer"]
     directions = [direction.name.lower() for direction in study.directions]
-    expected = {
-        "directions": optimizer["directions"],
-        "k4opt.study": document["id"],
-        "k4opt.identity": document["identity"],
-        "k4opt.constraints": optimizer["constraints"],
-    }
+    expected = {"directions": document["optimizer"]["directions"], **study_attributes(document)}
     found = {key: study.user_attrs.get(key) for key in expected} | {"directions": directions}
     differ = [key for key in expected if found[key] != expected[key]]
     if differ:
