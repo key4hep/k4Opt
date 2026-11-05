@@ -541,6 +541,15 @@ STUDY_CHANGES: dict[str, tuple[Callable[[Path], None], str]] = {
         lambda path: _rewrite(path, lambda d: d["scope"].update(replicate=1)),
         r"study\.json records the scope .*, but its problem makes it",
     ),
+    "another distribution": (
+        lambda path: _rewrite(
+            path,
+            lambda d: d["optimizer"]["parameters"].update(
+                {RADIUS: {"name": "CategoricalDistribution", "attributes": {"choices": [1]}}}
+            ),
+        ),
+        r"study\.json records the distributions .*, but its problem gives",
+    ),
     "other distributions": (
         lambda path: _rewrite(path, lambda d: d["optimizer"].update(parameters={})),
         r"study\.json records the distributions of \[\], but the study searches",

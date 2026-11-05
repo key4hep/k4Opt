@@ -20,7 +20,11 @@ from optuna.trial import FrozenTrial, TrialState
 
 from k4opt.frozen import freeze
 from k4opt.optimization._optuna import marks
-from k4opt.optimization._optuna.optimizer import check_optuna_study, study_attributes
+from k4opt.optimization._optuna.optimizer import (
+    check_distributions,
+    check_optuna_study,
+    study_attributes,
+)
 from k4opt.optimization._optuna.space import constraint_values, objective_values
 from k4opt.optimization._optuna.storage import close, existing_storage, leaving
 from k4opt.optimization._results import (
@@ -221,6 +225,7 @@ def load(directory: str | os.PathLike[str], storage: str | None) -> StudyResults
         raise OptimizationError(f"{path} is not a study directory: it holds no {STUDY_NAME}")
     document = read_study(path)
     scope = recorded_scope(document)
+    check_distributions(document, scope)
     database: BaseStorage | None = None
     try:
         database = existing_storage(path, document, storage)

@@ -25,9 +25,16 @@ from k4opt.optimization._identity import (
     revision_warnings,
     search_warnings,
 )
+from k4opt.optimization._optuna.space import search_space
 from k4opt.optimization._optuna.storage import storage_record
 from k4opt.optimization._scope import StudyScope
-from k4opt.optimization._study import CONSTRAINT_VALUES, STUDY_SCHEMA, now, trial_directories
+from k4opt.optimization._study import (
+    CONSTRAINT_VALUES,
+    STUDY_NAME,
+    STUDY_SCHEMA,
+    now,
+    trial_directories,
+)
 from k4opt.optimization.errors import OptimizationError
 
 STARTUP_TRIALS = 10  # random proposals until this many trials are COMPLETE
@@ -182,6 +189,21 @@ def study_attributes(document: Mapping[str, Any]) -> dict[str, Any]:
         "k4opt.objectives": list(optimizer["objectives"]),
         "k4opt.constraints": list(optimizer["constraints"]),
     }
+
+
+def check_distributions(document: Mapping[str, Any], scope: StudyScope) -> None:
+    """The distributions ``study.json`` records are those the study's problem and scope give,
+    each as Optuna writes it, type and value: the record describes the search that ran."""
+    expected = {
+        key: json.loads(distribution_to_json(distribution))
+        for key, distribution in search_space(scope.spec, scope.searched).items()
+    }
+    recorded = document["optimizer"].get("parameters")
+    if json.dumps(recorded) != json.dumps(expected):
+        raise OptimizationError(
+            f"{STUDY_NAME} records the distributions {recorded!r}, but its problem gives "
+            f"{expected!r}"
+        )
 
 
 def check_optuna_study(study: optuna.Study, document: Mapping[str, Any]) -> None:
