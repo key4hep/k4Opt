@@ -169,3 +169,55 @@ def test_a_heading_still_alike_after_its_whole_name_is_numbered() -> None:
     assert len(row) == 3 + 1 + 1 + 2  # the fixed columns, the parameter, the objective
     assert row[f"{title} ({RADIUS})"] == 300.0  # the parameter's, the first column of the two
     assert row[f"{title} ({RADIUS}) (2)"] is None  # the objective's, which the trial has not
+
+
+def test_a_study_of_a_level_below_is_tabled_by_the_objective_it_is_judged_by(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("optuna")
+    from tests.support.studies import nested_study
+
+    import tables
+
+    inner = load_study(nested_study(tmp_path / "s", monkeypatch)).trial(0).inner
+    assert inner is not None
+    (row, *_) = tables.trials(inner)
+    assert "seen" in row and not any("cells" in heading for heading in row)
+    (best,) = tables.bests(inner)
+    assert best.label == "test.candidate_check/analysis/seen"
+
+
+def test_the_tuned_value_stands_beside_the_objective_it_tuned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.support.studies import nested_study
+
+    import tables
+
+    top = load_study(nested_study(tmp_path / "s", monkeypatch))
+    (row, *_) = tables.trials(top)
+    headings = list(row)
+    # the inner objective is no objective of the top: its tuned value comes after the objectives
+    assert headings.index("seen, tuned") > headings.index("ecal_barrel.mean_hit_cells")
+    trial = top.trial(0)
+    found = tables.tuned(trial)
+    assert trial.inner is not None and trial.selected is not None and found is not None
+    assert found == trial.inner.trial(int(str(trial.selected["trial"]))).assessment.objectives[0]
+    assert row["seen, tuned"] == found.value
+
+
+def test_the_tuned_value_is_headed_with_the_unit_the_tuning_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.optimization import StudyResults
+    from tests.support.studies import nested_study
+
+    import tables
+
+    data = load_study(nested_study(tmp_path / "s", monkeypatch)).to_dict()
+    for trial in data["trials"]:  # an inner-only metric measured in mm
+        for inner in trial["inner"]["trials"]:
+            for value in inner["assessment"]["objectives"]:
+                value["unit"] = "mm"
+    (row, *_) = tables.trials(StudyResults.from_dict(data))
+    assert "seen, tuned [mm]" in row

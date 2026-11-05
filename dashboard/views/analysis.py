@@ -37,9 +37,9 @@ SAID = {
 
 
 def render(results: StudyResults) -> None:
-    objectives = [f"objective:{o.label}" for o in results.problem.objectives]
-    # ranking the trials over pairs of parameters needs two parameters at least
-    views = [view for view in SAID if view != "Rank" or len(results.problem.parameters) > 1]
+    objectives = [f"objective:{o.label}" for o in results.scope.criteria.objectives]
+    # ranking the trials over pairs of parameters needs two the study searches at least
+    views = [view for view in SAID if view != "Rank" or len(results.scope.searched) > 1]
     pick, show = st.columns([1, 2], vertical_alignment="bottom")
     with pick:
         objective = widgets.choice(

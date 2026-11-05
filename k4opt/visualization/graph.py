@@ -33,6 +33,7 @@ from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Literal
 
+from k4opt.evaluation import Scalar
 from k4opt.frozen import Json
 from k4opt.optimization import StudyResults
 from k4opt.problem import (
@@ -47,7 +48,7 @@ from k4opt.problem import (
     StageDestination,
     names,
 )
-from k4opt.problem.plan import GEOMETRY, Kind, Plan, Task, TaskId, plan_tasks, reference_task
+from k4opt.problem.plan import GEOMETRY, Kind, Plan, Task, TaskId, level_plan, reference_task
 from k4opt.problem.stages import executors
 from k4opt.visualization.errors import VisualizationError
 
@@ -70,7 +71,10 @@ class GraphNode:
     samples a node of a stack stands for (empty for any other). ``required`` is ``False`` for a
     diagnostic, ``given`` ``True`` for a stage given as a file. Of a study, ``seconds`` holds the
     recorded times of a stage, by trial number (of a stack, each trial's mean over its samples),
-    and ``failed`` the numbers of the trials a diagnostic did not succeed in.
+    and ``failed`` the numbers of the trials a diagnostic did not succeed in. ``loop`` is, of a
+    study with levels below its own, the innermost level whose trials it runs once for: the deepest
+    level whose searched parameters reach it (a parameter: its own level), ``None`` outside every
+    loop.
     """
 
     id: str
@@ -85,6 +89,7 @@ class GraphNode:
     seconds: Mapping[int, float] | None = None
     failed: tuple[int, ...] = ()
     samples: tuple[str, ...] = ()
+    loop: int | None = None
 
     @property
     def median_seconds(self) -> float | None:
@@ -119,16 +124,31 @@ class SampleBox:
 
 
 @dataclass(frozen=True, slots=True)
+class LoopBox:
+    """The frame of one level of a nested study, around what runs once for each of its trials:
+    its ``level``, its ``title`` (``for each ECAL cell size``) and the ``lines`` under it (how many
+    trials, what judges them; below the study's level, that its best is evaluated again)."""
+
+    level: int
+    title: str
+    lines: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TaskGraph:
     """The nodes, in order: the parameters, the tasks in plan order, the objectives and the
     constraints; the edges; the boxes of the samples, by key (a sample's name; a stack's is that
-    of its first sample); and ``recorded``, the number of trials with a record (of a problem: 0).
+    of its first sample); ``recorded``, the number of trials with a record (of a problem: 0); and
+    of a study with levels below its own, the frame of each level from its own down
+    (:class:`LoopBox`), each drawn in the one before, a node in the frame of its
+    :attr:`GraphNode.loop`.
     """
 
     nodes: tuple[GraphNode, ...]
     edges: tuple[GraphEdge, ...]
     samples: Mapping[str, SampleBox]
     recorded: int = 0
+    loops: tuple[LoopBox, ...] = ()
 
     def node(self, id: str) -> GraphNode:
         """The node ``id``; :class:`VisualizationError` if the graph has none."""
@@ -142,13 +162,15 @@ def task_graph(
     source: StudyResults | ProblemSpec, *, stack: bool = True, expanded: Collection[str] = ()
 ) -> TaskGraph:
     """The tasks of a candidate of ``source``; of a study, with the recorded times of each stage and
-    the trials each diagnostic did not succeed in. Samples alike are stacked unless ``stack`` is
-    false or the stack's key (its first sample's name) is in ``expanded``."""
+    the trials each diagnostic did not succeed in, and of a study of a level below the top, the
+    tasks that level runs, judged by its criteria, the parameters it fixes shown with their value.
+    Samples alike are stacked unless ``stack`` is false or the stack's key (its first sample's
+    name) is in ``expanded``."""
     results = source if isinstance(source, StudyResults) else None
     spec = source.problem if isinstance(source, StudyResults) else source
-    plan = plan_tasks(
-        spec.samples, spec.evaluators, references=spec.references, parameters=spec.parameters
-    )
+    level = 0 if results is None else results.scope.level
+    fixed = {} if results is None else results.scope.fixed
+    plan = level_plan(spec, level)
     times: dict[str, dict[int, float]] = {}
     failures: dict[str, list[int]] = {}
     for trial in results.trials if results is not None else ():
@@ -159,7 +181,9 @@ def task_graph(
     called = names(spec)
     sets: dict[TaskId, list[tuple[str, str]]] = {}  # (what, parameter name) by task
     edges: list[GraphEdge] = []
-    nodes = [_parameter(parameter, called) for parameter in spec.parameters]
+    nodes = [
+        _parameter(parameter, called, fixed.get(parameter.name)) for parameter in spec.parameters
+    ]
     for parameter in spec.parameters:
         for target, name in _sets(plan, parameter):
             sets.setdefault(target, []).append((name, parameter.name))
@@ -174,7 +198,8 @@ def task_graph(
         for task in plan.tasks
         for need in _reduced(plan, task)
     ]
-    measured: list[Objective | Constraint] = [*spec.objectives, *spec.constraints]
+    criteria = spec.criteria(level)
+    measured: list[Objective | Constraint] = [*criteria.objectives, *criteria.constraints]
     # in its sample's box a measurement is called by its title or metric alone, the box saying
     # the sample, unless another of its kind in that box is called alike
     alike = Counter((type(item), item.sample, item.title or item.metric) for item in measured)
@@ -196,21 +221,130 @@ def task_graph(
         if any(task.id.sample == name for task in plan.tasks)
     }
     recorded = 0 if results is None else sum(t.record is not None for t in results.trials)
-    graph = TaskGraph(tuple(nodes), tuple(edges), samples, recorded)
+    loops: tuple[LoopBox, ...] = ()
+    if spec.depth > level:
+        nodes, edges = _looped(spec, plan, nodes, edges, level, fixed)
+        loops = tuple(
+            _loop(spec, at, level, called, results, fixed) for at in range(level, spec.depth + 1)
+        )
+    graph = TaskGraph(tuple(nodes), tuple(edges), samples, recorded, loops)
     return _stacked(graph, expanded) if stack else graph
 
 
-def _parameter(parameter: Parameter, called: Names) -> GraphNode:
+def _parameter(parameter: Parameter, called: Names, value: Scalar | None = None) -> GraphNode:
+    """A parameter's node: its domain, or the ``value`` the study gives it for every trial."""
     facts = [("parameter", parameter.name)] if parameter.title is not None else []
     facts += [("type", parameter.kind), ("domain", _domain(parameter, short=False))]
+    if value is not None:
+        facts.append(("fixed", _fixed(parameter, value)))
     facts += [("sets", destination.label) for destination in parameter.targets]
     return GraphNode(
         f"parameter:{parameter.name}",
         "parameter",
         called.parameter(parameter.name),
-        (_domain(parameter),),
+        (_domain(parameter) if value is None else f"fixed: {_fixed(parameter, value)}",),
         tuple(facts),
     )
+
+
+def _looped(
+    spec: ProblemSpec,
+    plan: Plan,
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    level: int,
+    fixed: Mapping[str, Scalar],
+) -> tuple[list[GraphNode], list[GraphEdge]]:
+    """``nodes`` each in its loop (:attr:`GraphNode.loop`), from the study's ``level`` down, and
+    ``edges``, what an evaluation of a level below measures for this one labeled: its best,
+    measured again on new events. An evaluation is in the loop of the deepest level whose plan
+    runs it (:func:`~k4opt.problem.plan.level_plan`), whatever reaches it: a diagnostic only the
+    top runs is drawn there, and an evaluation a level below requires there, even if none of its
+    parameters reaches it. A stage, reused otherwise, is in the loop of the deepest level whose
+    parameters reach it, of those that run it, or of the deepest level that runs it if only a
+    level below it reaches it (through the candidates that level selects). A task that does no
+    work of its own (the particle gun, fired by ddsim) runs in the outermost loop of the working
+    tasks of its sample."""
+    searched = {
+        name: at
+        for at in range(level, spec.depth + 1)
+        for name in spec.parameters_of(at)
+        if name not in fixed
+    }
+    # the levels whose studies run each task: an evaluation runs for every trial of the deepest
+    # one; a stage is reused otherwise, so it runs anew only for the trials of the deepest level
+    # whose parameters reach it, of those that run it
+    runs: dict[str, list[int]] = {}
+    for at in range(level, spec.depth + 1):
+        for each in level_plan(spec, at).tasks:
+            runs.setdefault(each.id.label, []).append(at)
+    loops: dict[str, int | None] = {}
+    for task in plan.tasks:
+        deepest = max(runs.get(task.id.label, [level]))
+        if task.id.kind is Kind.EVALUATOR:
+            loops[task.id.label] = deepest
+            continue
+        # a level below that reaches a stage it does not run reaches it through the candidates
+        # it selects for the deepest level that runs it, which runs it anew for each
+        reached = [searched[name] for name in task.varies if name in searched]
+        loops[task.id.label] = min(max(reached), deepest) if reached else None
+    for task in plan.tasks:
+        if task.directory is None and task.id.sample is not None:
+            working = [
+                loops[other.id.label]
+                for other in plan.tasks
+                if other.id.sample == task.id.sample and other.directory is not None
+            ]
+            known = [at for at in working if at is not None]
+            loops[task.id.label] = min(known) if known and len(known) == len(working) else None
+    for name, at in searched.items():
+        loops[f"parameter:{name}"] = at
+    looped = [replace(node, loop=loops.get(node.id)) for node in nodes]
+    deeper = {id for id, at in loops.items() if at is not None and at > level}
+    relabeled = [
+        replace(edge, label="best, on new events")
+        if edge.kind == "measures" and edge.source in deeper
+        else edge
+        for edge in edges
+    ]
+    return looped, relabeled
+
+
+def _loop(
+    spec: ProblemSpec,
+    at: int,
+    level: int,
+    called: Names,
+    results: StudyResults | None,
+    fixed: Mapping[str, Scalar],
+) -> LoopBox:
+    """The frame of the trials of level ``at``: for each of what it searches (not what the study
+    is given one value of, ``fixed``), how many trials and what judges them; below the study's
+    ``level``, that its best is evaluated again."""
+    own = [name for name in spec.parameters_of(at) if name not in fixed]
+    searched = ", ".join(called.parameter(name) for name in own)
+    criteria = spec.criteria(at)
+    if len(criteria.objectives) == 1:
+        (objective,) = criteria.objectives
+        arrow = "▲" if objective.direction == "maximize" else "▼"
+        judged = f"{arrow} {called.objective(objective.label)}"
+    else:
+        judged = f"compared by its {len(criteria.objectives)} objectives"
+    if at == level:
+        trials = [] if results is None else [f"{len(results.trials)} trials"]
+        return LoopBox(at, f"for each {searched}", (" · ".join([*trials, judged]),))
+    above = ", ".join(called.parameter(name) for name in spec.parameters_of(at - 1))
+    budget = spec.levels[at].trials
+    return LoopBox(
+        at,
+        f"for each {searched} trial",
+        (f"{budget} per {above} · {judged}", "best one evaluated again on new events"),
+    )
+
+
+def _fixed(parameter: Parameter, value: Scalar) -> str:
+    shown = f"{value:.4g}" if isinstance(value, float) else str(value)
+    return f"{shown} {parameter.unit}" if parameter.unit else shown
 
 
 def _measured(item: Objective | Constraint, alike: bool) -> GraphNode:
@@ -530,7 +664,7 @@ def _stacked(graph: TaskGraph, expanded: Collection[str]) -> TaskGraph:
         )
         for edge in graph.edges
     )
-    return TaskGraph(tuple(nodes), tuple(edges), boxes, graph.recorded)
+    return TaskGraph(tuple(nodes), tuple(edges), boxes, graph.recorded, graph.loops)
 
 
 def _signature(graph: TaskGraph, sample: str, nodes: Sequence[GraphNode]) -> object:
@@ -612,6 +746,13 @@ COLLAPSED = "sample:"
 """The prefix of the id of a sample's box drawn as one node (``sample:<key>``)."""
 
 
+def _outermost(loops: Sequence[int | None]) -> int | None:
+    """The loop a node standing for nodes in ``loops`` is drawn in: the outermost of them, none if
+    one of them is in none."""
+    known = [at for at in loops if at is not None]
+    return min(known) if known and len(known) == len(loops) else None
+
+
 def collapsed(graph: TaskGraph, keys: Collection[str]) -> TaskGraph:
     """``graph`` with the box of each sample (or stack) in ``keys`` drawn as one node, so that a
     large graph shows what joins what before what each sample does.
@@ -655,6 +796,7 @@ def collapsed(graph: TaskGraph, keys: Collection[str]) -> TaskGraph:
                 seconds=seconds or None,
                 failed=tuple(sorted({n for member in members for n in member.failed})),
                 samples=box.members if box.is_stack else (),
+                loop=_outermost([member.loop for member in members]),
             )
         )
     edges: list[GraphEdge] = []
@@ -666,4 +808,4 @@ def collapsed(graph: TaskGraph, keys: Collection[str]) -> TaskGraph:
         seen.add((source, target, edge.kind))
         edges.append(replace(edge, source=source, target=target))
     samples = {key: box for key, box in graph.samples.items() if key not in folded}
-    return TaskGraph(tuple(nodes), tuple(edges), samples, graph.recorded)
+    return TaskGraph(tuple(nodes), tuple(edges), samples, graph.recorded, graph.loops)

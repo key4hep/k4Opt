@@ -38,6 +38,7 @@ from k4opt.visualization.trials import (
     _axis,
     _hover,
     _unit,
+    searched,
 )
 
 _COLUMNS = 3  # panels side by side at most
@@ -57,8 +58,8 @@ def parallel_figure(
     called = names(spec)
     drawn = [t for t in results.trials if t.outcome == "feasible"]
     left_out = Counter(t.outcome for t in results.trials if t.outcome != "feasible")
-    dimensions: list[dict[str, Any]] = [_dimension(p, drawn, called) for p in spec.parameters]
-    for index, o in enumerate(spec.objectives):
+    dimensions: list[dict[str, Any]] = [_dimension(p, drawn, called) for p in searched(results)]
+    for index, o in enumerate(results.scope.criteria.objectives):
         unit = _unit(_axis(results, f"{OBJECTIVE}{o.label}"), drawn)
         dimensions.append(
             {
@@ -130,7 +131,7 @@ def slice_figure(
     colors = _COLORS[dark]
     drawn, left_out = _valid(results, axis)
     unit = _unit(axis, drawn)
-    parameters = results.problem.parameters
+    parameters = searched(results)
     called = names(results.problem)
     columns, rows = _grid(len(parameters))
     figure = make_subplots(
@@ -195,11 +196,11 @@ def rank_figure(
     they rank in ``objective`` (the share of the other feasible trials each is better than), the
     infeasible ones marked apart. Raises :class:`VisualizationError` for fewer than two
     parameters, and for an objective the study does not have."""
-    parameters = results.problem.parameters
+    parameters = searched(results)
     if len(parameters) < 2:
         raise VisualizationError(
             "ranking trials over pairs of parameters needs two parameters at least; "
-            f"the study has {len(parameters)}"
+            f"the study searches {len(parameters)}"
         )
     axis = _objective(results, objective)
     assert axis.objective is not None
@@ -277,7 +278,7 @@ def edf_figure(results: StudyResults, *, dark: bool = False) -> go.Figure:
     the trials with a value of it whose value is at most each value. Raises
     :class:`VisualizationError` for values of an objective recorded in different units."""
     colors = _COLORS[dark]
-    objectives = results.problem.objectives
+    objectives = results.scope.criteria.objectives
     columns, rows = _grid(len(objectives))
     figure = make_subplots(rows=rows, cols=columns, horizontal_spacing=0.08, vertical_spacing=0.22)
     counted: Counter[str] = Counter()
@@ -311,7 +312,7 @@ def edf_figure(results: StudyResults, *, dark: bool = False) -> go.Figure:
 
 def _objective(results: StudyResults, key: str | None) -> _Axis:
     """The objective ``key`` names, the first by default; a parameter is refused."""
-    objectives = results.problem.objectives
+    objectives = results.scope.criteria.objectives
     axis = _axis(results, key or f"{OBJECTIVE}{objectives[0].label}")
     if axis.objective is None:
         raise VisualizationError(f"{key!r} is a parameter, not an objective")
