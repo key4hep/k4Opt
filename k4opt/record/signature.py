@@ -10,6 +10,9 @@ content, and the interpreter it runs in), the same ``KEY4HEP_STACK`` and search 
 stage belongs to, its time limit, how many workers ran it and where its files and its program
 are play no part (the record says where): a stage of another sample or another candidate with
 the same signature made the same events (as far as the program is deterministic for a seed).
+The definition names files as the problem writes them (relative to the problem file, or through
+a variable), so a problem moved with its files keeps its signatures; the same file named
+otherwise makes another one, and its stage runs again rather than being reused.
 
 The writer of a record (:mod:`k4opt.record.write`, through the execution) and its reader
 (:mod:`k4opt.record.read`) build the document with the same functions here, so that a record's
