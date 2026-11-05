@@ -64,7 +64,7 @@ from k4opt.problem.plan import (
     Task,
     TaskId,
     evaluations,
-    plan_tasks,
+    level_plan,
     read_stages,
     rejecting,
     stage_task,
@@ -348,16 +348,7 @@ def _bind_problem(
     planned = tuple(
         (task, of[id(entry)]) for task, entry in evaluations(spec.samples, spec.evaluators)
     )
-    plans = {
-        level: plan_tasks(
-            spec.samples,
-            spec.evaluators,
-            provided,
-            references=spec.criteria(level).references,
-            parameters=spec.parameters,
-        )
-        for level in range(spec.depth + 1)
-    }
+    plans = {level: level_plan(spec, level, provided) for level in range(spec.depth + 1)}
     plan = plans[0]
     runs = {task.id for task in plan.of(Kind.STAGE) if task.given is None}
     contexts = {

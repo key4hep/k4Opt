@@ -203,6 +203,27 @@ def test_the_tasks_required_are_those_an_objective_or_constraint_names_and_what_
     assert [task.id.label for task in plan.diagnostics] == ["gamma/occupancy"]
 
 
+def test_without_diagnostics_a_plan_holds_what_is_required_alone() -> None:
+    # a level below the top: the cost of the candidate alone, so no stage of the sample runs
+    evaluators = [ev("calo", "simulation"), ev("cost")]
+    cost = MetricRef("cost", "geometry", "channels")
+    assert [t.id.label for t in plan_tasks(GAMMA, evaluators, references=[cost]).tasks] == [
+        "geometry",
+        "gamma/generation",
+        "gamma/simulation",
+        "gamma/calo",
+        "cost",
+    ]
+    plan = plan_tasks(GAMMA, evaluators, references=[cost], diagnostics=False)
+    assert [task.id.label for task in plan.tasks] == ["geometry", "cost"]
+    assert plan.diagnostics == ()
+    # a required entry runs all the same, with what it reads
+    check = replace(ev("calo", "simulation"), required=True)
+    plan = plan_tasks(GAMMA, [check, ev("cost")], references=[cost], diagnostics=False)
+    assert needed(plan) == [task.id.label for task in plan.tasks]
+    assert "gamma/calo" in needed(plan)
+
+
 def test_an_evaluator_marked_required_is_required_with_what_it_reads_on_every_sample() -> None:
     samples = GAMMA | {"pion": Sample("pion", {"generation": GUN, "simulation": DDSIM})}
     check = replace(ev("check", "simulation", "gamma", "pion"), required=True)

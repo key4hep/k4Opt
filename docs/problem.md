@@ -780,6 +780,17 @@ tune the tracking for its efficiency, say, and compare detectors on their sensit
 Every evaluation measures whatever any level names of it; which evaluations are required (decide
 the candidate's status) follows from the level's own criteria.
 
+**What runs at each level.** At the top, every evaluation runs, and those its criteria do not read
+are diagnostics, recorded but deciding nothing. At a level below, only what its criteria and the
+evaluators marked `required: true` read runs, with the stages they read: its studies run many
+trials each, and an expensive analysis only the top level reads would otherwise run in every one
+of them. In the ECAL study, say, the readout cost only the top level compares is not computed in
+the inner trials, while the simulation and reconstruction the photon finding reads are: once per
+geometry, every other trial reusing them.
+An evaluation runs as a whole: one that measures both a cheap metric an inner level reads and an
+expensive one only the top reads runs whole at the inner level too, so split such work into two
+evaluators to keep the expensive part at the top.
+
 **New events.** The best trial of each inner study is evaluated once more on new events (its seeds
 derived, [replicates](execution.md#k4opt-evaluate)) before its level above is told it, since the
 best of many trials on the same events looks better than it is. So every sample must make its events
