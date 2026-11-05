@@ -201,9 +201,11 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      own Python files, taken before anything runs, and the commit and dirty flag of its git
      checkout (`null` when it is installed rather than checked out), `KEY4HEP_STACK` and `K4GEO`
      (those the session opened with, checked before each candidate), `programs` (the `ddsim`
-     and `k4run` every stage ran: the executable the session found on `PATH` when it opened,
-     where its links lead, with its size and SHA-256, and the `interpreter` its `#!` line names
-     as `PATH` found it, `null` for one that cannot be read) and
+     and `k4run` the stages that run ran, and no other: the executable the session found on
+     `PATH` when it opened, where its links lead, with its size and SHA-256, and the
+     `interpreter` its `#!` line names as `PATH` found it, `null` for a program that is no
+     script; a program `null` was not found, and its stages fail; one found whose file or
+     interpreter cannot be read keeps the session from opening) and
      `search` (the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`,
      which decide what those programs load); the pin and the stack are not compared).
 

@@ -167,7 +167,7 @@ def test_summary_is_written_and_truthful(
     # the stages, recorded once, apart from the evaluators that read them
     assert list(on_disk["samples"]["gamma"]["stages"]) == ["generation", "simulation"]
     simulated = on_disk["samples"]["gamma"]["stages"]["simulation"]
-    assert simulated["argv"][0] == "/stack/bin/ddsim"
+    assert simulated["argv"][0] == simulation.DDSIM
     assert (simulated["returncode"], simulated["events_read"]) == (0, 3)
     # each a task: how it ended, and the tasks it read
     assert (simulated["status"], simulated["message"]) == ("done", None)
@@ -213,8 +213,11 @@ def test_summary_is_written_and_truthful(
         on_disk["samples"]["gamma"]["stages"]["generation"]["particle_gun"]["particle"] == "gamma"
     )
     assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
-    # the fake ddsim's /stack/bin/ddsim cannot be read: it is recorded as such
-    assert on_disk["environment"]["observed"]["programs"] == {"ddsim": None}
+    # the program the fake ddsim stands for, by content and the interpreter its #! line names
+    ddsim = on_disk["environment"]["observed"]["programs"]["ddsim"]
+    assert ddsim["path"] == simulation.DDSIM and ddsim["interpreter"]["path"] == shutil.which(
+        "python3"
+    )
     assert set(on_disk["environment"]["observed"]["search"]) == {
         "PATH",
         "PYTHONPATH",

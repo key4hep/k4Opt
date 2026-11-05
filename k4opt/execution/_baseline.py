@@ -104,7 +104,8 @@ class Baseline:
         ``named`` are the files its stages read, by where they are named, or what lists them as
         the directories the problem names (a reconstruction's) hold them when it is called: then
         :meth:`verify_inputs` refuses a file that appeared in one or went. Raises
-        :class:`RunError` if k4opt's code changed since this process identified it."""
+        :class:`RunError` if k4opt's code changed since this process identified it, or if a
+        program a stage runs was found but cannot be identified (:func:`k4opt.program.identify`)."""
         listed = named if callable(named) else None
         named = named() if callable(named) else named
         # an unreadable file has no identity: its stage reports it, and a record still names it
@@ -123,6 +124,12 @@ class Baseline:
             name: None if path is None else identify(Path(path))
             for name, path in sorted(executables.items())
         }
+        for name, path in executables.items():
+            if path is not None and programs[name] is None:
+                raise ProvenanceError(
+                    f"{name}: {path} cannot be read, or the interpreter its #! line names cannot "
+                    "be found or read, so no record could say which program ran"
+                )
         process = freeze(
             {
                 "k4opt": code_identity(),
@@ -297,7 +304,7 @@ class Baseline:
         assert isinstance(programs, Mapping)
         for name, opened in programs.items():
             if not isinstance(opened, Mapping):
-                continue  # it could not be read: its stage reports that
+                continue  # it was not found: its stages fail (StageContext.unfound)
             now = identify(Path(str(opened["path"])))
             if now != thaw(opened):
                 raise ProvenanceError(

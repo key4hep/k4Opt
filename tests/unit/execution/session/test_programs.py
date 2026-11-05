@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -99,3 +100,24 @@ def test_a_program_not_found_when_the_session_opened_is_not_looked_for_later(
     assert simulation["status"] == "failed" and "argv" not in simulation
     assert "ddsim was not found on PATH when the session opened" in simulation["message"]
     assert "signature" not in simulation or simulation["signature"]["document"]["program"] is None
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        pytest.param(lambda ddsim: ddsim.chmod(0o311), id="unreadable"),
+        pytest.param(
+            lambda ddsim: ddsim.write_text("#!/usr/bin/env k4opt-no-such-python\n"),
+            id="interpreter-not-found",
+        ),
+    ],
+)
+def test_a_program_found_but_not_identified_is_refused_when_the_session_opens(
+    problem_file: Path, builds: tuple[Path, Path], broken: Callable[[Path], None]
+) -> None:
+    first, _ = builds
+    broken(first)
+    if os.access(first, os.R_OK) and first.stat().st_mode & 0o444 == 0:
+        pytest.skip("this user reads files without read permission (root)")
+    with pytest.raises(ProvenanceError, match="no record could say which program ran"):
+        EvaluationSession.open(problem_file, [cell_count()])

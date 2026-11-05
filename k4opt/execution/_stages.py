@@ -120,12 +120,12 @@ class StageContext:
     home directory each ``~`` or ``~user`` a path starts with stands for (by that prefix), taken
     when the context was made, the session's opening: every candidate reads the files the session
     identified, wherever the variable or ``HOME`` points later. ``programs`` holds, by name, the
-    executable each program a stage of it runs (``ddsim``, ``k4run``) was found at then, where
-    its links lead (:func:`k4opt.program.locate`), or ``None`` if none was found: every
-    candidate runs that one, whatever ``PATH`` finds later, and a stage whose program was not
-    found then fails (:meth:`unfound`), since its record could not say which program ran. A
-    context made without a session (no ``programs``) looks for a program on ``PATH`` when it
-    runs.
+    executable each program a stage of it that runs (``ddsim``, ``k4run``) was found at then
+    (:meth:`running`), where its links lead (:func:`k4opt.program.locate`), or ``None`` if none
+    was found: every candidate runs that one, whatever ``PATH`` finds later, and a stage whose
+    program was not found then fails (:meth:`unfound`), since its record could not say which
+    program ran. A context made without a session (no ``programs``) looks for a program on
+    ``PATH`` when it runs.
 
     ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
     program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's
@@ -154,25 +154,17 @@ class StageContext:
             prefix = text.split("/", 1)[0]
             if prefix.startswith("~") and os.path.expanduser(prefix) != prefix:
                 variables[prefix] = os.path.expanduser(prefix)
-        named_programs = sorted(
-            {
-                name
-                for stage_name, stage in stages.items()
-                if stage.executor is not None
-                and (name := executors(stage_name)[stage.executor].program) is not None
-            }
+        return cls(stages, spec.pending(sample), directory, sample=sample, variables=variables)
+
+    def running(self, stages: Collection[str]) -> StageContext:
+        """The same conditions, with the programs the ``stages`` that run (of those it has) found
+        on ``PATH`` now (:attr:`programs`): only those, so that a program no stage runs plays no
+        part in what a session identifies."""
+        named = sorted(
+            {program for name in stages if (program := _program(self, name)) is not None}
         )
-        programs = {
-            name: None if (found := locate(name)) is None else str(found) for name in named_programs
-        }
-        return cls(
-            stages,
-            spec.pending(sample),
-            directory,
-            sample=sample,
-            variables=variables,
-            programs=programs,
-        )
+        programs = {name: None if (found := locate(name)) is None else str(found) for name in named}
+        return replace(self, programs=programs)
 
     def executable(self, program: str) -> Path | None:
         """The executable of ``program`` the session found (:attr:`programs`), ``None`` if it

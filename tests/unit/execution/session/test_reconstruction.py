@@ -106,7 +106,7 @@ def test_the_reconstruction_runs_on_the_candidate_s_geometry_and_simulation(
         == hashlib.sha256(Path(programs["k4run"]["path"]).read_bytes()).hexdigest()
     )
     assert argv[0] == programs["k4run"]["path"]  # the executable identified is the one run
-    assert programs["ddsim"] is None  # faked at a path that does not exist: not readable
+    assert programs["ddsim"]["path"] == simulation.DDSIM
     (metric,) = summary["metrics"]
     assert metric["label"] == "gamma/test.reco_cells/reconstruction/ecal_barrel.mean_hit_cells"
 
@@ -191,6 +191,8 @@ def test_a_supplied_simulation_is_reconstructed_without_ddsim(
     record = json.loads((tmp_path / "run" / SUMMARY_NAME).read_text())
     argv = record["samples"]["gamma"]["stages"]["reconstruction"]["argv"]
     assert argv[argv.index("--IOSvc.Input") + 1] == str(given)
+    # no stage runs ddsim: the session identifies the k4run it runs, and only that
+    assert list(record["environment"]["observed"]["programs"]) == ["k4run"]
 
 
 def test_a_reconstruction_runs_in_a_worker_and_loses_events_there_too(

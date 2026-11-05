@@ -324,10 +324,10 @@ class EvaluationSession:
         runs = DryRuns(problem.source.root / problem.source.compact)
         try:
             _try_reconstructions(problem, binding, runs)
+            baseline = Baseline.take(problem, binding, lambda: _named(binding, supplied))
         except BaseException:
             runs.close()
             raise
-        baseline = Baseline.take(problem, binding, lambda: _named(binding, supplied))
         crowded = []  # of how the session runs, or what it is given: no summary keeps these
         slots = 1 if count is None else count
         for task in binding.plan.tasks:

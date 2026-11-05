@@ -294,10 +294,10 @@ keeps its geometry and its EDM4hep file.
   SHA-256 of each file its external references read (`${DD4hepINSTALL}/...`, `${K4GEO}/...`,
   absolute paths);
 - `KEY4HEP_STACK` and `K4GEO`;
-- `programs`: each program of the stack the stages run (`ddsim`, `k4run`), as the executable the
-  session found on `PATH` when it opened, where its links lead, with its size and SHA-256, and
-  the `interpreter` its `#!` line names as `PATH` found it (`null` for one that cannot be
-  read);
+- `programs`: each program of the stack a stage that runs starts (`ddsim`, `k4run`; not that of
+  a stage given as a file), as the executable the session found on `PATH` when it opened, where
+  its links lead, with its size and SHA-256, and the `interpreter` its `#!` line names as `PATH`
+  found it (`null` for a program that is no script); `null` for a program not found;
 - `search`: the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`,
   which decide what those programs load;
 - k4opt's version, the SHA-256 of its code and its git checkout;

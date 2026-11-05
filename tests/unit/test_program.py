@@ -67,3 +67,12 @@ def _bytes(path: Path) -> dict[str, object]:
 
     data = path.read_bytes()
     return {"path": str(path), "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def test_a_script_whose_interpreter_is_not_found_is_not_identified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _executable(tmp_path / "bin" / "ddsim", "#!/usr/bin/env python3\n")
+    monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
+    assert identify(script) is None  # what would run is not known
+    assert identify(_executable(tmp_path / "empty", "#!\n")) is None
