@@ -10,6 +10,7 @@ one more with two evaluators that share its simulation, and one of two samples (
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -166,7 +167,10 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
         assert residual["unit"] == "mrad"
         assert 0 < residual["value"] < 20  # a 10 GeV photon: about a mrad
         assert stage_file(run, SAMPLE, "stderr").is_file()
-        assert run["samples"][SAMPLE]["stages"]["simulation"]["outputs"]["events"]["sha256"] is None
+        # hashed when the stage ended, so that a stage reusing it can check it is still that file
+        events = stage_file(run, SAMPLE, "events")
+        output = run["samples"][SAMPLE]["stages"]["simulation"]["outputs"]["events"]
+        assert output["sha256"] == hashlib.sha256(events.read_bytes()).hexdigest()
         assert run["environment"]["declared"]["version"] == "2026-10-20"
         assert run["samples"]["gamma_10gev"]["stages"]["simulation"]["returncode"] == 0
 
@@ -348,6 +352,25 @@ def test_pi0_example_combines_hashed_histograms_from_two_real_samples(
     assert Assessment.from_summary(parse_problem(run["problem"]["definition"]), run).feasible
 
 
+def _unhashed(run: dict[str, Any]) -> dict[str, Any]:
+    """``run`` without the SHA-256 of its stages' outputs."""
+    run = copy.deepcopy(run)
+    for sample in run["samples"].values():
+        for stage in sample["stages"].values():
+            for output in (stage.get("outputs") or {}).values():
+                output.pop("sha256", None)
+    return run
+
+
+def _signatures(run: dict[str, Any]) -> dict[str, Any]:
+    """The SHA-256 of each stage signature of ``run``, by sample and stage."""
+    return {
+        f"{name}/{stage_name}": (stage.get("signature") or {}).get("sha256")
+        for name, sample in run["samples"].items()
+        for stage_name, stage in sample["stages"].items()
+    }
+
+
 def test_pi0_example_gives_the_same_record_with_four_workers(
     pi0_runs: dict[int | str, dict[str, Any]],
 ) -> None:
@@ -355,8 +378,13 @@ def test_pi0_example_gives_the_same_record_with_four_workers(
     print(f"pi0 example: {one['elapsed_seconds']:.1f} s inline, ", end="")
     print(f"{four['elapsed_seconds']:.1f} s with four")
     assert four["environment"]["observed"]["execution"] == {"backend": "process", "workers": 4}
-    # the EDM4hep files are not hashed: ROOT may write them a few bytes apart
-    assert scientific(one, frozenset({"bytes"})) == scientific(four, frozenset({"bytes"}))
+    # ROOT writes the same events a few bytes apart (its files carry when and where they were
+    # written), so the outputs' sizes and hashes differ; everything else, the stages' signatures
+    # included, is the same
+    assert scientific(_unhashed(one), frozenset({"bytes"})) == scientific(
+        _unhashed(four), frozenset({"bytes"})
+    )
+    assert _signatures(one) == _signatures(four)
     for sample in ("gamma_50gev", "pi0_50gev"):
         evaluation = four["samples"][sample]["evaluations"]["calo.shower_shape"]
         assert (Path(four["run_dir"]) / evaluation["log"]).is_file()
