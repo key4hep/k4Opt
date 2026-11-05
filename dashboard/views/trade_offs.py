@@ -18,7 +18,7 @@ import tables
 import trial
 import widgets
 
-REFERENCE, RULES, NOISE = "ref", "rules", "noise"
+REFERENCE, RULES, NOISE = trial.TRADE_OFF
 ANY = "any"
 # what each kind of rule is called, read after the objective's name
 KINDS = {

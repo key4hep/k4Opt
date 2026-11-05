@@ -387,3 +387,21 @@ def test_a_study_of_a_level_below_opens_by_the_url_and_a_bad_path_is_dropped(
         at = study_page(monkeypatch, tmp_path, results, inner=held)
         assert not at.exception, held
         assert "The study of level 1" not in texts(at)
+
+
+def opened() -> None:
+    """Open the study below trial 1, as its trial sheet's button does."""
+    import trial
+
+    trial.open_study([1])
+
+
+def test_opening_a_study_of_another_level_leaves_no_trade_off_of_the_one_before() -> None:
+    at = AppTest.from_function(opened)
+    held = {"study": "s", "ref": "2", "rules": "0:worsen:5:%", "noise": "0", "trial": "3"}
+    for key, value in held.items():
+        at.query_params[key] = value
+    at.run()
+    assert not at.exception
+    # its rules named the objectives of the level above by their place
+    assert dict(at.query_params) == {"study": "s", "inner": "1"}

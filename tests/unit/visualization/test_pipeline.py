@@ -18,7 +18,8 @@ pytest.importorskip("plotly")
 
 from k4opt.frozen import FrozenMap
 from k4opt.optimization import StudyResults, TrialResult
-from k4opt.problem import ProblemSpec, parse_problem
+from k4opt.problem import ProblemSpec, names, parse_problem
+from k4opt.problem.plan import level_costs, stage_task
 from k4opt.visualization import (
     COLLAPSED,
     TaskGraph,
@@ -28,6 +29,7 @@ from k4opt.visualization import (
     pipeline_graph,
     task_graph,
 )
+from k4opt.visualization.graph import _loop
 
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
 GRAPHVIZ = pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz is not installed")
@@ -465,3 +467,48 @@ def test_an_evaluation_is_in_the_loop_of_the_deepest_level_that_runs_it() -> Non
 
     loops = {n.id: n.loop for n in task_graph(nested(required), stack=False).nodes}
     assert loops["readout"] == 1 and loops["geometry"] == 0  # no inner parameter reaches either
+
+
+def test_a_stage_only_a_level_below_reaches_is_in_the_loop_of_the_level_that_runs_it() -> None:
+    def tuned_without_it(document: dict[str, Any]) -> None:
+        # the cell size reaches the readout alone, the threshold the readout and the
+        # reconstruction; the inner level, tuned by the readout, does not reconstruct
+        del document["evaluators"][1]["settings"]["layers"]
+        document["parameters"]["ecal_cell_size"]["targets"] = {
+            "evaluators": {"readout": "cell_size"}
+        }
+        document["parameters"]["ecal_mip_threshold"]["targets"]["evaluators"] = {
+            "readout": "layers"
+        }
+        document["optimization"]["inner"]["objective"] = {
+            "evaluator": "readout",
+            "stage": "geometry",
+            "metric": "ecal_barrel.channels",
+            "direction": "minimize",
+        }
+
+    spec = nested(tuned_without_it)
+    loops = {n.id: n.loop for n in task_graph(spec, stack=False).nodes}
+    # reconstructed once for each cell size, with the threshold its study selected
+    assert loops["pi0_50gev/reconstruction"] == 0
+    assert level_costs(spec, 8)[stage_task("reconstruction", "pi0_50gev")] == 8
+
+
+def test_the_loop_of_a_study_names_only_what_it_searches() -> None:
+    def tuned_together(document: dict[str, Any]) -> None:
+        document["parameters"]["range_cut"] = {
+            "title": "Range cut",
+            "type": "continuous",
+            "bounds": [0.1, 1.0],
+            "unit": "mm",
+            "targets": {"simulation": "physics.rangecut"},
+        }
+        document["optimization"]["parameters"].append("range_cut")
+
+    data = yaml.safe_load(NESTED.read_text())
+    tuned_together(data)
+    spec = parse_problem(data)
+    assert task_graph(spec).loops[0].title == "for each ECAL cell size, Range cut"
+    # in a study given one cell size (--fix), the loop is over the range cut alone
+    fixed = _loop(spec, 0, 0, names(spec), None, {"ecal_cell_size": 5.1})
+    assert fixed.title == "for each Range cut"

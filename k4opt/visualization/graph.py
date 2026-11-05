@@ -225,7 +225,7 @@ def task_graph(
     if spec.depth > level:
         nodes, edges = _looped(spec, plan, nodes, edges, level, fixed)
         loops = tuple(
-            _loop(spec, at, level, called, results) for at in range(level, spec.depth + 1)
+            _loop(spec, at, level, called, results, fixed) for at in range(level, spec.depth + 1)
         )
     graph = TaskGraph(tuple(nodes), tuple(edges), samples, recorded, loops)
     return _stacked(graph, expanded) if stack else graph
@@ -261,8 +261,10 @@ def _looped(
     runs it (:func:`~k4opt.problem.plan.level_plan`), whatever reaches it: a diagnostic only the
     top runs is drawn there, and an evaluation a level below requires there, even if none of its
     parameters reaches it. A stage, reused otherwise, is in the loop of the deepest level whose
-    parameters reach it, of those that run it. A task that does no work of its own (the particle
-    gun, fired by ddsim) runs in the outermost loop of the working tasks of its sample."""
+    parameters reach it, of those that run it, or of the deepest level that runs it if only a
+    level below it reaches it (through the candidates that level selects). A task that does no
+    work of its own (the particle gun, fired by ddsim) runs in the outermost loop of the working
+    tasks of its sample."""
     searched = {
         name: at
         for at in range(level, spec.depth + 1)
@@ -282,9 +284,10 @@ def _looped(
         if task.id.kind is Kind.EVALUATOR:
             loops[task.id.label] = deepest
             continue
+        # a level below that reaches a stage it does not run reaches it through the candidates
+        # it selects for the deepest level that runs it, which runs it anew for each
         reached = [searched[name] for name in task.varies if name in searched]
-        reached = [at for at in reached if at <= deepest]
-        loops[task.id.label] = max(reached) if reached else None
+        loops[task.id.label] = min(max(reached), deepest) if reached else None
     for task in plan.tasks:
         if task.directory is None and task.id.sample is not None:
             working = [
@@ -308,11 +311,18 @@ def _looped(
 
 
 def _loop(
-    spec: ProblemSpec, at: int, level: int, called: Names, results: StudyResults | None
+    spec: ProblemSpec,
+    at: int,
+    level: int,
+    called: Names,
+    results: StudyResults | None,
+    fixed: Mapping[str, Scalar],
 ) -> LoopBox:
-    """The frame of the trials of level ``at``: for each of what it searches, how many trials and
-    what judges them; below the study's ``level``, that its best is evaluated again."""
-    searched = ", ".join(called.parameter(name) for name in spec.parameters_of(at))
+    """The frame of the trials of level ``at``: for each of what it searches (not what the study
+    is given one value of, ``fixed``), how many trials and what judges them; below the study's
+    ``level``, that its best is evaluated again."""
+    own = [name for name in spec.parameters_of(at) if name not in fixed]
+    searched = ", ".join(called.parameter(name) for name in own)
     criteria = spec.criteria(at)
     if len(criteria.objectives) == 1:
         (objective,) = criteria.objectives

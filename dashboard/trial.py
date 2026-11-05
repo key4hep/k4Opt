@@ -19,6 +19,8 @@ import widgets
 
 SHOWN = "trial"  # the URL's parameter of the trial open
 INNER = "inner"  # the URL's parameter of the study of a level below shown: its trials, by "."
+# the Trade-offs tab's reference, rules and whether noise counts: of one study, by its objectives
+TRADE_OFF = ("ref", "rules", "noise")
 VIEW = "view"  # the Study page's tabs, by their key: a comparison opens the Trade-offs tab
 # the color of each outcome's badge; every other outcome is a trial without a result
 BADGES = {"feasible": "green", "infeasible": "orange", "running": "blue"}
@@ -72,7 +74,12 @@ def inner_path() -> list[int] | None:
 
 
 def open_study(path: list[int]) -> None:
-    """Show the study the trials ``path`` lead to, from its Overview, with no trial open."""
+    """Show the study the trials ``path`` lead to, from its Overview, with no trial open and no
+    trade-off of the study left: its rules name objectives by their place, which another level's
+    are not."""
+    for key in TRADE_OFF:
+        if key in st.query_params:
+            del st.query_params[key]
     if path:
         st.query_params[INNER] = ".".join(map(str, path))
     elif INNER in st.query_params:
