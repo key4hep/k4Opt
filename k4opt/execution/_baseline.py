@@ -119,7 +119,10 @@ class Baseline:
             for context in binding.contexts.values()
             for name, path in context.programs.items()
         }
-        programs = {name: identify(Path(path)) for name, path in sorted(executables.items())}
+        programs = {
+            name: None if path is None else identify(Path(path))
+            for name, path in sorted(executables.items())
+        }
         process = freeze(
             {
                 "k4opt": code_identity(),

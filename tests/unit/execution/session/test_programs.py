@@ -78,3 +78,24 @@ def test_a_ddsim_that_changes_after_the_session_opened_stops_the_next_candidate(
         with pytest.raises(ProvenanceError, match=r"ddsim: .* changed after the session opened"):
             session.evaluate({RADIUS: 460.0}, tmp_path / "two")
     assert not (tmp_path / "two").exists()
+
+
+def test_a_program_not_found_when_the_session_opened_is_not_looked_for_later(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack.install(monkeypatch)
+    later = build(tmp_path / "later", "later")
+    found = os.environ["PATH"].split(os.pathsep)
+    without = [entry for entry in found if not (Path(entry) / "ddsim").exists()]
+    monkeypatch.setenv("PATH", os.pathsep.join(without))
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        assert session.identity()["programs"] == {"ddsim": None}
+        # a ddsim on PATH now: the session did not identify it, so no record could name it
+        monkeypatch.setenv("PATH", os.pathsep.join([str(later.parent), *without]))
+        session.evaluate({RADIUS: 450.0}, tmp_path / "run")
+    record = json.loads((tmp_path / "run" / SUMMARY_NAME).read_text())
+    assert record["status"] == "failed"
+    simulation = record["samples"]["gamma"]["stages"]["simulation"]
+    assert simulation["status"] == "failed" and "argv" not in simulation
+    assert "ddsim was not found on PATH when the session opened" in simulation["message"]
+    assert "signature" not in simulation or simulation["signature"]["document"]["program"] is None

@@ -121,8 +121,11 @@ class StageContext:
     when the context was made, the session's opening: every candidate reads the files the session
     identified, wherever the variable or ``HOME`` points later. ``programs`` holds, by name, the
     executable each program a stage of it runs (``ddsim``, ``k4run``) was found at then, where
-    its links lead (:func:`k4opt.program.locate`): every candidate runs that one, whatever
-    ``PATH`` finds later. A program not found then is looked for on ``PATH`` when it runs.
+    its links lead (:func:`k4opt.program.locate`), or ``None`` if none was found: every
+    candidate runs that one, whatever ``PATH`` finds later, and a stage whose program was not
+    found then fails (:meth:`unfound`), since its record could not say which program ran. A
+    context made without a session (no ``programs``) looks for a program on ``PATH`` when it
+    runs.
 
     ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
     program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's
@@ -136,7 +139,7 @@ class StageContext:
     timeout: float | None = None
     sample: str | None = None
     variables: Mapping[str, str] = field(default_factory=dict)
-    programs: Mapping[str, str] = field(default_factory=dict)
+    programs: Mapping[str, str | None] = field(default_factory=dict)
     started: Callable[[int], None] | None = field(default=None, compare=False, repr=False)
     die_with_parent: bool = field(default=False, compare=False, repr=False)
 
@@ -160,7 +163,7 @@ class StageContext:
             }
         )
         programs = {
-            name: str(found) for name in named_programs if (found := locate(name)) is not None
+            name: None if (found := locate(name)) is None else str(found) for name in named_programs
         }
         return cls(
             stages,
@@ -176,6 +179,16 @@ class StageContext:
         found none."""
         found = self.programs.get(program)
         return None if found is None else Path(found)
+
+    def unfound(self, program: str | None) -> str | None:
+        """Why a stage that runs ``program`` cannot run: the session looked for it when it
+        opened and found none; ``None`` otherwise."""
+        if program is None or program not in self.programs or self.programs[program] is not None:
+            return None
+        return (
+            f"{program} was not found on PATH when the session opened (is the Key4hep "
+            "environment set up?); a session runs only the programs it found then"
+        )
 
     def configured(self, stages: Mapping[str, Stage]) -> StageContext:
         """The same conditions with the ``stages`` of one candidate, complete."""
@@ -590,6 +603,8 @@ class DryRuns:
         key = json.dumps(
             [[str(file) for file in files], str(directory), thaw(options)], sort_keys=True
         )
+        if (unfound := context.unfound("k4run")) is not None:
+            return unfound
         if key not in self._said:
             if self._scratch is None:
                 self._scratch = Path(tempfile.mkdtemp(prefix="k4opt-dry-run-"))
@@ -843,6 +858,8 @@ def make_stage(
             outcome = StageOutcome(
                 provenance={"file": str(path)}, error=f"cannot read {path}: {exc}"
             )
+    elif (unfound := context.unfound(_program(context, stage))) is not None:
+        outcome = StageOutcome(error=unfound)  # not looked for again: no record would name it
     else:
         outcome = run_stage(context, stage, inputs=inputs, workdir=workdir)
     main = outcome.outputs.get(output)
@@ -852,3 +869,11 @@ def make_stage(
     provenance = {**outcome.provenance, **observed}
     outcome = replace(outcome, provenance=provenance, error=error)
     return outcome, None if error is not None else main
+
+
+def _program(context: StageContext, stage: str) -> str | None:
+    """The program of the stack the stage ``stage`` of ``context`` runs (``ddsim``), if any."""
+    found = context.stages.get(stage)
+    if found is None or found.executor is None:
+        return None
+    return executors(stage)[found.executor].program
