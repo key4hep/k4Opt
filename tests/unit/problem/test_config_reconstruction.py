@@ -149,6 +149,17 @@ def test_what_a_parameter_cannot_set_in_a_reconstruction(
     reject(reco, message)
 
 
+def test_a_parameter_sets_a_key_of_a_map_of_the_job(reco: dict[str, Any]) -> None:
+    key = "MyDDMarlinPandora_10ns.Parameters[ECalMipThreshold]"
+    reco["parameters"]["mip_threshold"] = {
+        "type": "continuous",
+        "bounds": [0.1, 5.0],
+        "targets": {"reconstruction": key},
+    }
+    problem = parse_problem(reco)
+    assert problem.parameters[1].targets == (StageDestination("reconstruction", key, ("gamma",)),)
+
+
 def test_the_reconstruction_example_parses() -> None:
     path = EXAMPLES / "cld-ecal-pi0-reco.yaml"
     problem = parse_problem(yaml.safe_load(path.read_text()), source=path)

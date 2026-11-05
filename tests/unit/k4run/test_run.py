@@ -197,6 +197,40 @@ def test_dry_runs_that_share_a_placeholder_write_it_once(tmp_path: Path, job: Pa
     assert "root_io" not in _placeholder_options(placeholder)
 
 
+def test_a_key_of_a_map_is_set_by_k4opt_s_options_file_and_must_be_held(
+    monkeypatch: pytest.MonkeyPatch, job: Path, sim: Path, tmp_path: Path
+) -> None:
+    key = {"Pandora.Parameters[Cut]": 2.0}
+    install_k4run(monkeypatch)
+    done = run(job, sim, tmp_path / "a", **key)
+    assert done.error is None, done.error
+    assert not any("Cut" in argument for argument in done.argv)  # no argument of the job
+    written = done.files["options"].read_text()
+    assert "_set('Pandora', 'Parameters', 'Cut', ['2.0'])" in written
+    assert "DUMPFILE" in written
+    install_k4run(monkeypatch, keep_maps=True)  # a job that sets its map again
+    said = run(job, sim, tmp_path / "b", **key).error
+    assert said is not None and "Pandora.Parameters[Cut] is nothing, not ['2.0']" in said
+
+
+def test_a_dry_run_sets_the_keys_of_maps_too(
+    monkeypatch: pytest.MonkeyPatch, job: Path, tmp_path: Path
+) -> None:
+    options = {
+        "options": "CLDReconstruction.py",
+        "directory": str(job),
+        "Pandora.Parameters[Cut]": 2.0,
+    }
+    install_k4run(monkeypatch)
+    files = [job / "CLDReconstruction.py"]
+    workdir = tmp_path / "a"
+    said = dry_run(
+        files=files, directory=job, compact=Path("/g.xml"), options=options, workdir=workdir
+    )
+    assert said is None
+    assert "_set('Pandora', 'Parameters', 'Cut'" in (workdir / "k4opt.opts.py").read_text()
+
+
 def test_the_files_of_a_job_s_directory_are_listed_by_their_relative_path(job: Path) -> None:
     assert list(job_files(job)) == ["CLDReconstruction.py", "PandoraSettingsCLD/Likelihood.xml"]
 

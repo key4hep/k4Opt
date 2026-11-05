@@ -5,10 +5,11 @@ a copy of the directory they belong to. k4opt gives the job the candidate's geom
 of the simulation and the file to write, through k4FWCore's services (``GeoSvc.detectors``,
 ``IOSvc.Input``, ``IOSvc.Output``) or through the job's own arguments the stage names, has it
 reconstruct every event, passes the stage's other options on as the job's arguments
-(``cms: 91`` as ``--cms=91``) and checks, from the job's resolved options, that it read what it
-was given. Whether the job takes its arguments is decided by the job itself (:func:`dry_run`), not
-by a table of k4opt. It does not read the output; that is up to the caller. See
-``docs/k4run.md``.
+(``cms: 91`` as ``--cms=91``) or, for a key of a map property such as a Marlin processor's
+``Parameters``, in an options file of its own, and checks, from the job's resolved options, that
+it read what it was given. Whether the job takes its arguments is decided by the job itself
+(:func:`dry_run`), not by a table of k4opt. It does not read the output; that is up to the
+caller. See ``docs/k4run.md``.
 
 Typical use::
 
@@ -38,6 +39,7 @@ from k4opt.k4run.command import (
     check_options,
     data_arguments,
     k4run_arguments,
+    map_keys,
     options_files,
     settable_option,
     wiring,
@@ -61,6 +63,7 @@ __all__ = [
     "dry_run",
     "job_files",
     "k4run_arguments",
+    "map_keys",
     "options_files",
     "properties",
     "reconstruct",

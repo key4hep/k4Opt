@@ -35,6 +35,28 @@ samples:
 | `data` | Optional. Each argument of the job that names a file or a directory of data it reads, with its path: `data: {dataFolder: /scratch/calibration/}` for ALLEGRO's calibration maps and ONNX models. k4opt passes it (`--dataFolder=/scratch/calibration/`, a trailing `/` kept, since a job may append file names to it) and identifies what it names, a directory by every file in it, as it identifies the job's own files; the data is read where it is, not copied. Paths are read as `directory`'s are. |
 | any other key | An argument of the job or a Gaudi property, named as `k4run OPTIONS.py --help` names it, without the dashes: `cms: 91` is `--cms=91`, `GeoSvc.OutputLevel: 3` is `--GeoSvc.OutputLevel=3`, a list is `--key v1 v2`, `true` the flag `--key`. `false` is refused: a flag of the job's own (CLD's `--truthTracking`, an argparse `store_true`) takes no value and cannot be switched off, and leaving it out keeps the job's default, which k4opt does not know, so leave the key out yourself; a Gaudi property, which takes a value, is given the text `'False'` (`GeoSvc.EnableGeant4Geo: 'False'`). A mapping or `null` is refused, as is a list value starting with `-`, which k4run would read as an argument. |
 
+Many settings of a job are keys of a map property, out of reach of an argument, which would replace
+the whole map: CLD's Marlin processors hold theirs in `Parameters`. `<component>.<property>[<key>]`
+sets one key:
+
+```yaml
+reconstruction:
+  executor: k4run
+  directory: $CLDCONFIG/share/CLDConfig
+  options: CLDReconstruction.py
+  geometry: compactFile
+  MyDDMarlinPandora_10ns.Parameters[ECalMipThreshold]: 2.0   # Pandora's cut on ECAL hits, in MIPs
+```
+
+The names are those of the job's resolved options (`joboptions.txt` of any run). k4opt's own options
+file, loaded after the job's, changes that key and leaves the rest of the map as the job set it. The
+key must be one the job sets: a processor ignores a parameter it does not know, so a misspelt key is
+refused when the session opens, with the keys it resembles, and so is a parameter it does not set
+itself and leaves at the processor's default. A value is a number, a text or a list of them, written
+as the texts a Marlin processor reads (a boolean as the text `'true'`). The resolved options must show
+the value after the run, or the stage fails. A parameter can set such a key
+([problem](problem.md#parameters)).
+
 A reconstruction takes no `events` or `seed`: it reconstructs every event of the simulation it
 reads, whose `events` and `seed` made them (an evaluator of the reconstruction gets those as
 `request.events` and `request.seed`). A seed the job itself reads is one of its arguments.

@@ -18,6 +18,12 @@ Verified against the ``k4run`` of the Key4hep nightly 2026-10-20 (k4FWCore's ``b
   ``--truthTracking``, an argparse ``store_true``) takes no value and cannot be switched off,
   and leaving it out means the job's default, which k4opt does not know; a Gaudi property, which
   does take one, is given the text ``'False'``.
+* Many settings of a job are keys of a map property, which no argument can reach: CLD's Marlin
+  processors hold theirs in ``Parameters``, each a list of texts (``'ECalMipThreshold' : ['0.5']``),
+  and an argument would replace the whole map. An option
+  ``<component>.<property>[<key>]`` sets that key alone: k4opt's own options file, loaded after the
+  job's, changes it (:mod:`k4opt.k4run.run`), and refuses a key the job does not set, which a
+  processor would otherwise ignore. The resolved options must show it (:func:`k4opt.k4run.verify`).
 * k4opt gives the job the candidate's geometry, the simulation's events and the file to write
   through k4FWCore's services (``GeoSvc.detectors``, ``IOSvc.Input``, ``IOSvc.Output``), or, for
   the geometry and the input, through the job's own argument the stage names (``geometry:
@@ -91,6 +97,7 @@ _MANAGED_COMPONENTS: Mapping[str, str] = {
 }
 
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_:\-]*(\.[A-Za-z_][A-Za-z0-9_:\-]*)*")
+_MAP_KEY = re.compile(r"(?P<property>[^\[\]]+)\[(?P<key>[^\[\]]+)\]")
 
 
 def _fail(key: str, message: str) -> K4runError:
@@ -117,7 +124,14 @@ def _managed(name: str) -> str | None:
 
 def _check_name(key: object, path: str) -> str:
     """``key`` as the name of an argument of the job: without its dashes, as ``--help`` lists it
-    (``cms``, ``GeoSvc.OutputLevel``), and not one k4opt manages."""
+    (``cms``, ``GeoSvc.OutputLevel``), and not one k4opt manages; or as a key of a map property,
+    ``<component>.<property>[<key>]``, of such a property."""
+    entry = _MAP_KEY.fullmatch(key) if isinstance(key, str) else None
+    if entry is not None:
+        if "." not in entry["property"]:
+            raise _fail(path, "a key of a map is <component>.<property>[<key>]")
+        _check_name(entry["property"], path)
+        return str(key)
     if not isinstance(key, str) or not _NAME.fullmatch(key):
         hint = ""
         if isinstance(key, str) and key.startswith("-"):
@@ -171,12 +185,39 @@ def _argument(key: str, value: Json) -> tuple[str, ...]:
     return (f"--{key}={_scalar(value, key)}",)
 
 
+def _map_values(key: str, value: Json) -> tuple[str, ...]:
+    """What ``value`` sets a key of a map to, as the texts a Marlin processor reads."""
+    items = list(value) if isinstance(value, (list, tuple)) else [value]
+    if not items:
+        raise _fail(key, "an empty list sets nothing; leave the option out")
+    if any(isinstance(item, bool) for item in items):
+        raise _fail(key, "write a boolean as the text the job's map holds ('true')")
+    many = isinstance(value, (list, tuple))
+    return tuple(
+        _scalar(item, f"{key}[{index}]" if many else key) for index, item in enumerate(items)
+    )
+
+
+def map_keys(options: Mapping[str, Json]) -> dict[tuple[str, str], tuple[str, ...]]:
+    """The keys of map properties that the options of the stage set, in their order, by
+    ``(<component>.<property>, <key>)``: what each is set to, as texts; raises
+    :class:`K4runError` for one k4opt manages or cannot set."""
+    found = {}
+    for name, value in options.items():
+        entry = _MAP_KEY.fullmatch(name)
+        if entry is not None and name not in EXECUTOR_KEYS:
+            _check_name(name, name)
+            found[entry["property"], entry["key"]] = _map_values(name, value)
+    return found
+
+
 def job_arguments(options: Mapping[str, Json]) -> tuple[str, ...]:
     """The arguments of the job that the options of the stage other than :data:`EXECUTOR_KEYS`
-    pass, in their order; raises :class:`K4runError` for one k4opt manages or cannot pass."""
+    pass, in their order, which a key of a map is not (:func:`map_keys`); raises
+    :class:`K4runError` for one k4opt manages or cannot pass."""
     arguments: list[str] = []
     for key, value in options.items():
-        if key in EXECUTOR_KEYS:
+        if key in EXECUTOR_KEYS or _MAP_KEY.fullmatch(key):
             continue
         arguments += _argument(_check_name(key, key), value)
     return tuple(arguments)
@@ -300,6 +341,7 @@ def check_options(options: Mapping[str, Json], pending: Collection[str] = ()) ->
                 key, "is an argument that takes the geometry, the input or data; k4opt sets it"
             )
     job_arguments(options)
+    map_keys(options)
 
 
 def k4run_arguments(

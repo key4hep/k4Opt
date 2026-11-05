@@ -52,3 +52,16 @@ def test_a_dump_without_the_services_or_with_other_files_fails_for_each() -> Non
     two = DUMP.replace(f"[ '{SIM}' ]", f"[ '{SIM}', '/other.root' ]")
     message = verify(two, compact=COMPACT, input_file=SIM, output=RECO, input_argument="inputFiles")
     assert message is not None and "that k4opt passed as --inputFiles" in message
+
+
+def test_the_keys_of_maps_must_be_held_as_they_were_set() -> None:
+    dump = DUMP + "Pandora.Parameters = { 'Cut' : [ '2.0' ] , 'Other' : [ 'x' ] };\n"
+    common = {"compact": COMPACT, "input_file": SIM, "output": RECO}
+    key = ("Pandora.Parameters", "Cut")
+    assert verify(dump, keys={key: ("2.0",)}, **common) is None
+    said = verify(dump, keys={key: ("0.5",)}, **common)
+    assert said is not None and "Pandora.Parameters[Cut] is ['2.0'], not ['0.5']" in said
+    said = verify(dump, keys={("Pandora.Parameters", "Gone"): ("1",)}, **common)
+    assert said is not None and "Pandora.Parameters[Gone] is nothing" in said
+    said = verify(DUMP, keys={key: ("2.0",)}, **common)
+    assert said is not None and "Pandora.Parameters[Cut] is nothing" in said

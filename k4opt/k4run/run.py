@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 
 from k4opt import program
 from k4opt.frozen import Json
-from k4opt.k4run.command import check_options, k4run_arguments, wiring
+from k4opt.k4run.command import check_options, k4run_arguments, map_keys, wiring
 from k4opt.k4run.errors import K4runError
 from k4opt.k4run.joboptions import verify
 
@@ -135,6 +135,38 @@ def _run_files(files: Sequence[Path], directory: Path | None) -> list[str]:
     ]
 
 
+_SET_KEY = """\
+# the keys of map properties the stage sets; a key the job does not set would be ignored
+from difflib import get_close_matches
+
+from Gaudi.Configuration import allConfigurables
+
+
+def _set(component, name, key, values):
+    if component not in allConfigurables:
+        close = get_close_matches(component, list(allConfigurables), 3)
+        raise SystemExit(f"k4opt: the job has no component {component}; close: {close}")
+    held = getattr(allConfigurables[component], name)
+    if key not in held:
+        close = get_close_matches(key, list(held), 3)
+        raise SystemExit(f"k4opt: {component}.{name} has no key {key}; close: {close}")
+    old = held[key]
+    held[key] = values if isinstance(old, (list, tuple)) else type(old)(values[0])
+
+
+"""
+
+
+def _key_options(options: Mapping[str, Json]) -> str:
+    """What k4opt's options file adds to set the keys of map properties ``options`` names."""
+    keys = map_keys(options)
+    calls = [
+        f"_set({name.rpartition('.')[0]!r}, {name.rpartition('.')[2]!r}, {key!r}, {list(values)!r})"
+        for (name, key), values in keys.items()
+    ]
+    return "".join([_SET_KEY, *(f"{call}\n" for call in calls)]) if calls else ""
+
+
 def _dump_options(dump: Path) -> str:
     """k4opt's options file: Gaudi writes the job's resolved options to ``dump``."""
     return (
@@ -212,7 +244,7 @@ def reconstruct(
     began = time.monotonic()
     try:
         job = _stage(workdir, directory)
-        paths["options"].write_text(_dump_options(paths["joboptions"]))
+        paths["options"].write_text(_dump_options(paths["joboptions"]) + _key_options(options))
     except OSError as exc:
         return made((), None, f"cannot prepare the reconstruction in {workdir}: {exc}")
     remaining = None if timeout is None else timeout - (time.monotonic() - began)
@@ -260,6 +292,7 @@ def reconstruct(
                 output=output,
                 geometry=geometry,
                 input_argument=input_argument,
+                keys=map_keys(options),
             )
         if error is None and not output.is_file():
             error = f"k4run finished but wrote no {output.name} (logs in {workdir})"
@@ -283,8 +316,9 @@ def dry_run(
     directory ``workdir``, on the geometry ``compact`` and the input ``placeholder``
     (``workdir/placeholder.edm4hep.root`` if ``None``), an EDM4hep file of one empty event that
     the job writes first unless it exists: dry runs that share one write it once. The job's
-    options files run and every argument is parsed, strictly; nothing is reconstructed. Raises
-    :class:`K4runError` as :func:`reconstruct` does."""
+    options files run, a key of a map the job does not set is refused, and every argument is
+    parsed, strictly; nothing is reconstructed. Raises :class:`K4runError` as :func:`reconstruct`
+    does."""
     check_options(options)
     workdir = Path(os.path.abspath(workdir))
     if placeholder is None:
@@ -293,7 +327,7 @@ def dry_run(
     try:
         job = _stage(workdir, directory)
         mine = workdir / LOG_FILES["options"]
-        mine.write_text(_placeholder_options(placeholder))
+        mine.write_text(_placeholder_options(placeholder) + _key_options(options))
     except OSError as exc:
         return f"cannot prepare the dry run in {workdir}: {exc}"
     arguments = k4run_arguments(
