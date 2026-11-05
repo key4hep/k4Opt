@@ -52,9 +52,11 @@ The names are those of the job's resolved options (`joboptions.txt` of any run).
 file, loaded after the job's, changes that key and leaves the rest of the map as the job set it. The
 key must be one the job sets: a processor ignores a parameter it does not know, so a misspelt key is
 refused when the session opens, with the keys it resembles, and so is a parameter it does not set
-itself and leaves at the processor's default. A value is a number, a text or a list of them, written
-as the texts a Marlin processor reads (a boolean as the text `'true'`). The resolved options must show
-the value after the run, or the stage fails. A parameter can set such a key
+itself and leaves at the processor's default. Only a key that holds a list of texts can be set, as
+those of a Marlin processor do; a map of plain texts or numbers is refused when the session opens,
+and so is a property that is no map. A value is a number, a text or a list of them, written as the
+texts a Marlin processor reads (a boolean as the text `'true'`). The resolved options must show the
+value after the run, or the stage fails. A parameter can set such a key
 ([problem](problem.md#parameters)).
 
 A reconstruction takes no `events` or `seed`: it reconstructs every event of the simulation it

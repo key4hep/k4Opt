@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
+import types
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ from typing import Any
 import pytest
 
 from k4opt.k4run import K4runError, dry_run, job_files, reconstruct
+from k4opt.k4run.run import _key_options
 from tests.support.stack import install_k4run
 
 
@@ -229,6 +232,79 @@ def test_a_dry_run_sets_the_keys_of_maps_too(
     )
     assert said is None
     assert "_set('Pandora', 'Parameters', 'Cut'" in (workdir / "k4opt.opts.py").read_text()
+
+
+def test_two_keys_of_one_map_are_both_set_and_checked(
+    monkeypatch: pytest.MonkeyPatch, job: Path, sim: Path, tmp_path: Path
+) -> None:
+    install_k4run(monkeypatch)
+    keys = {"Pandora.Parameters[Cut]": 2.0, "Pandora.Parameters[Layers]": [41, 100]}
+    done = run(job, sim, tmp_path / "a", **keys)
+    assert done.error is None, done.error
+
+
+class Component:
+    """A configured component of a job, as Gaudi's ``allConfigurables`` holds it."""
+
+    def __init__(self, **properties: Any) -> None:
+        self.__dict__.update(properties)
+
+    def getProperties(self) -> dict[str, Any]:  # noqa: N802  # as Gaudi names it
+        return self.__dict__
+
+
+def configure(monkeypatch: pytest.MonkeyPatch, component: Component, **options: Any) -> None:
+    """Run what k4opt's options file adds for ``options`` in a job that has ``component``,
+    ``Pandora``."""
+    gaudi = types.ModuleType("Gaudi")
+    configuration = types.ModuleType("Gaudi.Configuration")
+    configuration.allConfigurables = {"Pandora": component}  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "Gaudi", gaudi)
+    monkeypatch.setitem(sys.modules, "Gaudi.Configuration", configuration)
+    exec(_key_options(options), {})
+
+
+def test_k4opt_s_options_file_changes_the_keys_it_sets_and_no_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    held = {"Cut": ["0.5"], "Layers": ["1"], "Other": ["x"]}
+    configure(
+        monkeypatch,
+        Component(Parameters=held),
+        **{"Pandora.Parameters[Cut]": 2.0, "Pandora.Parameters[Layers]": [41, 100]},
+    )
+    assert held == {"Cut": ["2.0"], "Layers": ["41", "100"], "Other": ["x"]}
+
+
+@pytest.mark.parametrize(
+    ("option", "properties", "says"),
+    [
+        ("Other.Parameters[Cut]", {}, "the job has no component Other; close: []"),
+        (
+            "Pandora.ParameterMap[Cut]",
+            {"Parameters": {"Cut": ["1"]}, "OutputLevel": 3},
+            "Pandora has no map property ParameterMap; close: ['Parameters']",
+        ),
+        ("Pandora.OutputLevel[Cut]", {"OutputLevel": 3}, "no map property OutputLevel"),
+        (
+            "Pandora.Parameters[Cutt]",
+            {"Parameters": {"Cut": ["1"]}},
+            "Pandora.Parameters has no key Cutt; close: ['Cut']",
+        ),
+        ("Pandora.Map[Cut]", {"Map": {"Cut": "text"}}, "holds 'text'; only a key that holds"),
+        ("Pandora.Map[Cut]", {"Map": {"Cut": True}}, "holds True; only a key that holds"),
+        ("Pandora.Map[Cut]", {"Map": {"Cut": 1.5}}, "holds 1.5; only a key that holds"),
+        ("Pandora.Map[Cut]", {"Map": {"Cut": [1, 2]}}, "holds [1, 2]; only a key that holds"),
+    ],
+)
+def test_what_k4opt_s_options_file_cannot_set_stops_the_job_saying_why(
+    monkeypatch: pytest.MonkeyPatch, option: str, properties: dict[str, Any], says: str
+) -> None:
+    before = repr(properties)
+    with pytest.raises(SystemExit) as stopped:
+        configure(monkeypatch, Component(**properties), **{option: "2"})
+    assert says in str(stopped.value)
+    assert repr(properties) == before  # nothing was coerced
 
 
 def test_the_files_of_a_job_s_directory_are_listed_by_their_relative_path(job: Path) -> None:

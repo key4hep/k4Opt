@@ -22,8 +22,10 @@ Verified against the ``k4run`` of the Key4hep nightly 2026-10-20 (k4FWCore's ``b
   processors hold theirs in ``Parameters``, each a list of texts (``'ECalMipThreshold' : ['0.5']``),
   and an argument would replace the whole map. An option
   ``<component>.<property>[<key>]`` sets that key alone: k4opt's own options file, loaded after the
-  job's, changes it (:mod:`k4opt.k4run.run`), and refuses a key the job does not set, which a
-  processor would otherwise ignore. The resolved options must show it (:func:`k4opt.k4run.verify`).
+  job's, changes it (:mod:`k4opt.k4run.run`). It refuses a key the job does not set, which a
+  processor would otherwise ignore, and one that holds anything but a list of texts, which k4opt
+  would have to convert. So the job's dry run says all this before anything is simulated. The
+  resolved options must show the value (:func:`k4opt.k4run.verify`).
 * k4opt gives the job the candidate's geometry, the simulation's events and the file to write
   through k4FWCore's services (``GeoSvc.detectors``, ``IOSvc.Input``, ``IOSvc.Output``), or, for
   the geometry and the input, through the job's own argument the stage names (``geometry:

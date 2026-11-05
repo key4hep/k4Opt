@@ -101,6 +101,12 @@ def test_a_key_the_job_does_not_set_is_refused_with_those_it_resembles(
     bad = job(cld, **wiring, **{"NoSuchAlg.Parameters[x]": 2.0})
     said = dry_run(workdir=tmp_path / "c", **bad, **common)
     assert said is not None and "the job has no component NoSuchAlg" in said
+    bad = job(cld, **wiring, **{"MyDDMarlinPandora_10ns.ParameterMap[ECalMipThreshold]": 2.0})
+    said = dry_run(workdir=tmp_path / "d", **bad, **common)
+    assert said is not None and "has no map property ParameterMap" in said and "Parameters" in said
+    bad = job(cld, **wiring, **{"MyDDMarlinPandora_10ns.OutputLevel[x]": 2.0})
+    said = dry_run(workdir=tmp_path / "e", **bad, **common)
+    assert said is not None and "has no map property OutputLevel" in said
 
 
 def test_a_key_of_a_map_reaches_the_job_and_leaves_the_others_as_it_set_them(

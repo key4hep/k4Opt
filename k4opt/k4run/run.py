@@ -137,6 +137,7 @@ def _run_files(files: Sequence[Path], directory: Path | None) -> list[str]:
 
 _SET_KEY = """\
 # the keys of map properties the stage sets; a key the job does not set would be ignored
+from collections.abc import MutableMapping
 from difflib import get_close_matches
 
 from Gaudi.Configuration import allConfigurables
@@ -146,12 +147,22 @@ def _set(component, name, key, values):
     if component not in allConfigurables:
         close = get_close_matches(component, list(allConfigurables), 3)
         raise SystemExit(f"k4opt: the job has no component {component}; close: {close}")
-    held = getattr(allConfigurables[component], name)
+    settings = allConfigurables[component]
+    held = getattr(settings, name, None)
+    if not isinstance(held, MutableMapping):
+        maps = [p for p, v in settings.getProperties().items() if isinstance(v, MutableMapping)]
+        close = get_close_matches(name, maps, 3)
+        raise SystemExit(f"k4opt: {component} has no map property {name}; close: {close}")
     if key not in held:
         close = get_close_matches(key, list(held), 3)
         raise SystemExit(f"k4opt: {component}.{name} has no key {key}; close: {close}")
     old = held[key]
-    held[key] = values if isinstance(old, (list, tuple)) else type(old)(values[0])
+    if not isinstance(old, (list, tuple)) or not all(isinstance(item, str) for item in old):
+        raise SystemExit(
+            f"k4opt: {component}.{name}[{key}] holds {old!r}; only a key that holds a list of "
+            "texts, as those of a Marlin processor do, can be set"
+        )
+    held[key] = values
 
 
 """

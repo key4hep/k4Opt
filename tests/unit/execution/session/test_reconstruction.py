@@ -13,6 +13,7 @@ import yaml
 
 from k4opt.evaluation import EvaluationContractError, edm4hep
 from k4opt.execution import EvaluationSession, ProvenanceError, Rejected
+from k4opt.k4run import properties
 from k4opt.record import SUMMARY_NAME
 from tests.support import simulation, stack
 from tests.support.evaluators import implementations, reco_cells
@@ -261,6 +262,37 @@ def test_a_candidate_whose_value_the_job_does_not_take_is_rejected_before_anythi
     assert not isinstance(outcome, Rejected) and outcome.candidate.status == "valid"
     record = json.loads((tmp_path / "b" / SUMMARY_NAME).read_text())
     assert "--cms=240" in record["samples"]["gamma"]["stages"]["reconstruction"]["argv"]
+
+
+def test_a_parameter_reaches_a_key_of_a_map_and_the_record_says_what_it_varied(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reco_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    key = "Pandora.Parameters[Cut]"
+    doc = yaml.safe_load(reco_file.read_text())
+    doc["parameters"]["cut"] = {
+        "type": "continuous",
+        "bounds": [0.1, 5.0],
+        "targets": {"reconstruction": key},
+    }
+    reco_file.write_text(yaml.safe_dump(doc))
+    install_k4run(monkeypatch)
+    with EvaluationSession.open(reco_file, implementations(reco_cells())) as session:
+        for name, cut in (("a", 0.5), ("b", 2.0)):
+            outcome = session.evaluate({RADIUS: 450.0, "cut": cut}, tmp_path / name)
+            assert not isinstance(outcome, Rejected) and outcome.candidate.status == "valid"
+    assert len(fake.calls) == 1  # the threshold does not reach the simulation, which is reused
+    for name, cut in (("a", 0.5), ("b", 2.0)):
+        record = json.loads((tmp_path / name / SUMMARY_NAME).read_text())
+        stage = record["samples"]["gamma"]["stages"]["reconstruction"]
+        assert stage["definition"][key] == cut
+        assert stage["varies"] == ["cut", RADIUS]  # in problem order: the document's is sorted
+        assert record["samples"]["gamma"]["stages"]["simulation"]["varies"] == [RADIUS]
+        assert not any("Cut" in argument for argument in stage["argv"])
+        written = (tmp_path / name / stage["logs"]["options"]).read_text()
+        assert f"_set('Pandora', 'Parameters', 'Cut', [{str(cut)!r}])" in written
+        assert properties((tmp_path / name / stage["logs"]["joboptions"]).read_text())[
+            "Pandora.Parameters"
+        ] == {"Cut": [str(cut)]}
 
 
 def test_the_data_a_job_reads_is_passed_and_identified_and_a_change_is_caught(
