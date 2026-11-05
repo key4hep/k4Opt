@@ -154,8 +154,8 @@ def _identical(
         stages = (tuple(sample.stages.items()), tuple(set_by))
         if stages in first:
             warnings[
-                f"samples {first[stages]} and {name} have identical stages; each is simulated "
-                "separately"
+                f"samples {first[stages]} and {name} have identical stages: they are simulated "
+                "once and measure the same events"
             ] = None
         else:
             first[stages] = name
@@ -348,6 +348,13 @@ def _bind_problem(
         references=spec.references,
         parameters=spec.parameters,
     )
+    runs = {task.id for task in plan.of(Kind.STAGE) if task.given is None}
+    contexts = {
+        sample: context.running(
+            [name for name in context.stages if stage_task(name, sample) in runs]
+        )
+        for sample, context in contexts.items()
+    }
     return _Binding(
         contexts,
         evaluators,

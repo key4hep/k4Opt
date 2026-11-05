@@ -173,8 +173,10 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
        and `message`; the particle gun, or the size and SHA-256 of a given or supplied file; the
        exact `ddsim` command and exit code, the files its options name, with their hashes; the
        events found (`events_read`), its `directory`, its `outputs` (the EDM4hep file of a
-       simulation that is `done`: its reference `gamma_10gev/simulation#events`, path and size,
-       never hashed, so `sha256` is `null`) and `logs` (`stdout`, `stderr`, `command`), the tasks
+       simulation that is `done`: its reference `gamma_10gev/simulation#events`, path, size and
+       SHA-256, hashed when the stage ended), its `signature` (what it was made from,
+       [docs/evaluation.md](evaluation.md#stage-signatures)) and `logs` (`stdout`, `stderr`,
+       `command`), the tasks
        it `reads` (labeled `gamma_10gev/generation`, and `geometry`) and those it was
        `blocked_by`, and the time spent on it (`null` if it did not run);
      - `evaluations`, each binding that measures the sample by its name, in problem order: the
@@ -198,8 +200,14 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git
      checkout (`null` when it is installed rather than checked out), `KEY4HEP_STACK` and `K4GEO`
-     (those the session opened with, checked before each candidate) and the `ddsim` and `k4run`
-     that were started; the pin and the stack are not compared).
+     (those the session opened with, checked before each candidate), `programs` (the `ddsim`
+     and `k4run` the stages that run ran, and no other: the executable the session found on
+     `PATH` when it opened, where its links lead, with its size and SHA-256, and the
+     `interpreter` its `#!` line names as `PATH` found it, `null` for a program that is no
+     script; a program `null` was not found, and its stages fail; one found whose file or
+     interpreter cannot be read keeps the session from opening) and
+     `search` (the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`,
+     which decide what those programs load); the pin and the stack are not compared).
 
 The command prints the candidate's values, its status, each evaluation's status and metrics with their
 uncertainty (a binding named with `as` beside its evaluator, and the sample it measures:
@@ -310,7 +318,8 @@ before creating anything, and `CandidateRejected` for a candidate an evaluator r
 problem or supplied) that changes during a session (other bytes under the same path, or removed)
 stops the next candidate with a `RunError` before anything is created; `verify_inputs()` checks
 it on its own. So does a change of what the geometry's external references read, of
-`KEY4HEP_STACK` or `K4GEO`, or of k4opt's files: the candidates of a session run in the
+`KEY4HEP_STACK` or `K4GEO`, of a program the stages run (the executable the session found), or
+of k4opt's files: the candidates of a session run in the
 environment it opened in, which every summary of the session records. A change while a candidate
 runs raises the `RunError` after its stages and evaluators ran, and its directory keeps their
 files but no `summary.json`: the record could not say which files or code it was made with. A
@@ -323,8 +332,10 @@ the session evaluates with: the problem's path and definition, the identities of
 stages read, the `implementations` (the version, stage, source and declared metrics of each
 evaluator the problem binds, by name, once however often it is bound), the compact file,
 source root and fingerprint of the unmodified geometry and what its external references read,
-`KEY4HEP_STACK` and `K4GEO`, and k4opt's version, code SHA-256 and checkout. The environment
-and k4opt's identity are taken when the session opens, before anything runs, and every summary
+`KEY4HEP_STACK` and `K4GEO`, the `programs` and `search` variables, and k4opt's version, code
+SHA-256 and checkout. Each program a stage runs is found on `PATH` once, when the session opens,
+and every candidate runs that executable, whatever `PATH` says later. The environment, the
+programs and k4opt's identity are taken when the session opens, before anything runs, and every summary
 of the session records the same k4opt identity, so an edit to the k4opt checkout during a long
 run is not recorded as the code that ran (a hash cannot prove which code Python executed, only
 narrow the gap). k4opt's code is hashed once per process, since Python runs the modules it
@@ -424,7 +435,11 @@ with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # sto
   each needs its memory once (its threads share it). Add the session's own process. Measure one
   candidate first, then choose N for the memory as much as for the processors, with some room,
   since it is an estimate; a shared machine (lxplus) is not yours alone. k4opt sets no memory
-  limit of its own.
+  limit of its own (a limit of address space breaks Geant4 and ROOT, which reserve far more
+  than they use), but warns when N programs of the stack (ddsim, k4run) at about 2 GiB each
+  (CLD's peak at 1.3 to 1.6 GiB) would not fit in the machine's memory, at most its cgroup's
+  `memory.max`. A program the kernel kills for want of memory fails its stage with a message
+  that names the signal ("was killed by SIGKILL (out of memory? ...)").
 - **Records** are the same whatever runs the tasks: each task gets the same configuration
   (geometry, stage options and seeds, requests), each record holds its results in plan order
   with the same statuses, blocking and diagnostics, and deterministic evaluators measure the
@@ -474,6 +489,38 @@ whole candidates (each a session with its own workers on one batch node), withou
 problem, the evaluators or the records. Nothing of that exists yet. It would still need the
 files moved to where the tasks run and back, the stack and the evaluators' code provided there
 and checked, credentials on the batch nodes, and its own memory and processor requests.
+
+### Stages made once: reuse
+
+A stage is not run again when a stage with its
+[signature](evaluation.md#stage-signatures) made its output already: the same definition (events,
+seed, options as the candidate sets them), the same inputs (the geometry's content and the stages
+it reads), the same files, programs, environment and k4opt code. The sample and the candidate
+play no part, so the candidates of a study that vary only the reconstruction, or an evaluator's
+setting, simulate once, and two samples defined alike simulate once. Every simulation has a
+seed (k4opt requires one), so every candidate simulates the same events anyway, and ddsim makes
+the same events from the same seed:
+reusing an output changes nothing a candidate is evaluated with, only the time it takes.
+
+What a session reuses:
+
+- the outputs of its own stages that ended `done`, as soon as they ended; a stage whose
+  signature is still running for another candidate (or sample) waits for it, holding its slot,
+  then reuses its output, or runs itself if it did not succeed;
+- the outputs of the stages the records it is given hold: `session.reuse(directories)` (a run
+  directory, or a directory of runs such as a study), `k4opt evaluate --reuse DIR` and
+  `k4opt optimize --reuse DIR`; a resumed study reuses its own trials' stages.
+
+An output is reused only if its record holds its signature, whose SHA-256 is that of its
+document, and its SHA-256; it is hashed again before each use if its stat changed, and one that
+changed or went is not reused (the stage runs). A record is written only once every task of its
+candidate ended, so nothing half written is ever reused. The reusing stage's record says
+`reused`: the record and stage that made the output, its run directory, its path there, its size
+and SHA-256, and has the same `signature`, but no `outputs` or `logs` of its own (the record that
+made it has them). Nothing is copied: the output stays in the run that made it, and the tasks
+that read it read it there, watched like a file of the candidate until it ends. A reused output
+that is later deleted leaves the records that reused it as they are: they still say, by
+signature and SHA-256, what they read.
 
 ## What ends a candidate, and what stops a session
 

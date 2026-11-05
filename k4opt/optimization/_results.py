@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
@@ -42,6 +41,7 @@ from k4opt.problem import (
 from k4opt.problem.candidate import validate_value
 from k4opt.record import SUMMARY_NAME, Assessment, Limit, ObjectiveValue, RecordError
 from k4opt.record.assess import judge_limit
+from k4opt.record.read import seconds
 
 RESULTS_FORMAT = "k4opt.study-results/1"
 OUTCOMES = (
@@ -312,11 +312,11 @@ def record_of(
         assessment = Assessment.from_summary(spec, summary)
     except RecordError as exc:
         raise OptimizationError(f"{where}: {exc}") from None
-    timed = {}
-    for sample, part in summary["samples"].items():  # checked by from_summary
-        for stage, entry in part["stages"].items():
-            at = f"{where}: samples.{sample}.stages.{stage}.elapsed_seconds"
-            timed[f"{sample}/{stage}"] = _seconds(entry.get("elapsed_seconds"), at)
+    timed = {  # every time was checked by from_summary
+        f"{sample}/{stage}": seconds(entry.get("elapsed_seconds"), stage)
+        for sample, part in summary["samples"].items()
+        for stage, entry in part["stages"].items()
+    }
     references = [parameter.name for parameter in spec.parameters]
     result = TrialResult(
         number=number,
@@ -326,7 +326,7 @@ def record_of(
         record=summary["id"],
         sha256=hashlib.sha256(data).hexdigest(),
         message=summary.get("message"),
-        elapsed_seconds=_seconds(summary.get("elapsed_seconds"), f"{where}: elapsed_seconds"),
+        elapsed_seconds=seconds(summary.get("elapsed_seconds"), "elapsed_seconds"),
         stage_seconds={stage: seconds for stage, seconds in timed.items() if seconds is not None},
         diagnostics=summary["diagnostics"],  # checked by from_summary
     )
@@ -373,17 +373,12 @@ def recorded(
 
 
 def _seconds(value: object, where: str) -> float | None:
-    """A time a record holds: ``None``, or a finite number of seconds, zero or more."""
-    if value is None:
-        return None
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or value < 0
-    ):
-        raise OptimizationError(f"{where} is {value!r}, not a time in seconds")
-    return value
+    """A time the JSON form of a study holds, checked as a record's
+    (:func:`k4opt.record.read.seconds`)."""
+    try:
+        return seconds(value, where)
+    except RecordError as exc:
+        raise OptimizationError(str(exc)) from None
 
 
 def pareto_front(trials: Sequence[TrialResult], spec: ProblemSpec) -> tuple[int, ...]:

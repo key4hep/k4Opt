@@ -227,8 +227,9 @@ Each `RoleInput` exposes:
   its result `provenance`.
 
 A `Role(stage="simulation")` takes a stage file directly. Its input has
-`artifacts["simulation"]`, with reference `sample/simulation#events`; generated EDM4hep files
-are not hashed. Files supplied by the caller or named in the problem carry the input hash.
+`artifacts["simulation"]`, with reference `sample/simulation#events` and its SHA-256: a stage's
+output is hashed when the stage ends, and files supplied by the caller or named in the problem
+carry the input hash.
 There are no collection helpers for stage roles yet; read these files with podio yourself.
 
 Session opening checks wiring, cardinality, settings and declarations before creating files.
@@ -343,10 +344,12 @@ once, and recorded as an `Artifact`: its reference `<task>#<name>`
 (`gamma_10gev/calo.shower_shape#histogram`), which stays the same wherever the run directory is
 moved, its path, its size and its SHA-256.
 
-The output of a stage that ran is recorded the same way (`gamma_10gev/simulation#events`), but is
-never hashed: an EDM4hep file can be gigabytes, so its `sha256` is `null`. A record claims a
-content identity only where it computed one; nothing can later prove that the bytes of an
-unhashed output are unchanged. While the candidate runs, each file a task made is watched by its
+The output of a stage that ran is recorded the same way (`gamma_10gev/simulation#events`), hashed
+once, when the stage ends: a fraction of a second for the EDM4hep file of a few hundred CLD events
+(47 MiB), against minutes of simulation, so a record can later prove that an output is the file
+the stage made. Each stage that ran also records its *signature*: what it was made from, as one
+document, and that document's SHA-256 (see [Stage signatures](#stage-signatures)). While the
+candidate runs, each file a task made is watched by its
 size, times and inode, kept in memory and never recorded: a task whose input file changed after
 it was made fails without running, one whose input changes while it runs fails with what it
 returned kept as diagnostics, and if any file a task made changed by the end of the candidate,
@@ -485,13 +488,41 @@ results: what ran (the
 command, exit code and time limit), what was given or supplied, the files a ddsim option names (with their
 hashes), the events found, its status (`done`, `failed`, `blocked`) and message, the tasks it
 reads and those that blocked it, its `directory`, its `outputs` (the main output of a stage that
-ran and is `done`, [unhashed](#artifacts-and-the-files-of-a-run)) and `logs`, and the time spent
-on it. An
+ran and is `done`, [hashed](#artifacts-and-the-files-of-a-run)), its
+[`signature`](#stage-signatures) and `logs`, and the time spent on it. An
 evaluator's result holds only what it returned, so its artifact and provenance names cannot
 clash with the stages'. The stages take their conditions from their sample, never from an
 evaluator, its time limit included: a stage that runs a program (ddsim) longer than its
 `timeout` (or the problem's) has the program killed and fails, its logs kept. Stages are internal for now: what each stage type is in
 `k4opt.problem.stages`, how one runs in `k4opt.execution._stages`.
+
+### Stage signatures
+
+Each stage that ran records its `signature`: `{"sha256": …, "document": …}`, the document
+saying what the stage was made from and the SHA-256 of that document written as canonical JSON
+(`k4opt.record.signature`):
+
+| Key | What |
+| --- | --- |
+| `stage` | the stage type (`simulation`) |
+| `definition` | the stage as its candidate configures it: executor, `events`, `seed`, every option with the values parameters set, a path as the problem writes it (relative to the problem file, or through a variable); not its `timeout` |
+| `reads` | what it read, by name: `geometry` as its fingerprint and the content of what its external references read (no paths); a stage that ran as its signature's SHA-256; a stage given as a file as that file's size and SHA-256 |
+| `files` | each file the problem names for it (`physics.pdgfile`, a reconstruction's job and data files), by key, as its size and SHA-256 |
+| `program` | the executable it ran (`ddsim`, `k4run`): its size and SHA-256, not its path (the record's `environment.observed.programs` has that), and the `interpreter` its `#!` line names as `PATH` found it (path, size and SHA-256; `null` for a program that is no script); `null` for a stage that runs none |
+| `environment` | `KEY4HEP_STACK` and the SHA-256 of the search variables `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`; not `PATH`, which differs between shells that run the same programs (an editor's terminal, a batch job): of it, only the interpreter matters, signed with the program |
+| `k4opt` | the SHA-256 of k4opt's code |
+
+What does not change what a stage makes is left out: the sample it belongs to, the candidate, its
+time limit, the workers, where its files and its program are. The definition names the files as
+the problem writes them, so a problem moved with its files, or a variable that points elsewhere,
+keeps the signature; the same file named otherwise (another relative path, an absolute one) makes
+another signature, and the stage runs again: a path decides where a reconstruction's job runs
+from, which its scripts may look at. Two stages with equal signatures were made from the
+same things, so they made the same events: ddsim makes the same events from the same seed
+(on one thread in the same order, on several in any order; an integration test checks it on
+CLD). A record is read back only if each stage's signature is what the record itself says the stage was
+made from, and its SHA-256 that of its document. A stage given as a file, and one that never ran
+(`blocked`), has no signature.
 
 ## Loading an evaluator
 
@@ -639,7 +670,8 @@ own process), which is why it must stay an inexpensive check of the request.
 record of the stages, are **framework-observed** (the executed `ddsim` command and exit code,
 the hashes of given files, the events found). `k4opt evaluate` also records the k4opt version
 with the SHA-256 of k4opt's own Python files and its git checkout, the active stack
-(`KEY4HEP_STACK`, `K4GEO`, the `ddsim` that ran) and each evaluator's source identity as
+(`KEY4HEP_STACK`, `K4GEO`, the `ddsim` and `k4run` that ran, with their SHA-256, and the
+variables that decide what they load) and each evaluator's source identity as
 described above. That identifies the evaluator's own code, not the modules it imports;
 `name` and `version` remain labels. The problem's `environment.key4hep` is a declared pin and is
 not compared with the stack that ran.

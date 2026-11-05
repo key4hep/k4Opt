@@ -167,7 +167,7 @@ def test_summary_is_written_and_truthful(
     # the stages, recorded once, apart from the evaluators that read them
     assert list(on_disk["samples"]["gamma"]["stages"]) == ["generation", "simulation"]
     simulated = on_disk["samples"]["gamma"]["stages"]["simulation"]
-    assert simulated["argv"][0] == "/stack/bin/ddsim"
+    assert simulated["argv"][0] == simulation.DDSIM
     assert (simulated["returncode"], simulated["events_read"]) == (0, 3)
     # each a task: how it ended, and the tasks it read
     assert (simulated["status"], simulated["message"]) == ("done", None)
@@ -192,8 +192,8 @@ def test_summary_is_written_and_truthful(
     seconds = [stage["elapsed_seconds"] for stage in on_disk["samples"]["gamma"]["stages"].values()]
     seconds += [on_disk["geometry"]["elapsed_seconds"], evaluator["elapsed_seconds"]]
     assert min(seconds) >= 0 and sum(seconds) <= on_disk["elapsed_seconds"]
-    # what the simulation made in its directory: its output, by reference, never hashed, and
-    # its logs
+    # what the simulation made in its directory: its output, by reference, hashed when the stage
+    # ended, and its logs
     assert simulated["directory"] == "samples/gamma/simulation"
     events = tmp_path / "a" / "samples" / "gamma" / "simulation" / "events.edm4hep.root"
     assert simulated["outputs"] == {
@@ -201,7 +201,7 @@ def test_summary_is_written_and_truthful(
             "ref": "gamma/simulation#events",
             "path": "samples/gamma/simulation/events.edm4hep.root",
             "bytes": events.stat().st_size,
-            "sha256": None,
+            "sha256": hashlib.sha256(events.read_bytes()).hexdigest(),
         }
     }
     assert list(simulated["logs"]) == ["stdout", "stderr", "command"]
@@ -213,7 +213,17 @@ def test_summary_is_written_and_truthful(
         on_disk["samples"]["gamma"]["stages"]["generation"]["particle_gun"]["particle"] == "gamma"
     )
     assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
-    assert on_disk["environment"]["observed"]["ddsim"] == "/stack/bin/ddsim"
+    # the program the fake ddsim stands for, by content and the interpreter its #! line names
+    ddsim = on_disk["environment"]["observed"]["programs"]["ddsim"]
+    assert ddsim["path"] == simulation.DDSIM and ddsim["interpreter"]["path"] == shutil.which(
+        "python3"
+    )
+    assert set(on_disk["environment"]["observed"]["search"]) == {
+        "PATH",
+        "PYTHONPATH",
+        "LD_LIBRARY_PATH",
+        "ROOT_INCLUDE_PATH",
+    }
     assert on_disk["environment"]["observed"]["k4opt"] == __version__
     # what the version only labels: the content of the code that ran
     assert on_disk["environment"]["observed"]["k4opt_source"] == code_identity()
@@ -1020,6 +1030,23 @@ def test_a_session_runs_its_candidates_in_the_environment_it_opened_in(
     observed = outcome.summary["environment"]["observed"]  # type: ignore[index]
     identity = session.identity()["environment"]
     assert {k: observed[k] for k in ("KEY4HEP_STACK", "K4GEO")} == identity
+    monkeypatch.setenv(name, "/somewhere/else")
+    with pytest.raises(RunError, match=rf"{name} changed after the session opened"):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and len(fake.calls) == 1
+
+
+@pytest.mark.parametrize("name", ["PYTHONPATH", "LD_LIBRARY_PATH", "ROOT_INCLUDE_PATH"])
+def test_a_session_runs_its_programs_with_the_search_variables_it_opened_with(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    # what the records and the stages' signatures say the programs loaded with
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     monkeypatch.setenv(name, "/somewhere/else")
     with pytest.raises(RunError, match=rf"{name} changed after the session opened"):
         session.evaluate({RADIUS: 500.0}, tmp_path / "b")

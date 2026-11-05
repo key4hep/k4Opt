@@ -66,6 +66,7 @@ from k4opt.problem.stages import (
     stage_type,
     writes_files,
 )
+from k4opt.program import locate
 
 _VARIABLE = re.compile(
     r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
@@ -118,7 +119,13 @@ class StageContext:
     environment variable a path of a stage names (a reconstruction's ``$CLDCONFIG``), and the
     home directory each ``~`` or ``~user`` a path starts with stands for (by that prefix), taken
     when the context was made, the session's opening: every candidate reads the files the session
-    identified, wherever the variable or ``HOME`` points later.
+    identified, wherever the variable or ``HOME`` points later. ``programs`` holds, by name, the
+    executable each program a stage of it that runs (``ddsim``, ``k4run``) was found at then
+    (:meth:`running`), where its links lead (:func:`k4opt.program.locate`), or ``None`` if none
+    was found: every candidate runs that one, whatever ``PATH`` finds later, and a stage whose
+    program was not found then fails (:meth:`unfound`), since its record could not say which
+    program ran. A context made without a session (no ``programs``) looks for a program on
+    ``PATH`` when it runs.
 
     ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
     program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's
@@ -132,6 +139,7 @@ class StageContext:
     timeout: float | None = None
     sample: str | None = None
     variables: Mapping[str, str] = field(default_factory=dict)
+    programs: Mapping[str, str | None] = field(default_factory=dict)
     started: Callable[[int], None] | None = field(default=None, compare=False, repr=False)
     die_with_parent: bool = field(default=False, compare=False, repr=False)
 
@@ -147,6 +155,32 @@ class StageContext:
             if prefix.startswith("~") and os.path.expanduser(prefix) != prefix:
                 variables[prefix] = os.path.expanduser(prefix)
         return cls(stages, spec.pending(sample), directory, sample=sample, variables=variables)
+
+    def running(self, stages: Collection[str]) -> StageContext:
+        """The same conditions, with the programs the ``stages`` that run (of those it has) found
+        on ``PATH`` now (:attr:`programs`): only those, so that a program no stage runs plays no
+        part in what a session identifies."""
+        named = sorted(
+            {program for name in stages if (program := _program(self, name)) is not None}
+        )
+        programs = {name: None if (found := locate(name)) is None else str(found) for name in named}
+        return replace(self, programs=programs)
+
+    def executable(self, program: str) -> Path | None:
+        """The executable of ``program`` the session found (:attr:`programs`), ``None`` if it
+        found none."""
+        found = self.programs.get(program)
+        return None if found is None else Path(found)
+
+    def unfound(self, program: str | None) -> str | None:
+        """Why a stage that runs ``program`` cannot run: the session looked for it when it
+        opened and found none; ``None`` otherwise."""
+        if program is None or program not in self.programs or self.programs[program] is not None:
+            return None
+        return (
+            f"{program} was not found on PATH when the session opened (is the Key4hep "
+            "environment set up?); a session runs only the programs it found then"
+        )
 
     def configured(self, stages: Mapping[str, Stage]) -> StageContext:
         """The same conditions with the ``stages`` of one candidate, complete."""
@@ -306,6 +340,7 @@ def _run_simulation(
         timeout=context.timeout,
         started=context.started,
         die_with_parent=context.die_with_parent,
+        executable=context.executable("ddsim"),
     )
     # it ran in workdir, the stage's own directory, which the record names relative to the run
     provenance: dict[str, Json] = {
@@ -449,6 +484,7 @@ def _run_reconstruction(
         timeout=context.timeout,
         started=context.started,
         die_with_parent=context.die_with_parent,
+        executable=context.executable("k4run"),
     )
     # it ran in workdir/job, a copy of the directory; the record names workdir relative to the run
     provenance: dict[str, Json] = {
@@ -559,6 +595,8 @@ class DryRuns:
         key = json.dumps(
             [[str(file) for file in files], str(directory), thaw(options)], sort_keys=True
         )
+        if (unfound := context.unfound("k4run")) is not None:
+            return unfound
         if key not in self._said:
             if self._scratch is None:
                 self._scratch = Path(tempfile.mkdtemp(prefix="k4opt-dry-run-"))
@@ -571,6 +609,7 @@ class DryRuns:
                 options=options,
                 data=_data(context, stage),
                 placeholder=self._scratch / "placeholder.edm4hep.root",
+                executable=context.executable("k4run"),
             )
             shutil.rmtree(workdir, ignore_errors=True)  # a copy of the job: only its answer counts
         return self._said[key]
@@ -811,6 +850,8 @@ def make_stage(
             outcome = StageOutcome(
                 provenance={"file": str(path)}, error=f"cannot read {path}: {exc}"
             )
+    elif (unfound := context.unfound(_program(context, stage))) is not None:
+        outcome = StageOutcome(error=unfound)  # not looked for again: no record would name it
     else:
         outcome = run_stage(context, stage, inputs=inputs, workdir=workdir)
     main = outcome.outputs.get(output)
@@ -820,3 +861,11 @@ def make_stage(
     provenance = {**outcome.provenance, **observed}
     outcome = replace(outcome, provenance=provenance, error=error)
     return outcome, None if error is not None else main
+
+
+def _program(context: StageContext, stage: str) -> str | None:
+    """The program of the stack the stage ``stage`` of ``context`` runs (``ddsim``), if any."""
+    found = context.stages.get(stage)
+    if found is None or found.executor is None:
+        return None
+    return executors(stage)[found.executor].program

@@ -145,6 +145,11 @@ def test_parsing_never_runs_a_subprocess(
             "samples.gamma.simulation: missing required key 'events': how many events ddsim runs",
         ),
         (
+            lambda s: s["simulation"].pop("seed"),
+            "samples.gamma.simulation: missing required key 'seed': the seed of ddsim's random "
+            "numbers, which with the rest of the stage decides its events",
+        ),
+        (
             lambda s: s["simulation"].update(events=0),
             "samples.gamma.simulation.events: must be >= 1",
         ),
@@ -554,12 +559,12 @@ def test_a_sample_takes_a_shared_stage_it_does_not_define(doc: dict[str, Any]) -
 
 def test_a_stage_naming_executor_or_file_replaces_the_shared_one(doc: dict[str, Any]) -> None:
     doc = shared(doc)
-    doc["samples"]["pion"]["simulation"] = {"executor": "ddsim", "events": 10}
+    doc["samples"]["pion"]["simulation"] = {"executor": "ddsim", "events": 10, "seed": 3}
     doc["samples"]["pion"]["generation"] = {"file": "events/pion.hepmc"}
     problem = parse_problem(doc)
     pion = problem.samples["pion"].stages
     assert pion["simulation"].options == {}  # physics.list is not taken from stages.simulation
-    assert (pion["simulation"].events, pion["simulation"].seed) == (10, None)
+    assert (pion["simulation"].events, pion["simulation"].seed) == (10, 3)
     assert pion["generation"].file == "events/pion.hepmc"
     assert problem.samples["gamma"].stages["simulation"].options == {"physics.list": "FTFP_BERT"}
 
@@ -592,7 +597,7 @@ def takes_shared_simulation(doc: dict[str, Any]) -> None:
 def replaces_simulation(doc: dict[str, Any]) -> None:
     """Every sample of ``doc`` defines a simulation of its own."""
     for sample in doc["samples"].values():
-        sample["simulation"] = {"executor": "ddsim", "events": 5}
+        sample["simulation"] = {"executor": "ddsim", "events": 5, "seed": 5}
 
 
 def has_no_generation(doc: dict[str, Any]) -> None:
@@ -763,6 +768,7 @@ def test_a_shared_stage_a_sample_does_not_use_says_where_it_comes_from(
 ) -> None:
     doc = shared(doc)
     # zh reads an event file; nothing simulates it, yet it takes stages.simulation
+    doc["stages"]["simulation"]["seed"] = 1
     doc["samples"]["zh"] = {"generation": {"file": "events/zh.hepmc"}}
     doc["evaluators"].append(
         {"name": "test.file_size", "version": "1", "stage": "generation", "samples": ["zh"]}

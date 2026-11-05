@@ -89,6 +89,7 @@ samples:
     simulation:
       executor: ddsim
       events: 500
+      seed: 1
 ```
 
 A relative path is read from the directory of the problem file. `ddsim` receives it as
@@ -131,7 +132,10 @@ What an evaluation defines cannot be changed by an option: `compactFile`, `outpu
 also as unambiguous abbreviations (`ddsim` accepts them). These are refused too:
 `steeringFile` (ddsim executes it as Python, which can change anything k4opt sets),
 `skipNEvents` (it changes which events are simulated), `dumpParameter` and `dumpSteeringFile`
-(ddsim exits without simulating) and `gdb`. A file named by `physics.pdgfile` is read from the
+(ddsim exits without simulating) and `gdb`, and so is a Geant4 UI command in a `ui.*` option
+that reads a macro file or runs a program (`/control/execute`, `/control/loop`,
+`/control/foreach`, `/control/macroPath`, `/control/shell`): k4opt could not say what the
+simulation ran; write the commands themselves. A file named by `physics.pdgfile` is read from the
 problem's directory if relative, passed to ddsim as an absolute path and recorded with its size
 and SHA-256.
 

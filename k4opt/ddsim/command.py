@@ -75,6 +75,9 @@ _REFUSED = {
     "dumpSteeringFile": "ddsim prints a steering file and exits without simulating",
     "gdb": "it runs ddsim under a debugger",
 }
+# Geant4 UI commands (in the ui.commands* options) that read a file k4opt cannot identify (a
+# macro) or run a program: refused as the steering file is
+_UNIDENTIFIED_COMMANDS = re.compile(r"/control/(execute|loop|foreach|macroPath|shell)\b")
 # options whose value is a file ddsim reads; the caller passes an absolute path and records it
 FILE_OPTIONS = ("physics.pdgfile",)
 
@@ -309,6 +312,18 @@ def _is_flag(key: str) -> bool:
     return name.startswith(("enable", "force")) if dot else key in _FLAGS
 
 
+def _check_commands(key: str, text: str, path: str) -> None:
+    """Refuse a Geant4 UI command in a ``ui.*`` option that reads a macro file or runs a shell:
+    the record could not say what the simulation ran."""
+    found = _UNIDENTIFIED_COMMANDS.search(text) if key.startswith("ui.") else None
+    if found:
+        raise _fail(
+            path,
+            f"{found[0]} is not supported: Geant4 reads a macro file k4opt cannot identify (or "
+            "runs a program); write the commands themselves",
+        )
+
+
 def _option_text(value: Json, path: str) -> str:
     """One value as ddsim reads it: text unchanged, a number as written, a boolean as
     ``True``/``False`` (ddsim's ``ConfigHelper.makeBool``)."""
@@ -357,6 +372,8 @@ def option_args(options: Mapping[str, Json]) -> tuple[str, ...]:
             if not values:
                 raise _fail(path, "must not be an empty list")
             texts = [_option_text(item, f"{path}[{i}]") for i, item in enumerate(values)]
+            for i, text in enumerate(texts):
+                _check_commands(key, text, f"{path}[{i}]")
             if key in _REPEATED:
                 args.extend(f"--{key}={text}" for text in texts)
             else:
@@ -374,7 +391,9 @@ def option_args(options: Mapping[str, Json]) -> tuple[str, ...]:
         else:
             if key == THREADS:
                 _threads(value, path)
-            args.append(f"--{key}={_option_text(value, path)}")
+            text = _option_text(value, path)
+            _check_commands(key, text, path)
+            args.append(f"--{key}={text}")
     return tuple(args)
 
 

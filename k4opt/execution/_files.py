@@ -5,9 +5,9 @@ it, and told apart from a rewritten one, on the filesystem that took it, by its 
 size, times and inode (:data:`Stat`). The stats are machine-specific and never recorded.
 
 The files a task makes in its own directory are :class:`Made`: what the record says of each (an
-:class:`~k4opt.evaluation.Artifact`, hashed for an evaluator's artifact, never for the possibly
-huge output of a stage), and the file's ``stat`` when it was made. A file whose stat changed is
-no longer what the record says (:meth:`Made.changed`), so the tasks that read it check it
+:class:`~k4opt.evaluation.Artifact`, hashed once, when the task ends: an evaluator's artifact
+and the output of a stage alike), and the file's ``stat`` when it was made. A file whose stat
+changed is no longer what the record says (:meth:`Made.changed`), so the tasks that read it check it
 before and after they run, and the candidate checks all of them at its end. The files of the
 geometry, which the record identifies together by their fingerprint and every simulation of
 every sample reads, are watched as one :class:`Tree`. :func:`artifacts` checks and hashes what
@@ -47,11 +47,14 @@ def stat_of(path: Path) -> Stat | None:
     return (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
 
 
-@functools.lru_cache(maxsize=32)
+@functools.cache
 def _sha256(path: str, size: int, mtime_ns: int, ctime_ns: int, inode: int) -> str:
     """SHA-256 of a file. The other arguments only key the cache, so the same file is read once
-    per run of candidates but a changed one is hashed again: writing to a file or replacing it
-    changes its ctime or inode even if the content keeps its size and its mtime is restored.
+    per process however many candidates read it, but a changed one is hashed again: writing to a
+    file or replacing it changes its ctime or inode even if the content keeps its size and its
+    mtime is restored. The cache is not bounded: a session checks every file it identified before
+    each candidate, so a bound smaller than their number would hash each of them every time; an
+    entry is a few hundred bytes per version of a file.
     The kernel stamps ctime with a coarse clock (milliseconds), so a file rewritten within the
     same tick as it was hashed is not told apart; input files are assumed not to change while
     a campaign hashes them."""
@@ -82,6 +85,19 @@ def readable_identity(path: Path) -> dict[str, Json] | None:
         return None
 
 
+def snapshot(path: Path) -> tuple[Stat, dict[str, Json]]:
+    """The stat of the file at ``path`` and its :func:`file_identity` at that stat: one version
+    of it, so that a later equal stat vouches for its hash. Raises :class:`OSError` if it cannot
+    be read, or if it changes while it is hashed (a size and a hash of other versions)."""
+    stat = stat_of(path)
+    if stat is None:
+        raise OSError(f"{path} is no file")
+    identity = file_identity(path)
+    if stat_of(path) != stat:
+        raise OSError(f"{path} changed while it was hashed")
+    return stat, identity
+
+
 @dataclass(frozen=True, slots=True)
 class Made:
     """A file a task made in its own directory: its ``artifact`` as the record names it, and its
@@ -98,10 +114,12 @@ class Made:
         stat = stat_of(path)
         if stat is None or not path.is_file():
             raise OSError(f"{path} is no file")
-        sha256 = file_identity(path)["sha256"] if hashed else None
-        assert sha256 is None or isinstance(sha256, str)
-        if hashed and stat_of(path) != stat:
-            raise OSError(f"{path} changed while it was hashed")
+        sha256: str | None = None
+        if hashed:
+            stat, identity = snapshot(path)
+            digest = identity["sha256"]
+            assert isinstance(digest, str)
+            sha256 = digest
         return cls(Artifact(f"{task.label}#{name}", path, stat[0], sha256), stat)
 
     def changed(self) -> bool:

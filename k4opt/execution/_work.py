@@ -283,9 +283,9 @@ def _stage(
     made: dict[str, Artifact] = {}
     stats: dict[str, Stat] = {}
     if error is None and main is not None and spec.task.given is None:
-        name = stage_output(task.name)  # made in its directory: never hashed
+        name = stage_output(task.name)  # made in its directory: hashed once, now
         try:
-            file = Made.file(task, name, main, hashed=False)
+            file = Made.file(task, name, main, hashed=True)
         except OSError as exc:
             error, main = f"cannot read its output: {exc}", None
         else:

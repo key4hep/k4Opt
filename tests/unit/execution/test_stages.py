@@ -1151,6 +1151,18 @@ def test_an_evaluator_may_read_only_generation(
 # --- hashing an input file once per file version, not once per candidate ---
 
 
+def test_many_files_checked_again_and_again_are_each_hashed_once(tmp_path: Path) -> None:
+    # as a session checks a directory of data before each candidate, in the same order
+    files = [tmp_path / f"{i}.dat" for i in range(100)]
+    for file in files:
+        file.write_bytes(file.name.encode())
+    _sha256.cache_clear()
+    for _ in range(3):
+        for file in files:
+            file_identity(file)
+    assert _sha256.cache_info().misses == 100
+
+
 def test_a_file_is_hashed_once_until_it_changes(tmp_path: Path) -> None:
     hepmc = tmp_path / "zh.hepmc"
     hepmc.write_bytes(b"one")

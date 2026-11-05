@@ -336,8 +336,9 @@ takes only its own keys:
   gun is fired inside ddsim, makes as many events as the simulation asks for and draws from its
   random numbers, so `events` or `seed` under the gun is an error that points to the sample's
   `simulation`.
-- `ddsim`: `events`, the number of events to simulate (required), `seed` (optional; ddsim's own
-  default otherwise), and any other key is a ddsim option named as `ddsim --help` names it,
+- `ddsim`: `events`, the number of events to simulate (required), `seed`, the seed of its
+  random numbers (required: ddsim would draw one of its own, and the stage would make other
+  events each time it ran, which its record could not say), and any other key is a ddsim option named as `ddsim --help` names it,
   such as `physics.list: FTFP_BERT` ([ddsim](ddsim.md#options-simulation)).
 - `k4run`: the job's `options` files (required; one or a list), an optional `directory` the job
   runs from a copy of (the options files are then named relative to it), optional `geometry`
@@ -796,7 +797,7 @@ sample (or of the shared `stages`) or on an entry of `evaluators`, which wins:
 timeout: 1800                      # every stage and evaluation, unless it says otherwise
 samples:
   gamma_10gev:
-    simulation: {executor: ddsim, events: 1000, timeout: 7200}
+    simulation: {executor: ddsim, events: 1000, seed: 42, timeout: 7200}
 evaluators:
   - {name: calo.photon, version: "1", stage: simulation, timeout: 600}
 ```

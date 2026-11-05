@@ -201,7 +201,15 @@ def _stage(where: str, place: _Place, m: Mapping[str, Any]) -> Stage:
         if "events" not in m:
             raise _fail(path, f"missing required key 'events': how many events {executor} runs")
         events = _integer(m["events"], place.key("events"), minimum=1)
-        seed = _integer(m["seed"], place.key("seed")) if "seed" in m else None
+        # without one, ddsim draws its own: the stage would not be defined by what the record
+        # holds, a rerun would make other events, and one reused for it would not be its own
+        if "seed" not in m:
+            raise _fail(
+                path,
+                f"missing required key 'seed': the seed of {executor}'s random numbers, which "
+                "with the rest of the stage decides its events",
+            )
+        seed = _integer(m["seed"], place.key("seed"))
     elif spec.inside is None:  # it processes every event of the stage it reads
         for key in ("events", "seed"):
             if key in m:

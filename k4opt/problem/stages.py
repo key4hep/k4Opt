@@ -45,13 +45,16 @@ class Executor:
     without ``events`` that runs in a process of its own processes every event of the stage it
     reads (k4run). ``asks`` says whether k4opt asks the program itself whether it takes the
     options, before anything runs (k4run's dry run): then a required stage whose option a
-    parameter sets is asked for each candidate, and rejects one whose values it does not take."""
+    parameter sets is asked for each candidate, and rejects one whose values it does not take.
+    ``program`` names the executable of the stack it runs (``ddsim``), ``None`` for one that runs
+    none of its own."""
 
     events: bool
     options: Callable[[Mapping[str, Json], Collection[str]], None]
     settable: Callable[[str], Settable]
     inside: str | None = None
     asks: bool = False
+    program: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +90,10 @@ _STAGES: Mapping[str, StageType] = {
         ("generation",),
         {
             "ddsim": Executor(
-                events=True, options=ddsim.check_options, settable=ddsim.settable_option
+                events=True,
+                options=ddsim.check_options,
+                settable=ddsim.settable_option,
+                program="ddsim",
             )
         },
         geometry=True,
@@ -102,6 +108,7 @@ _STAGES: Mapping[str, StageType] = {
                 options=k4run.check_options,
                 settable=k4run.settable_option,
                 asks=True,
+                program="k4run",
             )
         },
         geometry=True,

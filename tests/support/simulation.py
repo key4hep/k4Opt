@@ -15,7 +15,8 @@ from k4opt.evaluation import edm4hep
 COLLECTION = "ECalBarrelCollection"
 HIT_TYPE = "edm4hep::SimCalorimeterHit"
 PARTICLE_TYPE = "edm4hep::MCParticle"
-DDSIM = "/stack/bin/ddsim"
+# a real file, so that a session identifies it: the fake stack's, which only worker processes run
+DDSIM = str(Path(__file__).with_name("fake_stack") / "bin" / "ddsim")
 
 type Triple = tuple[float, float, float]
 

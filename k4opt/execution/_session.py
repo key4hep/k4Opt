@@ -37,16 +37,17 @@ from k4opt.evaluation import (
 from k4opt.execution._backends import Backend, InlineBackend
 from k4opt.execution._baseline import Baseline, candidate_reads
 from k4opt.execution._binding import _bind_problem, _Binding, _context, task_cpus
-from k4opt.execution._cpus import AUTO, INLINE, usable_cpus
+from k4opt.execution._cpus import AUTO, INLINE, usable_cpus, usable_memory
 from k4opt.execution._drive import Activity, _drive, _Run
 from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._process import ProcessBackend
 from k4opt.execution._publish import RunOutcome, publish
+from k4opt.execution._reuse import Reuse
 from k4opt.execution._schedule import Scheduler
 from k4opt.execution._stages import DryRuns, input_files, try_reconstruction
 from k4opt.execution._tasks import GeometryWork, TaskOutcome, Workspace
 from k4opt.execution._worker import session_spec
-from k4opt.execution.errors import RunError
+from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.geometry import Parameter as GeometryParameter
@@ -58,10 +59,17 @@ from k4opt.problem.candidate import (
 )
 from k4opt.problem.config import resolve_problem
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
-from k4opt.problem.plan import GEOMETRY, Kind, TaskId, stage_task
-from k4opt.problem.stages import STAGE_TYPES, plan_stages
+from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, stage_task
+from k4opt.problem.stages import STAGE_TYPES, executors, plan_stages
 from k4opt.record.read import SUMMARY_SCHEMA
 from k4opt.record.results import DONE, TaskResult
+from k4opt.record.signature import (
+    SIGNATURE,
+    geometry_identity,
+    given_identity,
+    signed,
+    stage_document,
+)
 from k4opt.record.write import SUMMARY_NAME
 
 
@@ -210,6 +218,7 @@ class EvaluationSession:
         "_execution",
         "_inputs",
         "_open",
+        "_reuse",
         "_warnings",
     )
 
@@ -239,6 +248,7 @@ class EvaluationSession:
             execution = {"backend": "process", "workers": workers}
         self._execution: Mapping[str, Json] = FrozenMap(execution)
         self._open: Evaluations | None = None
+        self._reuse = Reuse()
         self._backend: ProcessBackend | None = None
         if workers is not None:  # one worker started at once: one that cannot work refuses here
             environment = baseline.process["environment"]
@@ -314,10 +324,10 @@ class EvaluationSession:
         runs = DryRuns(problem.source.root / problem.source.compact)
         try:
             _try_reconstructions(problem, binding, runs)
+            baseline = Baseline.take(problem, binding, lambda: _named(binding, supplied))
         except BaseException:
             runs.close()
             raise
-        baseline = Baseline.take(problem, binding, lambda: _named(binding, supplied))
         crowded = []  # of how the session runs, or what it is given: no summary keeps these
         slots = 1 if count is None else count
         for task in binding.plan.tasks:
@@ -336,6 +346,7 @@ class EvaluationSession:
                 f"{slots} workers, more than the {usable} processors this process may use: tasks "
                 "will share processors"
             )
+        crowded += _memory_warning(binding, count)
         if supplied:
             crowded.append(
                 f"supplied {', '.join(sorted(task.label for task in supplied))}: each file is "
@@ -403,11 +414,38 @@ class EvaluationSession:
         ``geometry``: the compact file, the source root, the fingerprint of the unmodified
         geometry and what its external references read
         (:meth:`~k4opt.geometry.GeometrySource.external_files`); ``environment``:
-        ``KEY4HEP_STACK`` and ``K4GEO``; ``k4opt``: its version, the SHA-256 of its code and its
-        git checkout, as every summary records them. The environment, k4opt and the external
-        files are taken when the session opened. A fresh copy on every call.
+        ``KEY4HEP_STACK`` and ``K4GEO``; ``programs``: each program of the stack the stages run,
+        by name, as the executable the session runs (its path, size and SHA-256, ``None`` if it
+        cannot be read); ``search``: the SHA-256 of each variable that decides what those
+        programs load (:func:`k4opt.program.search_environment`); ``k4opt``: its version, the
+        SHA-256 of its code and its git checkout, as every summary records them. The
+        environment, the programs, k4opt and the external files are taken when the session
+        opened. A fresh copy on every call.
         """
         return self._baseline.identity()
+
+    def reuse(self, directories: Iterable[str | os.PathLike[str]]) -> int:
+        """Let the stages of this session's candidates reuse what the stages of the records in
+        ``directories`` made; how many outputs that adds.
+
+        Each directory is a run directory (it holds a ``summary.json``: ``k4opt evaluate``'s
+        output, a trial of a study) or holds run directories (a study). A stage of a candidate
+        is not run when one with its signature (:mod:`k4opt.record.signature`: the same
+        definition, inputs, geometry, files, programs, environment and k4opt code) made an
+        output that is still there with the SHA-256 its record holds: its record then says
+        ``reused``, with where the output comes from. The session's own stages are reused the
+        same way, without being named here. Raises :class:`~k4opt.execution.RunError` for a
+        directory that does not exist."""
+        runs: list[Path] = []
+        for given in directories:
+            path = Path(os.path.abspath(Path(given).expanduser()))
+            if (path / SUMMARY_NAME).is_file():
+                runs.append(path)
+            elif path.is_dir():
+                runs += sorted(each for each in path.iterdir() if (each / SUMMARY_NAME).is_file())
+            else:
+                raise RunError(f"reuse {os.fspath(given)}: {path} is no directory")
+        return self._reuse.index(runs)
 
     def check_limits(self) -> None:
         """Raise :class:`~k4opt.execution.RunError` if this session could not keep the time
@@ -554,6 +592,8 @@ class EvaluationSession:
             pull,
             self._checked,
             activity,
+            sign=self._sign,
+            reuse=self._reuse,
         )
         try:
             for run in driven:
@@ -566,15 +606,29 @@ class EvaluationSession:
                     yield request, run.rejected
                     continue
                 try:
+                    self._check_relied(run)
                     outcome = publish(run, self._baseline, self._execution)
                 except Exception as exc:
+                    self._reuse.withdraw(run.workspace.id)  # no record says where they come from
                     yield request, exc
                     continue
+                self._reuse.published(run.workspace.id)
                 yield request, outcome
         finally:
             driven.close()
             if backend is not self._backend:  # the session's workers serve its next evaluation
                 backend.close()
+
+    def _check_relied(self, run: _Run) -> None:
+        """Raise :class:`ProvenanceError` if ``run`` reused the output of another candidate of
+        this session that was not published: its record would name one that does not exist."""
+        missing = sorted(record for record in run.relies if not self._reuse.is_published(record))
+        if missing:
+            raise ProvenanceError(
+                f"a stage reused the output of the candidate(s) {', '.join(missing)}, which were "
+                f"not published, so the record could not say where it comes from (in "
+                f"{run.workspace.root}, which has no {SUMMARY_NAME})"
+            )
 
     def _start(self, request: RunRequest, under_way: Collection[Path | None] = ()) -> _Run:
         """A candidate checked and prepared as :meth:`check` does, with its own new run directory
@@ -602,13 +656,13 @@ class EvaluationSession:
             reference=reference,
         )
 
-    def _checked(self, run: _Run, outcome: TaskOutcome, result: TaskResult) -> None:
+    def _checked(self, run: _Run, outcome: TaskOutcome | None, result: TaskResult) -> None:
         """What is checked of each result as it comes: that the geometry made changes the
         attributes the session resolved, to the values the candidate's configuration gives them,
         and that the references only the candidate's geometry names read what they read for the
         candidates already recorded. A geometry that was not made (it ran out of time, its worker
         died) has none to check."""
-        if result.id != GEOMETRY or result.status != DONE:
+        if result.id != GEOMETRY or result.status != DONE or outcome is None:
             return
         run.own_refs = outcome.own_refs
         assert run.prepared is not None
@@ -618,6 +672,58 @@ class EvaluationSession:
         except RunError as exc:  # of the kind it is: a ProvenanceError stays one
             run_dir = run.workspace.root
             raise type(exc)(f"{exc} (in {run_dir}, which has no {SUMMARY_NAME})") from None
+
+    def _sign(
+        self, run: _Run, task: Task, results: Mapping[TaskId, TaskResult]
+    ) -> Mapping[str, Json] | None:
+        """The signature of ``task`` of ``run`` (:mod:`k4opt.record.signature`), from the results
+        of what it reads: for a stage that runs, what it is made from; ``None`` for anything
+        else, and for a stage that reads a geometry without a fingerprint."""
+        if task.id.kind is not Kind.STAGE or task.given is not None:
+            return None
+        sample, name = task.id.sample, task.id.name
+        assert sample is not None
+        assert run.prepared is not None
+        stage = run.prepared.contexts[sample].stages[name]
+        reads: dict[str, object] = {}
+        for need in task.needs:
+            provenance = results[need].provenance
+            if need == GEOMETRY:
+                reads[need.name] = geometry_identity(provenance)
+            elif self._binding.plan[need].given is not None:
+                reads[need.name] = given_identity(provenance)
+            else:
+                upstream = provenance.get(SIGNATURE)
+                reads[need.name] = upstream.get("sha256") if isinstance(upstream, Mapping) else None
+        if any(identity is None for identity in reads.values()):
+            return None  # what it reads is not identified: neither is what it makes
+        prefix = f"samples.{sample}.{name}."
+        files = {
+            label.removeprefix(prefix): identity
+            for label, (_, identity) in self._baseline.files.items()
+            if label.startswith(prefix)
+        }
+        process = self._baseline.process
+        programs, environment, k4opt = process["programs"], process["environment"], process["k4opt"]
+        assert isinstance(programs, Mapping)
+        assert isinstance(environment, Mapping)
+        assert isinstance(k4opt, Mapping)
+        program = None if stage.executor is None else executors(name)[stage.executor].program
+        document = stage_document(
+            name,
+            stage,
+            reads=reads,
+            files=files,
+            program=None if program is None else programs.get(program),
+            environment={
+                "KEY4HEP_STACK": environment.get("KEY4HEP_STACK"),
+                "search": process["search"],
+            },
+            k4opt=k4opt.get("sha256"),
+        )
+        signature = freeze(signed(document), SIGNATURE, RunError)
+        assert isinstance(signature, Mapping)
+        return signature
 
     def _prepare(
         self, candidate: Mapping[str, Scalar]
@@ -636,6 +742,31 @@ class EvaluationSession:
 
 
 _END = object()  # what the requests give once there are none left; no request is it
+
+PROGRAM_MEMORY = 2 * 1024**3
+"""What k4opt expects one task that runs a program of the stack (ddsim, k4run) to take at its
+peak, in bytes, for :func:`_memory_warning`: CLD's simulation and reconstruction peak at
+1.3 to 1.6 GiB."""
+
+
+def _memory_warning(binding: _Binding, workers: int | None) -> list[str]:
+    """Why the session's workers may not fit in the memory this process may use, if they may
+    not: as many programs of the stack (ddsim, k4run) at once as there are workers, each of
+    :data:`PROGRAM_MEMORY`. k4opt reserves and limits no memory; a program the kernel kills for
+    want of it fails its stage."""
+    runs = any(task.given is None for task in binding.plan.of(Kind.STAGE))
+    memory = usable_memory()
+    if workers is None or not runs or memory is None:
+        return []
+    expected = workers * PROGRAM_MEMORY
+    if expected <= memory:
+        return []
+    return [
+        f"{workers} workers may run {workers} programs of the stack (ddsim, k4run) at once, about "
+        f"{expected / 1024**3:.0f} GiB at {PROGRAM_MEMORY / 1024**3:.0f} GiB each, more than the "
+        f"{memory / 1024**3:.1f} GiB this process may use: a program the kernel kills for "
+        "memory fails its stage; fewer --workers?"
+    ]
 
 
 def _check_output(run_dir: Path, under_way: Iterable[Path]) -> None:

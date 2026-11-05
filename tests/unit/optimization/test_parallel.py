@@ -234,7 +234,8 @@ def _settlement_failure(monkeypatch: pytest.MonkeyPatch, how: str) -> None:
         ("check_record", "not the study's", TrialState.FAIL),
         ("check_candidate_files", "other files", TrialState.FAIL),
         ("from_summary", "metric test.trade_off/analysis/a", TrialState.FAIL),
-        ("tell", "StorageInternalError: the database is gone", TrialState.FAIL),
+        # its marks were told: left running, for a resume to tell it its record
+        ("tell", "StorageInternalError: the database is gone", TrialState.RUNNING),
         ("interrupt", None, TrialState.COMPLETE),  # told its record when it is closed
     ],
 )
@@ -255,7 +256,12 @@ def test_a_trial_that_cannot_be_told_settles_with_the_trials_still_running(
     with pytest.raises(expected) as info:
         optimize(write_problem(), [gated], output, trials=5, seed=1, workers=3)
     if error is not None:
-        assert str(info.value).startswith("trial 0 stops the study (trial-000000 is FAIL): ")
+        became = (
+            "was left running; k4opt optimize --resume settles it"
+            if state == TrialState.RUNNING
+            else "is FAIL"
+        )
+        assert str(info.value).startswith(f"trial 0 stops the study (trial-000000 {became}): ")
         assert error in str(info.value)
     assert states(output) == {0: state, 1: TrialState.FAIL, 2: TrialState.FAIL}
     stopped(output, marks)

@@ -67,8 +67,10 @@ def simulate(
     timeout: float | None = None,
     started: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
+    executable: Path | None = None,
 ) -> SimulationRun:
-    """Run the ``ddsim`` found on ``PATH`` on ``compact``, in the new directory ``workdir``.
+    """Run ``ddsim`` (``executable``, or the one found on ``PATH``) on ``compact``, in the new
+    directory ``workdir``.
 
     The command is an argument list without a shell: the options k4opt manages (geometry,
     output, event count, seed, particle gun or input file) followed by ``options`` in order
@@ -121,6 +123,7 @@ def simulate(
         timeout=timeout,
         started=started,
         die_with_parent=die_with_parent,
+        executable=executable,
     )
     error = run.error
     if error is None and not output.is_file():

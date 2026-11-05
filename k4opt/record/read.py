@@ -16,6 +16,7 @@ record alone: no file the record names is opened, so an old record stays readabl
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -47,7 +48,7 @@ from k4opt.problem.plan import (
     represents_candidate,
     stage_task,
 )
-from k4opt.problem.stages import STAGE_TYPES, stage_output
+from k4opt.problem.stages import STAGE_TYPES, executors, stage_output
 from k4opt.record.errors import RecordError
 from k4opt.record.results import (
     DECLINED,
@@ -57,6 +58,13 @@ from k4opt.record.results import (
     candidate_message,
     candidate_status,
     diagnostics,
+)
+from k4opt.record.signature import (
+    SIGNATURE,
+    digest,
+    geometry_identity,
+    given_identity,
+    stage_document,
 )
 
 SUMMARY_SCHEMA = "k4opt.run/1"
@@ -87,6 +95,42 @@ def _mapping(value: object, where: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise RecordError(f"{where} must be a mapping, got {type(value).__name__}")
     return value
+
+
+def seconds(value: object, where: str) -> float | None:
+    """A time a record holds (an ``elapsed_seconds``): ``None``, or a finite number of seconds,
+    zero or more; raises :class:`~k4opt.record.RecordError` for anything else."""
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise RecordError(f"{where} is {value!r}, not a time in seconds")
+    return value
+
+
+def _times(record: Mapping[str, object]) -> None:
+    """Every ``elapsed_seconds`` of the record is a time: the candidate's, the geometry's and
+    each task's."""
+    seconds(record.get("elapsed_seconds"), "elapsed_seconds")
+    geometry = record.get("geometry")
+    if isinstance(geometry, Mapping):
+        seconds(geometry.get("elapsed_seconds"), "geometry.elapsed_seconds")
+    samples = record.get("samples")
+    for sample, part in (samples if isinstance(samples, Mapping) else {}).items():
+        for kind in ("stages", "evaluations"):
+            tasks = part.get(kind) if isinstance(part, Mapping) else None
+            for name, entry in (tasks if isinstance(tasks, Mapping) else {}).items():
+                if isinstance(entry, Mapping):
+                    where = f"samples.{sample}.{kind}.{name}.elapsed_seconds"
+                    seconds(entry.get("elapsed_seconds"), where)
+    evaluations = record.get("evaluations")
+    for name, entry in (evaluations if isinstance(evaluations, Mapping) else {}).items():
+        if isinstance(entry, Mapping):
+            seconds(entry.get("elapsed_seconds"), f"evaluations.{name}.elapsed_seconds")
 
 
 def _list(value: object, where: str) -> list[object]:
@@ -219,6 +263,40 @@ def _files(
         except EvaluationContractError as exc:
             raise RecordError(f"{at}: {exc}") from None
     return files
+
+
+def _reused(
+    part: Mapping[str, object], task: TaskId, status: str, given: str | None, at: str
+) -> bool:
+    """Whether the stage ``task`` of a record reused the output of a stage with its signature:
+    then it is ``done``, ran nothing (it was not given as a file), made nothing in its directory
+    and kept no logs, and ``reused`` says where the output comes from (the record, the stage of
+    the same type, its path in that run, its size and SHA-256)."""
+    entry = part.get("reused")
+    if entry is None:
+        return False
+    item = _mapping(entry, f"{at}: reused")
+    if status != DONE or given is not None:
+        raise RecordError(f"{at}: reused, but a stage that is {status} or given reuses nothing")
+    source = item.get("task")
+    if not isinstance(source, str) or source.partition("/")[2] != task.name:
+        raise RecordError(f"{at}: reused the output of {source!r}, which is no {task.name}")
+    for key in ("record", "run_dir", "path"):
+        _text(item.get(key), f"{at}: reused.{key}")
+    if not isinstance(item.get("sha256"), str):
+        raise RecordError(f"{at}: reused an output without its SHA-256")
+    try:
+        Artifact(
+            f"{source}#{stage_output(task.name)}",
+            Path(str(item.get("path"))),
+            cast(int, item.get("bytes")),
+            cast(str | None, item.get("sha256")),
+        )
+    except EvaluationContractError as exc:
+        raise RecordError(f"{at}: reused: {exc}") from None
+    if part.get("outputs") or part.get("logs"):
+        raise RecordError(f"{at}: reused, but it names files of its own")
+    return True
 
 
 def _samples(spec: ProblemSpec, record: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
@@ -419,10 +497,10 @@ def _results(
                 raise RecordError(
                     f"{at}: directory {part.get('directory')!r}, but its directory is {directory!r}"
                 )
-            outputs = _files(
-                part.get("outputs"), made_by, directory, f"{at}: outputs", hashed=False
-            )
-            made = [stage_output(name)] if fragment.status == DONE and directory else []
+            outputs = _files(part.get("outputs"), made_by, directory, f"{at}: outputs", hashed=True)
+            reuses = _reused(part, made_by, fragment.status, plan[made_by].given, at)
+            ran = fragment.status == DONE and directory and not reuses
+            made = [stage_output(name)] if ran else []
             if list(outputs) != made:
                 raise RecordError(
                     f"{at}: outputs {list(outputs)}, but a stage that is {fragment.status} "
@@ -598,6 +676,74 @@ class Recorded(NamedTuple):
     value: _Lookup
 
 
+def _within(value: object, *keys: str) -> Mapping[str, object]:
+    """The mapping at ``keys`` of ``value``; an empty one where there is none."""
+    for key in keys:
+        value = value.get(key) if isinstance(value, Mapping) else None
+    return value if isinstance(value, Mapping) else {}
+
+
+def _check_signatures(
+    configuration: Configuration, record: Mapping[str, object], plan: Plan
+) -> None:
+    """Each stage that ran holds its signature (:mod:`k4opt.record.signature`), and that
+    signature is what the record says the stage was made from: its definition, the geometry and
+    the stages it read, the files the problem names for it, the program it ran, the environment
+    and k4opt's code; its SHA-256 is that of its document. A blocked stage, and one given as a
+    file, has none."""
+    samples = cast(Mapping[str, Mapping[str, Any]], record["samples"])  # checked by _samples
+    geometry = _mapping(record.get("geometry"), "geometry")
+    observed = _within(record, "environment", "observed")
+    programs = _within(observed, "programs")
+    environment = {"KEY4HEP_STACK": observed.get("KEY4HEP_STACK"), "search": observed.get("search")}
+    k4opt = _within(observed, "k4opt_source").get("sha256")
+    for task in plan.of(Kind.STAGE):
+        assert task.id.sample is not None
+        sample, name = task.id.sample, task.id.name
+        part = samples[sample]["stages"][name]
+        at = f"stage {task.id.label!r}"
+        held = part.get(SIGNATURE)
+        if task.given is not None or part.get("status") == Status.BLOCKED:
+            if held is not None:
+                raise RecordError(f"{at}: a signature, but a stage that did not run has none")
+            continue
+        held = _mapping(held, f"{at}: {SIGNATURE}")
+        document = _mapping(held.get("document"), f"{at}: {SIGNATURE}.document")
+        if held.get("sha256") != digest(document):
+            raise RecordError(f"{at}: its signature's SHA-256 is not that of its document")
+        stage = configuration.samples[sample].stages[name]
+        reads: dict[str, object] = {}
+        for need in task.needs:
+            if need == GEOMETRY:
+                reads[need.name] = geometry_identity(geometry)
+                continue
+            assert need.sample is not None
+            upstream = samples[need.sample]["stages"][need.name]
+            if plan[need].given is not None:
+                reads[need.name] = given_identity(upstream)
+            else:
+                reads[need.name] = (upstream.get(SIGNATURE) or {}).get("sha256")
+        files = part.get("files")
+        if not isinstance(files, Mapping):  # it ended before it read them: its document says
+            files = _within(document, "files")
+        executor = executors(name)[stage.executor or ""]
+        expected = stage_document(
+            name,
+            stage,
+            reads=reads,
+            files=files,
+            program=None if executor.program is None else programs.get(executor.program),
+            environment=environment,
+            k4opt=k4opt,
+        )
+        if _plain(expected) != _plain(dict(document)):
+            differ = [key for key in expected if expected[key] != document.get(key)]
+            raise RecordError(
+                f"{at}: its signature says it was made from other {', '.join(differ)} than the "
+                "record does"
+            )
+
+
 def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
     """Check the run record ``summary`` (``summary.json`` as read back) against the problem
     ``spec`` as :meth:`~k4opt.record.Assessment.from_summary` documents, all but its
@@ -622,6 +768,7 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
     )
     evaluators = _evaluations(spec, configuration, record, samples, declared, demands, plan)
     results = _results(spec, configuration, record, samples, supplied, evaluators, plan)
+    _check_signatures(configuration, record, plan)
     required = [task.id.label for task in plan.tasks if task.required]
     if record.get("required") != required:
         raise RecordError(
@@ -660,4 +807,5 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
         return owner.measured[(ref.stage, ref.metric)]  # a valid one measured it: check_result
 
     _check_metrics(spec, record, value)
+    _times(record)
     return Recorded(status, represents, value)

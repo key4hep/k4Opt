@@ -307,7 +307,7 @@ def test_a_trial_that_stopped_the_study_is_an_error_without_a_result(
     assert trial.message == optuna_study(tmp_path / "s").trials[0].user_attrs["k4opt.error"]
 
 
-def test_a_valid_record_whose_values_never_reached_the_optimizer_is_no_result(
+def test_a_valid_record_whose_values_never_reached_the_optimizer_is_told_on_resume(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tell = optuna.Study.tell
@@ -317,23 +317,20 @@ def test_a_valid_record_whose_values_never_reached_the_optimizer_is_no_result(
             raise StorageInternalError("lost the database")
         return tell(self, trial, *args, **kwargs)
 
+    problem, output = write_problem(), tmp_path / "s"
     monkeypatch.setattr(optuna.Study, "tell", losing_values)
-    with pytest.raises(OptimizationError, match="trial 0 stops the study"):
-        run(write_problem(), tmp_path / "s", 1, seed=1)
+    with pytest.raises(OptimizationError, match=r"trial 0 stops the study .*was left running"):
+        run(problem, output, 1, seed=1)
     monkeypatch.setattr(optuna.Study, "tell", tell)
-    (frozen,) = optuna_study(tmp_path / "s").trials
-    assert frozen.state == TrialState.FAIL and frozen.user_attrs["k4opt.status"] == "valid"
-    study = load_study(tmp_path / "s")
-    (trial,) = study.trials
-    assert (trial.status, trial.outcome, trial.assessment, trial.feasible) == (
-        "error",
-        "error",
-        None,
-        None,
-    )
-    assert trial.record == summary(tmp_path / "s", 0)["id"]  # kept, for its provenance
-    assert "lost the database" in trial.message
-    assert (study.pareto, study.outcomes["error"]) == ((), 1)
+    # its marks were told, its values not: FAIL with them would read as no result of a valid
+    # record, so it is left running for a resume to tell it its record
+    (frozen,) = optuna_study(output).trials
+    assert frozen.state == TrialState.RUNNING and frozen.user_attrs["k4opt.status"] == "valid"
+    assert [t.status for t in load_study(output).trials] == ["running"]
+    trial = run(problem, output, 1, resume=True).trials[0]
+    assert (trial.status, trial.recovered) == ("valid", True)
+    assert trial.record == summary(output, 0)["id"]
+    assert optuna_study(output).trials[0].state == TrialState.COMPLETE
 
 
 def test_reading_changes_nothing_and_hands_out_nothing_mutable(

@@ -258,6 +258,13 @@ at random too, so up to N - 1 more than with one worker. Each trial still record
 its session's sampler seed and its record, and the records of a candidate are the same whatever
 N: the simulation seed is each sample's own.
 
+**Stages made once.** A trial does not run a stage again whose output a stage with the same
+signature made already, in this session or in an earlier trial of the study (a resume reuses the
+study's own trials), or in the runs and studies `--reuse DIR` names (repeatable): a study that
+varies only the reconstruction, or only evaluators' settings, simulates once. The trial's record
+says where the reused output comes from ([reuse](execution.md#stages-made-once-reuse)). Neither
+the reuse nor `--reuse` is part of the study: a reused stage is the stage that would have run.
+
 ## The study directory
 
 ```text
@@ -287,6 +294,12 @@ keeps its geometry and its EDM4hep file.
   SHA-256 of each file its external references read (`${DD4hepINSTALL}/...`, `${K4GEO}/...`,
   absolute paths);
 - `KEY4HEP_STACK` and `K4GEO`;
+- `programs`: each program of the stack a stage that runs starts (`ddsim`, `k4run`; not that of
+  a stage given as a file), as the executable the session found on `PATH` when it opened, where
+  its links lead, with its size and SHA-256, and the `interpreter` its `#!` line names as `PATH`
+  found it (`null` for a program that is no script); `null` for a program not found;
+- `search`: the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`,
+  which decide what those programs load;
 - k4opt's version, the SHA-256 of its code and its git checkout;
 - the `identity` digest;
 - the optimizer: `optuna` and its version, the study name (`<problem name>-<8 hex>`), the
@@ -315,10 +328,16 @@ directory itself is fine: a trial's record names the files of its run directory 
 | evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash, or whose hash is not known to be of the code that runs, `executed: false`, cannot make a study) and of the modules it imports from beside it (`helpers`), the metrics it declares with their units and the artifacts it declares (read from its class, where an evaluator declares them) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, the attribute each geometry target of the parameters resolves to (its file below the root, locator, attribute and unmodified value; every trial's record must change exactly those) and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
+| programs | each program the stages run (`ddsim`, `k4run`): the path of its executable, where its links lead (a release of the stack is told apart by its path), its size and SHA-256, and its interpreter; every trial's record must have run the same | the SHA-256 of `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH` (a change warns; `PATH` is recorded, but of it only the interpreter matters) |
 | k4opt | the SHA-256 of its code | version, git commit |
 | Optuna | its exact version; the study's directions, id, identity digest and limit names; the storage | |
 
-The `identity` digest covers the compared column only. A resume is refused, with what changed,
+The `identity` digest covers the compared column only, but for the programs, which are compared
+apart, so that a refusal names the program that differs. Both
+ddsim and k4run are Python scripts: the same script with another `PYTHONPATH` (a local build
+layered over the release) runs other code, which only the warning about the search variables
+shows; the libraries behind the scripts are identified as far as `KEY4HEP_STACK` names an
+immutable release. A resume is refused, with what changed,
 for any difference in it. It is also refused for `--seed` with `--resume` (a study keeps its
 seed), for a recorded optimizer (sampler, seed, startup trials, distributions, limits,
 constraint-value policy) other than the one this k4opt would run the study with, and for a
@@ -330,8 +349,8 @@ uncommitted changes: the evaluator's file and the modules it imports are unchang
 either refuses the resume), but other files beside them, such as data it reads, may not be.
 
 Within a session, the files the problem names, the files the geometry's external references
-read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are checked before each candidate and again
-after it ran, before its record is written; the geometry's own files are checked by its
+read, `KEY4HEP_STACK`, `K4GEO`, the programs and k4opt's code are checked before each
+candidate and again after it ran, before its record is written; the geometry's own files are checked by its
 materialization. A change while a candidate runs leaves its directory without a
 `summary.json`, and the trial stops the study.
 
@@ -354,6 +373,9 @@ cleanly. Each running trial is FAIL, or is told its record if one was published 
 ddsim is killed, with any process it started, and so are the worker processes; the
 lock is removed; the command exits 1 and says how to resume. A study killed outright (SIGKILL)
 takes its worker processes with it (Linux), and a resume closes the trials it left running.
+Wherever an interruption falls, even between two of the writes that tell the optimizer a
+trial, the study stays readable and resumable: that trial reads as what it was told to be, or
+as `interrupted` (the mark that says what a trial is, `k4opt.status`, is written last).
 
 **The lock.** `.lock` is created exclusively when a process starts working on a study, and
 removed when it ends, so two processes never work on one study. A lock that a killed process
@@ -531,7 +553,8 @@ or the number 1: the JSON export is the typed one.
 leave the machine: what a [publication](publication.md) holds is exactly these bytes. `study` is
 `study.json` without its locations: the problem file's path, the paths of the files it names, of
 the evaluators' files and of the files the geometry's external references resolve to, the
-geometry's source root, `K4GEO` and the optimizer's storage (a journal name, or a database URL
+geometry's source root, `K4GEO`, the paths of the programs of the stack and of their interpreters
+(each kept by size and SHA-256) and the optimizer's storage (a journal name, or a database URL
 with its host and user) are left out, and so is anything else not on the list in
 `k4opt/optimization/_study.py` (`PORTABLE`). Locations are no part of a study's identity, so its
 `identity` digest still holds. The study directory and the read warnings are not part of it

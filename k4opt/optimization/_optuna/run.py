@@ -35,6 +35,7 @@ from k4opt.evaluation import EvaluatorProtocol
 from k4opt.execution import Activity, EvaluationSession, RunRequest
 from k4opt.optimization._identity import dirty_checkouts, unhashed
 from k4opt.optimization._lock import Lock
+from k4opt.optimization._optuna import marks
 from k4opt.optimization._optuna.optimizer import (
     CONSTANT_LIAR,
     STARTUP_TRIALS,
@@ -118,8 +119,8 @@ def _requests(
         name = trial_directory(trial.number)
         output = run.directory / name
         in_flight[trial.number] = (trial, output)
-        trial.set_user_attr("k4opt.dir", name)
-        trial.set_user_attr("k4opt.sampler_seed", seed)
+        trial.set_user_attr(marks.DIR, name)
+        trial.set_user_attr(marks.SAMPLER_SEED, seed)
         candidate = {key: trial.params[key] for key in space}
         yield RunRequest(candidate, output, {"study": run.document["id"], "trial": trial.number})
 
@@ -169,6 +170,7 @@ def optimize(
     warn: Warn,
     progress: Progress,
     activity: Watch | None = None,
+    reuse: Sequence[str | os.PathLike[str]] = (),
 ) -> StudyResults:
     if isinstance(trials, bool) or not isinstance(trials, int) or trials < 1:
         raise OptimizationError(f"trials must be a positive integer, got {trials!r}")
@@ -188,6 +190,7 @@ def optimize(
 
     # its workers stop with the study however it ends
     with EvaluationSession.open(problem, implementations, workers=workers) as session:
+        session.reuse(reuse)
         return _run_study(
             session,
             directory,
@@ -259,6 +262,7 @@ def _run_study(
             if resume:
                 check_optuna_study(study, document)
                 _recover(run, progress)
+                session.reuse([directory])  # every trial's record held up: their stages serve
             seed = document["optimizer"]["sampler"]["seed"]
             seed_now = session_seed(seed, len(study.trials))
             study.sampler = optuna.samplers.TPESampler(

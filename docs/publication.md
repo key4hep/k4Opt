@@ -41,7 +41,7 @@ What leaves the machine with a snapshot, and what does not:
 | each trial's candidate, assessment, outcome, times, message and diagnostics | the trial directories and every file in them (records, events, geometries, logs) |
 | each record's id and SHA-256, to identify it | the record's path or any link to it: the record stays in the study |
 | size and SHA-256 of every file the problem names, the evaluators' versions, source hashes and git commits, the geometry's compact file, fingerprint, targets and the hashes of what its external references read | the paths of those files, the geometry's source root, `K4GEO` |
-| `KEY4HEP_STACK` (part of the study's identity) and k4opt's version, hash and commit | the optimizer's storage (a journal name, or a database URL with its host and user) |
+| `KEY4HEP_STACK` (part of the study's identity), the programs the stages ran (path, size and SHA-256 of `ddsim`, `k4run`) and the SHA-256 of the variables that decide what they load, and k4opt's version, hash and commit | the optimizer's storage (a journal name, or a database URL with its host and user) |
 | the optimizer, its sampler and seed, its directions and distributions | anything of `study.json` not on the list (`PORTABLE` in `k4opt/optimization/_study.py`) |
 
 **Publishing makes all of it readable to whoever can read the publication.** The problem

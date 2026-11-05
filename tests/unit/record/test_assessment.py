@@ -530,6 +530,15 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
             _set("implementations/test.echo/metrics/0/unit", ""),
             "metrics[0].unit must be a nonblank string",
         ),
+        (_set("elapsed_seconds", -1.0), "elapsed_seconds is -1.0, not a time in seconds"),
+        (
+            _set("geometry/elapsed_seconds", True),
+            "geometry.elapsed_seconds is True, not a time in seconds",
+        ),
+        (
+            _set(f"{ECHOED}/elapsed_seconds", float("nan")),
+            "evaluations.test.echo.elapsed_seconds is nan, not a time in seconds",
+        ),
         (_set("assessment/feasible", False), "its assessment is not the one"),
         (_set("assessment/limits/0/margin", -1.0), "its assessment is not the one"),
         (_set("assessment", None), "its assessment is not the one"),

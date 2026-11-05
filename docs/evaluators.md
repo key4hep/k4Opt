@@ -13,7 +13,7 @@ and versions must be those the problem declares.
 
 `stage = "simulation"`: it reads `request.inputs["simulation"]`, the EDM4hep file the
 framework's simulation stage ([ddsim](ddsim.md)) wrote, and runs no tool. The stage uses its
-`events` (required, and checked against the file), `seed` (optional, passed to ddsim when given)
+`events` (required, and checked against the file), `seed` (required, passed to ddsim)
 and ddsim options, and the generation stage (a particle gun or an event file); the evaluator
 itself uses only its `collections` and `settings`. It reads each event with `self.events()`, so
 the hits and the generated photon of an event always come from that one event.

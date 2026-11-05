@@ -436,19 +436,27 @@ def test_a_file_that_changes_while_the_second_sample_runs_leaves_no_record(
         assert (tmp_path / "a" / "samples" / sample / "simulation").is_dir()
 
 
-def test_samples_with_identical_stages_are_a_warning(
+def test_samples_with_identical_stages_are_a_warning_and_simulated_once(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     doc = yaml.safe_load(problem_file.read_text())
     two_samples(problem_file, **doc["samples"]["gamma"])
     session = EvaluationSession.open(problem_file, [cell_count()])
     assert (
-        "samples gamma and pion have identical stages; each is simulated separately"
-        in session.warnings
+        "samples gamma and pion have identical stages: they are simulated once and measure the "
+        "same events" in session.warnings
     )
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
-    assert len(fake.calls) == 2  # each all the same
+    assert len(fake.calls) == 1  # the same signature: pion's simulation reuses gamma's
     assert outcome.candidate.status == "valid"
+    stages = outcome.summary["samples"]["pion"]["stages"]  # type: ignore[index]
+    assert stages["simulation"]["reused"]["task"] == "gamma/simulation"
+    assert (
+        stages["simulation"]["signature"]
+        == (
+            outcome.summary["samples"]["gamma"]["stages"]["simulation"]["signature"]  # type: ignore[index]
+        )
+    )
 
 
 def test_samples_alike_but_for_the_parameter_that_sets_an_option_are_no_warning(
@@ -470,8 +478,9 @@ def test_samples_alike_but_for_the_parameter_that_sets_an_option_are_no_warning(
     doc["parameters"]["cut_a"]["targets"]["simulation"]["samples"] = ["gamma", "pion"]
     problem_file.write_text(yaml.safe_dump(doc))
     session = EvaluationSession.open(problem_file, [cell_count()])
-    assert "samples gamma and pion have identical stages; each is simulated separately" in (
-        session.warnings
+    assert (
+        "samples gamma and pion have identical stages: they are simulated once and measure the "
+        "same events" in session.warnings
     )
 
 
@@ -739,7 +748,7 @@ def test_what_a_role_reads_reaches_the_evaluator_unchanged_and_k4opt_computes_no
     Assessment.from_summary(session.spec, summary)
 
 
-def test_a_role_that_reads_a_stage_gets_its_file_unhashed(
+def test_a_role_that_reads_a_stage_gets_its_file_hashed_once(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hashed: list[str] = []
@@ -784,7 +793,9 @@ def test_a_role_that_reads_a_stage_gets_its_file_unhashed(
     events = zz.artifacts["simulation"]
     assert events.ref == "zz/simulation#events"
     assert events.path == tmp_path / "a" / "samples" / "zz" / "simulation" / "events.edm4hep.root"
-    assert events.sha256 is None and not any(path.endswith(".root") for path in hashed)
+    # hashed once, when the simulation ended, not again for the role that reads it
+    assert events.sha256 == hashlib.sha256(events.path.read_bytes()).hexdigest()
+    assert hashed.count(str(events.path)) == 1
     summary = json.loads(outcome.summary_path.read_text())
     assert summary["evaluations"]["test.files"]["reads"] == [
         "geometry",

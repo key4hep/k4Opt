@@ -487,7 +487,8 @@ def test_each_task_records_its_own_peak_memory_in_reused_workers(
     probe(monkeypatch, **{"a.p": {"allocate": 200}})
     session = session_of(2, problem)
     big = verified(session.evaluate({RADIUS: 450.0}, tmp_path / "a"))
-    small = verified(session.evaluate({RADIUS: 450.0}, tmp_path / "b"))  # the same two workers
+    # the same two workers, another geometry (the same one would reuse a's simulations)
+    small = verified(session.evaluate({RADIUS: 460.0}, tmp_path / "b"))
     for summary in (big, small):
         for sample in ("gamma", "pion"):
             simulated = summary["samples"][sample]["stages"]["simulation"]["peak_memory_bytes"]
@@ -601,7 +602,7 @@ def test_an_exception_that_cannot_be_rebuilt_is_raised_as_a_task_error() -> None
 @pytest.mark.parametrize(
     ("killed", "required", "status", "message"),
     [
-        ("ddsim", True, "failed", "ddsim exited with status -9"),
+        ("ddsim", True, "failed", "ddsim was killed by SIGKILL (out of memory?"),
         ("the worker during ddsim", True, "failed", "died (killed by SIGKILL)"),
         ("the worker during an evaluation", True, "failed", "died (killed by SIGKILL)"),
         ("the worker during an evaluation", False, "valid", None),
@@ -638,7 +639,9 @@ def test_a_process_killed_like_the_oom_killer_does_fails_its_task_and_leaves_not
         else summary["samples"]["gamma"]["stages"]["simulation"]
     )
     assert failed["status"] == "failed"
-    reason = "died (killed by SIGKILL)" if "worker" in killed else "status -9"
+    reason = (
+        "died (killed by SIGKILL)" if "worker" in killed else "killed by SIGKILL (out of memory?"
+    )
     assert reason in failed["message"]
     if "evaluation" not in killed:  # what ddsim wrote so far stays referenced
         assert {"stdout", "stderr"} <= failed["logs"].keys()
@@ -739,7 +742,7 @@ def test_closing_stops_every_worker_and_simulation_still_running(
     stack.install(monkeypatch, marks, **{"b.gamma": {"sleep": 600}, "b.pion": {"sleep": 600}})
     session = session_of(3)
     evaluations = session.evaluate_each(
-        [RunRequest({RADIUS: 450.0}, tmp_path / "a"), RunRequest({RADIUS: 450.0}, tmp_path / "b")]
+        [RunRequest({RADIUS: 450.0}, tmp_path / "a"), RunRequest({RADIUS: 460.0}, tmp_path / "b")]
     )
     _, outcome = next(evaluations)
     assert isinstance(outcome, RunOutcome) and outcome.candidate.status == "valid"
@@ -1081,7 +1084,8 @@ def test_concurrent_candidates_that_read_one_reference_alike_are_both_recorded_e
             yield RunRequest({RADIUS: 1000.0}, tmp_path / "never")
         if first is not None:
             model.write_text("solid two")
-        yield RunRequest(candidate, tmp_path / "b")
+        # the same reference, another radius: its own simulation (the same one would wait for a's)
+        yield RunRequest(candidate | {RADIUS: 460.0}, tmp_path / "b")
 
     with session_of(2, problem).evaluate_each(requests()) as evaluations:
         ended = {

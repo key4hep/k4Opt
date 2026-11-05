@@ -3,16 +3,24 @@ it, and how a parameter's value is written into one of its options.
 
 Shared by the components that run a program (:mod:`k4opt.ddsim`, :mod:`k4opt.k4run`): each
 builds its command, says where it keeps the logs and checks what the program wrote; :func:`run`
-starts the program found on ``PATH`` in the stage's directory, without a shell, in a process group
-of its own, and keeps its standard output and error and a record of the command (``argv``, the
-directory, the exit status, the time limit and the peak memory). A program that fails is reported
-by :attr:`ProgramRun.error`, never by an exception: settings that cannot be run are refused before
-(:class:`ProgramError`).
+starts the program (the executable it is given, or the one found on ``PATH``) in the stage's
+directory, without a shell, in a process group of its own, and keeps its standard output and
+error and a record of the command (``argv``, the directory, the exit status, the time limit and
+the peak memory). A program that fails is reported by :attr:`ProgramRun.error`, never by an
+exception: settings that cannot be run are refused before (:class:`ProgramError`).
+
+What a program runs is identified by :func:`locate` and :func:`identify` (its executable, where
+its links lead, with its size and SHA-256) and :func:`search_environment` (the variables that
+decide which interpreter and which libraries and modules it loads). ddsim and k4run are Python
+scripts (``#!/usr/bin/env python3``): the same script with another ``PYTHONPATH`` runs other
+code, and the libraries behind it are identified only as far as ``KEY4HEP_STACK`` names an
+immutable release.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import math
 import os
 import resource
@@ -32,6 +40,11 @@ from k4opt.jsonio import write_json
 
 LOG_TAIL = 15
 """Lines of standard error quoted in the message of a program that failed."""
+
+SEARCH_VARIABLES = ("PATH", "PYTHONPATH", "LD_LIBRARY_PATH", "ROOT_INCLUDE_PATH")
+"""The environment variables that decide which interpreter, libraries and modules a program of
+the stack loads (:func:`search_environment`). Of ``PATH``, only the interpreter it finds for a
+program decides what that program runs (:func:`identify`)."""
 
 LOG_ROLES = ("stdout", "stderr", "command")
 """The files :func:`run` keeps, by role: the program's standard output and error and the record of
@@ -91,6 +104,83 @@ class ProgramRun:
         return {role: path for role, path in roles.items() if path.is_file()}
 
 
+def locate(name: str) -> Path | None:
+    """The executable ``name`` found on ``PATH``, where its links lead; ``None`` if there is
+    none."""
+    found = shutil.which(name)
+    return None if found is None else Path(os.path.realpath(found))
+
+
+def identify(executable: Path) -> dict[str, object] | None:
+    """What identifies ``executable``: its ``path``, ``bytes`` and ``sha256``, and the
+    ``interpreter`` that runs it, identified alike (``None`` for a program that is no script);
+    ``None`` if it cannot be read, or its interpreter cannot be found or read: what would run
+    is then not known.
+
+    ddsim and k4run are scripts that ``#!/usr/bin/env python3`` runs in the first interpreter on
+    ``PATH``: that interpreter, not ``PATH`` itself, is what ``PATH`` decides for them. It keeps
+    the path ``PATH`` gave, links not followed, since the interpreter of a virtual environment
+    finds its packages from where it is."""
+    found = _file_identity(executable)
+    if found is None:
+        return None
+    try:
+        interpreter = _interpreter(executable)
+    except OSError:
+        return None
+    if interpreter is None:
+        return {**found, "interpreter": None}
+    identified = _file_identity(interpreter)
+    return None if identified is None else {**found, "interpreter": identified}
+
+
+def _file_identity(path: Path) -> dict[str, object] | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            size = 0
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+                size += len(block)
+    except OSError:
+        return None
+    return {"path": str(path), "bytes": size, "sha256": digest.hexdigest()}
+
+
+def _interpreter(script: Path) -> Path | None:
+    """The interpreter the ``#!`` line of ``script`` names, as ``PATH`` finds it now for
+    ``#!/usr/bin/env NAME``; ``None`` for a file without one. Raises :class:`OSError` if
+    ``script`` cannot be read, or if its ``#!`` line names no interpreter ``PATH`` finds."""
+    with script.open("rb") as handle:
+        line = handle.readline(4096)
+    if not line.startswith(b"#!"):
+        return None
+    words = line[2:].decode(errors="replace").split()
+    if not words:
+        raise OSError(f"the #! line of {script} names no interpreter")
+    if Path(words[0]).name != "env":
+        return Path(words[0])
+    name = next((word for word in words[1:] if not word.startswith("-")), None)
+    found = None if name is None else shutil.which(name)
+    if found is None:
+        raise OSError(f"PATH finds no {name}, which the #! line of {script} names")
+    return Path(found)
+
+
+def search_environment() -> dict[str, str | None]:
+    """The SHA-256 of each variable of :data:`SEARCH_VARIABLES` as this process has it,
+    ``None`` for one that is not set: what tells apart two shells that would run other code
+    through the same executables (a local build layered over a release)."""
+    return {
+        name: None if (value := os.environ.get(name)) is None else _text_digest(value)
+        for name in SEARCH_VARIABLES
+    }
+
+
+def _text_digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def tail(path: Path) -> str:
     """The last :data:`LOG_TAIL` lines of the text file ``path``; empty if it cannot be read."""
     try:
@@ -99,6 +189,21 @@ def tail(path: Path) -> str:
     except OSError:
         return ""
     return "\n".join(line.rstrip("\r\n") for line in lines)
+
+
+def ended(returncode: int) -> str:
+    """How a program that did not succeed ended, for a person: ``exited with status 3``, or
+    ``was killed by SIGKILL`` for a negative status (a signal); a SIGKILL that k4opt did not
+    send is most often the kernel's, out of memory."""
+    if returncode >= 0:
+        return f"exited with status {returncode}"
+    try:
+        name = signal.Signals(-returncode).name
+    except ValueError:
+        return f"was killed by signal {-returncode}"
+    if name == "SIGKILL":
+        return "was killed by SIGKILL (out of memory? the record holds its peak memory)"
+    return f"was killed by {name}"
 
 
 def timeout_problem(timeout: float | None) -> str | None:
@@ -208,16 +313,19 @@ def run(
     timeout: float | None = None,
     started: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
+    executable: Path | None = None,
 ) -> ProgramRun:
-    """Run the program ``name`` found on ``PATH`` with ``arguments`` in the existing directory
-    ``cwd`` (``workdir`` if ``None``), keeping the files ``logs`` names by role
-    (:data:`LOG_ROLES`) in the existing directory ``workdir``.
+    """Run the program ``name`` with ``arguments`` in the existing directory ``cwd``
+    (``workdir`` if ``None``), keeping the files ``logs`` names by role (:data:`LOG_ROLES`) in
+    the existing directory ``workdir``.
 
-    The program is started by its absolute path, so that a relative ``PATH`` entry still resolves
-    from inside ``cwd``. One that runs longer than ``timeout`` seconds is killed with every
-    process it started, and the run fails with its logs kept. ``started`` is told the id of the
-    process group the program runs in once it started, and ``die_with_parent`` kills it when the
-    calling thread ends, even by SIGKILL (see :func:`execute`). The caller checks ``timeout``
+    The program is ``executable`` if it is given (as a session pins it, :func:`locate`), else the
+    one found on ``PATH`` now. It is started by its absolute path, so that a relative ``PATH``
+    entry still resolves from inside ``cwd``. One that runs longer than ``timeout`` seconds is
+    killed with every process it started, and the run fails with its logs kept. ``started`` is
+    told the id of the process group the program runs in once it started, and
+    ``die_with_parent`` kills it when the calling thread ends, even by SIGKILL (see
+    :func:`execute`). The caller checks ``timeout``
     (:func:`timeout_problem`) and what the program should have written.
     """
     stdout, stderr, command = (workdir / logs[role] for role in LOG_ROLES)
@@ -226,7 +334,7 @@ def run(
     def made(argv: tuple[str, ...], returncode: int | None, error: str | None) -> ProgramRun:
         return ProgramRun(argv, here, returncode, stdout, stderr, command, error)
 
-    found = shutil.which(name)
+    found = str(executable) if executable is not None else shutil.which(name)
     if found is None:
         return made((), None, f"{name} not found on PATH (is the Key4hep environment set up?)")
     argv = (os.path.abspath(found), *arguments)
@@ -251,7 +359,7 @@ def run(
         error = f"{name} ran longer than {timeout:g} s and was killed (logs in {workdir}):\n"
         error += tail(stderr)
     elif returncode != 0:
-        error = f"{name} exited with status {returncode} (logs in {workdir}):\n" + tail(stderr)
+        error = f"{name} {ended(returncode)} (logs in {workdir}):\n" + tail(stderr)
     peak = peaks[0] if peaks else None
     record = {
         "argv": argv,

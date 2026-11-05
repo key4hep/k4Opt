@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -98,8 +99,14 @@ def test_the_reconstruction_runs_on_the_candidate_s_geometry_and_simulation(
     ]
     assert record["files"]["directory/CLDReconstruction.py"]["bytes"] == len("# the job\n")
     assert (here / "reconstruction" / "job" / "PandoraSettingsCLD" / "Likelihood.xml").is_file()
-    assert summary["environment"]["observed"]["k4run"].endswith("fake_stack/bin/k4run")
-    assert summary["environment"]["observed"]["ddsim"] == simulation.DDSIM
+    programs = summary["environment"]["observed"]["programs"]
+    assert programs["k4run"]["path"].endswith("fake_stack/bin/k4run")
+    assert (
+        programs["k4run"]["sha256"]
+        == hashlib.sha256(Path(programs["k4run"]["path"]).read_bytes()).hexdigest()
+    )
+    assert argv[0] == programs["k4run"]["path"]  # the executable identified is the one run
+    assert programs["ddsim"]["path"] == simulation.DDSIM
     (metric,) = summary["metrics"]
     assert metric["label"] == "gamma/test.reco_cells/reconstruction/ecal_barrel.mean_hit_cells"
 
@@ -184,6 +191,8 @@ def test_a_supplied_simulation_is_reconstructed_without_ddsim(
     record = json.loads((tmp_path / "run" / SUMMARY_NAME).read_text())
     argv = record["samples"]["gamma"]["stages"]["reconstruction"]["argv"]
     assert argv[argv.index("--IOSvc.Input") + 1] == str(given)
+    # no stage runs ddsim: the session identifies the k4run it runs, and only that
+    assert list(record["environment"]["observed"]["programs"]) == ["k4run"]
 
 
 def test_a_reconstruction_runs_in_a_worker_and_loses_events_there_too(

@@ -268,6 +268,9 @@ def test_options_are_written_the_way_ddsim_reads_them(
         ({"steeringFile": "steer.py"}, "executes it as Python"),
         ({"steering": "steer.py"}, "executes it as Python"),  # ddsim accepts the prefix
         ({"skipNEvents": 3}, "changes which events are simulated"),
+        ({"ui.commandsConfigure": "/control/execute /abs/y.mac"}, "/control/execute is not"),
+        ({"ui.commands": "/run/verbose 1; /control/shell rm x"}, "/control/shell is not"),
+        ({"ui.commandsPostRun": "/control/loop m.mac i 0 3 1"}, "/control/loop is not"),
         ({"dumpParameter": True}, "exits without simulating"),
         ({"numberOfEvents": 3}, "set events instead"),
         ({"numberOf": 3}, "set events instead"),
@@ -305,6 +308,12 @@ def test_the_threads_ddsim_simulates_with_are_its_number_of_threads() -> None:
 
 def test_plain_python_lists_are_accepted() -> None:
     assert particle_gun_args(GENERATOR) == args(GENERATOR)
+
+
+def test_ui_commands_that_read_no_file_are_passed_on() -> None:
+    assert "--ui.commandsConfigure=/run/verbose 1" in build(
+        {"ui.commandsConfigure": "/run/verbose 1"}
+    )
 
 
 @pytest.mark.parametrize("key", ["meta.eventParameters", "meta.runParameters"])
