@@ -31,9 +31,9 @@ from k4opt.optimization._optuna import marks
 from k4opt.optimization._optuna.read import trial_result
 from k4opt.optimization._optuna.space import constraint_values, objective_values
 from k4opt.optimization._results import TrialResult, record_of
+from k4opt.optimization._scope import StudyScope
 from k4opt.optimization._study import trial_directories, trial_directory
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import ProblemSpec
 from k4opt.record import SUMMARY_NAME
 
 _MESSAGE = 1000  # characters of a message kept in the optimizer's storage; the record has all
@@ -49,7 +49,7 @@ type Progress = Callable[[TrialResult], None]
 class _Study:
     directory: Path
     document: Mapping[str, Any]  # study.json
-    spec: ProblemSpec
+    scope: StudyScope  # what the study searches and how its trials are judged
     study: optuna.Study
     warn: Warn
     # what each reference only candidates name read, and the first trial that read it
@@ -71,7 +71,7 @@ def _report(
     """
     number = trial.number
     result, warnings = record_of(
-        run.directory, run.document, run.spec, number, trial.params, run.read
+        run.directory, run.document, run.scope, number, trial.params, run.read
     )
     assessment = result.assessment
     assert assessment is not None
@@ -122,7 +122,7 @@ def _reject(run: _Study, trial: Trial, rejected: Rejected) -> TrialResult:
     for key in marks.REJECTION:
         trial.set_user_attr(key, told[key])
     frozen = run.study.tell(trial, state=TrialState.FAIL)
-    result, _ = trial_result(run.directory, run.document, run.spec, frozen, run.read)
+    result, _ = trial_result(run.directory, run.document, run.scope, frozen, run.read)
     return result
 
 
@@ -227,7 +227,7 @@ def _recover(run: _Study, progress: Progress) -> None:
         # the trials still to come must read what the earlier candidates' own references read
         # (``run.read``); the warnings of a record were given when the optimizer was told it
         try:
-            trial_result(run.directory, run.document, run.spec, frozen, run.read)
+            trial_result(run.directory, run.document, run.scope, frozen, run.read)
         except OptimizationError as exc:
             raise OptimizationError(
                 f"{exc}; the study resumes only with every trial as its record holds it"
@@ -241,4 +241,4 @@ def _recover(run: _Study, progress: Progress) -> None:
             continue
         trial.set_user_attr(marks.RECOVERED, True)
         finished = run.study.tell(trial, state=TrialState.FAIL)
-        progress(trial_result(run.directory, run.document, run.spec, finished, run.read)[0])
+        progress(trial_result(run.directory, run.document, run.scope, finished, run.read)[0])

@@ -25,6 +25,8 @@ from k4opt.optimization import StudyResults, load_study, optimize
 from k4opt.optimization._export import FORMATS, export
 from k4opt.optimization._render import Progress, render_study
 from k4opt.optimization._show import render_results, render_trial
+from k4opt.problem import load_problem
+from k4opt.problem.candidate import parse_candidate
 from k4opt.terminal import color, interactive, printable
 
 
@@ -70,6 +72,17 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "--resume",
         action="store_true",
         help="continue the study in DIR, made with exactly the same problem, files and code",
+    )
+    parser.add_argument(
+        "--fix",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help=(
+            "give a parameter one value for every trial, which the optimizer then does not "
+            "search, e.g. ecal_cell_size=6.0 (repeatable); part of the study: a resume needs the "
+            "same"
+        ),
     )
     parser.add_argument(
         "--reuse",
@@ -165,6 +178,7 @@ def _register_study(commands: argparse._SubParsersAction[argparse.ArgumentParser
 
 def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     implementations = [load_evaluator(reference) for reference in args.evaluator]
+    fixed = parse_candidate(load_problem(args.problem), args.fix, "--fix") if args.fix else None
     try:
         with Progress(args.trials, out, err, bar=interactive(out), color=color(out)) as progress:
             report = optimize(
@@ -177,6 +191,7 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 storage=args.storage,
                 workers=args.workers,
                 reuse=args.reuse,
+                fixed=fixed,
                 warn=progress.warning,
                 progress=progress.trial,
                 activity=progress.activity,

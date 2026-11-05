@@ -22,6 +22,7 @@ from typing import Any, Literal, NoReturn
 from k4opt.evaluation import EvaluationContractError, Measurement, Scalar
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.optimization._identity import digest
+from k4opt.optimization._scope import StudyScope, limit_names
 from k4opt.optimization._study import (
     STUDY_NAME,
     check_candidate_files,
@@ -33,6 +34,7 @@ from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import (
     CandidateError,
     Constraint,
+    Criteria,
     Objective,
     ProblemConfigError,
     ProblemSpec,
@@ -55,18 +57,6 @@ OUTCOMES = (
     "running",
 )
 """How a trial ended (:attr:`TrialResult.outcome`), in the order reports list them."""
-
-
-def limit_names(spec: ProblemSpec) -> list[str]:
-    """The name of each limit of the problem, as the optimizer knows its constraint value."""
-    names = [
-        f"{c.label}:{bound}"
-        for c in spec.constraints
-        for bound in ("min", "max")
-        if getattr(c, bound) is not None
-    ]
-    assert len(set(names)) == len(names)  # constraints are unique by metric reference
-    return names
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +182,16 @@ class StudyResults:
         return self.directory / trial_directory(trial.number) / SUMMARY_NAME
 
     @property
+    def scope(self) -> StudyScope:
+        """What the study searches and how its trials are judged (its parameters, but those it
+        fixes, and the criteria of its level), as ``study.json`` records it; an ordinary study of
+        :attr:`problem` for a document that records none (one made by hand: every study read
+        back records it, checked)."""
+        if "scope" not in self.document:
+            return StudyScope.of(self.problem)
+        return StudyScope.recorded(self.problem, self.document)
+
+    @property
     def outcomes(self) -> Mapping[str, int]:
         """How many trials ended how, by :attr:`TrialResult.outcome`; every outcome is a key."""
         return FrozenMap({o: sum(t.outcome == o for t in self.trials) for o in OUTCOMES})
@@ -241,9 +241,10 @@ class StudyResults:
 # --- reading ---------------------------------------------------------------------------------
 
 
-def recorded_problem(document: Mapping[str, Any]) -> ProblemSpec:
-    """The problem ``study.json`` records, once the document holds together: its identity digest
-    is that of its parts, and the optimizer it records has the problem's directions and limits.
+def recorded_scope(document: Mapping[str, Any]) -> StudyScope:
+    """The scope of the study ``study.json`` records (:class:`StudyScope`, with its problem),
+    once the document holds together: its identity digest is that of its parts, and the optimizer
+    it records has the scope's directions and limits.
     No geometry, file or evaluator the problem names is needed."""
     if digest(document) != document.get("identity"):
         raise OptimizationError(
@@ -262,32 +263,40 @@ def recorded_problem(document: Mapping[str, Any]) -> ProblemSpec:
         raise OptimizationError(
             f"{STUDY_NAME} lacks the study's id, its creation time or the optimizer's study name"
         )
-    directions = [o.direction for o in spec.objectives]
-    if optimizer.get("directions") != directions:
+    scope = StudyScope.recorded(spec, document)
+    labels = [objective.label for objective in scope.criteria.objectives]
+    if optimizer.get("objectives") != labels:
+        raise OptimizationError(
+            f"{STUDY_NAME} records the objectives {optimizer.get('objectives')!r}, but the "
+            f"study's are {labels!r}"
+        )
+    if optimizer.get("directions") != scope.directions:
         raise OptimizationError(
             f"{STUDY_NAME} records the directions {optimizer.get('directions')!r}, but its "
-            f"problem's objectives are {directions!r}"
+            f"objectives are {scope.directions!r}"
         )
-    if optimizer.get("constraints") != limit_names(spec):
+    if optimizer.get("constraints") != scope.limit_names:
         raise OptimizationError(
             f"{STUDY_NAME} records the limits {optimizer.get('constraints')!r}, but its problem's "
-            f"are {limit_names(spec)!r}"
+            f"are {scope.limit_names!r}"
         )
-    return spec
+    return scope
 
 
 def record_of(
     directory: Path,
     document: Mapping[str, Any],
-    spec: ProblemSpec,
+    scope: StudyScope,
     number: int,
     params: Mapping[str, Any],
     read: dict[str, tuple[int, object]],
 ) -> tuple[TrialResult, list[str]]:
-    """Trial ``number`` as its record ``trial-NNNNNN/summary.json`` holds it, checked before
-    anything trusts it, with the warnings of :func:`~k4opt.optimization._study.check_record`.
+    """Trial ``number`` of the study of ``scope`` as its record ``trial-NNNNNN/summary.json``
+    holds it, checked before anything trusts it, with the warnings of
+    :func:`~k4opt.optimization._study.check_record`.
 
-    ``params`` is the candidate the optimizer proposed, and ``read`` what the external references
+    ``params`` is what the optimizer proposed (the candidate, with the study's fixed values),
+    and ``read`` what the external references
     only candidates name read for the earlier trials
     (:func:`~k4opt.optimization._study.check_candidate_files`). The record must be made for this
     trial of this study with its evaluators, stack and code, and its assessment must recompute
@@ -304,12 +313,14 @@ def record_of(
         summary = json.loads(data)
     except ValueError as exc:
         raise OptimizationError(f"{where} is not JSON: {exc}") from None
-    warnings = [f"trial {number}: {w}" for w in check_record(document, summary, number, params)]
+    candidate = scope.candidate(params)
+    found = check_record(document, summary, number, candidate, scope.replicate, scope.level)
+    warnings = [f"trial {number}: {w}" for w in found]
     if not isinstance(summary.get("id"), str):
         raise OptimizationError(f"{where} has no record id")
     check_candidate_files(read, summary, number)
     try:
-        assessment = Assessment.from_summary(spec, summary)
+        assessment = Assessment.from_summary(scope.spec, summary)
     except RecordError as exc:
         raise OptimizationError(f"{where}: {exc}") from None
     timed = {  # every time was checked by from_summary
@@ -317,7 +328,7 @@ def record_of(
         for sample, part in summary["samples"].items()
         for stage, entry in part["stages"].items()
     }
-    references = [parameter.name for parameter in spec.parameters]
+    references = [parameter.name for parameter in scope.spec.parameters]
     result = TrialResult(
         number=number,
         status=summary["status"],
@@ -336,7 +347,7 @@ def record_of(
 def recorded(
     directory: Path,
     document: Mapping[str, Any],
-    spec: ProblemSpec,
+    scope: StudyScope,
     number: int,
     params: Mapping[str, Any],
     told: object,
@@ -361,7 +372,7 @@ def recorded(
             f"{where} cannot be read (it is gone), though the optimizer was told it: nothing "
             "shows what the trial's values rest on"
         )
-    result, warnings = record_of(directory, document, spec, number, params, read)
+    result, warnings = record_of(directory, document, scope, number, params, read)
     if result.sha256 != reference.get("sha256"):
         raise OptimizationError(f"{where} is not the record the optimizer was told (other bytes)")
     if result.record != reference.get("id"):
@@ -381,7 +392,7 @@ def _seconds(value: object, where: str) -> float | None:
         raise OptimizationError(str(exc)) from None
 
 
-def pareto_front(trials: Sequence[TrialResult], spec: ProblemSpec) -> tuple[int, ...]:
+def pareto_front(trials: Sequence[TrialResult], criteria: Criteria) -> tuple[int, ...]:
     """The numbers of the feasible ``valid`` trials that no other one dominates.
 
     A trial dominates another when it is at least as good in every objective, in that
@@ -394,7 +405,7 @@ def pareto_front(trials: Sequence[TrialResult], spec: ProblemSpec) -> tuple[int,
     so far. With two objectives that is the last one on the front, so the front takes a sort
     and one pass; with one, the first point alone is on it.
     """
-    signs = [1 if o.direction == "minimize" else -1 for o in spec.objectives]
+    signs = [1 if o.direction == "minimize" else -1 for o in criteria.objectives]
     points: dict[tuple[int | float, ...], list[int]] = {}
     for t in trials:
         if t.status != "valid" or t.feasible is not True or t.assessment is None:
@@ -477,7 +488,7 @@ def _from_dict(data: object) -> StudyResults:
     study = _mapping(form["study"], "study", None)
     document = thaw(study)
     assert isinstance(document, dict)
-    spec = recorded_problem(document)  # its identity digest is that of its parts
+    scope = recorded_scope(document)  # its identity digest is that of its parts
     if portable(document) != document:
         _refuse("study", "holds more of study.json than its JSON form keeps")
     entries = form["trials"]
@@ -486,19 +497,19 @@ def _from_dict(data: object) -> StudyResults:
     trials: list[TrialResult] = []
     flags: list[object] = []
     for index, entry in enumerate(entries):
-        trial, flag = _trial(entry, spec, f"trials[{index}]")
+        trial, flag = _trial(entry, scope, f"trials[{index}]")
         if trials and trial.number <= trials[-1].number:
             _refuse(f"trials[{index}]", f"is trial {trial.number}, after trial {trials[-1].number}")
         trials.append(trial)
         flags.append(flag)
     results = StudyResults(
-        name=document["optimizer"]["study"],  # checked by recorded_problem
+        name=document["optimizer"]["study"],  # checked by recorded_scope
         id=document["id"],
         created=document["created"],
-        problem=spec,
+        problem=scope.spec,
         document=study,
         trials=tuple(trials),
-        pareto=pareto_front(trials, spec),
+        pareto=pareto_front(trials, scope.criteria),
     )
     if form["pareto"] != results.pareto:
         _refuse("pareto", f"is {form['pareto']!r}, but the front of its trials is {results.pareto}")
@@ -511,7 +522,7 @@ def _from_dict(data: object) -> StudyResults:
     return results
 
 
-def _trial(entry: object, spec: ProblemSpec, where: str) -> tuple[TrialResult, object]:
+def _trial(entry: object, scope: StudyScope, where: str) -> tuple[TrialResult, object]:
     """One trial of the JSON form, as :func:`record_of` and the optimizer's adapter make it, and
     its ``pareto`` flag."""
     data = _mapping(entry, where, _TRIAL)
@@ -541,8 +552,8 @@ def _trial(entry: object, spec: ProblemSpec, where: str) -> tuple[TrialResult, o
     trial = TrialResult(
         number=number,
         status=status,
-        candidate=_candidate(data["candidate"], spec, held, where),
-        assessment=_assessment(data["assessment"], spec, status, where),
+        candidate=_candidate(data["candidate"], scope.spec, held, where),
+        assessment=_assessment(data["assessment"], scope.criteria, status, where),
         record=record_id,
         sha256=sha256,
         message=_text(data["message"], f"{where}'s message", optional=True),
@@ -605,7 +616,7 @@ def _candidate(value: object, spec: ProblemSpec, held: bool, where: str) -> dict
     return dict(candidate)  # type: ignore[arg-type]  # scalars, checked above
 
 
-def _assessment(value: object, spec: ProblemSpec, status: str, where: str) -> Assessment | None:
+def _assessment(value: object, criteria: Criteria, status: str, where: str) -> Assessment | None:
     """The assessment of a trial with a valid, invalid or failed record, against the problem:
     the objectives of a valid one, each bound of each constraint, and whether all are kept."""
     if status not in _RECORDED:
@@ -617,23 +628,27 @@ def _assessment(value: object, spec: ProblemSpec, status: str, where: str) -> As
     objectives: tuple[ObjectiveValue, ...] | None = None
     measured = data["objectives"]
     if valid:
-        if not isinstance(measured, tuple) or len(measured) != len(spec.objectives):
-            _refuse(f"{where}'s objectives", f"are not one value of each of {len(spec.objectives)}")
+        if not isinstance(measured, tuple) or len(measured) != len(criteria.objectives):
+            _refuse(
+                f"{where}'s objectives", f"are not one value of each of {len(criteria.objectives)}"
+            )
         objectives = tuple(
             _objective(entry, objective, f"{where}'s objectives[{index}]")
-            for index, (entry, objective) in enumerate(zip(measured, spec.objectives, strict=True))
+            for index, (entry, objective) in enumerate(
+                zip(measured, criteria.objectives, strict=True)
+            )
         )
     elif measured is not None:
         _refuse(f"{where}'s objectives", f"are given, but the trial is {status}")
     bounds: list[tuple[Constraint, Literal["min", "max"]]] = [
         (constraint, bound)
-        for constraint in spec.constraints
+        for constraint in criteria.constraints
         for bound in _BOUNDS
         if getattr(constraint, bound) is not None
     ]
     entries = data["limits"]
     if not isinstance(entries, tuple) or len(entries) != len(bounds):
-        _refuse(f"{where}'s limits", f"are not one of each of the limits {limit_names(spec)}")
+        _refuse(f"{where}'s limits", f"are not one of each of the limits {limit_names(criteria)}")
     limits = tuple(
         _limit(entry, constraint, bound, valid, f"{where}'s limits[{index}]")
         for index, (entry, (constraint, bound)) in enumerate(zip(entries, bounds, strict=True))

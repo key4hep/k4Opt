@@ -18,7 +18,8 @@ from types import TracebackType
 from typing import Any, TextIO
 
 from k4opt.execution import Activity
-from k4opt.optimization._results import OUTCOMES, StudyResults, TrialResult, limit_names
+from k4opt.optimization._results import OUTCOMES, StudyResults, TrialResult
+from k4opt.optimization._scope import limit_names
 from k4opt.optimization._study import trial_directory
 from k4opt.record import SUMMARY_NAME
 from k4opt.terminal import Style, printable, width
@@ -87,10 +88,10 @@ def _counts(results: StudyResults, style: Style) -> str:
 def render_study(results: StudyResults, out: TextIO, *, color: bool = False) -> None:
     """Print the study: its name, how many trials ended how, and its Pareto front."""
     style = Style(color)
-    spec = results.problem
+    criteria = results.scope.criteria
     print(
         f"{style.dim('study:')}    {style.bold(printable(results.name))}, "
-        f"{len(spec.objectives)} objective(s), {len(limit_names(spec))} limit(s), "
+        f"{len(criteria.objectives)} objective(s), {len(limit_names(criteria))} limit(s), "
         f"{printable(results.study_path)}",
         file=out,
     )

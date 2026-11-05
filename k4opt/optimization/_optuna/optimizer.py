@@ -26,16 +26,16 @@ from k4opt.optimization._identity import (
     search_warnings,
 )
 from k4opt.optimization._optuna.storage import storage_record
+from k4opt.optimization._scope import StudyScope
 from k4opt.optimization._study import CONSTRAINT_VALUES, STUDY_SCHEMA, now, trial_directories
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import MetricRef, ProblemSpec
 
 STARTUP_TRIALS = 10  # random proposals until this many trials are COMPLETE
 CONSTANT_LIAR = True  # trials still running count as bad ones, so trials at once spread out
 
 
 def new_document(
-    spec: ProblemSpec,
+    scope: StudyScope,
     identity: Mapping[str, Any],
     space: Mapping[str, BaseDistribution],
     names: Sequence[str],
@@ -47,13 +47,14 @@ def new_document(
     document |= dict(identity)
     document["identity"] = digest(identity)
     seed = secrets.randbelow(2**32) if seed is None else seed
-    name = f"{spec.name}-{study_id[:8]}"
-    document["optimizer"] = _optimizer(spec, space, names, name=name, seed=seed, storage=storage)
+    name = f"{scope.spec.name}-{study_id[:8]}"
+    document["scope"] = scope.to_dict()
+    document["optimizer"] = _optimizer(scope, space, names, name=name, seed=seed, storage=storage)
     return document
 
 
 def _optimizer(
-    spec: ProblemSpec,
+    scope: StudyScope,
     space: Mapping[str, BaseDistribution],
     names: Sequence[str],
     *,
@@ -74,7 +75,9 @@ def _optimizer(
             "constant_liar": CONSTANT_LIAR,
             "seeding": "per session, from the seed and the number of trials",
         },
-        "directions": [o.direction for o in spec.objectives],
+        # what it tells the optimizer, by label, with their directions
+        "objectives": [objective.label for objective in scope.criteria.objectives],
+        "directions": scope.directions,
         "parameters": {
             key: json.loads(distribution_to_json(distribution))
             for key, distribution in space.items()
@@ -87,7 +90,7 @@ def _optimizer(
 def check_resume(
     document: Mapping[str, Any],
     identity: Mapping[str, Any],
-    spec: ProblemSpec,
+    scope: StudyScope,
     space: Mapping[str, BaseDistribution],
     names: Sequence[str],
     storage: str | None,
@@ -97,12 +100,17 @@ def check_resume(
     one whose recorded optimizer is not the one this k4opt would run it with."""
     optimizer = document["optimizer"]
     found = differences(document, identity) + program_differences(document, identity)
+    if document.get("scope") != scope.to_dict():
+        found.append(
+            f"it searches with {document.get('scope')!r}, not {scope.to_dict()!r} (give the same "
+            "--fix as when it was made)"
+        )
     seed = (optimizer.get("sampler") or {}).get("seed")
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**32:
         found.append(f"its sampler seed {seed!r} is no seed in [0, 2**32)")
     else:
         expected = _optimizer(
-            spec, space, names, name=str(optimizer.get("study")), seed=seed, storage=storage
+            scope, space, names, name=str(optimizer.get("study")), seed=seed, storage=storage
         )
         found += [
             f"its recorded optimizer {key} is {optimizer.get(key)!r}, not {value!r}"
@@ -166,15 +174,11 @@ def open_optuna(
 def study_attributes(document: Mapping[str, Any]) -> dict[str, Any]:
     """The ``k4opt.*`` attributes of the Optuna study ``document`` describes."""
     optimizer = document["optimizer"]
-    objectives = document["problem"]["definition"]["objectives"]
     return {
         "k4opt.study": document["id"],
         "k4opt.identity": document["identity"],
         "k4opt.parameters": list(optimizer["parameters"]),
-        "k4opt.objectives": [
-            MetricRef(o["evaluator"], o["stage"], o["metric"], o.get("sample")).label
-            for o in objectives
-        ],
+        "k4opt.objectives": list(optimizer["objectives"]),
         "k4opt.constraints": list(optimizer["constraints"]),
     }
 

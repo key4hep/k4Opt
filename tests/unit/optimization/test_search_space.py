@@ -20,7 +20,7 @@ from optuna.distributions import (
 
 from k4opt.optimization import OptimizationError, optimize
 from k4opt.optimization._optuna.space import constraint_values, objective_values, search_space
-from k4opt.optimization._results import limit_names
+from k4opt.optimization._scope import limit_names
 from k4opt.problem import parse_problem
 from k4opt.record import Assessment, Limit, ObjectiveValue
 from tests.support.evaluators import candidate_check, trade_off
@@ -223,7 +223,7 @@ def test_each_bound_of_a_constraint_is_a_limit_of_its_own() -> None:
         {"stage": "analysis", "metric": "b", "max": 0.01, "scale": 0.001},
     ]
     spec = parse_problem(problem_document(constraints=constraints))
-    assert limit_names(spec) == [
+    assert limit_names(spec.criteria()) == [
         "test.trade_off/analysis/a:min",
         "test.trade_off/analysis/a:max",
         "test.trade_off/analysis/b:max",

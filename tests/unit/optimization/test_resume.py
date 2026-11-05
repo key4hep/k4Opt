@@ -1104,7 +1104,7 @@ def test_a_rejected_trial_is_read_strictly(
     tmp_path: Path, write_problem: Callable[..., Path], forge: dict[str, Any], message: str
 ) -> None:
     from k4opt.optimization._optuna.read import trial_result
-    from k4opt.optimization._results import recorded_problem
+    from k4opt.optimization._results import recorded_scope
     from k4opt.optimization._study import read_study
 
     problem, output = rejecting(write_problem, diagnostic="spare"), tmp_path / "s"
@@ -1127,7 +1127,7 @@ def test_a_rejected_trial_is_read_strictly(
     if not forge:  # all as k4opt tells it, but a directory: a rejected trial has none
         (output / "trial-000000").mkdir()
     with pytest.raises(OptimizationError, match=message):
-        trial_result(output, document, recorded_problem(document), frozen, {})
+        trial_result(output, document, recorded_scope(document), frozen, {})
 
 
 def _checking() -> Any:

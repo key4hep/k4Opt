@@ -186,16 +186,19 @@ def _parse_value(parameter: Parameter, text: str) -> Scalar:
     return float(text)
 
 
-def parse_candidate(spec: ProblemSpec, assignments: Sequence[str]) -> dict[str, Scalar]:
-    """The candidate ``NAME=VALUE`` strings give, each value read as its parameter's kind."""
+def parse_candidate(
+    spec: ProblemSpec, assignments: Sequence[str], option: str = "--param"
+) -> dict[str, Scalar]:
+    """The candidate ``NAME=VALUE`` strings give, each value read as its parameter's kind; an
+    error names them as given by ``option``."""
     by_name = {p.name: p for p in spec.parameters}
     candidate: dict[str, Scalar] = {}
     for assignment in assignments:
         name, equals, text = assignment.partition("=")  # a name holds no "=", a value may
         if not equals:
-            raise CandidateError(f"--param {assignment!r}: expected NAME=VALUE")
+            raise CandidateError(f"{option} {assignment!r}: expected NAME=VALUE")
         if name in candidate:
-            raise CandidateError(f"--param {name} is given more than once")
+            raise CandidateError(f"{option} {name} is given more than once")
         parameter = by_name.get(name)
         # an unknown name is reported by the candidate validation, with the known ones
         candidate[name] = text if parameter is None else _parse_value(parameter, text)

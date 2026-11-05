@@ -33,10 +33,10 @@ from __future__ import annotations
 
 import contextlib
 import os
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Literal
 
-from k4opt.evaluation import EvaluatorProtocol
+from k4opt.evaluation import EvaluatorProtocol, Scalar
 from k4opt.execution import Activity
 from k4opt.optimization._results import OUTCOMES, StudyResults, TrialResult
 from k4opt.optimization._study import STUDY_NAME
@@ -84,6 +84,7 @@ def optimize(
     storage: str | None = None,
     workers: int | Literal["auto", "inline"] = "inline",
     reuse: Sequence[str | os.PathLike[str]] = (),
+    fixed: Mapping[str, Scalar] | None = None,
     warn: Callable[[str], None] | None = None,
     progress: Callable[[TrialResult], None] | None = None,
     activity: Callable[[Activity], None] | None = None,
@@ -111,6 +112,11 @@ def optimize(
     in the runs and studies ``reuse`` names; its record says where the output comes from. Neither
     is part of the study.
 
+    ``fixed`` gives some parameters one value for every trial (``k4opt optimize --fix``): the
+    optimizer proposes only the others, every record holds the complete candidate, and a resume
+    needs the same values. A study of the reconstruction with the geometry fixed simulates once,
+    and its trials reuse that simulation.
+
     ``warn`` is called with each warning, ``progress`` with each trial as it ends, the trials a
     resume finishes first (``recovered``), and ``activity`` with what runs whenever that changes
     (:class:`~k4opt.execution.Activity`: trials under way, busy slots); each trial is given as
@@ -134,6 +140,7 @@ def optimize(
         storage=storage,
         workers=workers,
         reuse=reuse,
+        fixed=fixed,
         warn=warn or (lambda message: None),
         progress=progress or (lambda trial: None),
         activity=activity,

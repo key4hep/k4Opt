@@ -78,7 +78,7 @@ def trade_offs(
         raise OptimizationError(
             f"trial {reference} is {base.outcome} and has no objective values to compare with"
         )
-    labels = [o.label for o in results.problem.objectives]
+    labels = [o.label for o in results.scope.criteria.objectives]
     seen: set[str] = set()
     for rule in rules:
         if rule.label not in labels:

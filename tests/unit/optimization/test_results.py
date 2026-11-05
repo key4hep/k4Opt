@@ -24,7 +24,7 @@ from k4opt.evaluation import Measurement, load_evaluator
 from k4opt.execution import EvaluationSession
 from k4opt.optimization import OptimizationError, StudyResults, TrialResult, load_study, optimize
 from k4opt.optimization._optuna.space import search_space
-from k4opt.optimization._results import OUTCOMES, pareto_front, recorded, recorded_problem
+from k4opt.optimization._results import OUTCOMES, pareto_front, recorded, recorded_scope
 from k4opt.optimization._study import read_study
 from k4opt.problem import load_problem, parse_problem
 from k4opt.record import Assessment
@@ -167,16 +167,18 @@ def test_the_front_is_every_feasible_trial_no_other_dominates(directions: tuple[
         n for n, p in points.items() if not any(dominates(q, p) for q in points.values())
     )
     assert len(expected) > 1  # ties stay
-    assert pareto_front(trials, spec) == expected
+    assert pareto_front(trials, spec.criteria()) == expected
 
 
 def test_a_large_front_takes_a_sort_and_one_pass_not_a_comparison_of_every_pair() -> None:
     objectives = [("analysis", "m0", "minimize"), ("analysis", "m1", "minimize")]
     spec = parse_problem(problem_document(objectives=objectives))
     trials = [_trial(n, [n, -n], True) for n in range(20_000)]  # none dominates another
-    assert pareto_front(trials, spec) == tuple(range(20_000))  # all 2e8 pairs would take minutes
+    assert pareto_front(trials, spec.criteria()) == tuple(
+        range(20_000)
+    )  # all 2e8 pairs would take minutes
     tied = [_trial(n, [1, 1], True) for n in range(20_000)]
-    assert pareto_front(tied, spec) == tuple(range(20_000))
+    assert pareto_front(tied, spec.criteria()) == tuple(range(20_000))
 
 
 def test_values_keep_their_units_and_uncertainties_and_trials_their_recorded_times(
@@ -478,17 +480,17 @@ def test_a_record_must_be_the_trials_own_and_hold_up(
     output = tmp_path / "s"
     run(mixed_problem, output, 2, seed=1)
     document = read_study(output)
-    spec = recorded_problem(document)
+    scope = recorded_scope(document)
     params = dict(optuna_study(output).trials[0].params)
     path = output / "trial-000000" / "summary.json"
-    result, _ = recorded(output, document, spec, 0, params, _told(path), {})
+    result, _ = recorded(output, document, scope, 0, params, _told(path), {})
     assert result.record == summary(output, 0)["id"]  # as it is, it holds up
     edit, message = RECORD_CHANGES[change]
     told: dict[str, Any] = {}
     edit(path, told)
     told = _told(path) | told  # the bytes on disk, as if the optimizer had been told them
     with pytest.raises(OptimizationError, match=message):
-        recorded(output, document, spec, 0, params, told, {})
+        recorded(output, document, scope, 0, params, told, {})
 
 
 def test_a_replicate_of_the_trials_candidate_does_not_stand_in_for_its_record(
@@ -498,7 +500,7 @@ def test_a_replicate_of_the_trials_candidate_does_not_stand_in_for_its_record(
     output = tmp_path / "s"
     run(sampled_problem, output, 1, seed=1, evaluators=[cell_count()])
     document = read_study(output)
-    spec = recorded_problem(document)
+    scope = recorded_scope(document)
     params = dict(optuna_study(output).trials[0].params)
     # the same candidate, made for the same trial, on other events: a record that holds up
     replicated = tmp_path / "replicate"
@@ -511,7 +513,7 @@ def test_a_replicate_of_the_trials_candidate_does_not_stand_in_for_its_record(
     shutil.copytree(replicated, output / "trial-000000")
     path = output / "trial-000000" / "summary.json"
     with pytest.raises(OptimizationError, match="is replicate 1 of its candidate"):
-        recorded(output, document, spec, 0, params, _told(path), {})
+        recorded(output, document, scope, 0, params, _told(path), {})
 
 
 STUDY_CHANGES: dict[str, tuple[Callable[[Path], None], str]] = {
@@ -528,7 +530,19 @@ STUDY_CHANGES: dict[str, tuple[Callable[[Path], None], str]] = {
     ),
     "other directions": (
         lambda path: _rewrite(path, lambda d: d["optimizer"].update(directions=["maximize"] * 2)),
-        r"study\.json records the directions \['maximize', 'maximize'\], but its problem's",
+        r"study\.json records the directions \['maximize', 'maximize'\], but its objectives",
+    ),
+    "other objectives": (
+        lambda path: _rewrite(path, lambda d: d["optimizer"]["objectives"].reverse()),
+        r"study\.json records the objectives .*, but the study's are",
+    ),
+    "another scope": (
+        lambda path: _rewrite(path, lambda d: d["scope"].update(replicate=1)),
+        r"study\.json records the scope .*, but its problem makes it",
+    ),
+    "no scope": (
+        lambda path: _rewrite(path, lambda d: d.pop("scope")),
+        r"study\.json records no scope of the study",
     ),
 }
 
