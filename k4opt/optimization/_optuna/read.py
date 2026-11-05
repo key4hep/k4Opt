@@ -30,12 +30,19 @@ from k4opt.optimization._optuna.storage import close, existing_storage, leaving
 from k4opt.optimization._results import (
     StudyResults,
     TrialResult,
+    check_inner,
     pareto_front,
     recorded,
     recorded_scope,
 )
 from k4opt.optimization._scope import StudyScope
-from k4opt.optimization._study import STUDY_NAME, read_study, trial_directories, trial_directory
+from k4opt.optimization._study import (
+    STUDY_NAME,
+    inner_directory,
+    read_study,
+    trial_directories,
+    trial_directory,
+)
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem.plan import level_plan, rejecting
 
@@ -107,13 +114,18 @@ def trial_result(
             f"trial {number} has the parameter(s) {', '.join(unknown)}, which the study does "
             "not search"
         )
-    candidate = scope.candidate(frozen.params)  # with the values the study fixes
+    selected = attrs.get(marks.SELECTED)
+    added = {} if selected is None else selected["values"]
+    # with the values the study fixes, and those of the trial of the level below it selected
+    candidate = scope.candidate({**frozen.params, **added})
     recovered = attrs.get(marks.RECOVERED) is True
     if frozen.state == TrialState.RUNNING:
-        return TrialResult(number, "running", candidate, recovered=recovered), []
+        return TrialResult(number, "running", candidate, recovered=recovered, selected=selected), []
     told, error = attrs.get(marks.RECORD), attrs.get(marks.ERROR)
     if attrs.get(marks.STATUS) == "rejected":
         return _rejected(frozen, scope, candidate, directory / trial_directory(number)), []
+    if attrs.get(marks.STATUS) == "unscored":
+        return _unscored(frozen, scope, candidate), []
     if told is None:
         # interrupted, also while its rejection was told (a prefix of it, without the status)
         ours = marks.DIR in attrs or recovered
@@ -125,7 +137,12 @@ def trial_result(
             )
         status, message = ("interrupted", None) if error is None else ("error", str(error))
         return TrialResult(number, status, candidate, message=message, recovered=recovered), []
-    result, warnings = recorded(directory, document, scope, number, frozen.params, told, read)
+    if scope.nested and selected is None:
+        raise OptimizationError(
+            f"trial {number} has a record, but selected no trial of its study of the level below"
+        )
+    params = frozen.params
+    result, warnings = recorded(directory, document, scope, number, params, told, read, selected)
     if attrs.get(marks.STATUS) != result.status:
         raise OptimizationError(
             f"trial {number}: the optimizer was told the status {attrs.get(marks.STATUS)!r}, "
@@ -140,6 +157,21 @@ def trial_result(
             f"trial {number} is {frozen.state.name}, but its record is {result.status!r}"
         )
     return replace(result, recovered=recovered), warnings
+
+
+def _unscored(frozen: FrozenTrial, scope: StudyScope, candidate: Mapping[str, Any]) -> TrialResult:
+    """Trial ``frozen``, whose study of the level below has no feasible trial: FAIL, without
+    values or a record, saying why."""
+    attrs, where = frozen.user_attrs, f"trial {frozen.number} is unscored, but"
+    if not scope.nested:
+        raise OptimizationError(f"{where} its study has no level below")
+    if frozen.state != TrialState.FAIL or frozen.values is not None or frozen.constraints:
+        raise OptimizationError(f"{where} it is {frozen.state.name}, with values or constraints")
+    message = attrs.get(marks.MESSAGE)
+    if not isinstance(message, str):
+        raise OptimizationError(f"{where} its message is {message!r}")
+    recovered = attrs.get(marks.RECOVERED) is True
+    return TrialResult(frozen.number, "unscored", candidate, message=message, recovered=recovered)
 
 
 def _rejected(
@@ -184,6 +216,7 @@ def results_of(
     scope: StudyScope,
     study: optuna.Study,
     warnings: Sequence[str] = (),
+    storage: str | None = None,
 ) -> StudyResults:
     """The study ``document`` describes, whose trials ``study`` holds, as its records hold it:
     each trial read by :func:`trial_result`, as :func:`k4opt.optimization.load_study` reads it,
@@ -194,6 +227,8 @@ def results_of(
     held = sorted(study.get_trials(deepcopy=False), key=lambda frozen: frozen.number)
     for frozen in held:
         result, found = trial_result(directory, document, scope, frozen, read)
+        if scope.nested:
+            result = _with_inner(directory, document["id"], scope, frozen, result, storage)
         trials.append(result)
         notes += found
     known = {frozen.user_attrs.get(marks.DIR, trial_directory(frozen.number)) for frozen in held}
@@ -217,6 +252,31 @@ def results_of(
     )
 
 
+def _with_inner(
+    directory: Path,
+    study: str,
+    scope: StudyScope,
+    frozen: FrozenTrial,
+    result: TrialResult,
+    storage: str | None,
+) -> TrialResult:
+    """``result`` with the study of the level below that its trial stands for, read as any study
+    and its link checked (:func:`~k4opt.optimization._results.check_inner`): every trial that
+    ended with a record, or unscored, has one; a trial that was stopped may have none yet."""
+    path = inner_directory(directory, frozen.number)
+    if (path / STUDY_NAME).is_file():
+        inner = load(path, storage)
+        if inner.id != frozen.user_attrs.get(marks.CHILD):
+            raise OptimizationError(
+                f"trial {frozen.number} stands for the study "
+                f"{frozen.user_attrs.get(marks.CHILD)!r}, but {path} holds {inner.id!r}"
+            )
+        result = replace(result, inner=inner)
+    if result.inner is not None or result.record is not None or result.status == "unscored":
+        check_inner(study, scope, result)
+    return result
+
+
 def load(directory: str | os.PathLike[str], storage: str | None) -> StudyResults:
     """The study in ``directory`` as its records hold it, read without changing anything; see
     :func:`k4opt.optimization.load_study`."""
@@ -229,7 +289,8 @@ def load(directory: str | os.PathLike[str], storage: str | None) -> StudyResults
     database: BaseStorage | None = None
     try:
         database = existing_storage(path, document, storage)
-        return results_of(path, document, scope, _existing_study(document, database))
+        study = _existing_study(document, database)
+        return results_of(path, document, scope, study, storage=storage)
     except Exception as exc:
         replacement, secret = leaving(exc, storage, what="the study cannot be read")
         if replacement is None:

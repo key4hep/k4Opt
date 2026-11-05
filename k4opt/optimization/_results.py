@@ -52,6 +52,7 @@ OUTCOMES = (
     "invalid",
     "failed",
     "rejected",
+    "unscored",
     "interrupted",
     "error",
     "running",
@@ -80,7 +81,10 @@ class TrialResult:
     ``stage_seconds`` (each stage that ran, by label: ``gamma/simulation``) are the wall-clock
     times it records, no estimate. ``diagnostics`` holds, as the record does, each diagnostic that
     did not succeed (``task``, ``status``, ``message``): what the status leaves out. ``recovered``
-    marks a trial a resume finished.
+    marks a trial a resume finished. A trial that stands for a study of the level below holds
+    that study (``inner``) and the best trial of it, evaluated again for its record (``selected``:
+    ``study``, ``trial`` and the ``values`` it adds to the candidate); it is ``unscored``, with
+    no record, if that study has no feasible trial.
     """
 
     number: int
@@ -94,6 +98,8 @@ class TrialResult:
     stage_seconds: Mapping[str, float] = field(default_factory=lambda: FrozenMap({}))
     recovered: bool = False
     diagnostics: tuple[Mapping[str, str | None], ...] = ()
+    selected: Mapping[str, Json] | None = None
+    inner: StudyResults | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate", FrozenMap(self.candidate))
@@ -135,6 +141,8 @@ class TrialResult:
             "message": self.message,
             "diagnostics": [dict(entry) for entry in self.diagnostics],
             "record": None if self.record is None else {"id": self.record, "sha256": self.sha256},
+            "selected": None if self.selected is None else thaw(self.selected),
+            "inner": None if self.inner is None else self.inner.to_dict(),
         }
 
 
@@ -297,12 +305,14 @@ def record_of(
     number: int,
     params: Mapping[str, Any],
     read: dict[str, tuple[int, object]],
+    selected: Mapping[str, Any] | None = None,
 ) -> tuple[TrialResult, list[str]]:
     """Trial ``number`` of the study of ``scope`` as its record ``trial-NNNNNN/summary.json``
     holds it, checked before anything trusts it, with the warnings of
     :func:`~k4opt.optimization._study.check_record`.
 
-    ``params`` is what the optimizer proposed (the candidate, with the study's fixed values),
+    ``params`` is what the optimizer proposed (the candidate, with the study's fixed values, and
+    the values of the trial ``selected`` of its study of the level below, if it has one),
     and ``read`` what the external references
     only candidates name read for the earlier trials
     (:func:`~k4opt.optimization._study.check_candidate_files`). The record must be made for this
@@ -320,8 +330,11 @@ def record_of(
         summary = json.loads(data)
     except ValueError as exc:
         raise OptimizationError(f"{where} is not JSON: {exc}") from None
-    candidate = scope.candidate(params)
-    found = check_record(document, summary, number, candidate, scope.replicate, scope.level)
+    added = {} if selected is None else selected["values"]
+    candidate = scope.candidate({**params, **added})
+    found = check_record(
+        document, summary, number, candidate, scope.replicate, scope.level, selected
+    )
     warnings = [f"trial {number}: {w}" for w in found]
     if not isinstance(summary.get("id"), str):
         raise OptimizationError(f"{where} has no record id")
@@ -347,6 +360,7 @@ def record_of(
         elapsed_seconds=seconds(summary.get("elapsed_seconds"), "elapsed_seconds"),
         stage_seconds={stage: seconds for stage, seconds in timed.items() if seconds is not None},
         diagnostics=summary["diagnostics"],  # checked by from_summary
+        selected=selected,
     )
     return result, warnings
 
@@ -359,6 +373,7 @@ def recorded(
     params: Mapping[str, Any],
     told: object,
     read: dict[str, tuple[int, object]],
+    selected: Mapping[str, Any] | None = None,
 ) -> tuple[TrialResult, list[str]]:
     """Trial ``number`` as the record the optimizer was told holds it (:func:`record_of`).
 
@@ -379,7 +394,7 @@ def recorded(
             f"{where} cannot be read (it is gone), though the optimizer was told it: nothing "
             "shows what the trial's values rest on"
         )
-    result, warnings = record_of(directory, document, scope, number, params, read)
+    result, warnings = record_of(directory, document, scope, number, params, read, selected)
     if result.sha256 != reference.get("sha256"):
         raise OptimizationError(f"{where} is not the record the optimizer was told (other bytes)")
     if result.record != reference.get("id"):
@@ -397,6 +412,82 @@ def _seconds(value: object, where: str) -> float | None:
         return seconds(value, where)
     except RecordError as exc:
         raise OptimizationError(str(exc)) from None
+
+
+def best_trial(trials: Sequence[TrialResult], criteria: Criteria) -> TrialResult | None:
+    """The best feasible ``valid`` trial of a study of a level below the top, by the one objective
+    of its ``criteria`` (the lowest number among equals), ``None`` without one: a pure function
+    of the trials' records, so that it can be checked again whenever they are read."""
+    (objective,) = criteria.objectives
+    sign = 1 if objective.direction == "minimize" else -1
+    feasible = [
+        t
+        for t in trials
+        if t.status == "valid"
+        and t.feasible is True
+        and t.assessment is not None
+        and t.assessment.objectives
+    ]
+    if not feasible:
+        return None
+
+    def value(trial: TrialResult) -> tuple[int | float, int]:
+        assert trial.assessment is not None
+        assert trial.assessment.objectives
+        return sign * trial.assessment.objectives[0].value, trial.number
+
+    return min(feasible, key=value)
+
+
+def no_best_trial(trials: Sequence[TrialResult]) -> str:
+    """Why a study of a level below the top has no best trial, for the trial it stands for."""
+    outcomes = {o: sum(t.outcome == o for t in trials) for o in OUTCOMES}
+    held = ", ".join(f"{count} {o}" for o, count in outcomes.items() if count)
+    return f"no feasible trial among {len(trials)}: {held}"
+
+
+def check_inner(study: str, scope: StudyScope, trial: TrialResult) -> None:
+    """Refuse a trial of the study ``study`` of ``scope`` whose link to its study of the level
+    below does not hold: that study must be the one started for this trial, with its values,
+    and the trial it selected (or none, if it is ``unscored``) the best of it, by its records."""
+    where = f"trial {trial.number}"
+    inner = trial.inner
+    if inner is None:
+        raise OptimizationError(f"{where} stands for a study of the level below, but has none")
+    below = inner.scope
+    if below.level != scope.level + 1 or below.parent != {"study": study, "trial": trial.number}:
+        raise OptimizationError(
+            f"{where}: its inner study was started for {below.parent!r} at level {below.level}, "
+            "not for this trial"
+        )
+    for name, value in below.fixed.items():
+        given = trial.candidate.get(name, _MISSING)
+        if (type(given), given) != (type(value), value):
+            raise OptimizationError(
+                f"{where}: its inner study fixes {name} at {value!r}, but the trial gives {given!r}"
+            )
+    best = best_trial(inner.trials, below.criteria)
+    if trial.status == "unscored":
+        if best is not None:
+            raise OptimizationError(
+                f"{where} is unscored, but its inner study has the feasible trial {best.number}"
+            )
+        return
+    selected = trial.selected
+    if selected is None:
+        return  # not yet: it has no record, its inner study still goes on or was just chosen
+    if best is None or selected.get("trial") != best.number or selected.get("study") != inner.id:
+        raise OptimizationError(
+            f"{where} selected {thaw(selected)!r}, but the best trial of its inner study "
+            f"{inner.id} is {None if best is None else best.number}"
+        )
+    values = selected.get("values")
+    added = {k: v for k, v in best.candidate.items() if k not in below.fixed}
+    if not isinstance(values, Mapping) or json.dumps(thaw(values)) != json.dumps(added):
+        raise OptimizationError(
+            f"{where} selected the values {values!r}, but its inner study's best trial has "
+            f"{added!r}"
+        )
 
 
 def pareto_front(trials: Sequence[TrialResult], criteria: Criteria) -> tuple[int, ...]:
@@ -447,10 +538,12 @@ _TRIAL = (
     "message",
     "diagnostics",
     "record",
+    "selected",
+    "inner",
     "pareto",
 )
 _RECORDED = ("valid", "invalid", "failed")  # with a record, always; an error trial may have one
-_UNRECORDED = ("rejected", "interrupted", "running")  # never
+_UNRECORDED = ("rejected", "unscored", "interrupted", "running")  # never
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _OBJECTIVE = tuple(f.name for f in fields(ObjectiveValue))
 _LIMIT = tuple(f.name for f in fields(Limit))
@@ -509,6 +602,10 @@ def _from_dict(data: object) -> StudyResults:
         trial, flag = _trial(entry, scope, f"trials[{index}]")
         if trials and trial.number <= trials[-1].number:
             _refuse(f"trials[{index}]", f"is trial {trial.number}, after trial {trials[-1].number}")
+        if scope.nested and (trial.inner is not None or trial.status in (*_RECORDED, "unscored")):
+            check_inner(document["id"], scope, trial)
+        elif not scope.nested and (trial.inner is not None or trial.selected is not None):
+            _refuse(f"trial {trial.number}", "has an inner study, of a study that has none")
         trials.append(trial)
         flags.append(flag)
     results = StudyResults(
@@ -570,10 +667,22 @@ def _trial(entry: object, scope: StudyScope, where: str) -> tuple[TrialResult, o
         stage_seconds=stage_seconds,
         recovered=data["recovered"],
         diagnostics=diagnostics,
+        selected=_selected(data["selected"], where),
+        inner=None if data["inner"] is None else _from_dict(data["inner"]),
     )
     if data["outcome"] != trial.outcome:
         _refuse(f"{where}'s outcome", f"is {data['outcome']!r}, its status gives {trial.outcome!r}")
     return trial, data["pareto"]
+
+
+def _selected(value: object, where: str) -> Mapping[str, Json] | None:
+    """The trial of its inner study a trial selected, ``None`` without one; checked against that
+    study by :func:`check_inner`."""
+    return (
+        None
+        if value is None
+        else _mapping(value, f"{where}'s selected", ("study", "trial", "values"))
+    )
 
 
 def _record(value: object, where: str) -> tuple[str | None, str | None]:

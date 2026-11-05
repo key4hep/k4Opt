@@ -48,8 +48,11 @@ def new_document(
     names: Sequence[str],
     seed: int | None,
     storage: str | None,
+    study_id: str | None = None,
 ) -> dict[str, Any]:
-    study_id = str(uuid.uuid4())
+    """``study.json`` of a new study of ``scope``; ``study_id`` is its id if it has one already
+    (a study of a level below the top, whose id its parent trial decides)."""
+    study_id = study_id or str(uuid.uuid4())
     document: dict[str, Any] = {"schema": STUDY_SCHEMA, "id": study_id, "created": now()}
     document |= dict(identity)
     document["identity"] = digest(identity)

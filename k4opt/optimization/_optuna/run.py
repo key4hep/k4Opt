@@ -27,18 +27,13 @@ from types import FrameType
 from typing import Any, Literal
 
 import optuna
-from optuna.distributions import BaseDistribution
 from optuna.storages import BaseStorage
-from optuna.trial import Trial
 
 from k4opt.evaluation import EvaluatorProtocol
-from k4opt.execution import Activity, EvaluationSession, RunRequest
+from k4opt.execution import Activity, EvaluationSession
 from k4opt.optimization._identity import dirty_checkouts, unhashed
 from k4opt.optimization._lock import Lock
-from k4opt.optimization._optuna import marks
 from k4opt.optimization._optuna.optimizer import (
-    CONSTANT_LIAR,
-    STARTUP_TRIALS,
     check_optuna_study,
     check_resume,
     new_document,
@@ -57,19 +52,16 @@ from k4opt.optimization._optuna.storage import (
 from k4opt.optimization._optuna.tell import (
     Progress,
     Warn,
-    _close_interrupted,
     _recover,
-    _settle,
     _Study,
 )
+from k4opt.optimization._optuna.tree import Tree
 from k4opt.optimization._results import StudyResults, recorded_scope
 from k4opt.optimization._scope import StudyScope
 from k4opt.optimization._study import (
     JOURNAL_NAME,
     LOCK_NAME,
     read_study,
-    session_seed,
-    trial_directory,
     write_study,
 )
 from k4opt.optimization.errors import OptimizationError
@@ -106,58 +98,20 @@ def _quiet() -> Iterator[None]:
         optuna.logging.set_verbosity(level)
 
 
-def _requests(
-    run: _Study,
-    space: Mapping[str, BaseDistribution],
-    seed: int,
-    trials: int,
-    in_flight: dict[int, tuple[Trial, Path]],
-) -> Iterator[RunRequest]:
-    """Ask for ``trials`` candidates, one each time the session takes the next; each trial is in
-    ``in_flight`` from the moment it is asked for until it is settled."""
-    for _ in range(trials):
-        trial = run.study.ask(fixed_distributions=dict(space))
-        name = trial_directory(trial.number)
-        output = run.directory / name
-        in_flight[trial.number] = (trial, output)
-        trial.set_user_attr(marks.DIR, name)
-        trial.set_user_attr(marks.SAMPLER_SEED, seed)
-        # the complete candidate: what the optimizer proposed, with the values the study fixes
-        candidate = run.scope.candidate({key: trial.params[key] for key in space})
-        run_of = {"study": run.document["id"], "trial": trial.number}
-        yield RunRequest(candidate, output, run_of, run.scope.replicate, run.scope.level)
-
-
-def _run_trials(
-    run: _Study,
-    session: EvaluationSession,
-    space: Mapping[str, BaseDistribution],
-    seed: int,
-    trials: int,
-    progress: Progress,
-    activity: Watch | None = None,
-) -> None:
-    """Run ``trials`` new trials, as many at once as the session has slots, each told as it ends.
+def _run_trials(tree: Tree, session: EvaluationSession, activity: Watch | None = None) -> None:
+    """Run the trials of ``tree``, as many at once as the session has slots, each told as it ends.
 
     The optimizer is asked for a candidate only when a slot would otherwise be idle, and after
     every trial that ended was told. Whatever stops the study first stops the evaluations still
     running; their trials are then closed as interrupted, in number order, and one that cannot
     be is left RUNNING for a resume to settle.
     """
-    in_flight: dict[int, tuple[Trial, Path]] = {}
     try:
-        requests = _requests(run, space, seed, trials, in_flight)
-        with session.evaluate_each(requests, activity=activity) as evaluations:
+        with session.evaluate_each(tree.requests(), activity=activity) as evaluations:
             for request, result in evaluations:
-                assert isinstance(request.run, Mapping)
-                number = request.run["trial"]
-                assert isinstance(number, int)
-                trial, output = in_flight.pop(number)  # settled by _settle, whatever it raises
-                progress(_settle(run, trial, output, result))
+                tree.ended(request, result)
     finally:  # nothing runs any more
-        for number in sorted(in_flight):
-            with contextlib.suppress(Exception):  # one that cannot be told: --resume
-                _close_interrupted(run, *in_flight[number])
+        tree.close()
 
 
 def optimize(
@@ -176,8 +130,10 @@ def optimize(
     reuse: Sequence[str | os.PathLike[str]] = (),
     fixed: Mapping[str, Any] | None = None,
 ) -> StudyResults:
-    if isinstance(trials, bool) or not isinstance(trials, int) or trials < 1:
-        raise OptimizationError(f"trials must be a positive integer, got {trials!r}")
+    # a resume may ask for none: it goes on with the trials an interrupted session left
+    if isinstance(trials, bool) or not isinstance(trials, int) or trials < (0 if resume else 1):
+        kind = "a non-negative" if resume else "a positive"
+        raise OptimizationError(f"trials must be {kind} integer, got {trials!r}")
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         raise OptimizationError(f"seed must be an integer, got {seed!r}")
     if seed is not None and not 0 <= seed < 2**32:
@@ -224,11 +180,6 @@ def _run_study(
 ) -> StudyResults:
     # everything that can be checked before a file is created
     spec = session.spec
-    if spec.depth:
-        raise OptimizationError(
-            "the problem's optimization has inner levels (optimization.inner): nested studies are "
-            "not run yet; leave out inner: to optimize every parameter in one study"
-        )
     session.check_limits()  # the problem's time limits can be kept where the trials run
     scope = StudyScope.of(spec, fixed)
     # the evaluators' settings were checked when the session opened
@@ -247,6 +198,11 @@ def _run_study(
             warn(warning)
     if resume:
         document = read_study(directory)
+        if (document.get("scope") or {}).get("parent") is not None:
+            raise OptimizationError(
+                f"{directory} is a study of a level below the top, which runs with the study it "
+                "belongs to; resume that study"
+            )
     else:
         document = new_document(scope, identity, space, names, seed, storage)
 
@@ -276,15 +232,11 @@ def _run_study(
                 check_optuna_study(study, document)
                 _recover(run, progress)
                 session.reuse([directory])  # every trial's record held up: their stages serve
-            seed = document["optimizer"]["sampler"]["seed"]
-            seed_now = session_seed(seed, len(study.trials))
-            study.sampler = optuna.samplers.TPESampler(
-                seed=seed_now, n_startup_trials=STARTUP_TRIALS, constant_liar=CONSTANT_LIAR
-            )
-            _run_trials(run, session, space, seed_now, trials, progress, activity)
+            tree = Tree(session, run, space, trials, identity, storage, database, progress, warn)
+            _run_trials(tree, session, activity)
             # read back as load_study reads it, from the study still open: with the problem
             # study.json records, whose titles a resume with other titles leaves as they were
-            return results_of(directory, document, recorded_scope(document), study)
+            return results_of(directory, document, recorded_scope(document), study, storage=storage)
     except Exception as exc:
         replacement, secret = leaving(exc, storage)
         if replacement is None:

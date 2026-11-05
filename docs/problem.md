@@ -797,8 +797,7 @@ best of many trials on the same events looks better than it is. So every sample 
 from its seeds: a stage given as a `file` (HepMC generation, a given simulation) is refused under
 `inner`.
 
-The problem's levels are checked now; `k4opt optimize` runs nested studies in a later release, and
-refuses a problem with `inner` until then.
+[Nested studies](optimization.md#nested-studies) says how they run, resume and read back.
 
 ### Titles
 
