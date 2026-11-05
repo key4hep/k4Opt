@@ -208,12 +208,12 @@ SIMULATED = "samples/gamma/stages/simulation"
         (
             "samples/gamma/evaluations",
             {},
-            "samples.gamma.evaluations are [], but the problem's are ['test.cell_count']",
+            "samples.gamma.evaluations are [], but its plan's are ['test.cell_count']",
         ),
         (
             "evaluations/test.cell_count",
             {},
-            "its evaluations are ['test.parameter_echo', 'test.cell_count'], but the problem's "
+            "its evaluations are ['test.parameter_echo', 'test.cell_count'], but its plan's "
             "are ['test.parameter_echo']",
         ),
         ("metrics/0/sample", None, "its metrics are [['test.cell_count', None, "),

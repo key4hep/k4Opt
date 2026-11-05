@@ -112,18 +112,21 @@ def _preflight(
     for sample, configured in contexts.items():
         check_stages(configured, *binding.targets[sample], provided=_supplied(binding, sample))
     entries = dict(evaluations(configuration.samples, configuration.evaluators))
-    for task, bound in binding.evaluations:  # before any check(), which may use the candidate
+    # the evaluations its level runs: every one at the top, what its criteria read below
+    ids = {task.id for task in binding.plans[level].tasks}
+    planned = [(task, bound) for task, bound in binding.evaluations if task in ids]
+    for task, bound in planned:  # before any check(), which may use the candidate
         _check_unchanged(bound)  # the requests are made from what the class declares
         entry, cls = entries[task], bound.implementation
         check_settings(cls, with_defaults(cls, entry.settings))
         collection_names(cls, entry.collections)
     requests = {}
-    for task, bound in binding.evaluations:
+    for task, bound in planned:
         context = None if task.sample is None else contexts[task.sample]
         properties = {} if task.sample is None else binding.properties[task.sample]
         requests[task] = _request(context, entries[task], bound.implementation, properties)
     declined: dict[TaskId, str] = {}
-    for task, bound in binding.evaluations:
+    for task, bound in planned:
         check = getattr(bound.implementation, "check", None)
         if check is None:
             continue
@@ -152,7 +155,7 @@ def _preflight(
         binding,
         configuration,
         FrozenMap(contexts),
-        FrozenMap({task: entries[task] for task, _ in binding.evaluations}),
+        FrozenMap({task: entries[task] for task, _ in planned}),
         FrozenMap(requests),
         FrozenMap(declined),
         level,

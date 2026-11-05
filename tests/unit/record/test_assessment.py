@@ -484,7 +484,7 @@ def _failed_with_reason(data: dict[str, Any]) -> None:
             "implementation 'test.other', but the problem binds 'test.echo'",
         ),
         (_set("evaluations", []), "evaluations must be a mapping"),
-        (_set("evaluations", {"echo": {}}), "its evaluations are ['echo'], but the problem's"),
+        (_set("evaluations", {"echo": {}}), "its evaluations are ['echo'], but its plan's"),
         (_set("implementations", {}), "its implementations are [], but the problem binds"),
         (
             _set("implementations/test.echo/version", "2"),

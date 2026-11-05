@@ -77,9 +77,12 @@ def test_each_level_requires_names_and_judges_its_own_criteria(
     assert "test.trade_off" not in top["required"] and "test.trade_off" in inner["required"]
     assert "gamma/test.cell_count" in top["required"]
     assert "gamma/test.cell_count" not in inner["required"]
-    # what a level does not judge by is measured all the same
-    assert inner["samples"]["gamma"]["evaluations"]["test.cell_count"]["status"] == "valid"
+    # the top runs every evaluation, a diagnostic too; a level below only what its criteria
+    # read: here nothing of the sample, so it simulates nothing
     assert top["evaluations"]["test.trade_off"]["status"] == "valid"
+    assert inner["samples"]["gamma"] == {"stages": {}, "evaluations": {}}
+    assert list(inner["evaluations"]) == ["test.trade_off"]
+    assert len(fake.calls) == 1
 
 
 def test_a_candidate_only_its_inner_criteria_reject_is_valid_at_the_top(
@@ -100,7 +103,9 @@ def test_a_record_judged_by_another_level_is_refused(
     with EvaluationSession.open(nested_file, [cell_count(), trade_off()]) as session:
         record = evaluate(session, 0.8, tmp_path / "top", level=0)
         record["level"] = level
-        with pytest.raises(RecordError, match=r"level is|required is|its metrics are"):
+        with pytest.raises(
+            RecordError, match=r"level is|required is|its metrics are|its plan's are"
+        ):
             Assessment.from_summary(session.spec, record)
 
 
@@ -121,20 +126,29 @@ def test_the_diagnostics_of_a_session_are_those_of_a_level(
 ) -> None:
     with EvaluationSession.open(nested_file, [cell_count(), trade_off()]) as session:
         assert session.diagnostics() == session.diagnostics(0) == ("test.trade_off",)
-        assert session.diagnostics(1) == ("gamma/test.cell_count",)
-        notice = session.notice(1)
-        assert notice is not None and "gamma/test.cell_count" in notice
+        # a level below the top runs no diagnostic: what its criteria do not read is not run
+        assert (session.diagnostics(1), session.notice(1)) == ((), None)
+
+
+@pytest.fixture
+def simulating_file(nested_file: Path) -> Path:
+    """The nested problem whose inner level is judged by the cells of the simulation as well,
+    so that both levels simulate."""
+    doc = yaml.safe_load(nested_file.read_text())
+    doc["optimization"]["inner"]["objective"] = "ecal_barrel.mean_hit_cells"
+    nested_file.write_text(yaml.safe_dump(doc))
+    return nested_file
 
 
 def test_candidates_of_two_levels_in_one_evaluation_share_their_stages(
-    tmp_path: Path, nested_file: Path, fake: simulation.FakeDdsim
+    tmp_path: Path, simulating_file: Path, fake: simulation.FakeDdsim
 ) -> None:
     requests = [
         RunRequest({RADIUS: 450.0, "x": 0.8}, tmp_path / name, {"name": name}, level=level)
         for name, level in (("top", 0), ("inner", 1))
     ]
     with (
-        EvaluationSession.open(nested_file, [cell_count(), trade_off()]) as session,
+        EvaluationSession.open(simulating_file, [cell_count(), trade_off()]) as session,
         session.evaluate_each(requests) as evaluations,
     ):
         ended = {request.run["name"]: outcome for request, outcome in evaluations}  # type: ignore[index]
@@ -145,7 +159,8 @@ def test_candidates_of_two_levels_in_one_evaluation_share_their_stages(
     assert len(fake.calls) == 1  # one simulation: the stages do not depend on the level
     assert inner["samples"]["gamma"]["stages"]["simulation"]["reused"]["record"] == top["id"]
     assert [m["label"] for m in top["metrics"]] == [CELLS]
-    assert [m["label"] for m in inner["metrics"]] == [A]
+    assert [m["label"] for m in inner["metrics"]] == [CELLS]
+    assert list(top["evaluations"]) == ["test.trade_off"] and inner["evaluations"] == {}
 
 
 @pytest.fixture

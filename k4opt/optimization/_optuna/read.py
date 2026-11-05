@@ -37,7 +37,7 @@ from k4opt.optimization._results import (
 from k4opt.optimization._scope import StudyScope
 from k4opt.optimization._study import STUDY_NAME, read_study, trial_directories, trial_directory
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem.plan import plan_tasks, rejecting
+from k4opt.problem.plan import level_plan, rejecting
 
 
 def _existing_study(document: Mapping[str, Any], storage: BaseStorage) -> optuna.Study:
@@ -162,7 +162,7 @@ def _rejected(
         )
     by, message = attrs[marks.REJECTED_BY], attrs[marks.MESSAGE]
     spec = scope.spec
-    plan = plan_tasks(spec.samples, spec.evaluators, references=scope.criteria.references)
+    plan = level_plan(spec, scope.level)
     if by not in [task.label for task in rejecting(plan, spec.samples, spec.parameters)]:
         raise OptimizationError(
             f"{where} by {by!r}, which is neither a required evaluation of the problem nor a "

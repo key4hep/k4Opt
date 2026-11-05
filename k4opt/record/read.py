@@ -44,7 +44,7 @@ from k4opt.problem.plan import (
     TaskId,
     evaluations,
     evaluator_task,
-    plan_tasks,
+    level_plan,
     represents_candidate,
     stage_task,
 )
@@ -325,18 +325,24 @@ def _evaluations(
     ``plan`` gives it, and what it returned against what the problem asks of it
     (:func:`~k4opt.problem.contract.check_result`, the metrics the roles that read it ``demand``
     included). Those of each sample are in its part of the record, those of the candidate in
-    ``evaluations``, each by binding in problem order."""
+    ``evaluations``, each by binding in problem order: those ``plan`` holds (a candidate of a
+    level below the top runs only what its criteria read)."""
     held: dict[str | None, Mapping[str, object]] = {
         name: _mapping(part.get("evaluations"), f"samples.{name}.evaluations")
         for name, part in samples.items()
     }
     held[None] = _mapping(record.get("evaluations"), "evaluations")
-    planned = evaluations(configuration.samples, configuration.evaluators)
+    ids = {task.id for task in plan.tasks}
+    planned = [
+        (task, entry)
+        for task, entry in evaluations(configuration.samples, configuration.evaluators)
+        if task in ids
+    ]
     for sample, found in held.items():
         expected = [entry.binding for task, entry in planned if task.sample == sample]
         if list(found) != expected:
             where = "its evaluations" if sample is None else f"samples.{sample}.evaluations"
-            raise RecordError(f"{where} are {list(found)}, but the problem's are {expected}")
+            raise RecordError(f"{where} are {list(found)}, but its plan's are {expected}")
     evaluators: dict[TaskId, _Evaluator] = {}
     for task, spec_entry in planned:
         where = f"evaluator {task.label!r}"
@@ -757,20 +763,14 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
     if record.get("schema") != SUMMARY_SCHEMA:
         raise RecordError(f"schema is {record.get('schema')!r}, not {SUMMARY_SCHEMA!r}")
     _check_problem(spec, record)
-    criteria = _criteria(spec, record)
+    criteria, level = _criteria(spec, record)
     configuration = _check_candidate(spec, record)
     _text(record.get("run_dir"), "run_dir")  # where it was made: provenance only
     declared = _implementations(spec, record)
     demands = check_bindings(spec, declared, RecordError)
     samples = _samples(spec, record)
     supplied = _supplied(spec, record)
-    plan = plan_tasks(
-        spec.samples,
-        spec.evaluators,
-        supplied,
-        references=criteria.references,
-        parameters=spec.parameters,
-    )
+    plan = level_plan(spec, level, supplied)
     evaluators = _evaluations(spec, configuration, record, samples, declared, demands, plan)
     results = _results(spec, configuration, record, samples, supplied, evaluators, plan)
     _check_signatures(configuration, record, plan)
@@ -816,12 +816,13 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
     return Recorded(status, represents, value, criteria)
 
 
-def _criteria(spec: ProblemSpec, record: Mapping[str, object]) -> Criteria:
-    """The criteria of the level the record was made for (its ``level``): which tasks are
-    required, and which metrics it names and judges."""
+def _criteria(spec: ProblemSpec, record: Mapping[str, object]) -> tuple[Criteria, int]:
+    """The criteria of the level the record was made for (its ``level``), and that level:
+    which tasks it planned and required, and which metrics it names and judges."""
     level = record.get("level")
     try:
-        return spec.criteria(spec.check_level(level))
+        checked = spec.check_level(level)
+        return spec.criteria(checked), checked
     except ValueError:
         raise RecordError(
             f"level is {level!r}, but the problem's levels are 0 to {spec.depth}"

@@ -46,6 +46,7 @@ from k4opt.problem.models import (
     GeometryDestination,
     MetricRef,
     Parameter,
+    ProblemSpec,
     Reference,
     Sample,
     SettingDestination,
@@ -285,6 +286,7 @@ def plan_tasks(
     *,
     references: Collection[MetricRef],
     parameters: Sequence[Parameter] = (),
+    diagnostics: bool = True,
 ) -> Plan:
     """The plan of a problem with ``samples`` and ``evaluators`` (in problem order), the stages
     in ``supplied`` given by the caller, the metrics its objectives and constraints name,
@@ -299,7 +301,9 @@ def plan_tasks(
     ``evaluators/<binding>`` for one of the candidate.
 
     The required tasks are the evaluations that measure a metric of ``references``, those of an
-    entry marked ``required``, and every task these read, transitively.
+    entry marked ``required``, and every task these read, transitively. Without ``diagnostics``
+    the plan holds the required tasks alone: what no reference and no required entry reads is not
+    run (:func:`level_plan`).
     """
     tasks = [Task(GEOMETRY, directory=GEOMETRY.name)]
     planned = evaluations(samples, evaluators)
@@ -339,10 +343,27 @@ def plan_tasks(
         if each.id in needed:
             needed.update(each.needs)
     assert needed <= {each.id for each in tasks}  # the problem names only evaluations it has
+    if not diagnostics:
+        tasks = [each for each in tasks if each.id in needed]
     reach = varied(samples, evaluators, parameters)
     return Plan(
         tuple(
             replace(each, required=each.id in needed, varies=reach.get(each.id, ()))
             for each in tasks
         )
+    )
+
+
+def level_plan(spec: ProblemSpec, level: int = 0, supplied: Collection[TaskId] = ()) -> Plan:
+    """The tasks of a candidate of ``spec`` evaluated for ``level`` (with the stages ``supplied``
+    by the caller): at the top, every evaluation, those its criteria read required and the others
+    diagnostics; at a level below, only what its criteria and the required entries read, since
+    a study of that level runs many trials and nothing reads its diagnostics."""
+    return plan_tasks(
+        spec.samples,
+        spec.evaluators,
+        supplied,
+        references=spec.criteria(level).references,
+        parameters=spec.parameters,
+        diagnostics=level == 0,
     )
