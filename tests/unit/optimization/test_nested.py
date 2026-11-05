@@ -591,3 +591,52 @@ def test_a_lost_journal_is_no_study_never_set_up_once_trials_ran(
     (output / "inner" / "trial-000000" / "study.journal").unlink()  # its trials' records stay
     with pytest.raises(OptimizationError, match=r"study\.journal does not exist"):
         load_study(output)
+
+
+def test_the_json_form_of_a_running_trial_that_selected_needs_its_inner_study(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    with monkeypatch.context() as patched:
+        stop_before_the_new_events(patched)
+        with pytest.raises(Stop):
+            run(nested, output, 1)
+    data = json.loads(load_study(output).to_json())
+    assert data["trials"][0]["status"] == "running" and data["trials"][0]["selected"] is not None
+    assert StudyResults.from_dict(data).to_dict() == data  # as it stands, it reads back
+    data["trials"][0]["inner"] = None
+    with pytest.raises(OptimizationError, match="stands for a study of the level below"):
+        StudyResults.from_dict(data)
+
+
+def test_a_running_trial_does_not_hide_an_inner_study_that_lost_its_study_json(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    with monkeypatch.context() as patched:
+        stop_at_settle(1, 2)(patched)
+        with pytest.raises(Stop):
+            run(nested, output, 1)
+    (output / ".lock").unlink(missing_ok=True)
+    (output / "inner" / "trial-000000" / "study.json").unlink()  # its journal and records stay
+    with pytest.raises(OptimizationError, match=r"holds a study's files, but no study\.json"):
+        load_study(output)
+    with pytest.raises(OptimizationError, match=r"holds a study's files, but no study\.json"):
+        run(nested, output, 0, resume=True)  # not a new study over what is there
+
+
+def test_an_empty_inner_directory_is_a_study_not_made_yet(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    with monkeypatch.context() as patched:
+        patched.setattr(tree, "write_study", lambda *args: (_ for _ in ()).throw(Stop()))
+        with pytest.raises(Stop):
+            run(nested, output, 1)
+    (output / ".lock").unlink(missing_ok=True)
+    assert (output / "inner" / "trial-000000").is_dir()
+    assert load_study(output).trials[0].inner is None
+    assert run(nested, output, 0, resume=True).trials[0].status == "valid"

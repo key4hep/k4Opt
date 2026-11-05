@@ -38,6 +38,7 @@ from k4opt.optimization._results import (
 from k4opt.optimization._scope import StudyScope
 from k4opt.optimization._study import (
     INNER_NAME,
+    JOURNAL_NAME,
     STUDY_NAME,
     inner_directory,
     read_study,
@@ -254,6 +255,11 @@ def results_of(
     )
 
 
+def _ran(path: Path) -> bool:
+    """Whether anything ran in the study directory ``path``, which may not exist."""
+    return path.is_dir() and bool(trial_directories(path) or (path / INNER_NAME).exists())
+
+
 def _with_inner(
     directory: Path,
     document: Mapping[str, Any],
@@ -272,8 +278,7 @@ def _with_inner(
         try:
             inner = load(path, storage)
         except NotSetUpError:
-            ran = trial_directories(path) or (path / INNER_NAME).exists()
-            if frozen.state == TrialState.RUNNING and result.selected is None and not ran:
+            if frozen.state == TrialState.RUNNING and result.selected is None and not _ran(path):
                 return result
             raise
         if inner.id != frozen.user_attrs.get(marks.CHILD):
@@ -282,6 +287,8 @@ def _with_inner(
                 f"{frozen.user_attrs.get(marks.CHILD)!r}, but {path} holds {inner.id!r}"
             )
         result = replace(result, inner=inner)
+    elif _ran(path) or (path / JOURNAL_NAME).exists():
+        raise OptimizationError(f"{path} holds a study's files, but no {STUDY_NAME}")
     held = result.inner is not None or result.record is not None or result.selected is not None
     if held or result.status == "unscored":
         check_inner(document, scope, result)

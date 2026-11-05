@@ -629,9 +629,10 @@ def _from_dict(data: object) -> StudyResults:
         trial, flag = _trial(entry, scope, f"trials[{index}]")
         if trials and trial.number <= trials[-1].number:
             _refuse(f"trials[{index}]", f"is trial {trial.number}, after trial {trials[-1].number}")
-        if scope.nested and (trial.inner is not None or trial.status in (*_RECORDED, "unscored")):
+        held = trial.inner is not None or trial.selected is not None
+        if scope.nested and (held or trial.status in (*_RECORDED, "unscored")):
             check_inner(document, scope, trial)
-        elif not scope.nested and (trial.inner is not None or trial.selected is not None):
+        elif not scope.nested and held:
             _refuse(f"trial {trial.number}", "has an inner study, of a study that has none")
         trials.append(trial)
         flags.append(flag)
