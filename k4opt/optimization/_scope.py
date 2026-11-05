@@ -1,13 +1,14 @@
 """Internal: what one study searches and how its trials are judged, its *scope*; nothing of Optuna.
 
-A study searches some of the problem's parameters (``searched``) and gives the others one value
-for every trial (``fixed``): all of them for an ordinary study, those of its level of a nested
-optimization otherwise, less any the caller fixed (``k4opt optimize --fix``). Its trials are
-judged by the criteria of its ``level`` (:meth:`~k4opt.problem.ProblemSpec.criteria`) and
-evaluated as its ``replicate`` (:func:`~k4opt.problem.candidate.configure`), and a study started
-for a trial of another names it (``parent``). ``study.json`` records the scope under ``scope``;
-the optimizer knows only the searched parameters, while every record holds the complete
-candidate (:meth:`StudyScope.candidate`).
+A study searches some of the problem's parameters (``searched``) and gives others one value for
+every trial (``fixed``): it searches all of them in an ordinary study, those of its level of a
+nested optimization otherwise, less any the caller fixed (``k4opt optimize --fix``); a study of a
+level below the top is started for a candidate of the levels above, whose values it fixes. Its
+trials are judged by the criteria of its ``level`` (:meth:`~k4opt.problem.ProblemSpec.criteria`)
+and evaluated as its ``replicate`` (:func:`~k4opt.problem.candidate.configure`), and a study
+started for a trial of another names it (``parent``). ``study.json`` records the scope under
+``scope``; the optimizer knows only the searched parameters, while every record holds the
+complete candidate (:meth:`StudyScope.candidate`).
 """
 
 from __future__ import annotations
@@ -44,33 +45,48 @@ class StudyScope:
         parent: Mapping[str, Any] | None = None,
     ) -> StudyScope:
         """The scope of a study of ``spec`` at ``level`` that gives the parameters ``fixed`` their
-        value. Raises :class:`OptimizationError` for a level the problem lacks, a fixed parameter
-        the level does not search or a value outside its domain, and when nothing is left to
-        search."""
+        value: every parameter of the levels above (the candidate of the level above it was
+        started for: inherited, so required), and any of its own level it is not to search
+        (``k4opt optimize --fix``). Raises :class:`OptimizationError` for a level the problem
+        lacks, a value of the levels above missing, a parameter of a level below or none of the
+        problem's, a value outside its domain, and when nothing is left to search."""
         try:
             spec.check_level(level)
         except ValueError as exc:
             raise OptimizationError(str(exc)) from None
         given = dict(fixed or {})
         own = _own(spec, level)
-        unknown = [name for name in given if name not in own]
-        if unknown:
+        above = [name for each in spec.levels[:level] for name in each.parameters]
+        missing = [name for name in above if name not in given]
+        if missing:
             raise OptimizationError(
-                f"fixed: {', '.join(map(str, unknown))} is no parameter this study searches; it "
-                f"searches {', '.join(own)}"
+                f"fixed: a study of level {level} is started for a candidate of the levels "
+                f"above, so it needs the value of {', '.join(missing)}"
             )
+        below = [name for each in spec.levels[level + 1 :] for name in each.parameters]
+        for name in given:
+            if name in below:
+                raise OptimizationError(
+                    f"fixed: {name} is searched by a level below this one (by the study of each "
+                    "of its candidates), so this study does not give it a value"
+                )
+            if name not in own and name not in above:
+                raise OptimizationError(
+                    f"fixed: {name} is no parameter of the problem; this study searches "
+                    f"{', '.join(own)}"
+                )
         by_name = {parameter.name: parameter for parameter in spec.parameters}
         for name, value in given.items():
             try:
                 validate_value(by_name[name], value)
             except CandidateError as exc:
                 raise OptimizationError(f"fixed: {exc}") from None
-        if len(given) == len(own):
+        if all(name in given for name in own):
             raise OptimizationError(
                 "fixed: every parameter the study searches is fixed, so there is nothing to "
                 "search; evaluate the candidate with k4opt evaluate"
             )
-        ordered = {name: given[name] for name in own if name in given}
+        ordered = {p.name: given[p.name] for p in spec.parameters if p.name in given}
         plain = freeze(ordered, "fixed", OptimizationError)
         parent_json = None if parent is None else freeze(parent, "parent", OptimizationError)
         assert isinstance(plain, Mapping)
@@ -104,9 +120,11 @@ class StudyScope:
         return limit_names(self.criteria)
 
     def candidate(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        """The complete candidate of a trial whose proposed values are ``params``: with the
-        values of the parameters the study does not search, in problem order. Of a trial
-        interrupted before it was proposed everything, what it has."""
+        """The candidate of a trial whose proposed values are ``params``: with the values the
+        study fixes, in problem order. It is complete for a study of the last level (or an
+        ordinary one); a study whose trials stand for studies of the level below lacks the
+        values those choose. Of a trial interrupted before it was proposed everything, what it
+        has."""
         values = {**self.fixed, **params}
         return {p.name: values[p.name] for p in self.spec.parameters if p.name in values}
 

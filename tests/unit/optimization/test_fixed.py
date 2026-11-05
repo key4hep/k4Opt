@@ -4,6 +4,7 @@ searched, it simulates once."""
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 from collections.abc import Callable
@@ -14,7 +15,7 @@ import pytest
 import yaml
 
 from k4opt.cli import main
-from k4opt.optimization import OptimizationError, load_study, optimize
+from k4opt.optimization import OptimizationError, StudyResults, load_study, optimize
 from tests.support import simulation
 from tests.support.evaluators import candidate_check, cell_count
 from tests.unit.optimization.conftest import GUN, RADIUS, summary
@@ -97,7 +98,7 @@ def test_a_study_with_the_geometry_fixed_searches_the_rest_and_simulates_once(
 @pytest.mark.parametrize(
     ("fixed", "message"),
     [
-        ({"nope": 1.0}, "fixed: nope is no parameter this study searches; it searches radius, x"),
+        ({"nope": 1.0}, "fixed: nope is no parameter of the problem; this study searches"),
         ({RADIUS: 9999.0}, "fixed: radius"),
         ({RADIUS: 300.0, "x": 1.5}, "every parameter the study searches is fixed"),
     ],
@@ -122,3 +123,36 @@ def test_the_command_line_fixes_a_parameter(
     argv += ["--fix", f"{RADIUS}=320", "--workers", "inline"]
     assert main(argv, stdout=out, stderr=err) == 0, err.getvalue()
     assert {t.candidate[RADIUS] for t in load_study(tmp_path / "s").trials} == {320.0}
+
+
+def test_a_fixed_parameter_needs_no_distribution_the_sampler_could_draw(
+    tmp_path: Path, two_parameters: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # integers beyond 2**53 cannot be sampled exactly; one value of them can be fixed all the same
+    document = yaml.safe_load(two_parameters.read_text())
+    document["parameters"]["huge"] = {
+        "type": "integer",
+        "bounds": [0, 2**60],
+        "targets": {"evaluators": {"test.candidate_check": "refuse"}},
+    }
+    two_parameters.write_text(yaml.safe_dump(document))
+    simulation.install(monkeypatch)
+    with pytest.raises(OptimizationError, match="beyond 2\\*\\*53"):
+        _optimize(two_parameters, tmp_path / "searched", 1, seed=1, fixed={RADIUS: 300.0})
+    study = _optimize(two_parameters, tmp_path / "s", 2, seed=1, fixed={RADIUS: 300.0, "huge": 7})
+    assert [t.candidate["huge"] for t in study.trials] == [7, 7]
+    assert study.scope.searched == ("x",)
+
+
+def test_a_json_form_whose_trial_breaks_a_fixed_value_is_refused(
+    tmp_path: Path, two_parameters: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    study = _optimize(two_parameters, tmp_path / "s", 2, seed=1, fixed={RADIUS: 300.0})
+    data = study.to_dict()
+    assert StudyResults.from_dict(data).scope.fixed == {RADIUS: 300.0}
+    for change in (lambda c: c.update({RADIUS: 350.0}), lambda c: c.pop(RADIUS)):
+        edited = copy.deepcopy(data)
+        change(edited["trials"][0]["candidate"])
+        with pytest.raises(OptimizationError, match=r"fixes it at 300\.0|not the parameters"):
+            StudyResults.from_dict(edited)

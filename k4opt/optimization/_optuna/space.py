@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from optuna.distributions import (
     BaseDistribution,
     CategoricalDistribution,
@@ -28,8 +30,11 @@ def _float_bound(name: str, value: int | float) -> float:
     return bound
 
 
-def search_space(spec: ProblemSpec) -> dict[str, BaseDistribution]:
-    """The distribution of each parameter, by name, in problem order.
+def search_space(
+    spec: ProblemSpec, searched: Collection[str] | None = None
+) -> dict[str, BaseDistribution]:
+    """The distribution of each parameter ``searched`` (every one, by default), by name, in
+    problem order; a parameter the study does not search needs none, and is not checked here.
 
     Continuous parameters are sampled uniformly between their bounds, with no log scale and no
     step; their bounds must be floats exactly, and so must their range. Integer bounds must stay
@@ -39,6 +44,8 @@ def search_space(spec: ProblemSpec) -> dict[str, BaseDistribution]:
     space: dict[str, BaseDistribution] = {}
     for parameter in spec.parameters:
         name = parameter.name
+        if searched is not None and name not in searched:
+            continue
         if parameter.kind == "categorical":
             assert parameter.choices is not None
             space[name] = CategoricalDistribution(list(parameter.choices))

@@ -232,7 +232,7 @@ def _run_study(
     session.check_limits()  # the problem's time limits can be kept where the trials run
     scope = StudyScope.of(spec, fixed)
     # the evaluators' settings were checked when the session opened
-    space = {key: value for key, value in search_space(spec).items() if key in scope.searched}
+    space = search_space(spec, scope.searched)
     identity: dict[str, Any] = session.identity()
     reasons = unhashed(identity)
     if reasons:

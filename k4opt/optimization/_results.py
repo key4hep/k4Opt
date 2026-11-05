@@ -270,6 +270,13 @@ def recorded_scope(document: Mapping[str, Any]) -> StudyScope:
             f"{STUDY_NAME} records the objectives {optimizer.get('objectives')!r}, but the "
             f"study's are {labels!r}"
         )
+    searched = optimizer.get("parameters")
+    if not isinstance(searched, Mapping) or list(searched) != list(scope.searched):
+        raise OptimizationError(
+            f"{STUDY_NAME} records the distributions of "
+            f"{list(searched) if isinstance(searched, Mapping) else searched!r}, but the study "
+            f"searches {list(scope.searched)}"
+        )
     if optimizer.get("directions") != scope.directions:
         raise OptimizationError(
             f"{STUDY_NAME} records the directions {optimizer.get('directions')!r}, but its "
@@ -447,6 +454,8 @@ _UNRECORDED = ("rejected", "interrupted", "running")  # never
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _OBJECTIVE = tuple(f.name for f in fields(ObjectiveValue))
 _LIMIT = tuple(f.name for f in fields(Limit))
+_MISSING = object()  # a parameter a candidate gives no value
+
 _BOUNDS: tuple[Literal["min", "max"], ...] = ("min", "max")  # in the order of limit_names
 
 
@@ -552,7 +561,7 @@ def _trial(entry: object, scope: StudyScope, where: str) -> tuple[TrialResult, o
     trial = TrialResult(
         number=number,
         status=status,
-        candidate=_candidate(data["candidate"], scope.spec, held, where),
+        candidate=_candidate(data["candidate"], scope, held, where),
         assessment=_assessment(data["assessment"], scope.criteria, status, where),
         record=record_id,
         sha256=sha256,
@@ -598,10 +607,12 @@ def _diagnostics(value: object, where: str) -> tuple[Mapping[str, str | None], .
     return tuple(found)
 
 
-def _candidate(value: object, spec: ProblemSpec, held: bool, where: str) -> dict[str, Scalar]:
+def _candidate(value: object, scope: StudyScope, held: bool, where: str) -> dict[str, Scalar]:
     """The candidate of a trial: with a record, a value of every parameter, in the problem's
-    order; without one (running, rejected, interrupted, an error), what the optimizer proposed so
-    far, in that order."""
+    order; without one (running, rejected, interrupted, an error), the values the study fixes
+    and what the optimizer proposed so far, in that order; always with the study's fixed values,
+    type and value."""
+    spec = scope.spec
     candidate = _mapping(value, f"{where}'s candidate", None)
     names = [parameter.name for parameter in spec.parameters]
     expected = names if held else [name for name in names if name in candidate]
@@ -613,6 +624,14 @@ def _candidate(value: object, spec: ProblemSpec, held: bool, where: str) -> dict
             validate_value(parameters[name], item)
         except CandidateError as exc:
             _refuse(f"{where}'s candidate", f"does not hold up: {exc}")
+    for name, fixed in scope.fixed.items():
+        given = candidate.get(name, _MISSING)
+        if given is _MISSING or (type(given), given) != (type(fixed), fixed):
+            shown = "no value" if given is _MISSING else repr(given)
+            _refuse(
+                f"{where}'s candidate",
+                f"gives {name} {shown}, but the study fixes it at {fixed!r}",
+            )
     return dict(candidate)  # type: ignore[arg-type]  # scalars, checked above
 
 
