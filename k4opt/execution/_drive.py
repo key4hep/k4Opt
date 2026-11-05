@@ -90,6 +90,7 @@ class _Run:
     reference: object = None
     signatures: dict[TaskId, Mapping[str, Json]] = field(default_factory=dict)
     replicate: int = 0  # the request's: the seeds its stages were configured with
+    level: int = 0  # the request's: the level whose criteria judge it
     relies: set[str] = field(default_factory=set)
 
 
@@ -310,7 +311,7 @@ def _drive(
                     continue
                 run = found
                 assert run.prepared is not None
-                task = run.prepared.binding.plan[handle.task]
+                task = run.prepared.plan[handle.task]
                 try:
                     if isinstance(outcome, Exception):  # raised where the task ran
                         raise outcome
@@ -340,7 +341,7 @@ def _drive(
                 else:
                     runs[pulled.workspace.id] = pulled
                     backend.open(pulled.workspace)
-                    plan, contexts = pulled.prepared.binding.plan, pulled.prepared.contexts
+                    plan, contexts = pulled.prepared.plan, pulled.prepared.contexts
                     costs = {t.id: backend.cost(task_cpus(contexts, t)) for t in plan.tasks}
                     scheduler.add(pulled.workspace.id, plan, costs)
                 continue
@@ -371,7 +372,7 @@ def _finish_plan(run: _Run) -> CandidateRecord:
     would have been asked."""
     prepared = run.prepared
     assert prepared is not None
-    plan, results = prepared.binding.plan, dict(run.results)
+    plan, results = prepared.plan, dict(run.results)
     for task in plan.of(Kind.EVALUATOR):
         held = results[task.id]
         if held.status == Status.BLOCKED:

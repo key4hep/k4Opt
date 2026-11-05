@@ -497,6 +497,67 @@ class Constraint:
 
 
 @dataclass(frozen=True, slots=True)
+class Criteria:
+    """How a candidate is judged at one level of an optimization: the ``objectives`` it is
+    scored by and the ``constraints`` its feasibility is judged by (:meth:`ProblemSpec.criteria`).
+    """
+
+    objectives: tuple[Objective, ...]
+    constraints: tuple[Constraint, ...] = ()
+
+    @property
+    def references(self) -> tuple[MetricRef, ...]:
+        """The metrics the objectives and constraints name, each once, objectives first."""
+        refs = [o.ref for o in self.objectives] + [c.ref for c in self.constraints]
+        return tuple(dict.fromkeys(refs))
+
+
+@dataclass(frozen=True, slots=True)
+class Level:
+    """One level of a nested optimization (the problem's ``optimization`` block): the
+    ``parameters`` it searches, and, for each candidate of the level above, a study of them of
+    ``trials`` trials whose best trial by ``objective`` stands for that candidate. The top level
+    has neither ``trials`` (its budget is the run's) nor ``objective`` (the problem's objectives
+    judge it); ``inner`` is the level below, if any."""
+
+    parameters: tuple[str, ...]
+    trials: int | None = None
+    objective: Objective | None = None
+    inner: Level | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parameters", tuple(self.parameters))
+
+    def to_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {"parameters": list(self.parameters)}
+        if self.trials is not None:
+            data["trials"] = self.trials
+        if self.objective is not None:
+            data["objective"] = self.objective.to_dict()
+        if self.inner is not None:
+            data["inner"] = self.inner.to_dict()
+        return data
+
+
+def fixed_events(samples: Mapping[str, Sample]) -> str | None:
+    """Why the candidates of a problem with ``samples`` cannot be evaluated on other events
+    (:func:`k4opt.problem.candidate.check_replicate`), ``None`` if they can: a sample reads a
+    stage from a file (another seed would see the same collisions again), or no stage has a seed
+    (nothing would differ)."""
+    for name, sample in samples.items():
+        given = [stage for stage, entry in sample.stages.items() if entry.file is not None]
+        if given:
+            return (
+                f"samples.{name} reads its {', '.join(given)} from a file, so another seed would "
+                "not make new events; only samples that make their events from a seed (the "
+                "particle gun, fired by ddsim) have them"
+            )
+    if not any(stage.seed is not None for s in samples.values() for stage in s.stages.values()):
+        return "the problem makes no events from a seed (no sample simulates any)"
+    return None
+
+
+@dataclass(frozen=True, slots=True)
 class ProblemSpec:
     """A validated problem definition (``k4opt.problem/v1alpha1``).
 
@@ -517,15 +578,50 @@ class ProblemSpec:
     name: str | None = None
     # seconds each stage that runs and each evaluation may take, unless it sets its own
     timeout: Number | None = None
+    # the levels of a nested optimization, the top one first; None for an ordinary one
+    optimization: Level | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "evaluators", tuple(self.evaluators))
         object.__setattr__(self, "samples", FrozenMap(self.samples))
 
     @property
+    def levels(self) -> tuple[Level, ...]:
+        """The levels of the optimization, the top one first; none without ``optimization``."""
+        found, level = [], self.optimization
+        while level is not None:
+            found.append(level)
+            level = level.inner
+        return tuple(found)
+
+    @property
+    def depth(self) -> int:
+        """How many levels lie below the top one: 0 for an ordinary optimization."""
+        return max(len(self.levels) - 1, 0)
+
+    def criteria(self, level: int = 0) -> Criteria:
+        """How a candidate is judged at ``level``: by the problem's objectives at the top
+        (``0``), by the level's ``objective`` below; by the problem's constraints at every level.
+        Raises :class:`ValueError` for a level the problem does not have."""
+        if not 0 <= level <= self.depth:
+            raise ValueError(f"level {level!r}: the problem's levels are 0 to {self.depth}")
+        if level == 0:
+            return Criteria(self.objectives, self.constraints)
+        objective = self.levels[level].objective
+        assert objective is not None  # parse_problem: every inner level has one
+        return Criteria((objective,), self.constraints)
+
+    @property
     def references(self) -> tuple[MetricRef, ...]:
-        """The metrics the objectives and constraints name, each once, objectives first."""
-        refs = [o.ref for o in self.objectives] + [c.ref for c in self.constraints]
+        """The metrics the objectives and constraints name, each once, objectives first: those
+        the top level judges by (:meth:`criteria`)."""
+        return self.criteria(0).references
+
+    @property
+    def measured(self) -> tuple[MetricRef, ...]:
+        """The metrics any level judges by, each once: every one an evaluation must carry when
+        it is valid, whatever level it was made for."""
+        refs = [ref for level in range(self.depth + 1) for ref in self.criteria(level).references]
         return tuple(dict.fromkeys(refs))
 
     @property
@@ -573,6 +669,8 @@ class ProblemSpec:
         data["objectives"] = [objective.to_dict() for objective in self.objectives]
         if self.constraints:
             data["constraints"] = [constraint.to_dict() for constraint in self.constraints]
+        if self.optimization is not None:
+            data["optimization"] = self.optimization.to_dict()
         return data
 
 
@@ -602,12 +700,26 @@ def _untitled(item: object) -> object:
     return item
 
 
+def _untitled_level(level: object) -> object:
+    """A level of ``optimization`` without the ``title`` of its objective, and so each below."""
+    if not isinstance(level, Mapping):
+        return level
+    found = dict(level)
+    if "objective" in found:
+        found["objective"] = _untitled(found["objective"])
+    if "inner" in found:
+        found["inner"] = _untitled_level(found["inner"])
+    return found
+
+
 def essential(definition: Mapping[str, object]) -> dict[str, object]:
     """``definition`` (:meth:`ProblemSpec.to_dict` data) as two are compared: :func:`ordered`,
     without what only names things for a reader, its ``name`` and every ``title``. Two problems
     that differ only in those are one problem: a study goes on, and keeps its records."""
     found = ordered(definition)
     found.pop("name", None)
+    if "optimization" in found:
+        found["optimization"] = _untitled_level(found["optimization"])
     for key in _TITLED:
         value = found.get(key)
         if not isinstance(value, list):

@@ -38,6 +38,7 @@ from k4opt.problem.models import (
     Sample,
     Stage,
     StageDestination,
+    fixed_events,
 )
 from k4opt.problem.stages import executors
 from k4opt.program import Settable
@@ -309,21 +310,9 @@ def check_replicate(spec: ProblemSpec, replicate: object) -> int:
         )
     if replicate == 0:
         return 0
-    for name, sample in spec.samples.items():
-        given = [stage for stage, entry in sample.stages.items() if entry.file is not None]
-        if given:
-            raise CandidateError(
-                f"replicate {replicate}: samples.{name} reads its {', '.join(given)} from a file, "
-                "so another seed would not make new events; only samples that make their events "
-                "from a seed (the particle gun, fired by ddsim) have replicates"
-            )
-    if not any(
-        stage.seed is not None for s in spec.samples.values() for stage in s.stages.values()
-    ):
-        raise CandidateError(
-            f"replicate {replicate}: the problem makes no events from a seed (no sample "
-            "simulates any), so a replicate would be the candidate itself"
-        )
+    reason = fixed_events(spec.samples)
+    if reason is not None:
+        raise CandidateError(f"replicate {replicate}: {reason}, so it has no replicates")
     return replicate
 
 

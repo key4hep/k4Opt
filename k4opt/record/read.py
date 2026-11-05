@@ -36,7 +36,7 @@ from k4opt.geometry import parse_reference
 from k4opt.problem.candidate import Configuration, configure, validate_candidate
 from k4opt.problem.contract import Demands, MetricKey, check_bindings, check_entries, check_result
 from k4opt.problem.errors import CandidateError
-from k4opt.problem.models import MetricRef, ProblemSpec, essential
+from k4opt.problem.models import Criteria, MetricRef, ProblemSpec, essential
 from k4opt.problem.plan import (
     GEOMETRY,
     Kind,
@@ -644,20 +644,21 @@ def _measured(item: Mapping[str, object], where: str) -> Measurement:
 _NAMED = ("evaluator", "sample", "stage", "metric", "label")
 
 
-def _check_metrics(spec: ProblemSpec, record: Mapping[str, object], value: _Lookup) -> None:
-    """Each entry of ``metrics`` names a metric of the objectives and constraints, in order, and
-    holds what its evaluator measured, or nothing if that evaluator is not valid."""
+def _check_metrics(criteria: Criteria, record: Mapping[str, object], value: _Lookup) -> None:
+    """Each entry of ``metrics`` names a metric of the objectives and constraints of
+    ``criteria``, in order, and holds what its evaluator measured, or nothing if that evaluator
+    is not valid."""
     entries = [
         _mapping(entry, f"metrics[{i}]")
         for i, entry in enumerate(_list(record.get("metrics"), "metrics"))
     ]
     found = [[entry.get(key) for key in _NAMED] for entry in entries]
     wanted = [
-        [ref.evaluator, ref.sample, ref.stage, ref.metric, ref.label] for ref in spec.references
+        [ref.evaluator, ref.sample, ref.stage, ref.metric, ref.label] for ref in criteria.references
     ]
     if found != wanted:
         raise RecordError(f"its metrics are {found}, but the problem names {wanted}")
-    for ref, entry in zip(spec.references, entries, strict=True):
+    for ref, entry in zip(criteria.references, entries, strict=True):
         measured = _measurement(value(ref))
         expected = {key: measured[key] for key in ("value", "unit", "uncertainty")}
         recorded = {key: entry.get(key) for key in expected}
@@ -669,12 +670,14 @@ def _check_metrics(spec: ProblemSpec, record: Mapping[str, object], value: _Look
 
 class Recorded(NamedTuple):
     """What a record that holds up says its candidate's assessment is made from: the
-    candidate's status, whether it represents its candidate, and the measurement of each
-    objective and constraint metric by the evaluation that names it (``value``)."""
+    candidate's status, whether it represents its candidate, the measurement of each objective
+    and constraint metric by the evaluation that names it (``value``), and the ``criteria`` of
+    the level it was made for."""
 
     status: Status
     represents: bool
     value: _Lookup
+    criteria: Criteria
 
 
 def _within(value: object, *keys: str) -> Mapping[str, object]:
@@ -754,6 +757,7 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
     if record.get("schema") != SUMMARY_SCHEMA:
         raise RecordError(f"schema is {record.get('schema')!r}, not {SUMMARY_SCHEMA!r}")
     _check_problem(spec, record)
+    criteria = _criteria(spec, record)
     configuration = _check_candidate(spec, record)
     _text(record.get("run_dir"), "run_dir")  # where it was made: provenance only
     declared = _implementations(spec, record)
@@ -764,7 +768,7 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
         spec.samples,
         spec.evaluators,
         supplied,
-        references=spec.references,
+        references=criteria.references,
         parameters=spec.parameters,
     )
     evaluators = _evaluations(spec, configuration, record, samples, declared, demands, plan)
@@ -807,6 +811,15 @@ def check_summary(spec: ProblemSpec, summary: Mapping[str, object]) -> Recorded:
             return None
         return owner.measured[(ref.stage, ref.metric)]  # a valid one measured it: check_result
 
-    _check_metrics(spec, record, value)
+    _check_metrics(criteria, record, value)
     _times(record)
-    return Recorded(status, represents, value)
+    return Recorded(status, represents, value, criteria)
+
+
+def _criteria(spec: ProblemSpec, record: Mapping[str, object]) -> Criteria:
+    """The criteria of the level the record was made for (its ``level``): which tasks are
+    required, and which metrics it names and judges."""
+    level = record.get("level")
+    if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= spec.depth:
+        raise RecordError(f"level is {level!r}, but the problem's levels are 0 to {spec.depth}")
+    return spec.criteria(level)

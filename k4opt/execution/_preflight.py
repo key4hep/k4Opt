@@ -36,7 +36,7 @@ from k4opt.execution._stages import DryRuns, StageContext, check_stages, try_can
 from k4opt.frozen import FrozenMap, Json
 from k4opt.problem.candidate import Configuration
 from k4opt.problem.models import EvaluatorSpec
-from k4opt.problem.plan import Kind, TaskId, evaluations
+from k4opt.problem.plan import Kind, Plan, TaskId, evaluations
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +61,9 @@ class _Prepared:
     (``contexts``, checked complete), and by evaluation, in plan order, the entry that binds it
     with what the candidate sets (``entries``) and the request its evaluator's ``check`` was
     asked about (``requests``); ``declined`` holds, with its message, each diagnostic whose
-    ``check`` rejected the candidate, which is not run."""
+    ``check`` rejected the candidate, which is not run. ``level`` is the level of the
+    optimization it is evaluated for, whose :attr:`plan` says which of its tasks are required.
+    """
 
     binding: _Binding
     configuration: Configuration
@@ -69,14 +71,24 @@ class _Prepared:
     entries: Mapping[TaskId, EvaluatorSpec]
     requests: Mapping[TaskId, EvaluationRequest]
     declined: Mapping[TaskId, str] = FrozenMap({})
+    level: int = 0
+
+    @property
+    def plan(self) -> Plan:
+        """The candidate's tasks, those required by the criteria of its level."""
+        return self.binding.plans[self.level]
 
 
 def _preflight(
-    binding: _Binding, configuration: Configuration, dry_runs: DryRuns | None = None
+    binding: _Binding,
+    configuration: Configuration,
+    dry_runs: DryRuns | None = None,
+    level: int = 0,
 ) -> _Prepared | Rejected:
     """Prepare one candidate, configured as ``configuration`` says, before a file is created or a
     stage runs; :class:`Rejected` if the ``check`` of a required evaluation rejects it, or the job
-    of a required reconstruction does not take the arguments the candidate's values set in it.
+    of a required reconstruction does not take the arguments the candidate's values set in it:
+    required by the criteria of ``level``, the level of the optimization it is evaluated for.
 
     Checks that each evaluator class declares what it did when the session bound it, the stages
     of each sample with what the candidate sets in them, complete, the settings of each
@@ -118,7 +130,7 @@ def _preflight(
         try:
             check(requests[task])
         except CandidateRejected as exc:
-            if binding.plan[task].required:
+            if binding.plans[level][task].required:
                 return Rejected(task.label, str(exc))
             declined[task] = str(exc)  # a diagnostic decides nothing of the candidate
         except (EvaluationFailed, EvaluationInvalid) as exc:
@@ -129,7 +141,7 @@ def _preflight(
                 "EvaluationContractError for settings the evaluator cannot work with"
             ) from exc
     # a diagnostic reconstruction that refuses its arguments fails, and decides nothing
-    for task in binding.rejecting if dry_runs is not None else ():
+    for task in binding.rejecting[level] if dry_runs is not None else ():
         if task.kind is Kind.STAGE and task.name == "reconstruction" and dry_runs is not None:
             assert task.sample is not None
             pending = binding.contexts[task.sample].pending.get("reconstruction", ())
@@ -143,6 +155,7 @@ def _preflight(
         FrozenMap({task: entries[task] for task, _ in binding.evaluations}),
         FrozenMap(requests),
         FrozenMap(declined),
+        level,
     )
 
 

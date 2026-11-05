@@ -139,6 +139,8 @@ class RunRequest:
     run: Mapping[str, Json] | None = None
     # the same candidate on other events: every seed derived (:func:`k4opt.problem.configure`)
     replicate: int = 0
+    # the level of a nested optimization it is evaluated for, whose criteria judge it
+    level: int = 0
 
 
 class Evaluations:
@@ -499,6 +501,7 @@ class EvaluationSession:
         *,
         run: Mapping[str, Json] | None = None,
         replicate: int = 0,
+        level: int = 0,
     ) -> RunOutcome | Rejected:
         """Evaluate ``candidate`` into the new directory ``output`` and write its summary there;
         :class:`Rejected`, with nothing created, if an evaluator's ``check`` rejects it.
@@ -508,7 +511,9 @@ class EvaluationSession:
         (a study and a trial, say). ``replicate`` above 0 evaluates the candidate on other events:
         each stage's seed derived from the problem's
         (:func:`k4opt.problem.candidate.replicate_seed`), for a problem whose samples make their
-        events from their seeds and with no stage supplied. Raises a
+        events from their seeds and with no stage supplied. ``level`` is the level of a nested
+        optimization it is evaluated for (:attr:`~k4opt.problem.ProblemSpec.levels`), whose
+        criteria judge it (:meth:`~k4opt.problem.ProblemSpec.criteria`). Raises a
         :class:`~k4opt.errors.K4OptError` before anything is created for what :meth:`check`
         refuses, an existing ``output`` or an unusable location. Execution problems are
         ``failed`` or ``invalid`` results in the outcome; a result that breaks the evaluation
@@ -518,7 +523,8 @@ class EvaluationSession:
         candidate ran: that raises a :class:`~k4opt.execution.RunError`, since the record could not
         say which files or code the candidate was evaluated with.
         """
-        with self.evaluate_each([RunRequest(candidate, output, run, replicate)]) as evaluations:
+        request = RunRequest(candidate, output, run, replicate, level)
+        with self.evaluate_each([request]) as evaluations:
             for _, result in evaluations:
                 if isinstance(result, Exception):
                     raise result
@@ -649,7 +655,9 @@ class EvaluationSession:
         with no workspace."""
         reference = _run_reference(request.run)
         started = time.perf_counter()
-        values, key, prepared, overrides = self._prepare(request.candidate, request.replicate)
+        values, key, prepared, overrides = self._prepare(
+            request.candidate, request.replicate, request.level
+        )
         if isinstance(prepared, Rejected):
             return _Run(
                 Workspace("", None), None, key, rejected=prepared, request=request, values=values
@@ -668,6 +676,7 @@ class EvaluationSession:
             values=values,
             reference=reference,
             replicate=request.replicate,
+            level=request.level,
         )
 
     def _checked(self, run: _Run, outcome: TaskOutcome | None, result: TaskResult) -> None:
@@ -740,13 +749,16 @@ class EvaluationSession:
         return signature
 
     def _prepare(
-        self, candidate: Mapping[str, Scalar], replicate: int = 0
+        self, candidate: Mapping[str, Scalar], replicate: int = 0, level: int = 0
     ) -> tuple[dict[str, Scalar], CandidateKey, _Prepared | Rejected, list[Override]]:
         """The checked candidate, its key, what its preflight prepared (its configuration and
         the requests made for it, or why an evaluator rejected it) and its overrides; with the
-        seeds of ``replicate``, which a stage the caller supplies would not follow."""
+        seeds of ``replicate``, which a stage the caller supplies would not follow, judged by the
+        criteria of ``level``."""
         spec = self._baseline.spec
         values, key = validate_candidate(spec, candidate)
+        if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= spec.depth:
+            raise CandidateError(f"level {level!r}: the problem's levels are 0 to {spec.depth}")
         if replicate and self._inputs:
             supplied = ", ".join(sorted(task.label for task in self._inputs))
             raise CandidateError(
@@ -755,7 +767,7 @@ class EvaluationSession:
             )
         configuration = configure(spec, values, replicate)
         self._baseline.verify()  # first: a file that is gone changed, more than it is missing
-        prepared = _preflight(self._binding, configuration, self._dry_runs)
+        prepared = _preflight(self._binding, configuration, self._dry_runs, level)
         if isinstance(prepared, Rejected):
             return values, key, prepared, []
         overrides = geometry_overrides(self._baseline.problem, configuration)

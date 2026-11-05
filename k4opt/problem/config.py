@@ -24,6 +24,7 @@ from k4opt.problem._evaluators import _evaluators
 from k4opt.problem._fields import (
     _choice,
     _fail,
+    _integer,
     _mapping,
     _number,
     _optional_text,
@@ -44,10 +45,14 @@ from k4opt.problem.models import (
     Environment,
     EvaluatorSpec,
     Key4hepStack,
+    Level,
     MetricRef,
     Objective,
+    Parameter,
     ProblemSpec,
     ResolvedProblem,
+    Sample,
+    fixed_events,
 )
 from k4opt.yamlio import UniqueKeyLoader
 
@@ -63,6 +68,7 @@ _TOP_KEYS = (
     "evaluators",
     "objectives",
     "constraints",
+    "optimization",
 )
 _REQUIRED_TOP = (
     "schema_version",
@@ -192,6 +198,11 @@ def _parse(data: object, source: Path | None) -> ProblemSpec:
     parameters = _destinations(declared, samples, places, evaluators)
     _check_options(samples, places, parameters)
     _check_pipeline(samples, places, evaluators, parameters)
+    optimization = (
+        _optimization(top["optimization"], parameters, objectives, evaluators, samples)
+        if "optimization" in top
+        else None
+    )
     return ProblemSpec(
         name=name,
         environment=environment,
@@ -202,6 +213,7 @@ def _parse(data: object, source: Path | None) -> ProblemSpec:
         objectives=objectives,
         constraints=constraints,
         timeout=_seconds(top["timeout"], "timeout") if "timeout" in top else None,
+        optimization=optimization,
     )
 
 
@@ -310,26 +322,159 @@ def _objectives(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Obj
     first: dict[MetricRef, int] = {}
     for index, item in enumerate(items):
         path = f"objectives[{index}]"
-        m = _mapping(
-            item,
-            path,
-            ("sample", "evaluator", "stage", "metric", "title", "direction"),
-            ("stage", "metric", "direction"),
-        )
-        sample, evaluator = _owner(m, path, evaluators)
-        objective = Objective(
-            evaluator=evaluator,
-            stage=_text(m["stage"], f"{path}.stage"),
-            metric=_text(m["metric"], f"{path}.metric"),
-            direction=cast(Direction, _choice(m["direction"], f"{path}.direction", _DIRECTIONS)),
-            sample=sample,
-            title=_title(m, path),
-        )
+        objective = _objective(item, path, evaluators)
         if objective.ref in first:
             raise _fail(path, f"duplicates objectives[{first[objective.ref]}] ({objective.label})")
         first[objective.ref] = index
         objectives.append(objective)
     return tuple(objectives)
+
+
+def _objective(item: object, path: str, evaluators: tuple[EvaluatorSpec, ...]) -> Objective:
+    """One objective: a metric of an evaluation of the problem, and its direction."""
+    m = _mapping(
+        item,
+        path,
+        ("sample", "evaluator", "stage", "metric", "title", "direction"),
+        ("stage", "metric", "direction"),
+    )
+    sample, evaluator = _owner(m, path, evaluators)
+    return Objective(
+        evaluator=evaluator,
+        stage=_text(m["stage"], f"{path}.stage"),
+        metric=_text(m["metric"], f"{path}.metric"),
+        direction=cast(Direction, _choice(m["direction"], f"{path}.direction", _DIRECTIONS)),
+        sample=sample,
+        title=_title(m, path),
+    )
+
+
+def _optimization(
+    raw: object,
+    parameters: tuple[Parameter, ...],
+    objectives: tuple[Objective, ...],
+    evaluators: tuple[EvaluatorSpec, ...],
+    samples: Mapping[str, Sample],
+) -> Level | None:
+    """The levels of a nested optimization, the top one first; ``None`` for a block without
+    ``inner``, which is an ordinary optimization, as without the block. Every parameter is in
+    the ``parameters`` of exactly one level; the best trial of each inner study is evaluated
+    again on new events, so the samples must make theirs from seeds."""
+    top = _level(raw, "optimization", parameters, objectives, evaluators)
+    seen: dict[str, str] = {}
+    level: Level | None = top
+    path = "optimization"
+    while level is not None:
+        for name in level.parameters:
+            if name in seen:
+                raise _fail(
+                    f"{path}.parameters",
+                    f"{name!r} is in {seen[name]}.parameters too; each parameter is searched at "
+                    "one level",
+                )
+            seen[name] = path
+        level, path = level.inner, f"{path}.inner"
+    missing = [parameter.name for parameter in parameters if parameter.name not in seen]
+    if missing:
+        raise _fail(
+            "optimization",
+            f"the parameter(s) {', '.join(missing)} are in no level; list each parameter in the "
+            "parameters of the level that searches it",
+        )
+    if top.inner is None:
+        return None
+    reason = fixed_events(samples)
+    if reason is not None:
+        raise _fail(
+            "optimization.inner",
+            f"the best trial of each inner study is evaluated again on new events, but {reason}",
+        )
+    return top
+
+
+def _level(
+    raw: object,
+    path: str,
+    parameters: tuple[Parameter, ...],
+    objectives: tuple[Objective, ...],
+    evaluators: tuple[EvaluatorSpec, ...],
+) -> Level:
+    """One level of ``optimization`` at ``path``, and those below it."""
+    m = _mapping(raw, path, ("parameters", "trials", "objective", "inner"), ("parameters",))
+    top = path == "optimization"
+    if top and "trials" in m:
+        raise _fail(
+            f"{path}.trials",
+            "the top level's trials are how long a run goes on; give them on the command line "
+            "(k4opt optimize --trials N), where a resume can add more",
+        )
+    if top and "objective" in m:
+        raise _fail(
+            f"{path}.objective",
+            "the problem's objectives judge the top level; objective: says how an inner level "
+            "picks the best trial of each of its studies",
+        )
+    if not top and "trials" not in m:
+        raise _fail(
+            path,
+            "missing trials: how many trials each study of this level runs before its best is "
+            "chosen",
+        )
+    names = [parameter.name for parameter in parameters]
+    listed = _sequence(m["parameters"], f"{path}.parameters")
+    if not listed:
+        raise _fail(f"{path}.parameters", "must list at least one parameter")
+    for index, name in enumerate(listed):
+        where = f"{path}.parameters[{index}]"
+        if _text(name, where) not in names:
+            raise _fail(
+                where,
+                f"{name!r} is no parameter of the problem; its parameters are {', '.join(names)}",
+            )
+        if name in listed[:index]:
+            raise _fail(where, f"{name!r} is listed twice")
+    return Level(
+        tuple(listed),
+        None if top else _integer(m["trials"], f"{path}.trials", minimum=1),
+        None if top else _level_objective(m.get("objective"), path, objectives, evaluators),
+        _level(m["inner"], f"{path}.inner", parameters, objectives, evaluators)
+        if "inner" in m
+        else None,
+    )
+
+
+def _level_objective(
+    raw: object, path: str, objectives: tuple[Objective, ...], evaluators: tuple[EvaluatorSpec, ...]
+) -> Objective:
+    """What picks the best trial of each study of the level at ``path``: one of the problem's
+    objectives, by label or metric, or any metric of an evaluation, with its direction; the
+    problem's objective if it has one and none is named."""
+    labels = ", ".join(objective.label for objective in objectives)
+    if raw is None:
+        if len(objectives) == 1:
+            return objectives[0]
+        raise _fail(
+            path,
+            f"the problem has the objectives {labels}; say which one picks the best trial of "
+            "each study of this level (objective: METRIC or LABEL), or give one of any metric "
+            "(objective: {evaluator, sample, stage, metric, direction})",
+        )
+    if not isinstance(raw, str):
+        return _objective(raw, f"{path}.objective", evaluators)
+    found = [o for o in objectives if o.label == raw] or [o for o in objectives if o.metric == raw]
+    if len(found) == 1:
+        return found[0]
+    if found:
+        raise _fail(
+            f"{path}.objective",
+            f"{raw!r} is the metric of the objectives {', '.join(o.label for o in found)}; name "
+            "one by its label",
+        )
+    raise _fail(
+        f"{path}.objective",
+        f"{raw!r} is no objective of the problem ({labels}); name one by its metric or label, or "
+        "give one of any metric (objective: {evaluator, sample, stage, metric, direction})",
+    )
 
 
 def _constraints(raw: object, evaluators: tuple[EvaluatorSpec, ...]) -> tuple[Constraint, ...]:

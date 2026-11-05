@@ -130,6 +130,7 @@ def assemble(
     configuration: Configuration,
     execution: Mapping[str, Json],
     replicate: int = 0,
+    level: int = 0,
 ) -> dict[str, object]:
     """The summary of a candidate, made from its task results and nothing else that ran.
 
@@ -143,7 +144,10 @@ def assemble(
     and of the process (``process``), the candidate's ``configuration`` (each stage and each
     evaluator's settings as its parameters set them) and how it executed the tasks
     (``execution``: provenance, which no identity or comparison of records reads), and the
-    ``replicate`` its seeds are of (:func:`k4opt.problem.configure`).
+    ``replicate`` its seeds are of (:func:`k4opt.problem.configure`); the ``level`` of the
+    optimization it was evaluated for decides which metrics it names (its criteria:
+    :meth:`~k4opt.problem.ProblemSpec.criteria`), as the ``assessment`` and the plan's required
+    tasks were made for it.
     """
     plan, results = candidate.plan, candidate.results
     environment = thaw(process["environment"])
@@ -172,6 +176,8 @@ def assemble(
         "candidate_key": [list(part) for part in candidate.candidate_key],
         # 0, or the replicate whose seeds its stages ran with: the same candidate on other events
         "replicate": replicate,
+        # 0, or the level of a nested optimization it was evaluated for: what it is judged by
+        "level": level,
         "status": candidate.status,
         "message": candidate.message,
         # the tasks the status is decided by: what the objectives, constraints and the evaluators
@@ -191,7 +197,7 @@ def assemble(
             {"evaluator": ref.evaluator, "sample": ref.sample, "stage": ref.stage}
             | {"metric": ref.metric, "label": ref.label}
             | _measurement(candidate.value(ref))
-            for ref in spec.references
+            for ref in spec.criteria(level).references
         ],
         # the objectives and the constraints judged, from those metrics
         "assessment": assessment.to_dict(),

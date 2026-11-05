@@ -20,7 +20,14 @@ from fractions import Fraction
 from typing import Literal
 
 from k4opt.evaluation import Measurement, Status
-from k4opt.problem.models import Constraint, Direction, MetricRef, Objective, ProblemSpec
+from k4opt.problem.models import (
+    Constraint,
+    Criteria,
+    Direction,
+    MetricRef,
+    Objective,
+    ProblemSpec,
+)
 from k4opt.record.errors import RecordError
 from k4opt.record.read import _Lookup, _plain, check_summary
 from k4opt.record.results import CandidateRecord
@@ -199,7 +206,7 @@ class Assessment:
         ``represents_candidate``, ``metrics`` or ``assessment`` disagree with the recomputation.
         """
         recorded = check_summary(spec, summary)
-        assessment = _judge(spec, recorded.status, recorded.represents, recorded.value)
+        assessment = _judge(recorded.criteria, recorded.status, recorded.represents, recorded.value)
         if summary.get("assessment") != _plain(assessment.to_dict()):
             raise RecordError(
                 "its assessment is not the one its measurements give: "
@@ -208,23 +215,25 @@ class Assessment:
         return assessment
 
 
-def assess(spec: ProblemSpec, candidate: CandidateRecord) -> Assessment:
-    """The assessment of a candidate just evaluated."""
-    return _judge(spec, candidate.status, candidate.represents_candidate, candidate.value)
+def assess(criteria: Criteria, candidate: CandidateRecord) -> Assessment:
+    """The assessment of a candidate just evaluated, with the ``criteria`` of the level it was
+    evaluated for (:meth:`~k4opt.problem.ProblemSpec.criteria`)."""
+    return _judge(criteria, candidate.status, candidate.represents_candidate, candidate.value)
 
 
-def _judge(spec: ProblemSpec, status: Status, represents: bool, value: _Lookup) -> Assessment:
+def _judge(criteria: Criteria, status: Status, represents: bool, value: _Lookup) -> Assessment:
     """The one way an assessment is made, live or from a record: ``value(ref)`` is the
-    measurement of an objective or constraint metric by the binding that ``ref`` names."""
+    measurement of an objective or constraint metric of ``criteria`` by the binding that ``ref``
+    names."""
     bounds = [
         (constraint, bound)
-        for constraint in spec.constraints
+        for constraint in criteria.constraints
         for bound in _BOUNDS
         if getattr(constraint, bound) is not None
     ]
     if status is not Status.VALID:
         return Assessment(None, tuple(judge_limit(c, bound, None) for c, bound in bounds), None)
-    objectives = tuple(_objective(o, _required(value, o.ref)) for o in spec.objectives)
+    objectives = tuple(_objective(o, _required(value, o.ref)) for o in criteria.objectives)
     limits = tuple(judge_limit(c, b, _required(value, c.ref)) for c, b in bounds)
     feasible = all(limit.satisfied for limit in limits) if represents else None
     return Assessment(objectives, limits, feasible)

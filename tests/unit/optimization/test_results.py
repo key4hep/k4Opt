@@ -448,6 +448,10 @@ RECORD_CHANGES: dict[str, tuple[Callable[[Path, dict[str, Any]], None], str]] = 
         lambda path, told: _rewrite(path, lambda d: d["run"].update(study="another")),
         r"was made for \{'study': 'another', 'trial': 0\}, not this trial",
     ),
+    "another level's": (
+        lambda path, told: _rewrite(path, lambda d: d.update(level=1)),
+        r"was evaluated for level 1 of a nested optimization, judged by its criteria",
+    ),
     "another candidate's": (
         lambda path, told: _rewrite(path, lambda d: d["candidate"].update({RADIUS: 999})),
         r"holds candidate .*999.*, but the trial is",

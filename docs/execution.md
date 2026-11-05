@@ -368,7 +368,8 @@ with session.evaluate_each(requests) as evaluations:
 
 The next request is taken only once the candidates under way leave a slot idle, and every
 outcome that ended is given back before it; `evaluate()` is one request through the same path.
-A request may carry a `replicate` (above). A source that has nothing to give now, but may have
+A request may carry a `replicate` (above) and the `level` of a
+[nested optimization](problem.md#optimization) it is evaluated for, whose criteria judge it. A source that has nothing to give now, but may have
 once a candidate under way ended (an optimizer that waits for results), gives `WAIT`
 (`from k4opt.execution import WAIT`): it is asked again only once a candidate was given back,
 and the evaluation raises `RunError` if none is under way, since none would end.
