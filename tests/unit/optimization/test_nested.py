@@ -395,9 +395,12 @@ def test_a_run_stopped_anywhere_goes_on_from_where_it_was(
         with pytest.raises(Stop):
             run(nested, output, 1)
     (output / ".lock").unlink(missing_ok=True)  # a kill leaves it
-    study = run(nested, output, 0, resume=True)  # no new trial: it goes on with the one it has
+    told: list[Any] = []
+    # no new trial: it goes on with the one it has
+    study = run(nested, output, 0, resume=True, progress=told.append)
     (trial,) = study.trials
     assert trial.status == "valid" and trial.selected is not None
+    assert trial.recovered and [(t.number, t.recovered) for t in told] == [(0, True)]
     assert len([t for t in trial.inner.trials if t.status == "valid"]) == 3
     assert len(fake.calls) == 1  # the new events, once
     assert load_study(output).to_dict() == study.to_dict()
@@ -554,3 +557,37 @@ def test_a_run_keeps_only_its_open_studies(
     monkeypatch.setattr(tree.Tree, "close", closing)
     run(nested, tmp_path / "s", 3)
     assert held == [1]  # the top study: those of its three trials were let go as they ended
+
+
+@pytest.mark.parametrize("lost", ["study.json", "study.journal"])
+def test_a_selection_needs_its_inner_study_though_its_trial_still_runs(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, lost: str
+) -> None:
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    with monkeypatch.context() as patched:
+        stop_before_the_new_events(patched)
+        with pytest.raises(Stop):
+            run(nested, output, 1)
+    (output / ".lock").unlink(missing_ok=True)
+    assert load_study(output).trials[0].selected is not None  # as it stands, it reads back
+    (output / "inner" / "trial-000000" / lost).unlink()
+    with pytest.raises(OptimizationError):
+        load_study(output)
+    with pytest.raises(OptimizationError):
+        run(nested, output, 0, resume=True)
+
+
+def test_a_lost_journal_is_no_study_never_set_up_once_trials_ran(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    with monkeypatch.context() as patched:
+        stop_at_settle(1, 2)(patched)
+        with pytest.raises(Stop):
+            run(nested, output, 1)
+    (output / ".lock").unlink(missing_ok=True)
+    (output / "inner" / "trial-000000" / "study.journal").unlink()  # its trials' records stay
+    with pytest.raises(OptimizationError, match=r"study\.journal does not exist"):
+        load_study(output)

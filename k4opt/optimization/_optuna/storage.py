@@ -263,8 +263,9 @@ def _check_set_up(url: str, options: Mapping[str, Any]) -> None:
 
 
 class NotSetUpError(OptimizationError):
-    """The storage does not hold the study (yet): the process that made its ``study.json`` stopped
-    before setting it up. Nothing of it can have run, unlike a study that does not hold up."""
+    """The storage does not hold the study: the process that made its ``study.json`` stopped
+    before setting it up, or the storage was lost; only a study directory in which nothing ran
+    tells the two apart."""
 
 
 def existing_storage(directory: Path, document: Mapping[str, Any], url: str | None) -> BaseStorage:

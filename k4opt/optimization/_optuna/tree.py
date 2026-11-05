@@ -155,6 +155,7 @@ class Tree:
                 trial.set_user_attr(marks.RECOVERED, True)
                 run.study.tell(trial, state=TrialState.FAIL)
                 continue
+            trial.set_user_attr(marks.RECOVERED, True)  # finished by this session, not its own
             self._open(node, trial)
         if total:
             for frozen in run.study.get_trials(deepcopy=False):

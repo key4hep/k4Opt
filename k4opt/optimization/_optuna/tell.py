@@ -70,6 +70,7 @@ def _report(
     that does not hold up.
     """
     number = trial.number
+    recovered = recovered or trial.user_attrs.get(marks.RECOVERED) is True  # a parent reopened
     selected = trial.user_attrs.get(marks.SELECTED)  # of a trial that stands for a study below
     result, warnings = record_of(
         run.directory, run.document, run.scope, number, trial.params, run.read, selected

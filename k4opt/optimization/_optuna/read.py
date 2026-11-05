@@ -37,6 +37,7 @@ from k4opt.optimization._results import (
 )
 from k4opt.optimization._scope import StudyScope
 from k4opt.optimization._study import (
+    INNER_NAME,
     STUDY_NAME,
     inner_directory,
     read_study,
@@ -60,7 +61,8 @@ def _existing_study(document: Mapping[str, Any], storage: BaseStorage) -> optuna
         ) from None
     missing = [key for key in study_attributes(document) if key not in study.user_attrs]
     if missing:
-        raise NotSetUpError(
+        kind = OptimizationError if study.trials else NotSetUpError  # with trials, it was set up
+        raise kind(
             f"the optimizer's study {name!r} lacks {', '.join(missing)}: the process that made it "
             "stopped while setting it up; k4opt optimize --resume finishes that"
         )
@@ -262,15 +264,16 @@ def _with_inner(
 ) -> TrialResult:
     """``result`` with the study of the level below that its trial stands for, read as any study
     and its link checked (:func:`~k4opt.optimization._results.check_inner`): every trial that
-    ended with a record, or unscored, has one; a trial that was stopped may have none yet, or one
-    whose making was cut short (:class:`NotSetUpError`). Whatever else is wrong with it is refused,
-    of a trial still running too."""
+    ended with a record, or unscored, or that selected has one; a trial still running, before
+    that, may have none yet, or one whose making was cut short (:class:`NotSetUpError`, with
+    nothing in its directory that ran). Whatever else is wrong with it is refused."""
     path = inner_directory(directory, frozen.number)
     if (path / STUDY_NAME).is_file():
         try:
             inner = load(path, storage)
         except NotSetUpError:
-            if frozen.state == TrialState.RUNNING:
+            ran = trial_directories(path) or (path / INNER_NAME).exists()
+            if frozen.state == TrialState.RUNNING and result.selected is None and not ran:
                 return result
             raise
         if inner.id != frozen.user_attrs.get(marks.CHILD):
@@ -279,7 +282,8 @@ def _with_inner(
                 f"{frozen.user_attrs.get(marks.CHILD)!r}, but {path} holds {inner.id!r}"
             )
         result = replace(result, inner=inner)
-    if result.inner is not None or result.record is not None or result.status == "unscored":
+    held = result.inner is not None or result.record is not None or result.selected is not None
+    if held or result.status == "unscored":
         check_inner(document, scope, result)
     return result
 
