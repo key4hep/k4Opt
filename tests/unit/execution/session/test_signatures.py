@@ -56,7 +56,17 @@ def test_a_stage_made_from_the_same_things_has_the_same_signature(
         for key, value in first["samples"]["gamma"]["stages"]["simulation"]["definition"].items()
         if key != "timeout"
     }
-    assert document["program"] == first["environment"]["observed"]["programs"]["ddsim"]
+    ddsim = first["environment"]["observed"]["programs"]["ddsim"]
+    # by content: the same program elsewhere makes the same events
+    assert document["program"] == (
+        None
+        if ddsim is None
+        else {
+            "bytes": ddsim["bytes"],
+            "sha256": ddsim["sha256"],
+            "interpreter": ddsim["interpreter"],
+        }
+    )
     assert document["k4opt"] == first["environment"]["observed"]["k4opt_source"]["sha256"]
 
 

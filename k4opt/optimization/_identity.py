@@ -209,11 +209,14 @@ def program_differences(study: Mapping[str, Any], current: Mapping[str, Any]) ->
 def search_warnings(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
     """The variables that decide what the programs load (``search``) that differ between the
     study and ``current``: the same programs may then run other code (a local build, another
-    virtual environment), which no other part of the identity would show."""
+    virtual environment), which no other part of the identity would show. ``PATH`` is left out:
+    of it, only the interpreter it finds for a program decides what that program runs, and that
+    is compared with the program (:func:`program_differences`)."""
     then, now_ = study.get("search"), current.get("search")
     if not isinstance(then, Mapping) or not isinstance(now_, Mapping):
         return []
-    changed = [name for name in dict.fromkeys([*then, *now_]) if then.get(name) != now_.get(name)]
+    names = [name for name in dict.fromkeys([*then, *now_]) if name != "PATH"]
+    changed = [name for name in names if then.get(name) != now_.get(name)]
     if not changed:
         return []
     return [

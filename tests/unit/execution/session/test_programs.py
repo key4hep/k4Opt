@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -48,13 +49,17 @@ def test_a_session_runs_and_records_the_ddsim_it_found_when_it_opened(
     first, second = builds
     with EvaluationSession.open(problem_file, [cell_count()]) as session:
         programs = session.identity()["programs"]
-        assert programs == {
-            "ddsim": {
-                "path": str(first),
-                "bytes": first.stat().st_size,
-                "sha256": hashlib.sha256(first.read_bytes()).hexdigest(),
-            }
+        ddsim = dict(programs["ddsim"])
+        interpreter = ddsim.pop("interpreter")
+        assert ddsim == {
+            "path": str(first),
+            "bytes": first.stat().st_size,
+            "sha256": hashlib.sha256(first.read_bytes()).hexdigest(),
         }
+        # and the interpreter its #! line names, as PATH found it
+        shebang = first.read_text().splitlines()[0].split()
+        name = shebang[-1] if Path(shebang[0][2:]).name == "env" else shebang[0][2:]
+        assert interpreter["path"] == (shutil.which(name) if "/" not in name else name)
         # another ddsim first on PATH later: the session still runs the one it identified
         monkeypatch.setenv("PATH", f"{second.parent}{os.pathsep}{os.environ['PATH']}")
         session.evaluate({RADIUS: 450.0}, tmp_path / "run")

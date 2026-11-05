@@ -1192,6 +1192,19 @@ def test_a_study_resumes_only_with_the_ddsim_it_ran(
     )
     assert [t.status for t in resumed.trials] == ["valid", "valid"]
     assert [w for w in warned if "PYTHONPATH differ" in w]
+    # another PATH that finds the same ddsim and interpreter (another shell): no warning
+    monkeypatch.setenv("PATH", f"{os.environ['PATH']}{os.pathsep}{tmp_path / 'elsewhere'}")
+    warned.clear()
+    run(
+        sampled_problem,
+        output,
+        1,
+        resume=True,
+        workers=1,
+        evaluators=[cell_count()],
+        warn=warned.append,
+    )
+    assert not [w for w in warned if "PATH" in w and "PYTHONPATH" not in w], warned
 
 
 def test_a_record_that_ran_another_ddsim_than_its_study_is_refused(

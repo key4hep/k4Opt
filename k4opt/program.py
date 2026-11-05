@@ -43,7 +43,8 @@ LOG_TAIL = 15
 
 SEARCH_VARIABLES = ("PATH", "PYTHONPATH", "LD_LIBRARY_PATH", "ROOT_INCLUDE_PATH")
 """The environment variables that decide which interpreter, libraries and modules a program of
-the stack loads (:func:`search_environment`)."""
+the stack loads (:func:`search_environment`). Of ``PATH``, only the interpreter it finds for a
+program decides what that program runs (:func:`identify`)."""
 
 LOG_ROLES = ("stdout", "stderr", "command")
 """The files :func:`run` keeps, by role: the program's standard output and error and the record of
@@ -111,18 +112,53 @@ def locate(name: str) -> Path | None:
 
 
 def identify(executable: Path) -> dict[str, object] | None:
-    """What identifies ``executable``: its ``path``, ``bytes`` and ``sha256``; ``None`` if it
-    cannot be read."""
+    """What identifies ``executable``: its ``path``, ``bytes`` and ``sha256``, and the
+    ``interpreter`` that runs it, identified alike (``None`` for a program that is no script);
+    ``None`` if it cannot be read.
+
+    ddsim and k4run are scripts that ``#!/usr/bin/env python3`` runs in the first interpreter on
+    ``PATH``: that interpreter, not ``PATH`` itself, is what ``PATH`` decides for them. It keeps
+    the path ``PATH`` gave, links not followed, since the interpreter of a virtual environment
+    finds its packages from where it is."""
+    found = _file_identity(executable)
+    if found is None:
+        return None
+    interpreter = _interpreter(executable)
+    found["interpreter"] = None if interpreter is None else _file_identity(interpreter)
+    return found
+
+
+def _file_identity(path: Path) -> dict[str, object] | None:
     digest = hashlib.sha256()
     try:
-        with executable.open("rb") as handle:
+        with path.open("rb") as handle:
             size = 0
             for block in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(block)
                 size += len(block)
     except OSError:
         return None
-    return {"path": str(executable), "bytes": size, "sha256": digest.hexdigest()}
+    return {"path": str(path), "bytes": size, "sha256": digest.hexdigest()}
+
+
+def _interpreter(script: Path) -> Path | None:
+    """The interpreter the ``#!`` line of ``script`` names, as ``PATH`` finds it now for
+    ``#!/usr/bin/env NAME``; ``None`` for a file without one, or one not found."""
+    try:
+        with script.open("rb") as handle:
+            line = handle.readline(4096)
+    except OSError:
+        return None
+    if not line.startswith(b"#!"):
+        return None
+    words = line[2:].decode(errors="replace").split()
+    if not words:
+        return None
+    if Path(words[0]).name != "env":
+        return Path(words[0])
+    name = next((word for word in words[1:] if not word.startswith("-")), None)
+    found = None if name is None else shutil.which(name)
+    return None if found is None else Path(found)
 
 
 def search_environment() -> dict[str, str | None]:

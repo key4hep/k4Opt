@@ -295,8 +295,9 @@ keeps its geometry and its EDM4hep file.
   absolute paths);
 - `KEY4HEP_STACK` and `K4GEO`;
 - `programs`: each program of the stack the stages run (`ddsim`, `k4run`), as the executable the
-  session found on `PATH` when it opened, where its links lead, with its size and SHA-256
-  (`null` for one that cannot be read);
+  session found on `PATH` when it opened, where its links lead, with its size and SHA-256, and
+  the `interpreter` its `#!` line names as `PATH` found it (`null` for one that cannot be
+  read);
 - `search`: the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`,
   which decide what those programs load;
 - k4opt's version, the SHA-256 of its code and its git checkout;
@@ -327,7 +328,7 @@ directory itself is fine: a trial's record names the files of its run directory 
 | evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash, or whose hash is not known to be of the code that runs, `executed: false`, cannot make a study) and of the modules it imports from beside it (`helpers`), the metrics it declares with their units and the artifacts it declares (read from its class, where an evaluator declares them) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, the attribute each geometry target of the parameters resolves to (its file below the root, locator, attribute and unmodified value; every trial's record must change exactly those) and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
 | stack | `KEY4HEP_STACK` | |
-| programs | each program the stages run (`ddsim`, `k4run`): the path of its executable, where its links lead (a release of the stack is told apart by its path), its size and SHA-256; every trial's record must have run the same | the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH` (a change warns) |
+| programs | each program the stages run (`ddsim`, `k4run`): the path of its executable, where its links lead (a release of the stack is told apart by its path), its size and SHA-256, and its interpreter; every trial's record must have run the same | the SHA-256 of `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH` (a change warns; `PATH` is recorded, but of it only the interpreter matters) |
 | k4opt | the SHA-256 of its code | version, git commit |
 | Optuna | its exact version; the study's directions, id, identity digest and limit names; the storage | |
 
