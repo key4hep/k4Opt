@@ -198,7 +198,8 @@ rejects is a finding about that candidate.
 back from disk and checked:
 
 - it was made for this study and trial;
-- its candidate is the trial's, type and value;
+- its candidate is the trial's, type and value, on the problem's own events (replicate 0, not
+  [another replicate](execution.md#k4opt-evaluate) of it);
 - its evaluators, Key4hep stack, k4opt code, input files and the files the geometry's external
   references read are the study's;
 - a file that only candidates name (a `ref` parameter choosing `${CAD}/other.stl`), which the

@@ -228,6 +228,12 @@ def check_record(
         (k, type(v), v) for k, v in params.items()
     ]:
         raise OptimizationError(f"{where} holds candidate {candidate!r}, but the trial is {params}")
+    replicate = summary.get("replicate")
+    if replicate != 0 or isinstance(replicate, bool):  # a study's trials run on its own events
+        raise OptimizationError(
+            f"{where} is replicate {replicate!r} of its candidate, evaluated on other events than "
+            "the problem's seeds make; the trial asked for replicate 0"
+        )
     if summary.get("represents_candidate") is not True or summary.get("supplied") != []:
         raise OptimizationError(f"{where} was not made from its candidate alone (a supplied stage)")
     implementations = summary.get("implementations")
