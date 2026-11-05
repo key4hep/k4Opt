@@ -494,8 +494,9 @@ A stage is not run again when a stage with its
 seed, options as the candidate sets them), the same inputs (the geometry's content and the stages
 it reads), the same files, programs, environment and k4opt code. The sample and the candidate
 play no part, so the candidates of a study that vary only the reconstruction, or an evaluator's
-setting, simulate once, and two samples defined alike simulate once. With a fixed seed every
-candidate simulates the same events anyway, and ddsim makes the same events from the same seed:
+setting, simulate once, and two samples defined alike simulate once. Every simulation has a
+seed (k4opt requires one), so every candidate simulates the same events anyway, and ddsim makes
+the same events from the same seed:
 reusing an output changes nothing a candidate is evaluated with, only the time it takes.
 
 What a session reuses:

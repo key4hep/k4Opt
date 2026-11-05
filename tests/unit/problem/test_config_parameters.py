@@ -283,7 +283,6 @@ def test_an_option_written_in_the_shared_stages_points_there(doc: dict[str, Any]
     doc = two_samples(doc)
     doc["stages"] = {"simulation": doc["samples"]["gamma"].pop("simulation")}
     del doc["samples"]["pion"]["simulation"]
-    del doc["stages"]["simulation"]["seed"]
     targets = {"simulation": {"option": "physics.list", "samples": ["gamma"]}}
     reject(
         add(doc, "pl", targets, type="categorical", choices=["FTFP_BERT", "QGSP_BERT"]),

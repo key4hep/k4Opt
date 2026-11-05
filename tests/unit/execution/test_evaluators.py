@@ -125,7 +125,7 @@ def problem(
             "gamma": {"generation": gun if generation_file is None else {"file": generation_file}}
         }
     if "simulation" in read:
-        doc["samples"]["gamma"]["simulation"] = {"executor": "ddsim", "events": 3}
+        doc["samples"]["gamma"]["simulation"] = {"executor": "ddsim", "events": 3, "seed": 1}
 
     def owned(metric: tuple[str, ...]) -> dict[str, str]:
         if len(metric) == 3:
@@ -995,7 +995,7 @@ def thresholds(doc: dict[str, Any], *settings: dict[str, Any], **extra: Any) -> 
     doc.pop("constraints", None)
     doc["samples"]["gamma"] = {
         "generation": {"executor": "gun", **GUN},
-        "simulation": {"executor": "ddsim", "events": 3},
+        "simulation": {"executor": "ddsim", "events": 3, "seed": 1},
     }
     bindings = ["test.threshold", *(f"t{i}" for i in range(1, len(settings)))]
     doc["evaluators"] = [
@@ -1162,7 +1162,7 @@ def combined_problem(doc: dict[str, Any], *entries: dict[str, Any]) -> ProblemSp
     doc["samples"] = {
         name: {
             "generation": {"executor": "gun", **GUN, "particle": particle},
-            "simulation": {"executor": "ddsim", "events": 3},
+            "simulation": {"executor": "ddsim", "events": 3, "seed": 1},
         }
         for name, particle in (("gamma", "gamma"), ("pion", "pi-"))
     }

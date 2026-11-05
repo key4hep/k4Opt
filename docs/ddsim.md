@@ -89,6 +89,7 @@ samples:
     simulation:
       executor: ddsim
       events: 500
+      seed: 1
 ```
 
 A relative path is read from the directory of the problem file. `ddsim` receives it as

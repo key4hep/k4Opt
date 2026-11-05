@@ -164,10 +164,9 @@ def test_optional_parts_are_omitted_from_to_dict(doc: dict[str, Any]) -> None:
     assert data["evaluators"] == [{"name": "calo.single_particle_shower", "version": "1"}]
 
 
-def test_a_stage_without_seed_omits_it(doc: dict[str, Any]) -> None:
-    del doc["samples"]["gamma"]["simulation"]["seed"]
-    simulation = parse_problem(doc).to_dict()["samples"]["gamma"]["simulation"]  # type: ignore[index]
-    assert simulation == {"executor": "ddsim", "events": 1000, "physics.list": "FTFP_BERT"}
+def test_a_stage_without_events_omits_them() -> None:
+    reconstruction = Stage("reconstruction", executor="k4run", options={"options": "reco.py"})
+    assert reconstruction.to_dict() == {"executor": "k4run", "options": "reco.py"}
 
 
 def test_canonical_target(doc: dict[str, Any]) -> None:
