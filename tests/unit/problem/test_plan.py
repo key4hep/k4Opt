@@ -8,7 +8,20 @@ from dataclasses import replace
 import pytest
 
 from k4opt.evaluation import EvaluationContractError
-from k4opt.problem import EvaluatorSpec, MetricRef, Reference, Sample, Stage
+from k4opt.problem import (
+    EvaluatorSpec,
+    GeometryDestination,
+    Level,
+    MetricRef,
+    Objective,
+    Parameter,
+    ProblemSpec,
+    Reference,
+    Sample,
+    SettingDestination,
+    Stage,
+    StageDestination,
+)
 from k4opt.problem.plan import (
     GEOMETRY,
     Kind,
@@ -16,6 +29,7 @@ from k4opt.problem.plan import (
     Task,
     TaskId,
     evaluator_task,
+    level_costs,
     plan_tasks,
     stage_task,
 )
@@ -261,3 +275,71 @@ def test_what_a_required_combined_evaluator_reads_is_required_and_only_that() ->
         "b/occupancy",
     ]
     assert needed(plan) == ["geometry", "a/generation", "a/simulation", "a/shape", "separation"]
+
+
+def continuous(name: str, *targets: object) -> Parameter:
+    return Parameter(name, "continuous", targets, bounds=(0.0, 1.0))  # type: ignore[arg-type]
+
+
+def costs_of(spec: ProblemSpec, trials: int, fixed: tuple[str, ...] = ()) -> dict[str, int]:
+    return {task.label: count for task, count in level_costs(spec, trials, fixed).items()}
+
+
+CELL = continuous("cell", GeometryDestination("cell"))
+GUN_ENERGY = continuous("energy", StageDestination("generation", "energy", ("gamma",)))
+CUT = continuous("cut", SettingDestination("tuned", "cut"))
+TUNED = Objective("tuned", "simulation", "m", "maximize", sample="gamma")
+COST = Objective("cost", "geometry", "c", "minimize")
+
+
+def problem(*parameters: Parameter, optimization: Level | None = None) -> ProblemSpec:
+    """A simulation of ``gamma`` with an evaluator ``tuned`` of it, and ``cost`` of the candidate,
+    each the evaluation of an objective."""
+    return ProblemSpec(
+        environment=None,  # type: ignore[arg-type]  # nothing here reads it
+        geometry="detector.xml",
+        parameters=parameters,
+        evaluators=(ev("tuned", "simulation"), ev("cost")),
+        objectives=(TUNED, COST),
+        samples=GAMMA,
+        optimization=optimization,
+    )
+
+
+def test_an_ordinary_study_makes_a_stage_for_what_reaches_it_and_evaluates_each_trial() -> None:
+    assert costs_of(problem(CELL, CUT), 5) == {
+        "gamma/simulation": 5,
+        "gamma/tuned": 5,
+        "cost": 5,
+    }
+    # no parameter reaches the simulation: every trial reuses one
+    assert costs_of(problem(CUT), 5)["gamma/simulation"] == 1
+    # nor does a parameter fixed for the whole study
+    assert costs_of(problem(CELL, CUT), 5, ("cell",))["gamma/simulation"] == 1
+
+
+def test_a_nested_study_simulates_once_per_candidate_and_level_and_evaluates_every_trial() -> None:
+    inner = Level(("cut",), trials=20, objective=TUNED)
+    spec = problem(CELL, CUT, optimization=Level(("cell",), inner=inner))
+    assert costs_of(spec, 8) == {
+        "gamma/simulation": 8 + 8,  # for the tuning, shared by its trials, and on new events
+        "gamma/tuned": 8 * 20 + 8,
+        "cost": 8,  # only the top level reads it
+    }
+
+
+def test_a_stage_an_inner_level_reaches_runs_for_every_evaluation() -> None:
+    inner = Level(("energy",), trials=3, objective=TUNED)
+    spec = problem(CELL, GUN_ENERGY, optimization=Level(("cell",), inner=inner))
+    assert costs_of(spec, 2)["gamma/simulation"] == 2 * 3 + 2
+
+
+def test_three_levels_multiply_their_budgets() -> None:
+    last = Level(("cut",), trials=4, objective=TUNED)
+    middle = Level(("energy",), trials=3, objective=TUNED, inner=last)
+    spec = problem(CELL, GUN_ENERGY, CUT, optimization=Level(("cell",), inner=middle))
+    assert costs_of(spec, 2) == {
+        "gamma/simulation": 2 * 3 + 2 * 3 + 2,  # the last level shares the middle's candidate
+        "gamma/tuned": 2 * 3 * 4 + 2 * 3 + 2,
+        "cost": 2,
+    }

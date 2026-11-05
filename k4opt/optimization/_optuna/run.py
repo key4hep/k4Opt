@@ -57,7 +57,7 @@ from k4opt.optimization._optuna.tell import (
 )
 from k4opt.optimization._optuna.tree import Tree
 from k4opt.optimization._results import StudyResults, recorded_scope
-from k4opt.optimization._scope import StudyScope
+from k4opt.optimization._scope import StudyScope, check_trials
 from k4opt.optimization._study import (
     JOURNAL_NAME,
     LOCK_NAME,
@@ -130,10 +130,7 @@ def optimize(
     reuse: Sequence[str | os.PathLike[str]] = (),
     fixed: Mapping[str, Any] | None = None,
 ) -> StudyResults:
-    # a resume may ask for none: it goes on with the trials an interrupted session left
-    if isinstance(trials, bool) or not isinstance(trials, int) or trials < (0 if resume else 1):
-        kind = "a non-negative" if resume else "a positive"
-        raise OptimizationError(f"trials must be {kind} integer, got {trials!r}")
+    check_trials(trials, resume)
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         raise OptimizationError(f"seed must be an integer, got {seed!r}")
     if seed is not None and not 0 <= seed < 2**32:

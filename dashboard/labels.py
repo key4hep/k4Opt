@@ -112,7 +112,7 @@ def count(n: int, word: str, plural: str | None = None) -> str:
 
 def axis(key: str, results: StudyResults) -> str:
     """An axis or a color of a figure as a choice shows it, by what the figures call it
-    (:func:`~k4opt.visualization.names`): ``background_rejection · objective``, ``ECAL cell size
+    (:func:`~k4opt.problem.names`): ``background_rejection · objective``, ``ECAL cell size
     · parameter``, ``trial number``."""
     if key == TRIAL:
         return "trial number"

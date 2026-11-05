@@ -1,4 +1,4 @@
-"""What the figures call the things of a problem: titles, names, and more only where alike."""
+"""What the things of a problem are called: titles, names, and more only where alike."""
 
 from __future__ import annotations
 
@@ -7,8 +7,7 @@ from typing import Any
 
 import yaml
 
-from k4opt.problem import parse_problem
-from k4opt.visualization import names
+from k4opt.problem import names, parse_problem
 
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "problem"
 RESIDUAL = "calo.photon/simulation/ecal_barrel.angular_residual"
@@ -107,3 +106,15 @@ def test_an_objective_and_a_constraint_on_one_metric_are_each_called_by_their_ow
     called = names(parse_problem(document))
     assert called.objective(f"gamma_10gev/{RESIDUAL}") == "Angular residual"
     assert called.constraint(f"gamma_10gev/{RESIDUAL}") == "Residual limit"
+
+
+def test_an_objective_only_an_inner_level_names_is_called_too() -> None:
+    document = bindings()
+    objective = dict(document["objectives"][0], metric="ecal_barrel.other", title="Other")
+    document["optimization"] = {
+        "parameters": ["ecal_cell_size", "range_cut"],
+        "inner": {"parameters": ["cell_threshold"], "trials": 2, "objective": objective},
+    }
+    spec = parse_problem(document)
+    level = spec.levels[1].objective
+    assert level is not None and names(spec).objective(level.label) == "Other"

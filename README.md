@@ -141,7 +141,8 @@ k4opt optimize examples/problem/cld-ecal-granularity.yaml \
     --trials 30 --seed 42 --output runs/cld-ecal-study
 ```
 
-and look at the results later, without running anything again:
+(`k4opt problem explain` first says what a study would do and at most what it would run), and look
+at the results later, without running anything again:
 
 ```bash
 k4opt study show runs/cld-ecal-study      # what it optimizes, its trials and Pareto front

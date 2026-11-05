@@ -52,7 +52,7 @@ samples:
       truthTracking: true  # the photons need no pattern recognition
 evaluators:
   - name: pfo.pi0
-    version: "2"
+    version: "1"
     stage: reconstruction
     collections: {pfos: PandoraPFOs}
     settings:

@@ -16,9 +16,12 @@ k4opt optimize examples/problem/cld-ecal-granularity.yaml \
   --trials 30 --seed 42 --output runs/cld-ecal-study
 ```
 
-It prints each trial as it ends, and the study at the end (the values here are illustrative):
+It prints what the study will do, each trial as it ends, and the study at the end (the values here
+are illustrative):
 
 ```text
+Search ECAL cell size: 30 trials by Angular residual (minimize) and Fired cells (minimize)
+at most: simulation 30 · calo.photon 30
 trial 0:   valid    feasible    ecal_cell_size=9.79789  gamma_10gev/calo.photon/simulation/ecal_barrel.angular_residual=0.948  gamma_10gev/calo.photon/simulation/ecal_barrel.fired_cells=227
 trial 1:   failed   simulation failed: ddsim exited with status 1 (...); blocked: calo.photon  trial-000001/summary.json
 ...
@@ -128,6 +131,32 @@ It proposes at random until 10 trials are COMPLETE, and TPE models the trials fr
 constant liar matters only for [trials at once](#trials-at-once---workers): a trial still running
 counts as one that ended badly, so the sampler does not propose its neighborhood again before it
 knows the result.
+
+## What a study will do: `k4opt problem explain`
+
+`k4opt problem explain` prints what a new study does, as the study itself does before it starts. It
+reads the problem alone: no evaluator is needed, nothing runs and nothing is written. The levels of
+a [nested study](#nested-studies) read as loops, each with its budget and what picks its best trial,
+and the last line says at most how many times each stage and each evaluation runs, over all samples
+and levels:
+
+```bash
+k4opt problem explain examples/nested/cld-pi0-nested.yaml --trials 8
+```
+
+```text
+For each ECAL cell size (8 trials):
+  tune Pandora ECAL hit threshold: 12 trials maximizing π⁰ photons resolved
+  evaluate the best again on new events (seed 42 → 506952155)
+compare them by π⁰ photons resolved (maximize) and Readout channels (minimize)
+at most: simulation 16 · reconstruction 104 · pfo.pi0 104 · readout 8
+```
+
+An evaluation runs for every trial. A stage runs only for what it is made from, since trials reuse it
+otherwise: once per value of the parameters that reach it, on the events of its level. It is an upper
+bound: values repeated, a stage reused from an earlier study and trials that end early all lower it.
+A parameter of an inner level that reaches the simulation gets a warning: each trial of that level
+then simulates anew, which is rarely what a level below the geometry is meant for.
 
 ## Trials and their outcomes
 

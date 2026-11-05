@@ -46,6 +46,7 @@ from k4opt.problem.models import (
     Stage,
     StageDestination,
 )
+from k4opt.problem.names import Names, names
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -59,6 +60,7 @@ __all__ = [
     "Key4hepStack",
     "Level",
     "MetricRef",
+    "Names",
     "Objective",
     "Parameter",
     "ProblemConfigError",
@@ -69,5 +71,6 @@ __all__ = [
     "Stage",
     "StageDestination",
     "load_problem",
+    "names",
     "parse_problem",
 ]

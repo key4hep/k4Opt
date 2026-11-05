@@ -170,6 +170,14 @@ class StudyScope:
         return scope
 
 
+def check_trials(trials: object, resume: bool = False) -> None:
+    """Raise :class:`OptimizationError` unless ``trials`` is a run's budget: at least one trial,
+    or none on a resume, which then goes on with the trials an interrupted session left."""
+    if isinstance(trials, bool) or not isinstance(trials, int) or trials < (0 if resume else 1):
+        kind = "a non-negative" if resume else "a positive"
+        raise OptimizationError(f"trials must be {kind} integer, got {trials!r}")
+
+
 def _own(spec: ProblemSpec, level: int) -> tuple[str, ...]:
     """The parameters a study at ``level`` searches before any is fixed: those of its level, or
     every parameter of an ordinary problem."""

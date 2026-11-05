@@ -35,15 +35,18 @@ changes until the candidate ends (:class:`~k4opt.execution._files.Observed`).
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from math import prod
 from typing import Literal
 
 from k4opt.evaluation import EvaluationContractError
 from k4opt.problem.models import (
     EvaluatorSpec,
     GeometryDestination,
+    Level,
     MetricRef,
     Parameter,
     ProblemSpec,
@@ -367,3 +370,29 @@ def level_plan(spec: ProblemSpec, level: int = 0, supplied: Collection[TaskId] =
         parameters=spec.parameters,
         diagnostics=level == 0,
     )
+
+
+def level_costs(spec: ProblemSpec, trials: int, fixed: Collection[str] = ()) -> dict[TaskId, int]:
+    """At most how many times each task of ``spec`` that does work runs in a study of ``trials``
+    trials at the top with the parameters ``fixed`` not searched: its stages that run and its
+    evaluations, in plan order, each counted over all the levels of the tree of studies.
+
+    A candidate of a level is evaluated once for each trial of that level, in all the studies of
+    that level. An evaluation runs each time; a stage only for what it is made from, which is
+    reused otherwise (its signature): once for each trial of each level whose parameters reach
+    it, and for each evaluation if a level below reaches it, since each then gives its own
+    values. The levels do not share a stage, each evaluating on events of its own."""
+    levels = spec.levels or (Level(tuple(p.name for p in spec.parameters)),)
+    searched = [set(level.parameters) - set(fixed) for level in levels]
+    budgets = [trials, *(level.trials or 0 for level in levels[1:])]
+    costs: Counter[TaskId] = Counter()
+    for level in range(len(levels)):
+        above = list(zip(budgets[: level + 1], searched[: level + 1], strict=True))
+        below = searched[level + 1 :]
+        for task in level_plan(spec, level).tasks:
+            if task.id.kind is Kind.GEOMETRY or task.directory is None:
+                continue
+            varies = set(task.varies)
+            each = task.id.kind is Kind.EVALUATOR or any(own & varies for own in below)
+            costs[task.id] += prod(n for n, own in above if each or own & varies)
+    return dict(costs)

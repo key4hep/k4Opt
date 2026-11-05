@@ -38,17 +38,18 @@ from k4opt.optimization import StudyResults
 from k4opt.problem import (
     Constraint,
     GeometryDestination,
+    Names,
     Objective,
     Parameter,
     ProblemSpec,
     SettingDestination,
     Stage,
     StageDestination,
+    names,
 )
 from k4opt.problem.plan import GEOMETRY, Kind, Plan, Task, TaskId, plan_tasks, reference_task
 from k4opt.problem.stages import executors
 from k4opt.visualization.errors import VisualizationError
-from k4opt.visualization.names import Names, names
 
 type NodeKind = Literal["parameter", "geometry", "stage", "evaluator", "objective", "constraint"]
 type EdgeKind = Literal["sets", "reads", "measures"]

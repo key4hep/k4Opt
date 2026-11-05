@@ -256,8 +256,8 @@ def test_on_a_terminal_the_command_draws_the_bar_and_colors_the_output(
     code, text = optimize("color")
     assert code == 0 and "\x1b[32mvalid" in text
     lines = screen(text)
-    assert lines[2].startswith("✔ ") and "100%  2/2 trials" in lines[2]
-    assert lines[3].startswith("study:    trade-")
+    assert lines[4].startswith("✔ ") and "100%  2/2 trials" in lines[4]  # after the outline
+    assert lines[5].startswith("study:    trade-")
 
     out, err = Terminal(), io.StringIO()  # a study that cannot start: its error, and no bar
     argv = ["optimize", str(problem), "--evaluator", TRADE_OFF, "--trials", "2", "--resume"]
@@ -271,7 +271,7 @@ def test_on_a_terminal_the_command_draws_the_bar_and_colors_the_output(
 
     monkeypatch.setenv("TERM", "dumb")
     code, text = optimize("dumb")
-    assert code == 0 and "\x1b" not in text and "\r" not in text and len(text.splitlines()) == 5
+    assert code == 0 and "\x1b" not in text and "\r" not in text and len(text.splitlines()) == 7
 
 
 def test_a_running_study_cannot_send_the_terminal_a_control_sequence() -> None:

@@ -173,7 +173,7 @@ see the two photons of a neutral pion as two? The
 [example](../examples/problem/cld-ecal-pi0-reco.yaml) simulates 200 neutral pions of 50 GeV in
 the barrel on each candidate geometry and reconstructs them with CLD's reconstruction
 (CLDConfig's `CLDReconstruction.py`, run by k4run, [k4run](k4run.md)). The example evaluator
-`pfo.pi0` version 2 ([`pfo_pi0.py`](../examples/evaluators/pfo_pi0.py)) reads the
+`pfo.pi0` version 1 ([`pfo_pi0.py`](../examples/evaluators/pfo_pi0.py)) reads the
 reconstruction's particle-flow objects (`PandoraPFOs`), its generated particles and the links
 between the two (`RecoMCTruthLink`, a `Link<ReconstructedParticle,MCParticle>`), and keeps the
 events whose pion decayed into two photons, neither converted in the tracker and each of at least
@@ -199,10 +199,34 @@ out. From 4 mm up, coarser cells merge the photons, as their separation (at leas
 says, and from 10 mm on the particle flow always sees one photon. Below 4 mm the reconstruction
 finds fewer photons again: its digitization and Pandora settings were tuned for CLD's 5.1 mm
 cells (an energy threshold per cell, for one, keeps less of a shower spread over smaller cells).
-The metric is therefore that of the reconstruction as configured, not of the cells alone; a
-parameter can set an argument of the job as well ([problem](problem.md#parameters)), and a
-reconstruction tuned for each candidate is not done. It is a demonstration of a study that needs
-reconstruction, not a validated pi0 identification.
+The metric is therefore that of the reconstruction as configured, not of the cells alone, which the
+next example takes up. It is a demonstration of a study that needs reconstruction, not a validated
+pi0 identification.
+
+## Reconstruction tuned for each cell size
+
+Pandora ignores ECAL hits below a threshold, in MIPs (`ECalMipThreshold`, 0.5 in CLD), and the best
+threshold depends on the cells. Reconstructing the events of the table above again with other
+thresholds:
+
+| `ECalMipThreshold` | 2.5 mm | 4 mm | 5.1 mm | 7 mm |
+| --- | --- | --- | --- | --- |
+| 0.1 | 0.04 | 0.72 | 0.62 | 0.16 |
+| 0.25 | 0.07 | 0.68 | 0.58 | 0.17 |
+| 0.5 | 0.16 | 0.69 | 0.49 | 0.19 |
+| 1 | 0.43 | 0.59 | 0.39 | 0.14 |
+| 2 | 0.79 | 0.52 | 0.31 | 0.10 |
+| 3 | 0.70 | 0.44 | 0.26 | 0.08 |
+| 5 | 0.07 | 0.38 | 0.22 | 0.04 |
+
+With CLD's threshold 4 mm looks best; with a threshold for each cell size, 2.5 mm does. From 10 mm on
+no threshold tried resolves the pion. Comparing cell sizes at one threshold answers the wrong
+question, so the [nested example](../examples/nested/cld-pi0-nested.yaml) tunes it for each: a study
+of 12 trials of the threshold for each cell size, the best evaluated again on new events
+([nested studies](optimization.md#nested-studies)). The threshold is a key of the `Parameters` of
+CLD's Pandora processor ([k4run](k4run.md#the-job)). The numbers above are single runs of 160
+selected events, and the best of each column is optimistic: what the example compares are the values
+on new events.
 
 ## Not done
 

@@ -30,6 +30,7 @@ Typical use::
     pipeline_figure(study).show()  # laid out by Graphviz: needs its dot program
 """
 
+from k4opt.problem import Names, names
 from k4opt.visualization.analysis import edf_figure, parallel_figure, rank_figure, slice_figure
 from k4opt.visualization.errors import VisualizationError
 from k4opt.visualization.graph import (
@@ -41,7 +42,6 @@ from k4opt.visualization.graph import (
     collapsed,
     task_graph,
 )
-from k4opt.visualization.names import Names, names
 from k4opt.visualization.pipeline import pipeline_figure, pipeline_graph
 from k4opt.visualization.trials import (
     TRIAL,
