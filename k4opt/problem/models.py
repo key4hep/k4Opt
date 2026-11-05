@@ -599,13 +599,18 @@ class ProblemSpec:
         """How many levels lie below the top one: 0 for an ordinary optimization."""
         return max(len(self.levels) - 1, 0)
 
+    def check_level(self, level: object) -> int:
+        """``level`` as a level of the problem: an integer from 0 (the top) to :attr:`depth`.
+        Raises :class:`ValueError` for anything else (``True`` is no level)."""
+        if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= self.depth:
+            raise ValueError(f"level {level!r}: the problem's levels are 0 to {self.depth}")
+        return level
+
     def criteria(self, level: int = 0) -> Criteria:
         """How a candidate is judged at ``level``: by the problem's objectives at the top
         (``0``), by the level's ``objective`` below; by the problem's constraints at every level.
-        Raises :class:`ValueError` for a level the problem does not have."""
-        if not 0 <= level <= self.depth:
-            raise ValueError(f"level {level!r}: the problem's levels are 0 to {self.depth}")
-        if level == 0:
+        Raises :class:`ValueError` for a level the problem does not have (:meth:`check_level`)."""
+        if self.check_level(level) == 0:
             return Criteria(self.objectives, self.constraints)
         objective = self.levels[level].objective
         assert objective is not None  # parse_problem: every inner level has one

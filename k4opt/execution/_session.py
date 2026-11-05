@@ -390,10 +390,13 @@ class EvaluationSession:
         """The evaluations that no objective, constraint or required evaluator of ``level`` (of
         a nested optimization; 0, the top, for any other) reads, by label (``zz/calo.occupancy``),
         in plan order: each is run and recorded, but whatever its result, the status of a
-        candidate evaluated for that level does not depend on it."""
+        candidate evaluated for that level does not depend on it. Raises :class:`ValueError`
+        for a level the problem does not have."""
         return tuple(
             task.id.label
-            for task in self._binding.plans[level].of(Kind.EVALUATOR)
+            for task in self._binding.plans[self._baseline.spec.check_level(level)].of(
+                Kind.EVALUATOR
+            )
             if not task.required
         )
 
@@ -480,10 +483,13 @@ class EvaluationSession:
         """
         self._baseline.verify_inputs()
 
-    def check(self, candidate: Mapping[str, Scalar], replicate: int = 0) -> Configuration:
+    def check(
+        self, candidate: Mapping[str, Scalar], replicate: int = 0, level: int = 0
+    ) -> Configuration:
         """Check ``candidate`` as :meth:`evaluate` does before it creates anything, and stop there;
         what the candidate configures, each value written where its parameter sends it, with the
-        seeds of ``replicate``.
+        seeds of ``replicate``; the evaluations that may reject it are those required at
+        ``level``.
 
         ``candidate`` maps the name of each parameter to its value. Raises
         :class:`~k4opt.problem.CandidateError` for a value outside its domain, what creating an
@@ -491,7 +497,7 @@ class EvaluationSession:
         :class:`~k4opt.execution.RunError` for a file the stages or the geometry read, the
         environment or k4opt's code that changed since the session opened.
         """
-        _, _, prepared, _ = self._prepare(candidate, replicate)
+        _, _, prepared, _ = self._prepare(candidate, replicate, level)
         if isinstance(prepared, Rejected):
             raise CandidateRejected(str(prepared))
         return prepared.configuration
@@ -759,8 +765,10 @@ class EvaluationSession:
         criteria of ``level``."""
         spec = self._baseline.spec
         values, key = validate_candidate(spec, candidate)
-        if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= spec.depth:
-            raise CandidateError(f"level {level!r}: the problem's levels are 0 to {spec.depth}")
+        try:
+            spec.check_level(level)
+        except ValueError as exc:
+            raise CandidateError(str(exc)) from None
         if replicate and self._inputs:
             supplied = ", ".join(sorted(task.label for task in self._inputs))
             raise CandidateError(

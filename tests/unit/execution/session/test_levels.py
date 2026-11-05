@@ -11,11 +11,12 @@ from typing import Any
 import pytest
 import yaml
 
-from k4opt.execution import EvaluationSession, RunOutcome, RunRequest
+from k4opt.evaluation import CandidateRejected
+from k4opt.execution import EvaluationSession, Rejected, RunOutcome, RunRequest
 from k4opt.problem import CandidateError
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from tests.support import simulation
-from tests.support.evaluators import cell_count, trade_off
+from tests.support.evaluators import candidate_check, cell_count, trade_off
 from tests.unit.execution.session.conftest import RADIUS
 
 CELLS = "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells"
@@ -145,3 +146,37 @@ def test_candidates_of_two_levels_in_one_evaluation_share_their_stages(
     assert inner["samples"]["gamma"]["stages"]["simulation"]["reused"]["record"] == top["id"]
     assert [m["label"] for m in top["metrics"]] == [CELLS]
     assert [m["label"] for m in inner["metrics"]] == [A]
+
+
+@pytest.fixture
+def checked_file(nested_file: Path) -> Path:
+    """The nested problem whose inner level is judged by ``test.candidate_check``, which rejects
+    x = 0.3 in its ``check()``: required at level 1, a diagnostic at the top."""
+    doc = yaml.safe_load(nested_file.read_text())
+    doc["parameters"]["x"]["targets"]["evaluators"]["test.candidate_check"] = "x"
+    doc["evaluators"].append(
+        {"name": "test.candidate_check", "version": "1", "settings": {"reject": 0.3}}
+    )
+    doc["optimization"]["inner"]["objective"] = {
+        "evaluator": "test.candidate_check",
+        "stage": "analysis",
+        "metric": "seen",
+        "direction": "maximize",
+    }
+    nested_file.write_text(yaml.safe_dump(doc))
+    return nested_file
+
+
+def test_check_and_evaluate_reject_a_candidate_at_the_levels_that_require_its_rejecter(
+    tmp_path: Path, checked_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    candidate = {RADIUS: 450.0, "x": 0.3}
+    implementations = [cell_count(), trade_off(), candidate_check()]
+    with EvaluationSession.open(checked_file, implementations) as session:
+        session.check(candidate)  # a diagnostic's rejection decides nothing at the top
+        with pytest.raises(CandidateRejected, match=r"cannot measure 0\.3"):
+            session.check(candidate, level=1)
+        rejected = session.evaluate(candidate, tmp_path / "inner", level=1)
+        top = session.evaluate(candidate, tmp_path / "top")
+    assert isinstance(rejected, Rejected) and not (tmp_path / "inner").exists()
+    assert isinstance(top, RunOutcome) and top.candidate.status == "valid"

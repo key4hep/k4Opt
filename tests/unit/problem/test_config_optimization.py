@@ -50,8 +50,9 @@ def test_a_nested_problem_has_its_levels_and_their_criteria(nested: dict[str, An
     # the problem's one objective picks the best trial of each inner study, by default
     assert spec.criteria(0) == Criteria(spec.objectives, spec.constraints)
     assert spec.criteria(1) == Criteria((objective,), spec.constraints)
-    with pytest.raises(ValueError, match="the problem's levels are 0 to 1"):
-        spec.criteria(2)
+    for level in (2, -1, True, 1.0):  # True is no level 1
+        with pytest.raises(ValueError, match="the problem's levels are 0 to 1"):
+            spec.criteria(level)  # type: ignore[arg-type]
     assert parse_problem(spec.to_dict()) == spec  # written out in full, and read back
 
 

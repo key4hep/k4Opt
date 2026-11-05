@@ -820,6 +820,9 @@ def _criteria(spec: ProblemSpec, record: Mapping[str, object]) -> Criteria:
     """The criteria of the level the record was made for (its ``level``): which tasks are
     required, and which metrics it names and judges."""
     level = record.get("level")
-    if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= spec.depth:
-        raise RecordError(f"level is {level!r}, but the problem's levels are 0 to {spec.depth}")
-    return spec.criteria(level)
+    try:
+        return spec.criteria(spec.check_level(level))
+    except ValueError:
+        raise RecordError(
+            f"level is {level!r}, but the problem's levels are 0 to {spec.depth}"
+        ) from None
