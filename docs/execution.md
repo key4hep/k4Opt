@@ -317,7 +317,7 @@ for size in (5.0, 7.0, 10.0):
 | --- | --- |
 | load the problem file (later edits to it do not reach the session) and discover the geometry | check the candidate against the parameter domains |
 | bind the evaluator classes by what each class declares, without creating any; check the stages of each sample they read and their settings and collections; decide who measures each metric | build the request of each evaluation for this candidate and call its class's `check` with it, which may reject the candidate; check that each class still declares what it did |
-| collect the warnings about collections ddsim is not expected to write, and about what is measured or simulated twice (`session.warnings`); list the diagnostics (`session.diagnostics`, and `session.notice` to tell whoever starts it) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened, and that the directories a reconstruction reads hold the same files |
+| collect the warnings about collections ddsim is not expected to write, and about what is measured or simulated twice (`session.warnings`); list the diagnostics (`session.diagnostics(level)`, and `session.notice(level)` to tell whoever starts it; level 0 by default, the top of a nested optimization) | check that every file the stages read, what the geometry's external references read, `KEY4HEP_STACK`, `K4GEO` and k4opt's code are still what they were when the session opened, and that the directories a reconstruction reads hold the same files |
 | record the size and SHA-256 of every file the stages read, by where the problem names it (a stage `file`, `samples.gamma_10gev.generation.file`; a file a ddsim option names; a file supplied with `inputs`, `supplied.gamma_10gev.simulation`; a file two samples read is hashed once and named for each), what the geometry's external references read ([`external_files`](geometry.md#fingerprint)), and each evaluator's source identity and declared metrics | `evaluate()` only: materialize the geometry, run the stages, create one instance of each evaluation's evaluator where it runs and call it, check again what the previous row checks, assess, write the summary |
 
 No request or evaluator instance outlives the evaluation it was made for, so an evaluator's
@@ -368,7 +368,8 @@ with session.evaluate_each(requests) as evaluations:
 
 The next request is taken only once the candidates under way leave a slot idle, and every
 outcome that ended is given back before it; `evaluate()` is one request through the same path.
-A request may carry a `replicate` (above). A source that has nothing to give now, but may have
+A request may carry a `replicate` (above) and the `level` of a
+[nested optimization](problem.md#optimization) it is evaluated for, whose criteria judge it. A source that has nothing to give now, but may have
 once a candidate under way ended (an optimizer that waits for results), gives `WAIT`
 (`from k4opt.execution import WAIT`): it is asked again only once a candidate was given back,
 and the evaluation raises `RunError` if none is under way, since none would end.

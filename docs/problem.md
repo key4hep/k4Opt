@@ -129,6 +129,7 @@ stay separate (see [Identity](#identity-and-provenance)).
 | `evaluators` | yes | Who measures a candidate: which stage each reads, of which samples. |
 | `objectives` | yes | What to minimize or maximize; one or more. |
 | `constraints` | no | Hard limits on measured quantities. |
+| `optimization` | no | The levels of a nested optimization: which parameters each searches, and how an inner level picks its best trial ([`optimization`](#optimization)). |
 
 ### `environment`
 
@@ -746,6 +747,47 @@ constraints:
   - {stage: simulation, metric: ecal_barrel.angular_residual, max: 1.0, unit: mrad, scale: 0.2}
   - {evaluator: readout, stage: geometry, metric: ecal_barrel.channels, max: 5.0e+7, unit: "1", scale: 1.0e+6}
 ```
+
+### `optimization`
+
+Optional: a *nested* optimization, for when the best setting of some parameters depends on others.
+For each ECAL cell size, say, the photon finding is tuned anew, and the cell sizes are then compared
+each at its best:
+
+```yaml
+optimization:
+  parameters: [ecal_cell_size]            # the top level searches these
+  inner:                                  # for each of its candidates, a study of these:
+    parameters: [merge_distance, min_photon_energy]
+    trials: 20                            # trials of each such study
+    objective: pi0.resolved               # what picks its best trial
+```
+
+Each parameter is declared once, under `parameters`, and listed in the `parameters` of exactly one
+level. `inner` holds the next level down, and may hold another `inner` in turn. Without `inner`, or
+without the block, the problem is an ordinary one: one study searches every parameter.
+
+| Key | Where | Meaning |
+| --- | --- | --- |
+| `parameters` | every level | The parameters the level searches; the levels above fix theirs. |
+| `trials` | inner levels | How many trials each study of the level runs before its best is chosen. It changes what the level above measures (the best of 20 is not the best of 200), so it is part of the problem. The top level's budget is the run's: `k4opt optimize --trials`. |
+| `objective` | inner levels | Picks the best (feasible) trial of each study of the level: an objective of the problem, by its metric or its label, or any metric an evaluator of the problem measures, as a mapping with `sample`, `evaluator`, `stage`, `metric` and `direction`, as an objective has. It may be left out when the problem has one objective, which then picks. |
+
+**What judges a candidate at each level.** The top level is judged by the problem's `objectives`
+(one or several: a Pareto front) and `constraints`; an inner level by its `objective` and the
+problem's `constraints`. A metric only an inner level names stays out of the top level's front:
+tune the tracking for its efficiency, say, and compare detectors on their sensitivity and cost.
+Every evaluation measures whatever any level names of it; which evaluations are required (decide
+the candidate's status) follows from the level's own criteria.
+
+**New events.** The best trial of each inner study is evaluated once more on new events (its seeds
+derived, [replicates](execution.md#k4opt-evaluate)) before its level above is told it, since the
+best of many trials on the same events looks better than it is. So every sample must make its events
+from its seeds: a stage given as a `file` (HepMC generation, a given simulation) is refused under
+`inner`.
+
+The problem's levels are checked now; `k4opt optimize` runs nested studies in a later release, and
+refuses a problem with `inner` until then.
 
 ### Titles
 

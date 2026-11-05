@@ -104,7 +104,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
         raise type(exc)(
             f"{exc} (while the candidate in {run_dir} ran, which has no {SUMMARY_NAME})"
         ) from None
-    assessment = assess(spec, record)
+    assessment = assess(spec.criteria(run.level), record)
     summary = assemble(
         run.workspace.id,
         baseline.path,
@@ -119,6 +119,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
         run.prepared.configuration,
         execution,
         run.replicate,
+        run.level,
     )
     try:
         run_dir.mkdir(parents=True, exist_ok=True)  # a geometry that was not made made none

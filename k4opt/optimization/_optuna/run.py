@@ -217,8 +217,13 @@ def _run_study(
     activity: Watch | None,
 ) -> StudyResults:
     # everything that can be checked before a file is created
-    session.check_limits()  # the problem's time limits can be kept where the trials run
     spec = session.spec
+    if spec.depth:
+        raise OptimizationError(
+            "the problem's optimization has inner levels (optimization.inner): nested studies are "
+            "not run yet; leave out inner: to optimize every parameter in one study"
+        )
+    session.check_limits()  # the problem's time limits can be kept where the trials run
     space = search_space(spec)  # the evaluators' settings were checked when the session opened
     identity: dict[str, Any] = session.identity()
     reasons = unhashed(identity)
@@ -227,8 +232,8 @@ def _run_study(
     names = limit_names(spec)
     for warning in session.warnings:
         warn(warning)
-    if session.notice is not None:
-        warn(session.notice)
+    if (notice := session.notice()) is not None:
+        warn(notice)
     if not resume:
         for warning in dirty_checkouts(identity["implementations"]):
             warn(warning)

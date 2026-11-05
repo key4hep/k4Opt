@@ -77,15 +77,16 @@ def check_entries(
 def check_bindings(
     spec: ProblemSpec, declarations: Mapping[str, Declaration], error: type[K4OptError]
 ) -> dict[TaskId, tuple[MetricKey, ...]]:
-    """Each objective and constraint names a metric its evaluator measures, if that one declares
-    its ``metrics``, and a constraint ``unit`` is the unit it declares for it; otherwise the
-    result decides. Each combined evaluator gets for its roles what its implementation
-    declares: every role and no other, one item unless the role reads ``many``, evaluations
-    where the role reads them (of evaluators that declare the metrics and artifacts it reads)
-    and the files of its stage otherwise. Returns the metrics the roles read of each evaluation,
+    """Each objective and constraint, of every level (:attr:`ProblemSpec.measured`), names a
+    metric its evaluator measures, if that one declares its ``metrics``, and a constraint
+    ``unit`` is the unit it declares for it; otherwise the result decides. Each combined
+    evaluator gets for its roles what its implementation declares: every role and no other,
+    one item unless the role reads ``many``, evaluations where the role reads them (of
+    evaluators that declare the metrics and artifacts it reads) and the files of its stage
+    otherwise. Returns the metrics the roles read of each evaluation,
     which a ``valid`` result of that evaluation must carry. Raises ``error``."""
     of = {entry.binding: declarations[entry.name] for entry in spec.evaluators}
-    for ref in spec.references:
+    for ref in spec.measured:  # those of every level
         metrics = of[ref.evaluator].metrics
         if metrics is not None and (ref.stage, ref.metric) not in metrics:
             raise error(
@@ -167,9 +168,9 @@ def check_result(
     returned with ``status``, ``measurements`` and the ``artifacts`` named: every measurement
     of a metric it declares carries the declared unit, whatever the status (diagnostic values of
     an ``invalid`` result are recorded too), and it returns no artifact it does not declare. A
-    ``valid`` one carries every metric an objective or a constraint names of it, in the unit a
-    constraint declares, every metric the roles that read it ``demanded`` and every artifact it
-    declares. Raises ``error``."""
+    ``valid`` one carries every metric an objective or a constraint of any level names of it,
+    in the unit a constraint declares, every metric the roles that read it ``demanded`` and
+    every artifact it declares. Raises ``error``."""
     declared = declaration.metrics
     if declared is not None:
         for m in measurements:
@@ -181,7 +182,7 @@ def check_result(
                 )
     if status is Status.VALID:
         measured = {(m.stage, m.metric): m for m in measurements}
-        owned = [(r.stage, r.metric) for r in spec.references if r.invocation == task.label]
+        owned = [(r.stage, r.metric) for r in spec.measured if r.invocation == task.label]
         wanted = dict.fromkeys([*owned, *demanded])
         missing = [key for key in wanted if key not in measured]
         if missing:

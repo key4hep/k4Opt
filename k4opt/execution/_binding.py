@@ -247,13 +247,15 @@ def _unexpected_collections(
 @dataclass(frozen=True, slots=True)
 class _Binding:
     """What holds for every candidate: the implementations bound to the problem, the stages of
-    each sample they read and the tasks of a candidate."""
+    each sample they read and the tasks of a candidate: the same at every level of the
+    optimization (``plans``, by level), but for which of them are required, which the criteria
+    of the level decide (:meth:`~k4opt.problem.ProblemSpec.criteria`)."""
 
     contexts: Mapping[str, StageContext]  # by sample
     evaluators: tuple[_Bound, ...]  # problem order
     evaluations: tuple[tuple[TaskId, _Bound], ...]  # plan order
     targets: Mapping[str, tuple[str, ...]]  # the pipeline stages tasks read, by sample
-    plan: Plan  # the tasks of every candidate, the stages ``provided`` given
+    plans: Mapping[int, Plan]  # the tasks of every candidate, by level; ``provided`` given
     # collections the simulation is not expected to write, what is measured or simulated twice
     warnings: tuple[str, ...] = ()
     # the metrics the roles of combined evaluators read, by the evaluation that measures them
@@ -261,8 +263,13 @@ class _Binding:
     properties: Mapping[str, Mapping[str, Json]] = FrozenMap({})  # by sample
     # seconds a stage that runs or an evaluation may take unless it sets its own: the problem's
     timeout: float | None = None
-    # the tasks that may reject a candidate before anything of it is created (plan.rejecting)
-    rejecting: tuple[TaskId, ...] = ()
+    # by level, the tasks that may reject a candidate before anything of it is created
+    rejecting: Mapping[int, tuple[TaskId, ...]] = FrozenMap({})
+
+    @property
+    def plan(self) -> Plan:
+        """The plan of the top level: the tasks of every candidate, which every level has."""
+        return self.plans[0]
 
 
 def _bind_problem(
@@ -341,13 +348,17 @@ def _bind_problem(
     planned = tuple(
         (task, of[id(entry)]) for task, entry in evaluations(spec.samples, spec.evaluators)
     )
-    plan = plan_tasks(
-        spec.samples,
-        spec.evaluators,
-        provided,
-        references=spec.references,
-        parameters=spec.parameters,
-    )
+    plans = {
+        level: plan_tasks(
+            spec.samples,
+            spec.evaluators,
+            provided,
+            references=spec.criteria(level).references,
+            parameters=spec.parameters,
+        )
+        for level in range(spec.depth + 1)
+    }
+    plan = plans[0]
     runs = {task.id for task in plan.of(Kind.STAGE) if task.given is None}
     contexts = {
         sample: context.running(
@@ -360,12 +371,14 @@ def _bind_problem(
         evaluators,
         planned,
         FrozenMap(targets),
-        plan,
+        FrozenMap(plans),
         warnings,
         FrozenMap(demands),
         FrozenMap({name: sample.properties for name, sample in spec.samples.items()}),
         None if spec.timeout is None else float(spec.timeout),
-        rejecting(plan, spec.samples, spec.parameters),
+        FrozenMap(
+            {level: rejecting(each, spec.samples, spec.parameters) for level, each in plans.items()}
+        ),
     )
 
 

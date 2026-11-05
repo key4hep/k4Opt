@@ -234,6 +234,12 @@ def check_record(
             f"{where} is replicate {replicate!r} of its candidate, evaluated on other events than "
             "the problem's seeds make; the trial asked for replicate 0"
         )
+    level = summary.get("level")
+    if level != 0 or isinstance(level, bool):  # judged by the problem's own objectives
+        raise OptimizationError(
+            f"{where} was evaluated for level {level!r} of a nested optimization, judged by its "
+            "criteria; the trial asked for level 0"
+        )
     if summary.get("represents_candidate") is not True or summary.get("supplied") != []:
         raise OptimizationError(f"{where} was not made from its candidate alone (a supplied stage)")
     implementations = summary.get("implementations")

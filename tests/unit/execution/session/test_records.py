@@ -579,8 +579,8 @@ def test_a_diagnostic_that_does_not_succeed_is_recorded_and_leaves_the_candidate
     crash_pions(monkeypatch)
     diagnosed(problem_file)
     session = EvaluationSession.open(problem_file, [cell_count()])
-    assert session.diagnostics == ("pion/test.cell_count",)
-    assert session.notice == (
+    assert session.diagnostics() == ("pion/test.cell_count",)
+    assert session.notice() == (
         "diagnostics (recorded, do not affect the result): pion/test.cell_count; mark an "
         "evaluator required: true if its result must count"
     )
@@ -636,7 +636,7 @@ def test_an_evaluator_marked_required_decides_the_status_on_every_sample_it_meas
     crash_pions(monkeypatch)
     diagnosed(problem_file, required=True)
     session = EvaluationSession.open(problem_file, [cell_count()])
-    assert (session.diagnostics, session.notice) == ((), None)
+    assert (session.diagnostics(), session.notice()) == ((), None)
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     record = outcome.candidate
     assert record.status == "failed" and record.diagnostics == ()
