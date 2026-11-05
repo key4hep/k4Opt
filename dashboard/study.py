@@ -88,7 +88,7 @@ def _descend(top: StudyResults) -> tuple[StudyResults, list[int]]:
     """The study the URL leads to from ``top`` (``&inner=2.5``: the study of the level below trial
     2, then that of its trial 5), and the trials that lead there; as far as the trials named
     have studies below them."""
-    results, path = top, []
+    results, path = top, list[int]()
     for number in trial.inner_path():
         held = {each.number: each for each in results.trials}.get(number)
         if held is None or held.inner is None:
