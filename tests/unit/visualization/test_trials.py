@@ -322,3 +322,43 @@ def test_a_highlight_leaves_the_other_trials_faint_and_rings_the_reference() -> 
     assert numbers(ring) == [0] and ring.marker.symbol == "circle-open"
     assert ring.marker.color == "#0b0b0b"  # the ink: an open symbol takes the marker's color
     assert traces(trials_figure(study))["feasible"].marker.opacity is None
+
+
+def test_a_study_of_a_level_below_is_drawn_by_the_objective_it_is_judged_by(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("optuna")
+    from k4opt.optimization import load_study
+    from k4opt.visualization import axis_choices, default_axes, history_figure
+    from tests.support.studies import nested_study
+
+    inner = load_study(nested_study(tmp_path / "s", monkeypatch)).trial(0).inner
+    assert inner is not None
+    seen = "objective:test.candidate_check/analysis/seen"
+    objectives = [key for key in axis_choices(inner) if key.startswith("objective:")]
+    assert objectives == [seen]  # not the cells the level above compares
+    assert default_axes(inner) == ("parameter:radius", seen)
+    trials_figure(inner)
+    history_figure(inner)
+
+
+def test_the_model_of_a_study_of_a_level_below_is_what_that_level_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("optuna")
+    from k4opt.optimization import load_study
+    from k4opt.visualization import task_graph
+    from tests.support.studies import nested_study
+
+    top = load_study(nested_study(tmp_path / "s", monkeypatch))
+    inner = top.trial(0).inner
+    assert inner is not None
+    graph = {node.id: node for node in task_graph(inner, stack=False).nodes}
+    measured = [id for id in graph if id.startswith(("objective:", "constraint:"))]
+    assert measured == ["objective:test.candidate_check/analysis/seen"]
+    # what only the level above reads is not run at this level
+    assert "gamma/test.cell_count" not in graph and "gamma/simulation" not in graph
+    radius = top.trial(0).candidate["radius"]
+    assert graph["parameter:radius"].details == (f"fixed: {radius:.4g}",)  # no unit
+    whole = {node.id for node in task_graph(top, stack=False).nodes}
+    assert {"gamma/test.cell_count", "gamma/simulation"} <= whole

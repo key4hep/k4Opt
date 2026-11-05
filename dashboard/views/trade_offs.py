@@ -81,7 +81,7 @@ def _trade_offs(results: StudyResults) -> TradeOffs | None:
         held_rules = _held_rules(st.query_params.get(RULES, ""))
         rules: list[Rule] = []
         encoded = []
-        for index, objective in enumerate(results.problem.objectives):
+        for index, objective in enumerate(results.scope.criteria.objectives):
             kind0, amount0, relative0 = held_rules.get(index, (ANY, 0.0, True))
             arrow = "▼" if objective.direction == "minimize" else "▲"
             st.markdown(

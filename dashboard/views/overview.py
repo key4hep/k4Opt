@@ -266,13 +266,17 @@ def _problem(results: StudyResults) -> None:
             for p in spec.parameters:
                 unit = labels.unit(p.unit)
                 badges = [(p.kind, "blue")] + ([(unit, "gray")] if unit else [])
+                if p.name in results.scope.fixed:  # by the level above, or --fix
+                    value = labels.number(results.scope.fixed[p.name], p.unit)
+                    badges = [(f"fixed at {value}", "gray")]
                 sets = "; ".join(destination.label for destination in p.targets)
                 said = f"{tables.domain(p)} · sets {sets}"
                 titled = p.title is not None  # its name too, as the problem writes it
                 _item(called.parameter(p.name), badges, f"{p.name} · {said}" if titled else said)
         with columns[1]:
-            _heading("Objectives", ":material/flag:", len(spec.objectives))
-            for o in spec.objectives:
+            judged = results.scope.criteria.objectives  # those of its level, in a study below
+            _heading("Objectives", ":material/flag:", len(judged))
+            for o in judged:
                 unit = labels.unit(shown.get(o.label))
                 arrow = "▲" if o.direction == "maximize" else "▼"
                 way = "green" if o.direction == "maximize" else "red"  # as the model says it

@@ -386,3 +386,58 @@ def test_the_drawing_takes_the_colors_it_is_told() -> None:
     # drawn in the colors told, whatever the viewer prefers: no style that changes them
     assert "<style>" not in light and "<style>" not in dark
     assert 'stroke="#dfe4ec"' in light and 'stroke="#2a313c"' in dark  # a card's frame
+
+
+NESTED = EXAMPLES.parent / "nested" / "cld-pi0-nested.yaml"
+
+
+def test_a_nested_problem_is_drawn_as_loops_of_what_runs_for_each_trial_of_a_level() -> None:
+    spec = parse_problem(yaml.safe_load(NESTED.read_text()))
+    graph = task_graph(spec, stack=False)
+    assert [(loop.level, loop.title) for loop in graph.loops] == [
+        (0, "for each ECAL cell size"),
+        (1, "for each Pandora ECAL hit threshold trial"),
+    ]
+    assert graph.loops[1].lines[1] == "best one evaluated again on new events"
+    loops = {node.id: node.loop for node in graph.nodes}
+    # what the cell size reaches runs once for it; what the threshold reaches, for each trial of it
+    assert loops["parameter:ecal_cell_size"] == loops["geometry"] == 0
+    assert loops["pi0_50gev/simulation"] == loops["pi0_50gev/generation"] == 0
+    assert loops["parameter:ecal_mip_threshold"] == loops["pi0_50gev/reconstruction"] == 1
+    assert loops["pi0_50gev/pfo.pi0"] == 1 and loops["readout"] == 0
+    labels = {(e.source, e.kind): e.label for e in graph.edges}
+    assert labels["pi0_50gev/pfo.pi0", "measures"] == "best, on new events"
+    assert labels["readout", "measures"] is None  # measured for the cell size itself
+    # folded, a sample is drawn in the outermost loop of its tasks
+    (folded,) = [n for n in collapsed(graph, ["pi0_50gev"]).nodes if n.id.startswith("sample:")]
+    assert folded.loop == 0
+
+
+def test_the_loops_nest_as_the_levels_do_and_a_sample_box_holds_its_inner_loop() -> None:
+    spec = parse_problem(yaml.safe_load(NESTED.read_text()))
+    dot = pipeline_graph(spec, stack=False)
+    outer, sample, inner = (
+        dot.index("subgraph cluster_loop0_root"),
+        dot.index("subgraph cluster_0 "),
+        dot.index("subgraph cluster_loop1_cluster_0"),
+    )
+    assert outer < sample < inner
+    assert "best, on new events" in dot and "rank=source" not in dot
+
+
+def test_a_problem_without_levels_draws_no_loop() -> None:
+    graph = task_graph(parse_problem(example()))
+    assert graph.loops == () and all(node.loop is None for node in graph.nodes)
+    assert "cluster_loop" not in pipeline_graph(parse_problem(example()))
+
+
+@GRAPHVIZ
+def test_graphviz_lays_out_the_loops_and_the_figure_draws_each_node() -> None:
+    spec = parse_problem(yaml.safe_load(NESTED.read_text()))
+    shown = subprocess.run(
+        ["dot", "-Tsvg"], input=pipeline_graph(spec), capture_output=True, text=True, check=True
+    )
+    assert not complaints(shown.stderr) and "<svg" in shown.stdout
+    figure = pipeline_figure(spec)
+    drawn = {str(item[0]) for trace in figure.data for item in (trace.customdata or ())}
+    assert {node.id for node in task_graph(spec).nodes} <= drawn

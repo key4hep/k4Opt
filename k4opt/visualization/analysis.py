@@ -58,7 +58,7 @@ def parallel_figure(
     drawn = [t for t in results.trials if t.outcome == "feasible"]
     left_out = Counter(t.outcome for t in results.trials if t.outcome != "feasible")
     dimensions: list[dict[str, Any]] = [_dimension(p, drawn, called) for p in spec.parameters]
-    for index, o in enumerate(spec.objectives):
+    for index, o in enumerate(results.scope.criteria.objectives):
         unit = _unit(_axis(results, f"{OBJECTIVE}{o.label}"), drawn)
         dimensions.append(
             {
@@ -277,7 +277,7 @@ def edf_figure(results: StudyResults, *, dark: bool = False) -> go.Figure:
     the trials with a value of it whose value is at most each value. Raises
     :class:`VisualizationError` for values of an objective recorded in different units."""
     colors = _COLORS[dark]
-    objectives = results.problem.objectives
+    objectives = results.scope.criteria.objectives
     columns, rows = _grid(len(objectives))
     figure = make_subplots(rows=rows, cols=columns, horizontal_spacing=0.08, vertical_spacing=0.22)
     counted: Counter[str] = Counter()
@@ -311,7 +311,7 @@ def edf_figure(results: StudyResults, *, dark: bool = False) -> go.Figure:
 
 def _objective(results: StudyResults, key: str | None) -> _Axis:
     """The objective ``key`` names, the first by default; a parameter is refused."""
-    objectives = results.problem.objectives
+    objectives = results.scope.criteria.objectives
     axis = _axis(results, key or f"{OBJECTIVE}{objectives[0].label}")
     if axis.objective is None:
         raise VisualizationError(f"{key!r} is a parameter, not an objective")

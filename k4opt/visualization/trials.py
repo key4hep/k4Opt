@@ -120,7 +120,7 @@ def axis_choices(results: StudyResults) -> tuple[str, ...]:
     """The axes a figure of ``results`` can have: each objective, then each parameter."""
     spec = results.problem
     return tuple(
-        [f"{OBJECTIVE}{o.label}" for o in spec.objectives]
+        [f"{OBJECTIVE}{o.label}" for o in results.scope.criteria.objectives]
         + [f"{PARAMETER}{p.name}" for p in spec.parameters]
     )
 
@@ -128,7 +128,7 @@ def axis_choices(results: StudyResults) -> tuple[str, ...]:
 def _axis(results: StudyResults, key: str) -> _Axis:
     spec = results.problem
     called = names(spec)
-    for index, objective in enumerate(spec.objectives):
+    for index, objective in enumerate(results.scope.criteria.objectives):
         if key == f"{OBJECTIVE}{objective.label}":
             return _Axis(key, called.objective(objective.label), objective=objective, index=index)
     for parameter in spec.parameters:
@@ -143,7 +143,7 @@ def default_axes(results: StudyResults) -> tuple[str, str]:
     """The axes :func:`trials_figure` shows unless told others: the first two objectives, or, for
     one objective, the first parameter against it."""
     choices = axis_choices(results)
-    objectives = len(results.problem.objectives)
+    objectives = len(results.scope.criteria.objectives)
     return (choices[0], choices[1]) if objectives >= 2 else (choices[1], choices[0])
 
 
@@ -153,7 +153,7 @@ def color_choices(results: StudyResults) -> tuple[str, ...]:
     spec = results.problem
     return (
         TRIAL,
-        *(f"{OBJECTIVE}{o.label}" for o in spec.objectives),
+        *(f"{OBJECTIVE}{o.label}" for o in results.scope.criteria.objectives),
         *(f"{PARAMETER}{p.name}" for p in spec.parameters if p.kind != "categorical"),
     )
 
@@ -215,7 +215,7 @@ def trials_figure(
                 hoverinfo="text",
             )
         )
-    objectives = results.problem.objectives
+    objectives = results.scope.criteria.objectives
     exact = (
         len(objectives) == 2
         and horizontal.objective is not None
@@ -267,14 +267,14 @@ def history_figure(
     study of one objective, a step line follows the best feasible value so far; the front of
     several objectives is set apart by its color instead. Raises :class:`VisualizationError` for
     an objective the study does not have, and for values recorded in different units."""
-    key = objective or f"{OBJECTIVE}{results.problem.objectives[0].label}"
+    key = objective or f"{OBJECTIVE}{results.scope.criteria.objectives[0].label}"
     axis = _axis(results, key)
     if axis.objective is None:
         raise VisualizationError(f"the history is of an objective, and {key!r} is a parameter")
     groups, left_out = _groups(results, lambda t: axis.value(t) is not None)
     drawn = [trial for group in groups.values() for trial in group]
     unit = _unit(axis, drawn)
-    single = len(results.problem.objectives) == 1
+    single = len(results.scope.criteria.objectives) == 1
     figure = go.Figure()
     _mark(
         figure,
@@ -498,7 +498,10 @@ def _notes(
     results: StudyResults, front: list[TrialResult], exact: bool, left_out: Counter[str]
 ) -> list[str]:
     notes = []
-    objectives, limits = len(results.problem.objectives), len(results.problem.constraints)
+    objectives, limits = (
+        len(results.scope.criteria.objectives),
+        len(results.scope.criteria.constraints),
+    )
     if front and not exact:
         judged = f"its {objectives} objective{'s' if objectives > 1 else ''}"
         if limits:

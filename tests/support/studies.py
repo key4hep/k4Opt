@@ -57,3 +57,50 @@ def mixed_study(directory: Path, trials: int = 8) -> Path:
         evaluators=[TRADE | {"settings": {"invalid_below": 200, "failed_below": 150}}],
         constraints=[{"stage": "analysis", "metric": "a", "max": 400, "unit": "mm"}],
     )
+
+
+def nested_study(directory: Path, monkeypatch: pytest.MonkeyPatch, trials: int = 2) -> Path:
+    """A nested study of ``trials`` trials in ``directory``: the radius of the geometry at the
+    top, compared by the cells of a simulation (fake ddsim, in this process); for each radius, a
+    study of 3 trials of the setting ``x`` of ``test.candidate_check``, tuned by its metric
+    ``analysis/seen`` (minimized), which no objective of the problem names."""
+    from k4opt.optimization import optimize
+    from tests.support import simulation
+    from tests.support.evaluators import candidate_check, cell_count
+    from tests.unit.optimization.conftest import GUN, RADIUS, problem_document
+
+    cells = {"stage": "simulation", "metric": "ecal_barrel.mean_hit_cells", "direction": "minimize"}
+    document = problem_document(
+        evaluators=[
+            {
+                "name": "test.cell_count",
+                "version": "1",
+                "stage": "simulation",
+                "collections": {"hits": "ECalBarrelCollection"},
+            },
+            {"name": "test.candidate_check", "version": "1"},
+        ],
+        objectives=[("test.cell_count", *cells.values())],
+    )
+    document["parameters"][RADIUS]["targets"] = {"geometry": "InnerTracker_Barrel_radius_1"}
+    document["parameters"]["x"] = {
+        "type": "continuous",
+        "bounds": [1.0, 2.0],
+        "targets": {"evaluators": {"test.candidate_check": "x"}},
+    }
+    document["samples"] = {
+        "gamma": {
+            "generation": GUN | {"particle": "gamma"},
+            "simulation": {"executor": "ddsim", "events": 2, "seed": 1},
+        }
+    }
+    seen = {"evaluator": "test.candidate_check", "stage": "analysis", "metric": "seen"}
+    document["optimization"] = {
+        "parameters": [RADIUS],
+        "inner": {"parameters": ["x"], "trials": 3, "objective": seen | {"direction": "minimize"}},
+    }
+    problem = directory.with_name(f"{directory.name}.yaml")
+    problem.write_text(yaml.safe_dump(document), encoding="utf-8")
+    simulation.install(monkeypatch)
+    optimize(problem, [cell_count(), candidate_check()], directory, trials=trials, seed=1)
+    return directory

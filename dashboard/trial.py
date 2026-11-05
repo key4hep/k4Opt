@@ -18,6 +18,7 @@ import tables
 import widgets
 
 SHOWN = "trial"  # the URL's parameter of the trial open
+INNER = "inner"  # the URL's parameter of the study of a level below shown: its trials, by "."
 VIEW = "view"  # the Study page's tabs, by their key: a comparison opens the Trade-offs tab
 # the color of each outcome's badge; every other outcome is a trial without a result
 BADGES = {"feasible": "green", "infeasible": "orange", "running": "blue"}
@@ -54,6 +55,23 @@ def sheet(results: StudyResults) -> None:
         return
     dialog = st.dialog(f"Trial {number}", width="large", on_dismiss=_closed)
     dialog(_sheet)(results, results.trial(number))
+
+
+def inner_path() -> list[int]:
+    """The trials, from the top, whose studies of the level below lead to the study shown: none
+    for the top study."""
+    held = st.query_params.get(INNER, "")
+    return [int(part) for part in held.split(".") if part.isdigit()]
+
+
+def open_study(path: list[int]) -> None:
+    """Show the study the trials ``path`` lead to, from its Overview, with no trial open."""
+    if path:
+        st.query_params[INNER] = ".".join(map(str, path))
+    elif INNER in st.query_params:
+        del st.query_params[INNER]
+    st.session_state[VIEW] = "Overview"
+    _closed()
 
 
 def _closed() -> None:
@@ -102,7 +120,7 @@ def _sheet(results: StudyResults, trial: TrialResult) -> None:
             f"{value.label}, to {direction}",
         )
         for value, direction in zip(
-            measured, (o.direction for o in results.problem.objectives), strict=False
+            measured, (o.direction for o in results.scope.criteria.objectives), strict=False
         )
     ] + [
         (
@@ -117,6 +135,8 @@ def _sheet(results: StudyResults, trial: TrialResult) -> None:
         columns = st.columns(4)
         for column, (label, value, said) in zip(columns, tiles[start : start + 4], strict=False):
             column.metric(labels.plain(label), value, help=labels.plain(said), border=True)
+    if trial.inner is not None:
+        _tuning(results, trial)
     limits = tables.trial_limits(results, trial)
     if limits:
         st.markdown("**Constraints**")
@@ -135,3 +155,35 @@ def _sheet(results: StudyResults, trial: TrialResult) -> None:
         widgets.table(diagnostics)
     with st.expander("Record", icon=":material/description:"):
         widgets.table(tables.trial_record(trial))
+
+
+def _tuning(results: StudyResults, trial: TrialResult) -> None:
+    """What the study of the level below found for ``trial``: its best trial, what that measured
+    on the study's events, the values it gives; and a way into that study."""
+    inner = trial.inner
+    assert inner is not None
+    called = names(results.problem)
+    searched = ", ".join(called.parameter(name) for name in inner.scope.searched)
+    st.markdown("**Tuned for this candidate**")
+    found = tables.tuned(trial)
+    said = f"Its study of {labels.plain(searched)} ran {labels.count(len(inner.trials), 'trial')}"
+    if found is None or trial.selected is None:
+        st.caption(f"{said} and found no feasible one, so this trial has no value.")
+    else:
+        best = int(str(trial.selected["trial"]))
+        objective = labels.plain(called.objective(found.label))
+        value = labels.number(found.value, found.unit, found.uncertainty)
+        st.caption(
+            f"{said}; the best, trial {best}, reached {objective} = {value} on that study's "
+            "events. Its "
+            "values are this trial's, and the values above were measured again, on new events: "
+            "a best of many is optimistic on the events it was chosen on."
+        )
+    st.button(
+        "Open its study",
+        icon=":material/account_tree:",
+        key=f"trial-inner-{trial.number}",
+        on_click=open_study,
+        args=([*inner_path(), trial.number],),
+        help="Show the study of the level below as a study of its own, with every tab",
+    )

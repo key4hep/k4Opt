@@ -58,7 +58,7 @@ def _heading(name: str, unit: str | None) -> str:
     return f"{name} [{shown}]" if shown else name
 
 
-type _Kind = Literal["fixed", "parameter", "objective", "uncertainty", "margin", "change"]
+type _Kind = Literal["fixed", "parameter", "objective", "uncertainty", "margin", "change", "tuned"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +103,18 @@ def _columns(
             _heading(said, p.unit),
             _heading(f"{said} ({p.name})", p.unit),
         ]
-    for o in results.problem.objectives:
+    # what each trial's tuning reached, beside the objective on the same metric, if any
+    below = None
+    if results.scope.nested and not trade_off:
+        (below,) = results.problem.criteria(results.scope.level + 1).objectives
+    tuned_options: list[str] = []
+    if below is not None:
+        unit = shown.get(below.label)
+        tuned_options = [
+            _heading(f"{called.objective(below.label)}, tuned", unit),
+            _heading(f"{below.label}, tuned", unit),
+        ]
+    for o in results.scope.criteria.objectives:
         unit = shown.get(o.label)
         choices = [_heading(called.objective(o.label), unit), _heading(o.label, unit)]
         options["objective", o.label] = choices
@@ -111,7 +122,11 @@ def _columns(
             options["change", o.label] = [f"Δ {called.objective(o.label)} [%]", f"Δ {o.label} [%]"]
         elif o.label in uncertain:
             options["uncertainty", o.label] = [f"{choice} ±" for choice in choices]
-    for c in () if trade_off else results.problem.constraints:
+        if below is not None and below.label == o.label:
+            options["tuned", below.label] = tuned_options
+    if below is not None and ("tuned", below.label) not in options:
+        options["tuned", below.label] = tuned_options
+    for c in () if trade_off else results.scope.criteria.constraints:
         unit = c.unit or shown.get(c.label)
         for bound in ("min", "max"):
             if getattr(c, bound) is not None:
@@ -155,6 +170,11 @@ def helps(results: StudyResults) -> dict[str, str]:
         "objective": "{}",
         "uncertainty": "the uncertainty of {}",
         "margin": "the margin of the limit {}: zero or below when satisfied",
+        "tuned": (
+            "the best value of {} the trial's study of the level below reached, on that study's "
+            "events; the trial's own value of it is its best candidate measured again, on new "
+            "events"
+        ),
     }
     return {
         column.heading: said[column.kind].format(column.key)
@@ -200,12 +220,27 @@ def _row(trial: TrialResult, columns: Sequence[_Column], fixed: Mapping[str, obj
         elif column.kind == "margin":
             limit = limits.get(column.key)
             value = None if limit is None else limit.margin
+        elif column.kind == "tuned":
+            found = tuned(trial)
+            value = None if found is None else found.value
         elif column.kind in ("objective", "uncertainty"):
             found = measured.get(column.key)
             if found is not None:
                 value = found.value if column.kind == "objective" else found.uncertainty
         row[column.heading] = value
     return row
+
+
+def tuned(trial: TrialResult) -> ObjectiveValue | None:
+    """What the best trial of the study of the level below ``trial`` stands for measured of the
+    objective that picked it, on that study's events; ``None`` without one (unscored, or a study
+    without levels)."""
+    if trial.inner is None or trial.selected is None:
+        return None
+    best = trial.inner.trial(int(str(trial.selected["trial"])))
+    if best.assessment is None or not best.assessment.objectives:
+        return None
+    return best.assessment.objectives[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,7 +261,7 @@ def bests(results: StudyResults) -> list[Best]:
     """The best of each objective that a feasible trial measured; none of one that none did."""
     called = names(results.problem)
     found = []
-    for index, objective in enumerate(results.problem.objectives):
+    for index, objective in enumerate(results.scope.criteria.objectives):
         sign = -1 if objective.direction == "maximize" else 1
         best: ObjectiveValue | None = None
         number = -1

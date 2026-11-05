@@ -9,7 +9,9 @@ from __future__ import annotations
 import streamlit as st
 
 from k4opt.errors import K4OptError
+from k4opt.optimization import StudyResults
 from k4opt.publication import CatalogEntry, PublicationUnavailableError
+from k4opt.visualization import names
 
 import data
 import labels
@@ -37,7 +39,7 @@ def main(found: data.Source) -> None:
         return
     entry = entries[requested]
     try:
-        results = data.study(found.location, entry)
+        top = data.study(found.location, entry)
     except PublicationUnavailableError as exc:
         st.warning(
             f"The study cannot be read just now ({labels.plain(exc)}); it is read again on your "
@@ -47,6 +49,7 @@ def main(found: data.Source) -> None:
     except K4OptError as exc:
         st.error(f"The study's snapshot does not hold up: {labels.plain(exc)}")
         return
+    results, path = _descend(top)
     # a bar of tabs across the top of the page; only the open one runs, and the URL says which
     view = st.segmented_control(
         "View",
@@ -59,6 +62,8 @@ def main(found: data.Source) -> None:
         width="stretch",
     )
     _header(entry)
+    if path:
+        _below(top, path)
     PAGES[TABS.index(view if view in TABS else TABS[0])](results)
     trial.sheet(results)
 
@@ -77,6 +82,56 @@ def _header(entry: CatalogEntry) -> None:
             "publish the study again to see them end.",
             icon=":material/pending:",
         )
+
+
+def _descend(top: StudyResults) -> tuple[StudyResults, list[int]]:
+    """The study the URL leads to from ``top`` (``&inner=2.5``: the study of the level below trial
+    2, then that of its trial 5), and the trials that lead there; as far as the trials named
+    have studies below them."""
+    results, path = top, []
+    for number in trial.inner_path():
+        held = {each.number: each for each in results.trials}.get(number)
+        if held is None or held.inner is None:
+            st.warning(f"Trial {number} has no study of a level below; the study above is shown.")
+            break
+        results, path = held.inner, [*path, number]
+    if path != trial.inner_path():
+        trial.open_study(path)
+    return results, path
+
+
+def _below(top: StudyResults, path: list[int]) -> None:
+    """Which study of a level below is shown: the trials that lead to it, each with the values it
+    fixes, and a way back up."""
+    called = names(top.problem)
+    steps, results = [], top
+    for number in path:
+        held = results.trial(number)
+        fixed = [
+            f"{called.parameter(name)} = {labels.number(value, unit(top, name))}"
+            for name, value in held.candidate.items()
+            if name in results.scope.searched
+        ]
+        steps.append(f"trial {number} ({', '.join(fixed)})")
+        assert held.inner is not None
+        results = held.inner
+    up, said = st.columns([1, 5], vertical_alignment="center")
+    up.button(
+        "Up a level",
+        icon=":material/arrow_upward:",
+        on_click=trial.open_study,
+        args=(path[:-1],),
+        width="stretch",
+    )
+    searched = ", ".join(called.parameter(name) for name in results.scope.searched)
+    said.caption(
+        f"The study of level {results.scope.level} for {labels.plain(', then '.join(steps))}: it "
+        f"tunes {labels.plain(searched)} for those values, and its best trial is theirs."
+    )
+
+
+def unit(results: StudyResults, name: str) -> str | None:
+    return next(p.unit for p in results.problem.parameters if p.name == name)
 
 
 main(data.current())

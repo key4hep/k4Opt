@@ -97,7 +97,9 @@ studies are read from. The pages:
     reference ringed; below, each with how each objective changed, or, when none does, which
     rule excludes most. The reference and the rules are in the URL (`&ref=12&rules=0:worsen:5:%`).
   - **Trials**: every trial (values, uncertainties where any were recorded, limit margins, times,
-    messages), filtered by outcome.
+    messages), filtered by outcome. Of a [nested study](optimization.md#nested-studies), also what
+    each trial's study of the level below reached on its own events (`π⁰ photons resolved,
+    tuned`), beside the trial's value of it on new events.
   - **Analysis**: for the objective chosen (`&objective=objective:...`), one view at a time
     (`&analysis=Slice`): its [history](visualization.md#the-history-of-an-objective-history_figure),
     and the [analysis figures](visualization.md#how-the-parameters-act-on-an-objective-the-analysis-figures):
@@ -107,7 +109,12 @@ studies are read from. The pages:
   **A trial** opens the same way wherever it is shown, by a click in a figure or by selecting
   its row: as a sheet over the page, named in the URL (`&trial=12`), with its outcome, its
   objectives and parameters, its constraints, stage times and diagnostics that did not succeed,
-  and its record. *Compare with this trial* makes it the reference of the Trade-offs tab.
+  and its record. *Compare with this trial* makes it the reference of the Trade-offs tab. A trial
+  of a nested study says what its study of the level below found (its best trial and what that
+  measured on the tuning's events), and *Open its study* shows that study as a study of its own,
+  with every tab (`&inner=2`, or `&inner=2.5` a level further down): judged by its own objective,
+  the values of the levels above fixed, a line naming the trials it was made for and *Up a level*
+  to go back.
 
 **Caching.** The catalog changes when a study is published: it is kept 60 s for all viewers, and
 *Refresh* drops it. A snapshot never changes, since its name is its content: a study is kept by

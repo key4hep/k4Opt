@@ -139,32 +139,26 @@ def _dot(graph: TaskGraph, colors: Mapping[str, str]) -> str:
         f'  edge [color="{colors["muted"]}", penwidth=1.2, arrowhead=normal, arrowsize=0.6, '
         f'fontname="{_FONT}", fontsize=10, fontcolor="{colors["secondary"]}"]',
     ]
-    lines += [
-        "  " + _node(node, ids, colors, graph.recorded) for node in graph.nodes if not _boxed(node)
-    ]
-    for key, box in graph.samples.items():
+    if graph.loops:
+        lines += _looped(graph, ids, colors)
+    else:
         lines += [
-            f"  subgraph {ids[key]} {{",
-            "    "
-            + _attributes(
-                label=_label(box.title, box.lines, colors, dot=colors["sample-accent"], left=True),
-                style="rounded,filled" + (",bold" if box.is_stack else ""),
-                fillcolor=colors["sample-wash"],
-                color=colors["sample-frame"],
-                labeljust="l",
-                margin="14",
-                penwidth="1",
-                separator="; ",
-            )
-            + ";",
-            *(
+            "  " + _node(node, ids, colors, graph.recorded)
+            for node in graph.nodes
+            if not _boxed(node)
+        ]
+        for key in graph.samples:
+            inside = [
                 "    " + _node(node, ids, colors, graph.recorded)
                 for node in graph.nodes
                 if _boxed(node) and node.sample == key
-            ),
-            "  }",
-        ]
-    for rank, kinds in (("source", ("parameter",)), ("sink", _MEASURED)):
+            ]
+            lines += _sample(graph, key, ids, colors, inside)
+    # parameters in the frames of their loops are where those put them, not all at the left
+    ranks = (
+        (("sink", _MEASURED),) if graph.loops else (("source", ("parameter",)), ("sink", _MEASURED))
+    )
+    for rank, kinds in ranks:
         members = [ids[node.id] for node in graph.nodes if node.kind in kinds]
         if members:
             lines.append(f"  {{rank={rank}; " + " ".join(f"{name};" for name in members) + "}")
@@ -176,8 +170,8 @@ def _dot(graph: TaskGraph, colors: Mapping[str, str]) -> str:
         drawn.add(pair)
         if edge.kind == "sets":
             style = " [" + _attributes(style="dashed") + "]"
-        elif edge.kind == "measures":
-            style = ""
+        elif edge.kind == "measures":  # labeled only where a level below measured it again
+            style = "" if edge.label is None else f" [label=<{html.escape(edge.label)}>]"
         elif edge.label is not None:
             style = f" [label=<{html.escape(edge.label)}>]"
         else:
@@ -185,6 +179,125 @@ def _dot(graph: TaskGraph, colors: Mapping[str, str]) -> str:
         lines.append(f"  {pair[0]} -> {pair[1]}{style}")
     lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+def _sample(
+    graph: TaskGraph,
+    key: str,
+    ids: Mapping[str, str],
+    colors: Mapping[str, str],
+    inside: Sequence[str] = (),
+    indent: str = "  ",
+) -> list[str]:
+    """The box of the sample (or stack) ``key`` with its tasks, and the lines ``inside`` it."""
+    box = graph.samples[key]
+    return [
+        f"{indent}subgraph {ids[key]} {{",
+        f"{indent}  "
+        + _attributes(
+            label=_label(box.title, box.lines, colors, dot=colors["sample-accent"], left=True),
+            style="rounded,filled" + (",bold" if box.is_stack else ""),
+            fillcolor=colors["sample-wash"],
+            color=colors["sample-frame"],
+            labeljust="l",
+            margin="14",
+            penwidth="1",
+            separator="; ",
+        )
+        + ";",
+        *inside,
+        f"{indent}}}",
+    ]
+
+
+def _looped(graph: TaskGraph, ids: Mapping[str, str], colors: Mapping[str, str]) -> list[str]:
+    """The nodes of a study with levels below its own, each in the frame of its loop
+    (:attr:`~k4opt.visualization.GraphNode.loop`), the frames nested as the levels are: what
+    runs once for each trial of a level in that level's frame, inside those of the levels above.
+    A sample's box lies in the frame of the outermost loop of its tasks, and the frames of its
+    tasks of the loops below lie in it; a parameter of a level below lies in the frame of its
+    level in the first sample with tasks of that loop, beside what it sets. Each level's frame
+    says what it is once; drawn again, in another sample's box, it is titled only."""
+    nodes, said = list(graph.nodes), set()
+    first = graph.loops[0].level
+    boxes = {key: [n for n in nodes if _boxed(n) and n.sample == key] for key in graph.samples}
+    outermost = {
+        key: min((n.loop if n.loop is not None else first - 1) for n in members)
+        for key, members in boxes.items()
+        if members
+    }
+    homes: dict[str, str | None] = {}  # the sample a parameter of a level below is drawn in
+    for node in nodes:
+        if node.kind == "parameter" and node.loop is not None and node.loop > first:
+            homes[node.id] = next(
+                (
+                    key
+                    for key, members in boxes.items()
+                    if any(n.loop == node.loop for n in members)
+                ),
+                None,
+            )
+
+    def frame(
+        at: int, members: Sequence[GraphNode], boxed: Sequence[str], where: str, indent: str
+    ) -> list[str]:
+        """The frame of level ``at`` (and those below it) holding ``members`` and the boxes
+        ``boxed``; empty if none of them is in it."""
+        if at > graph.loops[-1].level:
+            return []
+        here = [n for n in members if n.loop == at]
+        lower = [n for n in members if n.loop is not None and n.loop > at]
+        inner_boxes = [key for key in boxed if outermost[key] > at]
+        these = [key for key in boxed if outermost[key] == at]
+        if not (here or lower or these or inner_boxes):
+            return []
+        loop = graph.loops[at - first]
+        lines = () if at in said else loop.lines
+        said.add(at)
+        content = [f"{indent}  " + _node(n, ids, colors, graph.recorded) for n in here]
+        for key in these:
+            content += _sample(
+                graph, key, ids, colors, _inside(key, at, indent + "    "), indent + "  "
+            )
+        content += frame(at + 1, lower, inner_boxes, where, indent + "  ")
+        return [
+            f"{indent}subgraph cluster_loop{at}_{where} {{",
+            f"{indent}  "
+            + _attributes(
+                label=_label(loop.title, lines, colors, dot=colors["parameter-accent"], left=True),
+                style="rounded,dashed",
+                color=colors["muted"],
+                labeljust="l",
+                margin="12",
+                penwidth="1",
+                separator="; ",
+            )
+            + ";",
+            *content,
+            f"{indent}}}",
+        ]
+
+    def _inside(key: str, at: int, indent: str) -> list[str]:
+        """What the box of sample ``key``, in the frame of loop ``at``, holds: its tasks of that
+        loop, then the frames of the loops below with theirs and the parameters drawn there."""
+        members = boxes[key] + [n for n in nodes if homes.get(n.id) == key]
+        top = [
+            f"{indent}" + _node(n, ids, colors, graph.recorded)
+            for n in members
+            if n.loop == at or (n.loop is None and at < first)
+        ]
+        below = [n for n in members if n.loop is not None and n.loop > at]
+        return top + frame(at + 1, below, (), ids[key], indent)
+
+    outside = [n for n in nodes if not _boxed(n) and n.loop is None]  # fixed, or reached by none
+    lines = ["  " + _node(n, ids, colors, graph.recorded) for n in outside]
+    for key in [key for key, at in outermost.items() if at < first]:
+        lines += _sample(graph, key, ids, colors, _inside(key, first - 1, "    "))
+    framed = [n for n in nodes if not _boxed(n) and n.loop is not None and homes.get(n.id) is None]
+    lines += frame(
+        first, framed, [key for key, at in outermost.items() if at >= first], "root", "  "
+    )
+    return lines
 
 
 def _hue(node: GraphNode) -> str:
@@ -366,6 +479,8 @@ def pipeline_figure(
     figure = go.Figure()
     clickable: list[tuple[float, float, str, str]] = []  # x, y, id, hover
     for cluster, box in layout.samples.items():
+        if cluster not in boxes:  # a level's box: nothing to draw by sample
+            continue
         sample = graph.samples[boxes[cluster]]
         if not sample.is_stack or box.label is None:
             continue
