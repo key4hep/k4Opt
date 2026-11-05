@@ -84,6 +84,13 @@ A proposed candidate is checked against the parameter domains as any other candi
 values are written into the geometry as they are, with nothing rounded or snapped
 (`9.797885082295046*mm`).
 
+**Fixed parameters.** `--fix NAME=VALUE` (repeatable; `optimize(fixed={...})`) gives a parameter
+one value for every trial: the optimizer searches only the others, and every trial's record holds
+the complete candidate. Tune an evaluator's settings for one geometry, say: with the geometry
+fixed, the study simulates once and every trial reuses that simulation. The fixed values are part
+of the study's *scope* (below): a resume needs the same, and a value outside the parameter's
+domain, an unknown parameter, or every parameter fixed is refused before anything is created.
+
 **Objectives.** The optimizer is told each objective's value, in the problem's order and with
 its `direction`. One objective and several take the same path. Each is named by its label,
 `sample/evaluator/stage/metric`, with the sample and the binding that measures it
@@ -303,9 +310,14 @@ keeps its geometry and its EDM4hep file.
   which decide what those programs load;
 - k4opt's version, the SHA-256 of its code and its git checkout;
 - the `identity` digest;
+- `scope`: what the study searches (`searched`, the parameters the optimizer proposes), the
+  values it `fixed` for every trial, and the `level` and `replicate` of its trials' records (0
+  and 0 for every study k4opt runs today), and the trial of another study it was started for
+  (`parent`, none today);
 - the optimizer: `optuna` and its version, the study name (`<problem name>-<8 hex>`), the
-  storage (a URL without its password), the sampler and its seed, the directions, the
-  parameters' distributions, the limits and the constraint-value policy.
+  storage (a URL without its password), the sampler and its seed, the objectives it is told by
+  label with their directions, the searched parameters' distributions, the limits and the
+  constraint-value policy.
 
 Combined objectives use `binding/stage/metric` without a sample prefix. Two combined bindings
 reporting the same metric have separate objective columns. `study show` and `study trial`
@@ -672,7 +684,8 @@ StudyResults.from_dict(data)  # read back, checked (above)
 
 `StudyResults` and `TrialResult` are a snapshot: immutable, detached from the storage, and free
 of Optuna types; `study.document` is `study.json` as a read-only mapping (without its locations
-for a study read from its JSON form, whose `directory` is `None`). `optimize` returns the
+for a study read from its JSON form, whose `directory` is `None`), and `study.scope` what it
+searches, the values it fixes and the criteria its trials are judged by. `optimize` returns the
 same. `load_study` raises `OptimizationError` for anything it cannot read or does not trust (above), and needs
 Optuna, which holds the trials; the rest of k4opt does not.
 

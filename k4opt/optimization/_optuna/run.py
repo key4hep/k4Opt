@@ -62,7 +62,8 @@ from k4opt.optimization._optuna.tell import (
     _settle,
     _Study,
 )
-from k4opt.optimization._results import StudyResults, limit_names, recorded_problem
+from k4opt.optimization._results import StudyResults, recorded_scope
+from k4opt.optimization._scope import StudyScope
 from k4opt.optimization._study import (
     JOURNAL_NAME,
     LOCK_NAME,
@@ -121,8 +122,10 @@ def _requests(
         in_flight[trial.number] = (trial, output)
         trial.set_user_attr(marks.DIR, name)
         trial.set_user_attr(marks.SAMPLER_SEED, seed)
-        candidate = {key: trial.params[key] for key in space}
-        yield RunRequest(candidate, output, {"study": run.document["id"], "trial": trial.number})
+        # the complete candidate: what the optimizer proposed, with the values the study fixes
+        candidate = run.scope.candidate({key: trial.params[key] for key in space})
+        run_of = {"study": run.document["id"], "trial": trial.number}
+        yield RunRequest(candidate, output, run_of, run.scope.replicate, run.scope.level)
 
 
 def _run_trials(
@@ -171,6 +174,7 @@ def optimize(
     progress: Progress,
     activity: Watch | None = None,
     reuse: Sequence[str | os.PathLike[str]] = (),
+    fixed: Mapping[str, Any] | None = None,
 ) -> StudyResults:
     if isinstance(trials, bool) or not isinstance(trials, int) or trials < 1:
         raise OptimizationError(f"trials must be a positive integer, got {trials!r}")
@@ -201,6 +205,7 @@ def optimize(
             warn=warn,
             progress=progress,
             activity=activity,
+            fixed=fixed,
         )
 
 
@@ -215,6 +220,7 @@ def _run_study(
     warn: Warn,
     progress: Progress,
     activity: Watch | None,
+    fixed: Mapping[str, Any] | None = None,
 ) -> StudyResults:
     # everything that can be checked before a file is created
     spec = session.spec
@@ -224,12 +230,14 @@ def _run_study(
             "not run yet; leave out inner: to optimize every parameter in one study"
         )
     session.check_limits()  # the problem's time limits can be kept where the trials run
-    space = search_space(spec)  # the evaluators' settings were checked when the session opened
+    scope = StudyScope.of(spec, fixed)
+    # the evaluators' settings were checked when the session opened
+    space = search_space(spec, scope.searched)
     identity: dict[str, Any] = session.identity()
     reasons = unhashed(identity)
     if reasons:
         raise OptimizationError(f"the study could not identify what it runs: {'; '.join(reasons)}")
-    names = limit_names(spec)
+    names = scope.limit_names
     for warning in session.warnings:
         warn(warning)
     if (notice := session.notice()) is not None:
@@ -240,7 +248,7 @@ def _run_study(
     if resume:
         document = read_study(directory)
     else:
-        document = new_document(spec, identity, space, names, seed, storage)
+        document = new_document(scope, identity, space, names, seed, storage)
 
     database: BaseStorage | None = None  # made in the directory, or reached once below
     try:
@@ -257,13 +265,13 @@ def _run_study(
                 raise OptimizationError(f"cannot create {directory}: {exc}") from exc
         with _quiet(), _terminate_as_interrupt(), Lock(directory):
             if resume:
-                check_resume(document, identity, spec, space, names, storage, warn)
+                check_resume(document, identity, scope, space, names, storage, warn)
             else:
                 _refuse_used(directory, LOCK_NAME)  # again, now that no one else can start here
                 write_study(directory, document)
             database = database or open_storage(directory, storage)
             study = open_optuna(directory, document, database, resume)
-            run = _Study(directory, document, spec, study, warn)
+            run = _Study(directory, document, scope, study, warn)
             if resume:
                 check_optuna_study(study, document)
                 _recover(run, progress)
@@ -276,7 +284,7 @@ def _run_study(
             _run_trials(run, session, space, seed_now, trials, progress, activity)
             # read back as load_study reads it, from the study still open: with the problem
             # study.json records, whose titles a resume with other titles leaves as they were
-            return results_of(directory, document, recorded_problem(document), study)
+            return results_of(directory, document, recorded_scope(document), study)
     except Exception as exc:
         replacement, secret = leaving(exc, storage)
         if replacement is None:

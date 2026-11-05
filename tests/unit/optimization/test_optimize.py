@@ -23,7 +23,7 @@ from k4opt.evaluation import EvaluationContractError
 from k4opt.execution import Evaluations, RunError
 from k4opt.optimization import STUDY_NAME, OptimizationError, load_study, optimize
 from k4opt.optimization._render import trial_line
-from k4opt.optimization._results import limit_names
+from k4opt.optimization._scope import limit_names
 from k4opt.problem import load_problem
 from k4opt.record import Assessment
 from tests.support import simulation
@@ -596,7 +596,7 @@ def test_metrics_whose_names_hold_a_slash_are_told_and_reported_apart(
         "test.slashed/analysis%2Fx/y",
         "test.slashed/analysis/x%2Fy",
     )
-    assert tuple(limit_names(report.problem)) == (
+    assert tuple(limit_names(report.problem.criteria())) == (
         "test.slashed/analysis%2Fx/y:max",
         "test.slashed/analysis/x%2Fy:max",
     )

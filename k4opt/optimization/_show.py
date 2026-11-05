@@ -121,15 +121,18 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
     _print(out, style, "id", [printable(results.id)])
     directory = f"{printable(results.directory)} (trials in {printable(where)})"
     _print(out, style, "directory", [directory])
+    fixed = results.scope.fixed
     parameters = [
-        f"{printable(p.name)}  {_domain(p)}  ({printable(', '.join(d.label for d in p.targets))})"
+        f"{printable(p.name)}  "
+        + (f"= {fixed[p.name]!r} (fixed)" if p.name in fixed else _domain(p))
+        + f"  ({printable(', '.join(d.label for d in p.targets))})"
         for p in spec.parameters
     ]
     _print(out, style, "parameters", parameters)
     objectives = [
         f"{printable(o.label)}  {o.direction}"
         + (f"  ({printable(units[o.ref])})" if o.ref in units else "")
-        for o in spec.objectives
+        for o in results.scope.criteria.objectives
     ]
     _print(out, style, "objectives", objectives)
     _print(out, style, "limits", _limits(results))
@@ -201,7 +204,7 @@ def render_trial(
                 f"margin {limit.margin!r} ({limit.normalized!r} of scale {limit.scale!r})"
             )
         _print(out, style, "limits", limits)
-    elif spec.constraints:
+    elif results.scope.criteria.constraints:
         _print(out, style, "limits", ["not assessed"])
     if trial.elapsed_seconds is None:
         times = "not recorded"

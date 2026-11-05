@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import TextIO
 
 from k4opt.jsonio import publish
-from k4opt.optimization._results import StudyResults, limit_names
+from k4opt.optimization._results import StudyResults
+from k4opt.optimization._scope import limit_names
 from k4opt.optimization._study import trial_directory
 from k4opt.optimization.errors import OptimizationError
 from k4opt.record import SUMMARY_NAME
@@ -62,7 +63,7 @@ def columns(results: StudyResults) -> list[str]:
 
 
 def _columns(results: StudyResults, stages: list[str]) -> list[str]:
-    spec = results.problem
+    spec, criteria = results.problem, results.scope.criteria
     header = [
         "study",
         "trial",
@@ -73,12 +74,12 @@ def _columns(results: StudyResults, stages: list[str]) -> list[str]:
         *(f"parameter:{_escaped(p.name)}" for p in spec.parameters),
         *(
             f"objective:{_label(o.sample, o.evaluator, o.stage, o.metric)}{part}"
-            for o in spec.objectives
+            for o in criteria.objectives
             for part in ("", ":unit", ":uncertainty")
         ),
         *(
             f"limit:{_label(c.sample, c.evaluator, c.stage, c.metric)}:{bound}:{part}"
-            for c in spec.constraints  # in the order of limit_names
+            for c in criteria.constraints  # in the order of limit_names
             for bound in ("min", "max")
             if getattr(c, bound) is not None
             for part in ("value", "margin", "normalized", "satisfied")
@@ -116,8 +117,8 @@ def _cell(value: object) -> str:
 
 
 def to_csv(results: StudyResults) -> str:
-    spec, front = results.problem, set(results.pareto)
-    stages, names = _stages(results), limit_names(spec)  # once, for the header and every row
+    spec, criteria, front = results.problem, results.scope.criteria, set(results.pareto)
+    stages, names = _stages(results), limit_names(criteria)  # once, for the header, every row
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow(_columns(results, stages))
@@ -134,7 +135,7 @@ def to_csv(results: StudyResults) -> str:
             trial.recovered,
         ]
         row += [trial.candidate.get(p.name) for p in spec.parameters]
-        for index in range(len(spec.objectives)):
+        for index in range(len(criteria.objectives)):
             m = None if measured is None else measured[index]
             row += [None, None, None] if m is None else [m.value, m.unit, m.uncertainty]
         for name in names:

@@ -106,11 +106,14 @@ PORTABLE: Mapping[str, _Kept] = {
     },
     "search": True,
     "k4opt": {"version": True, "sha256": True, "git": True},
+    # what the study searches and fixes, and the level and replicate of its trials
+    "scope": {"level": True, "searched": True, "fixed": True, "replicate": True, "parent": True},
     "optimizer": {
         "backend": True,
         "version": True,
         "study": True,
         "sampler": True,
+        "objectives": True,
         "directions": True,
         "parameters": True,
         "constraints": True,
@@ -210,11 +213,17 @@ _RESOLVED = ("parameter", "target", "file", "locator", "attribute")
 
 
 def check_record(
-    study: Mapping[str, Any], summary: object, number: int, params: Mapping[str, Any]
+    study: Mapping[str, Any],
+    summary: object,
+    number: int,
+    params: Mapping[str, Any],
+    replicate: int = 0,
+    level: int = 0,
 ) -> list[str]:
-    """Refuse a record that is not the one trial ``number`` of ``study`` asked for with
-    ``params``, or was made with something the study does not compare equal; return the
-    warnings of :func:`revision_warnings`. Its assessment is checked apart, by
+    """Refuse a record that is not the one trial ``number`` of ``study`` asked for with the
+    complete candidate ``params``, as its ``replicate`` and judged by the criteria of its
+    ``level`` (the study's scope), or was made with something the study does not compare equal;
+    return the warnings of :func:`revision_warnings`. Its assessment is checked apart, by
     :meth:`k4opt.record.Assessment.from_summary`."""
     where = f"trial {number}: {trial_directory(number)}/summary.json"
     if not isinstance(summary, Mapping):
@@ -228,17 +237,17 @@ def check_record(
         (k, type(v), v) for k, v in params.items()
     ]:
         raise OptimizationError(f"{where} holds candidate {candidate!r}, but the trial is {params}")
-    replicate = summary.get("replicate")
-    if replicate != 0 or isinstance(replicate, bool):  # a study's trials run on its own events
+    made = summary.get("replicate")
+    if made != replicate or isinstance(made, bool):  # the events the trial asked for
         raise OptimizationError(
-            f"{where} is replicate {replicate!r} of its candidate, evaluated on other events than "
-            "the problem's seeds make; the trial asked for replicate 0"
+            f"{where} is replicate {made!r} of its candidate, evaluated on other events than the "
+            f"trial asked for (replicate {replicate})"
         )
-    level = summary.get("level")
-    if level != 0 or isinstance(level, bool):  # judged by the problem's own objectives
+    judged = summary.get("level")
+    if judged != level or isinstance(judged, bool):  # by the criteria the study tells
         raise OptimizationError(
-            f"{where} was evaluated for level {level!r} of a nested optimization, judged by its "
-            "criteria; the trial asked for level 0"
+            f"{where} was evaluated for level {judged!r} of a nested optimization, judged by its "
+            f"criteria; the trial asked for level {level}"
         )
     if summary.get("represents_candidate") is not True or summary.get("supplied") != []:
         raise OptimizationError(f"{where} was not made from its candidate alone (a supplied stage)")
