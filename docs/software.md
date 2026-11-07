@@ -13,7 +13,7 @@ identifies a run is what is there:
 | build | the build of the stack, from what the stack says of itself |
 | system | the operating system with its major version, the glibc version, the architecture |
 | variables | the SHA-256 of every environment variable not known to be irrelevant, a local build on a search path by its content |
-| site | what the interpreter's site directories hold (a virtual environment, the user's `pip install --user`) |
+| site | what the interpreter's site directories hold (a virtual environment, the user's `pip install --user`), apart from the variables, so that no variable can stand for it |
 
 Their digest is the software's `id`: two sessions with one `id` run on the same software. The build
 is identified wherever the stack is, and so is a [local build](#local-builds): by what it holds, not
@@ -83,13 +83,16 @@ A local build (`k4_local_repo`, a helper directory, a virtual environment) is pu
 stack through the variables that tell programs where to load from. Their text says where it is, not
 what it is: a library rebuilt in place keeps the text, and the same build elsewhere changes it. So
 each entry of such a variable that is a local file or directory is identified by the SHA-256 of what
-can be loaded through it, as the variable uses it; entries under `/cvmfs`, `/usr`, `/lib`, `/lib64`,
+can be loaded through it, as the variable uses it. A relative or empty entry (`.`, or the empty one
+in `a::b`) is the directory k4opt runs in, which its own process and its workers import from, as
+Python resolves it when it starts; a program a stage runs starts in the stage's own directory,
+which k4opt makes. entries under `/cvmfs`, `/usr`, `/lib`, `/lib64`,
 `/bin`, `/sbin` and `/etc` stay as text, which the build and the system identify.
 
 | Variable | What can be loaded through a local entry |
 | --- | --- |
-| `LD_LIBRARY_PATH`, `ROOT_LIBRARY_PATH`, `GAUDI_PLUGIN_PATH` | the files directly in the directory: a library or a plugin is looked up among them by name (the loader, ROOT's and DD4hep's `.rootmap` and `.components` scans) |
-| `ROOT_INCLUDE_PATH` | every file below the directory, which an `#include` names relative to it |
+| `LD_LIBRARY_PATH`, `ROOT_LIBRARY_PATH`, `GAUDI_PLUGIN_PATH` | the libraries directly in the directory (`*.so`, `*.so.*`), which the loader looks up by name, and the registries and dictionaries ROOT, DD4hep and Gaudi read (`*.rootmap`, `*.components`, `*.pcm`); not build files, nor a log written there |
+| `ROOT_INCLUDE_PATH` | every header below the directory (`.h`, `.hh`, `.hpp`, `.hxx`, `.icc`, `.inl`, ...), which an `#include` names relative to it |
 | `PYTHONPATH`, and the interpreter's site directories with what their `.pth` files add | what Python can import: modules (`.py`, `.pyc`, `.so`) and `.pth` files, every file of a regular package (one with an `__init__`), the modules of a namespace package (a directory whose name is an identifier), package metadata (`*.dist-info`, `*.egg-info`) and the native libraries a wheel bundles (`*.libs`, which its extension modules load); never `__pycache__` |
 | `MARLIN_DLL`, `LD_PRELOAD` | each file named |
 
@@ -103,9 +106,10 @@ Each file is read once per version, as the files a problem names are (its size, 
 tell a rewritten file apart); before each candidate a session only looks at those. A worker takes
 what its session read, and after each task looks at the variables alone, since a task changes
 variables, not installed files. Links are followed, as a lookup through them is; a link back up
-the tree is not. An entry of more than 50,000 files or 4 GiB is identified by each file's relative
-path, size and mtime instead of its content, which would be read on every session: a rebuild still
-changes it, a copy that keeps mtimes does not, and the record says which it is (`content`).
+the tree is not. An entry of more than 50,000 files or 4 GiB is identified by its very files instead of
+their content, which would be read on every session: each file's size, times and inode, so that any
+write to it, or another file in its place, is other software, and a copy elsewhere is too; the
+record says which it is (`content`).
 
 A local build moved together with an environment that names its prefix in other variables
 (`VIRTUAL_ENV`, `CONDA_PREFIX`, `PATH`) is still other software through those: they are compared as

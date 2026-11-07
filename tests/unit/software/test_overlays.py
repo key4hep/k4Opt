@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -136,7 +138,7 @@ def test_a_preloaded_library_is_its_content(tmp_path: Path) -> None:
     assert before.differences(after) == [f"the files LD_PRELOAD leads to in {library} changed"]
 
 
-def test_an_entry_too_large_to_read_is_identified_by_sizes_and_mtimes(
+def test_an_entry_too_large_to_read_is_identified_by_its_very_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(overlays, "MAX_FILES", 2)
@@ -150,10 +152,13 @@ def test_an_entry_too_large_to_read_is_identified_by_sizes_and_mtimes(
     first = software(LD_LIBRARY_PATH=str(lib))
     (entry,) = first.by_stat
     assert (entry.variable, entry.files, entry.content) == ("LD_LIBRARY_PATH", 3, False)
-    moved = shutil.copytree(lib, tmp_path / "elsewhere")  # copy2: mtimes kept
-    assert software(LD_LIBRARY_PATH=str(moved)).id == first.id  # never by where it is
-    (moved / "b.so").write_bytes(b"rebuilt")
-    assert software(LD_LIBRARY_PATH=str(moved)).id != first.id
+    assert software(LD_LIBRARY_PATH=str(lib)).id == first.id
+    time.sleep(0.01)
+    (lib / "b.so").write_bytes(b"B.SO")  # another build of the same size ...
+    os.utime(lib / "b.so", ns=(old, old))  # ... its mtime kept, as an extraction may
+    assert software(LD_LIBRARY_PATH=str(lib)).id != first.id
+    moved = shutil.copytree(lib, tmp_path / "elsewhere")
+    assert software(LD_LIBRARY_PATH=str(moved)).id != first.id  # not known to be the same
 
 
 def test_a_link_that_leads_nowhere_is_recorded_and_a_new_target_is_other_software(
@@ -185,7 +190,7 @@ def test_the_site_directories_and_what_their_pth_files_add_are_identified(
     }
     (added / "editable.py").write_text("x = 2\n")  # an editable install, edited
     (said,) = before.differences(Software.now({}))
-    assert said == f"the files {SITE} leads to in {added} changed"
+    assert said == f"what Python imports from {added} changed"
 
 
 def test_local_entries_are_recorded_where_they_are_and_read_back(tmp_path: Path) -> None:
@@ -208,9 +213,11 @@ def test_a_directory_on_two_variables_is_read_once(
     listed: list[str] = []
     python = overlays._LISTED["python"]
 
-    def counting(directory: str, prefix: str, ancestors: frozenset[str]) -> overlays.Listed:
+    def counting(
+        directory: str, prefix: str, ancestors: frozenset[str], read: overlays._Read
+    ) -> overlays.Listed:
         listed.append(directory)
-        return python(directory, prefix, ancestors)
+        return python(directory, prefix, ancestors, read)
 
     monkeypatch.setitem(overlays._LISTED, "python", counting)
     monkeypatch.setattr(overlays.site, "getsitepackages", lambda: [str(root)])
@@ -258,7 +265,92 @@ def test_a_link_back_up_the_tree_ends(tmp_path: Path, variable: str) -> None:
     (root / "pkg").mkdir(parents=True)
     (root / "pkg" / "__init__.py").write_text("")
     (root / "helper.py").write_text("")
+    (root / "pkg" / "Hit.h").write_text("")
+    (root / "Track.h").write_text("")
     (root / "loop").symlink_to(root)  # an identifier: Python could import through it
     (root / "pkg" / "up").symlink_to(root)
     (entry,) = software(**{variable: str(root)}).local
     assert entry.files >= 2
+
+
+@pytest.mark.parametrize("spelling", [".", "", "./python/.."])
+def test_a_relative_entry_is_what_it_leads_to_from_where_k4opt_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    here, there = tmp_path / "studyA", tmp_path / "studyB"
+    for directory, scale in ((here, "1.0"), (there, "2.0")):
+        (directory / "python").mkdir(parents=True)
+        (directory / "helper.py").write_text(f"SCALE = {scale}\n")
+    monkeypatch.chdir(here)
+    first = software(PYTHONPATH=spelling)
+    (entry,) = first.local
+    assert entry.path == str(here)
+    monkeypatch.chdir(there)
+    assert software(PYTHONPATH=spelling).id != first.id  # the same text, other code
+
+
+def test_a_relative_entry_that_leads_nowhere_stays_as_it_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert identified("PYTHONPATH", "missing") == ("missing", ())
+
+
+def test_only_what_is_loaded_from_a_library_directory_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # an empty entry is the current directory, where a job's own log may be growing
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "nohup.out").write_text("candidate 1\n")
+    (tmp_path / "libLocal.so.1.2").write_bytes(b"v1")
+    before = software(LD_LIBRARY_PATH=":/cvmfs/stack/lib")
+    (tmp_path / "nohup.out").write_text("candidate 1\ncandidate 2\n")
+    assert software(LD_LIBRARY_PATH=":/cvmfs/stack/lib").id == before.id
+    for name, content in (
+        ("Local.rootmap", "x"),
+        ("Local.components", "x"),
+        ("Local_rdict.pcm", "x"),
+    ):
+        (tmp_path / name).write_text(content)
+        after = software(LD_LIBRARY_PATH=":/cvmfs/stack/lib")
+        assert after.id != before.id, name
+        before = after
+
+
+def test_only_headers_are_read_from_an_include_directory(tmp_path: Path) -> None:
+    include = tmp_path / "include"
+    include.mkdir()
+    (include / "Hit.hpp").write_text("struct Hit {};\n")
+    before = software(ROOT_INCLUDE_PATH=str(include))
+    (include / "CMakeLists.txt").write_text("# no header\n")
+    assert software(ROOT_INCLUDE_PATH=str(include)).id == before.id
+
+
+def test_a_variable_named_like_the_site_directories_is_compared(tmp_path: Path) -> None:
+    first, second = software(site="A"), software(site="B")
+    assert first.id != second.id
+    assert first.differences(second) == ["the environment differs in site"]
+
+
+def test_entries_identified_at_once_in_threads_agree(tmp_path: Path) -> None:
+    roots = []
+    for index in range(8):
+        root = tmp_path / f"python{index}" / "pkg"
+        root.mkdir(parents=True)
+        (root / "__init__.py").write_text(str(index))
+        roots.append(str(root.parent))
+    found: list[str] = []
+    errors: list[BaseException] = []
+
+    def look() -> None:
+        try:
+            found.append(software(PYTHONPATH=os.pathsep.join(roots)).id)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=look) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == [] and len(set(found)) == 1 and len(found) == 8

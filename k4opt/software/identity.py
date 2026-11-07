@@ -275,6 +275,7 @@ class Software:
     system: System
     variables: Mapping[str, str]
     local: tuple[Local, ...] = ()
+    site: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "variables", FrozenMap(self.variables))
@@ -297,9 +298,10 @@ class Software:
                 digests[name] = _sha256(os.fsencode(text))
                 local += found
         text, found = site_identified(sites() if site is None else site, seen)
-        digests[SITE] = _sha256(os.fsencode(text))
         local += found
-        return cls(Build.of(variables.get("KEY4HEP_STACK")), System.now(), digests, tuple(local))
+        build = Build.of(variables.get("KEY4HEP_STACK"))
+        site_digest = _sha256(os.fsencode(text))
+        return cls(build, System.now(), digests, tuple(local), site_digest)
 
     @property
     def id(self) -> str:
@@ -308,6 +310,7 @@ class Software:
             "build": self.build.to_dict(),
             "system": self.system.to_dict(),
             "variables": dict(self.variables),
+            "site": self.site,
         }
         return _sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")).encode())
 
@@ -333,6 +336,10 @@ class Software:
         others = [n for n in changed if n not in rebuilt]
         if others:
             found.append(f"the environment differs in {', '.join(others)}")
+        if self.site != now.site:
+            paths = _rebuilt(self, now, SITE)
+            where = ", ".join(paths) if paths else "the interpreter's site directories"
+            found.append(f"what Python imports from {where} changed")
         return found
 
     def to_dict(self) -> dict[str, object]:
@@ -342,6 +349,7 @@ class Software:
             "system": self.system.to_dict(),
             "variables": dict(self.variables),
             "local": [entry.to_dict() for entry in self.local],
+            "site": self.site,
         }
 
     @classmethod
@@ -357,18 +365,22 @@ class Software:
         local = entry["local"]
         if not isinstance(local, Sequence) or isinstance(local, str):
             raise SoftwareError(f"the software's local entries are {local!r}, not a list")
+        site = entry["site"]
+        if site is not None and not (isinstance(site, str) and _SHA256.fullmatch(site)):
+            raise SoftwareError(f"the software's site is {site!r}, no digest")
         software = cls(
             Build.from_dict(entry["build"]),
             System.from_dict(entry["system"]),
             dict(variables),
             tuple(_local(item) for item in local),
+            site,
         )
         if entry["id"] != software.id:
             raise SoftwareError(f"the software's id {entry['id']!r} is not that of its parts")
         return software
 
 
-_SOFTWARE = frozenset(("id", "build", "system", "variables", "local"))
+_SOFTWARE = frozenset(("id", "build", "system", "variables", "local", "site"))
 _LOCAL = frozenset(("variable", "path", "sha256", "files", "bytes", "content"))
 
 

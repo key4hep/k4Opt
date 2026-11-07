@@ -60,8 +60,9 @@ ROLES: dict[str, Role] = {
 """The variables whose local entries are identified by content, with what is loaded through them."""
 
 SITE = "site"
-"""The name under which the site directories of k4opt's interpreter are identified (:func:`sites`),
-as a variable of role ``python``: what a Python program of the same interpreter imports besides
+"""What the local entries of the site directories of k4opt's interpreter (:func:`sites`) name as
+their variable, of role ``python``; the software holds their digest apart from the variables, so
+that no variable can stand for it: what a Python program of the same interpreter imports besides
 ``PYTHONPATH``. ddsim and k4run run in the first ``python3`` on ``PATH``, k4opt's own in an
 environment set up as documented."""
 
@@ -72,11 +73,20 @@ MAX_FILES = 50_000
 MAX_BYTES = 4 << 30
 
 _MODULES = (".py", ".pyc", ".so", ".pth")
+_LIBRARY = re.compile(r"\.so(\.[\w.]*)?$|\.(rootmap|components|pcm)$")
+"""What is loaded from a library directory: libraries (``libX.so``, ``libX.so.1.2``), and the
+registries a plugin is looked up in and the dictionaries ROOT reads (``.rootmap``, ``.components``,
+``.pcm``); never what else lies there (build files, a log being written)."""
+_HEADERS = (".h", ".hh", ".hpp", ".hxx", ".h++", ".icc", ".ipp", ".inl", ".tcc", ".def", ".inc")
+"""What ``#include`` reads from an include directory."""
 _BESIDE = (".dist-info", ".egg-info", ".libs")
 """Directories beside the packages of a site directory that no import names but Python reads:
 package metadata, and the native libraries a wheel bundles (``numpy.libs``), which its extension
 modules load through their run path."""
 _TOKEN = "<{}>"
+
+type _Read = list[tuple[str, Stat | None]]
+"""The directories a walk scanned, with their stat when it scanned them."""
 
 type Listed = Iterator[tuple[str, str, Stat | None]]
 """Files that can be loaded through an entry: each one's name relative to it, its path and its
@@ -166,9 +176,12 @@ def _replaced(
     variable: str, role: Role, entries: list[str], seen: Seen
 ) -> tuple[str, tuple[Local, ...]]:
     kept, local = [], []
-    for entry in entries:
-        if not _is_local(entry):
-            kept.append(entry)
+    for given in entries:
+        entry = given
+        if role != "files" and not os.path.isabs(given):  # "" and "." are the current directory
+            entry = os.path.normpath(os.path.join(os.getcwd(), given))
+        if not _is_local(entry):  # a relative one that leads nowhere: as written, wherever it is
+            kept.append(entry if os.path.exists(entry) else given)
             continue
         if (role, entry) not in seen:
             seen[(role, entry)] = _identify(variable, role, entry)
@@ -200,10 +213,6 @@ _TAKEN: dict[tuple[Role, str], _Taken] = {}
 """The last look at each entry in this process: a later look stats what it read (tens of
 milliseconds for a virtual environment) and walks and hashes again only if something changed."""
 
-_READ: list[tuple[str, Stat | None]] | None = None
-"""The directories the look under way scans, with their stat; ``None`` between looks."""
-
-
 RECENT_NS = 2_000_000_000
 """How recent a change may be for a stat not to vouch for what it is: a file or directory changed
 twice within one tick of the kernel's coarse clock (milliseconds, a second on some network
@@ -219,16 +228,10 @@ def _identify(variable: str, role: Role, entry: str) -> Local:
     taken = _TAKEN.get((role, entry))
     if taken is not None and taken.unchanged():
         return taken.local
-    global _READ
-    _READ = []
     now = time.time_ns()
-    try:
-        local, files = _walk(variable, role, entry, now)
-        stats = (*_READ, *files)
-    finally:
-        _READ = None
+    local, stats = _walk(variable, role, entry, now)
     if not any(_recent(status, now) for _, status in stats):
-        _TAKEN[(role, entry)] = _Taken(local, stats)
+        _TAKEN[(role, entry)] = _Taken(local, tuple(stats))
     else:
         _TAKEN.pop((role, entry), None)
     return local
@@ -239,18 +242,19 @@ def _walk(
 ) -> tuple[Local, list[tuple[str, Stat | None]]]:
     """What can be loaded through ``entry``, and the stat of each file of it: by content up to
     :data:`MAX_FILES` files and :data:`MAX_BYTES` bytes, by each file's size and mtime beyond."""
+    read: list[tuple[str, Stat | None]] = []  # the directories scanned, whose names it lists
     if os.path.isfile(entry):
         listed = list(_file(entry))
     else:
-        listed = list(_LISTED[role](entry, "", frozenset()))
+        listed = list(_LISTED[role](entry, "", frozenset(), read))
     size = sum(status[0] for _, _, status in listed if status is not None)
     content = len(listed) <= MAX_FILES and size <= MAX_BYTES
     files: list[tuple[str, object]] = []
     for relative, path, status in listed:
         if status is None:  # a link that leads nowhere, or a file gone meanwhile
             files.append((relative, "unreadable"))
-        elif not content:  # a rebuild changes them; only a copy that keeps mtimes keeps them
-            files.append((relative, [status[0], status[1]]))
+        elif not content:  # these very files: any write changes its ctime, which nothing sets back
+            files.append((relative, list(status)))
         else:
             try:
                 recent = _recent(status, now)
@@ -259,7 +263,7 @@ def _walk(
                 files.append((relative, "unreadable"))
     text = json.dumps(sorted(files), separators=(",", ":"))
     digest = hashlib.sha256(text.encode()).hexdigest()
-    stats = [(path, status) for _, path, status in listed]
+    stats = [*read, *((path, status) for _, path, status in listed)]
     return Local(variable, entry, digest, len(listed), size, content), stats
 
 
@@ -273,9 +277,9 @@ def _stat(entry: os.DirEntry[str]) -> Stat | None:
     return (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
 
 
-def _scan(directory: str) -> list[os.DirEntry[str]]:
-    if _READ is not None:  # what it holds by name changes only with its own stat
-        _READ.append((directory, stat_of(directory)))
+def _scan(directory: str, read: _Read | None = None) -> list[os.DirEntry[str]]:
+    if read is not None:  # what it holds by name changes only with its own stat
+        read.append((directory, stat_of(directory)))
     try:
         with os.scandir(directory) as found:
             return list(found)
@@ -318,39 +322,43 @@ def _file(path: str) -> Listed:
     yield "", path, (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
 
 
-def _libraries(directory: str, prefix: str, ancestors: frozenset[str]) -> Listed:
-    for entry in _scan(directory):
-        if _is_file(entry):
+def _libraries(directory: str, prefix: str, ancestors: frozenset[str], read: _Read) -> Listed:
+    for entry in _scan(directory, read):
+        if _is_file(entry) and _LIBRARY.search(entry.name):
             yield f"{prefix}{entry.name}", entry.path, _stat(entry)
 
 
-def _headers(directory: str, prefix: str, ancestors: frozenset[str]) -> Listed:
+def _headers(directory: str, prefix: str, ancestors: frozenset[str], read: _Read) -> Listed:
     inside = _within(directory, ancestors)
     if inside is None:
         return
-    for entry in _scan(directory):
+    for entry in _scan(directory, read):
         if _is_dir(entry):
-            yield from _headers(entry.path, f"{prefix}{entry.name}/", inside)
-        elif _is_file(entry):
+            yield from _headers(entry.path, f"{prefix}{entry.name}/", inside, read)
+        elif _is_file(entry) and entry.name.endswith(_HEADERS):
             yield f"{prefix}{entry.name}", entry.path, _stat(entry)
 
 
-def _python(directory: str, prefix: str, ancestors: frozenset[str], top: bool = True) -> Listed:
+def _python(
+    directory: str, prefix: str, ancestors: frozenset[str], read: _Read, top: bool = True
+) -> Listed:
     inside = _within(directory, ancestors)
     if inside is None:
         return
-    for entry in _scan(directory):
+    for entry in _scan(directory, read):
         if entry.name == "__pycache__":
             continue
         if _is_dir(entry):
             if top and entry.name.endswith(_BESIDE):
-                yield from _package(entry.path, f"{entry.name}/", inside)
+                yield from _package(entry.path, f"{entry.name}/", inside, read)
             elif entry.name.isidentifier():
-                scanned = _scan(entry.path)
+                scanned = _scan(entry.path, read)
                 if any(item.name.startswith("__init__.") for item in scanned):
-                    yield from _package(entry.path, f"{prefix}{entry.name}/", inside, scanned)
+                    yield from _package(entry.path, f"{prefix}{entry.name}/", inside, read, scanned)
                 else:
-                    yield from _python(entry.path, f"{prefix}{entry.name}/", inside, top=False)
+                    yield from _python(
+                        entry.path, f"{prefix}{entry.name}/", inside, read, top=False
+                    )
         elif _is_file(entry) and entry.name.endswith(_MODULES):
             yield f"{prefix}{entry.name}", entry.path, _stat(entry)
 
@@ -359,21 +367,22 @@ def _package(
     directory: str,
     prefix: str,
     ancestors: frozenset[str],
+    read: _Read,
     scanned: list[os.DirEntry[str]] | None = None,
 ) -> Listed:
     inside = _within(directory, ancestors)
     if inside is None:
         return
-    for entry in _scan(directory) if scanned is None else scanned:
+    for entry in _scan(directory, read) if scanned is None else scanned:
         if entry.name == "__pycache__":
             continue
         if _is_dir(entry):
-            yield from _package(entry.path, f"{prefix}{entry.name}/", inside)
+            yield from _package(entry.path, f"{prefix}{entry.name}/", inside, read)
         elif _is_file(entry):
             yield f"{prefix}{entry.name}", entry.path, _stat(entry)
 
 
-def _nothing(directory: str, prefix: str, ancestors: frozenset[str]) -> Listed:
+def _nothing(directory: str, prefix: str, ancestors: frozenset[str], read: _Read) -> Listed:
     """What a variable of files loads through a directory on it: nothing."""
     return iter(())
 
