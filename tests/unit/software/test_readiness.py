@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -162,3 +163,40 @@ def test_an_inner_study_reads_what_the_top_study_kept(tmp_path: Path) -> None:
     (top / "study.json").write_text("{}")
     assert kept_directory(inner) == top / DIRECTORY
     assert kept_directory(top) == top / DIRECTORY
+
+
+def test_a_source_changed_after_its_build_is_not_known_to_be_what_ran(
+    tmp_path: Path, stack: Path
+) -> None:
+    repo = checkout(tmp_path)
+    prefix = build(repo)
+    library = prefix / "lib" / "libDDMarlinPandora.so.0.14.0"
+    os.utime(library, ns=(1_000_000_000, 1_000_000_000))  # built long ago
+    (repo / "src" / "DDCaloHitCreator.cc").write_text("energy = 2 * hit;\n")  # edited since
+    study = tmp_path / "study"
+    study_on(study, stack, variables(prefix))
+    readiness = requirements(study, [summary(local=[str(prefix / "lib")])], IDENTITY)
+    assert readiness.status == INCOMPLETE  # neither "rebuild needed" nor "blocked"
+    package = next(r for r in readiness.requirements if r.kind == "package")
+    assert package.source is not None
+    assert package.source["stale"] is True and package.source["rebuildable"] is False
+    assert any("not known to be what they were built from" in gap for gap in readiness.gaps)
+
+
+def test_a_source_that_changed_between_sessions_is_not_known_to_be_what_ran(
+    tmp_path: Path, stack: Path
+) -> None:
+    repo = checkout(tmp_path)
+    prefix = build(repo)
+    study = tmp_path / "study"
+    study_on(study, stack, variables(prefix))
+    notes = repo / "NOTES.txt"
+    notes.write_text("edited before the resume\n")
+    os.utime(notes, ns=(1_000_000_000, 1_000_000_000))  # older than the build: not stale by time
+    study_on(study, stack, variables(prefix))  # a second session: another state
+    assert len(list((study / DIRECTORY).glob("software-*.json"))) == 2
+    readiness = requirements(study, [summary(local=[str(prefix / "lib")])], IDENTITY)
+    assert readiness.status == INCOMPLETE
+    package = next(r for r in readiness.requirements if r.kind == "package")
+    assert package.source is not None and package.source["stale"] is True
+    assert any("between sessions" in note for note in package.notes)

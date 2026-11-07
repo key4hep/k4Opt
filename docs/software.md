@@ -222,7 +222,9 @@ in another directory has another build-id and other bytes. So a local build that
 from source* when its state is kept against a known revision and its link to the binary is
 `verified` (a CMake cache installs into its prefix, and the build tree's binaries have the build-ids
 of those installed) or `likely` (the cache does, but the binaries cannot be compared or differ);
-`adjacent` (in a checkout, no build tree says so) and `none` are not enough. Its original binary is a
+`adjacent` (in a checkout, no build tree says so) and `none` are not enough. Nor is a source whose
+files changed after its newest binary was made, or that differs between sessions of the study: what
+is kept is then not known to be what ran. Its original binary is a
 *fingerprint only*: identified, never available. A local build no stage read from (all of them
 observed completely) is *changed locally — not used*: on LCG views `k4_local_repo` leaves
 `MARLIN_DLL` on the nightly's library, so a rebuilt Marlin processor does not run unless it is set
@@ -246,7 +248,7 @@ The status never says a study was reproduced: that takes a rerun, which k4opt do
 | --- | --- |
 | Not rerun · all available on DATE | every check found what it needs, and no local build ran |
 | Not rerun · rebuild needed | as above, but a local build ran: it can be built again from its kept source, and a rerun runs other bytes, compared by its results |
-| Not rerun · record incomplete | a stage was not observed completely, no trial has a record yet, or the study kept nothing |
+| Not rerun · record incomplete | a stage was not observed completely, no trial has a record yet, the study kept nothing, or a local build that ran has a kept source that is not known to be what it was built from: changed after its newest binary was made, or between sessions of the study (a rebuild from it could do something else) |
 | Not rerun · blocked | something is gone or altered (a nightly overwritten, a kept patch changed on disk, an input not kept that changed), or a local build that ran cannot be built again |
 
 Each check is dated, and true when it was made: a nightly is overwritten by a later build within

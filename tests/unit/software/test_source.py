@@ -108,6 +108,8 @@ def test_a_source_edited_after_the_build_is_stale(tmp_path: Path) -> None:
     (repo / "src" / "DDCaloHitCreator.cc").write_text("energy = 2 * hit;\n")
     (found,) = origins(software(**variables(prefix)).local, None)
     assert found.stale is True
+    # what is kept is not what the binary was built from: never rebuildable
+    assert found.link == "verified" and not found.rebuildable
 
 
 def test_binaries_the_build_tree_no_longer_has_make_the_link_likely(tmp_path: Path) -> None:

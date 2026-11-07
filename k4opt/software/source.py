@@ -162,10 +162,13 @@ class Origin:
     @property
     def rebuildable(self) -> bool:
         """Whether its source is known well enough to build it again: a build whose state is kept
-        (its patch, or nothing to patch) against a known base, linked ``verified`` or ``likely``."""
+        (its patch, or nothing to patch) against a known base, linked ``verified`` or ``likely``,
+        and not changed after its binaries were built (``stale``): then the state kept is not
+        what they were built from, and a rebuild from it could do something else."""
         git = self.git
         return (
             self.kind == "build"
+            and self.stale is not True
             and self.link in ("verified", "likely")
             and git is not None
             and git.base is not None

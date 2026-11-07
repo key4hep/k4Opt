@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -118,11 +118,16 @@ class Readiness:
     def status(self) -> str:
         """The headline (see the module): *blocked* if something is gone or altered, or a local
         build that ran cannot be built again; *record incomplete* if what it needs is not fully
-        known; *rebuild needed* if a local build ran, whose original binary is not kept; *all
-        available* otherwise, with the date of the checks. Never *reproduced*."""
+        known, a local build that ran whose kept source changed after it was built among it (a
+        gap: what it was built from is not known); *rebuild needed* if a local build ran, whose
+        original binary is not kept; *all available* otherwise, with the date of the checks.
+        Never *reproduced*."""
         date = self.at[:10]
         if any(r.missing for r in self.requirements) or any(
-            r.kind == "package" and r.used_by and not (r.source or {}).get("rebuildable")
+            r.kind == "package"
+            and r.used_by
+            and not (r.source or {}).get("rebuildable")
+            and not (r.source or {}).get("stale")
             for r in self.requirements
         ):
             return BLOCKED
@@ -147,8 +152,10 @@ def kept_directory(study: Path) -> Path:
 
 
 def _documents(directory: Path) -> list[dict[str, Any]]:
+    """The states the study kept, in the order they were taken (each file is written once)."""
     found = []
-    for path in sorted(directory.glob("software-*.json")):
+    paths = sorted(directory.glob("software-*.json"), key=lambda p: (p.stat().st_mtime_ns, p.name))
+    for path in paths:
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -212,20 +219,34 @@ def requirements(
         return Readiness((), tuple(gaps), at)
     # a local build no stage read from did not run, if every stage of every record says so
     known = records > 0 and not gaps
-    document = documents[-1]  # one study, one software: the states differ only in their sources
+    # one study, one software: its states differ only in the sources of its local builds, which
+    # changed between its sessions; the last taken is shown, and a source that changed is stale
+    document = documents[-1]
+    trees: dict[str, set[object]] = {}
+    for each in documents:
+        for origin in each.get("origins") or []:
+            git = origin.get("git") or {}
+            trees.setdefault(str(origin.get("prefix")), set()).add(git.get("tree"))
+    moved = {prefix for prefix, seen in trees.items() if len(seen) > 1}
     ran = _ran(directory)
     found: list[Requirement] = []
     base = _base(document, at, sorted(stages_seen))
     if base is not None:
         found.append(base)
     for index, origin in enumerate(document.get("origins") or [], start=1):
-        found.append(_origin(origin, index, store, at, used_local, ran, document, known))
+        found.append(_origin(origin, index, store, at, used_local, ran, document, known, moved))
     found += [_steering(entry, store, at) for entry in document.get("steering") or []]
     for index, (path, entry) in enumerate(sorted(_read(directory / INPUTS, "inputs").items()), 1):
         found.append(_input(index, path, entry, store, at))
     found.append(_k4opt(identity, document, at))
     for name, entry in (document.get("evaluators") or {}).items():
         found.append(_evaluator(name, entry, identity, store, at))
+    gaps += [
+        f"{r.label}: its kept source changed after the binaries that ran were built, so it is not "
+        "known to be what they were built from"
+        for r in found
+        if r.kind == "package" and r.used_by and (r.source or {}).get("stale")
+    ]
     problems = tuple(str(p) for p in document.get("problems") or ())
     return Readiness(tuple(found), tuple(gaps), at, problems)
 
@@ -312,6 +333,7 @@ def _origin(
     ran: Mapping[str, set[str]],
     document: Mapping[str, Any],
     known: bool,
+    moved: Collection[str] = (),
 ) -> Requirement:
     kind = origin.get("kind")
     entries = [str(e) for e in origin.get("entries") or ()]
@@ -346,9 +368,13 @@ def _origin(
         used = sorted({*used, *stages})
         if entries and not used and known:
             notes.append("changed locally — not used: no observed stage read from it")
+        stale = bool(origin.get("stale")) or origin.get("prefix") in moved
         if origin.get("stale"):
-            notes.append("its source changed after its binaries were built")
-        source |= {"link": origin.get("link"), "rebuildable": bool(origin.get("rebuildable"))}
+            notes.append("its source changed after its binaries were built: not what they ran")
+        elif stale:
+            notes.append("its source changed between sessions of the study: not what they ran")
+        rebuildable = bool(origin.get("rebuildable")) and not stale
+        source |= {"link": origin.get("link"), "rebuildable": rebuildable, "stale": stale}
         identified = (
             f"{_git_line(git) if isinstance(git, Mapping) else 'source unknown'} "
             f"({origin.get('link')} link)"

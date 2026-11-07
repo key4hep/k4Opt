@@ -204,8 +204,13 @@ def _need(requirement: Requirement, style: Style) -> list[str]:
     """A requirement for a person, with its notes on lines of their own."""
     parts = [f"{style.bold(printable(requirement.label))}: {printable(requirement.identified)}"]
     if requirement.kind == "package":
-        rebuildable = (requirement.source or {}).get("rebuildable")
-        parts.append("rebuildable from source" if rebuildable else style.red("source unavailable"))
+        source = requirement.source or {}
+        if source.get("rebuildable"):
+            parts.append("rebuildable from source")
+        elif source.get("stale"):
+            parts.append(style.yellow("source not known to be what was built"))
+        else:
+            parts.append(style.red("source unavailable"))
         parts.append("original binary: fingerprint only")
     parts.append(_checked(requirement, style))
     if requirement.used_by:
