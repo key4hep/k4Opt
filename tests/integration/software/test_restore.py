@@ -32,7 +32,7 @@ import pytest
 import yaml
 
 from k4opt.cli import main
-from k4opt.software.readiness import ALL_AVAILABLE, REBUILD, requirements
+from k4opt.software.readiness import ALL_AVAILABLE, REBUILD, UNVERIFIED, requirements
 from k4opt.software.source import build_id
 from k4opt.software.stack import Release
 from tests.support.evaluators import PFO_ENERGY
@@ -207,8 +207,10 @@ def test_a_restored_candidate_measures_what_it_measured(
     monkeypatch.setenv("MY_ECAL_SCALE_FILE", str(private))
     output = tmp_path / "study"
     summary = study(problem(originals / "problem.yaml", job), output)
-    readiness = requirements(output, [summary], json.loads((output / "study.json").read_text()))
-    assert readiness.status.startswith(ALL_AVAILABLE), readiness
+    readiness = requirements(output, json.loads((output / "study.json").read_text()))
+    # nothing gone, nothing unknown, no local build: at most what no one can check (the
+    # distributions of an environment)
+    assert readiness.status.startswith((ALL_AVAILABLE, UNVERIFIED)), readiness
     kinds = {r.id: r for r in readiness.requirements}
     steering = kinds["steering:pi0/reconstruction"]
     assert "a copy of cldconfig" in steering.identified and "1 changed" in steering.identified
@@ -270,8 +272,8 @@ def test_a_local_cpp_build_rebuilt_from_its_kept_patch_measures_what_it_measured
         monkeypatch.setenv(name, value)
     job = Path(os.environ["CLDCONFIG"]) / "share" / "CLDConfig"
     summary = study(problem(originals / "problem.yaml", job), output)
-    readiness = requirements(output, [summary], json.loads((output / "study.json").read_text()))
-    assert readiness.status == REBUILD, readiness
+    readiness = requirements(output, json.loads((output / "study.json").read_text()))
+    assert readiness.status.startswith(REBUILD), readiness
     built = next(r for r in readiness.requirements if r.kind == "package")
     assert built.label == "ddmarlinpandora" and built.used_by == ("pi0/reconstruction",)
     assert built.source is not None and built.source["link"] == "verified"

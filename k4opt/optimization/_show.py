@@ -176,20 +176,6 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
     _rerun(results, out, style)
 
 
-def _summaries(results: StudyResults) -> list[Mapping[str, Any]]:
-    """The records of the study's trials that can be read."""
-    found = []
-    for trial in results.trials:
-        path = results.record_path(trial)
-        try:
-            summary = json.loads(path.read_bytes()) if path is not None else None
-        except (OSError, ValueError):
-            continue
-        if isinstance(summary, Mapping):
-            found.append(summary)
-    return found
-
-
 def _checked(requirement: Requirement, style: Style) -> str:
     """How the checks of ``requirement`` found it: ``available``, or the first that did not."""
     for check in requirement.checks:
@@ -224,7 +210,8 @@ def _rerun(results: StudyResults, out: TextIO, style: Style) -> None:
     study read from its JSON form, which has no directory."""
     if results.directory is None:
         return
-    readiness = requirements(results.directory, _summaries(results), results.document)
+    # every record of the study, at every level of a nested optimization, read by the software
+    readiness = requirements(results.directory, results.document)
     status = readiness.status
     painted = style.green(status) if status.startswith(ALL_AVAILABLE) else style.yellow(status)
     _print(out, style, "rerun", [f"{painted} (checked {printable(readiness.at)})"])

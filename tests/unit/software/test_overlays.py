@@ -386,19 +386,18 @@ def test_entries_identified_at_once_in_threads_agree(tmp_path: Path) -> None:
     assert errors == [] and len(set(found)) == 1 and len(found) == 8
 
 
-@pytest.mark.parametrize("spelling", ["", ".", "./"])
-def test_an_include_entry_that_is_where_k4opt_runs_stays_as_text(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+def test_an_empty_include_entry_stays_as_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # k4_local_repo leaves an empty entry; a study written below must not change the software
+    # k4_local_repo leaves an empty entry, which ROOT skips: a study written below where k4opt
+    # runs must not change the software
     monkeypatch.chdir(tmp_path)
-    value = f"{spelling}:/cvmfs/stack/include" if spelling else ":/cvmfs/stack/include"
+    value = ":/cvmfs/stack/include"
     before = software(ROOT_INCLUDE_PATH=value)
     assert before.local == ()
     (tmp_path / "study").mkdir()
     (tmp_path / "study" / "study.json").write_text("{}")
     assert software(ROOT_INCLUDE_PATH=value).id == before.id
-    (tmp_path / "include").mkdir()
-    (tmp_path / "include" / "Hit.h").write_text("int x;\n")
-    (entry,) = software(ROOT_INCLUDE_PATH="include").local  # one below it still counts
-    assert entry.path == str(tmp_path / "include")
+    # "." adds the working directory for an #include <...>: what it holds counts
+    (entry,) = software(ROOT_INCLUDE_PATH=".").local
+    assert entry.path == str(tmp_path)

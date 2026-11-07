@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import k4opt
-from k4opt.jsonio import publish, replace
+from k4opt.jsonio import PRIVATE, publish, replace
 from k4opt.software.errors import SoftwareError
 from k4opt.software.identity import Software, compared_variables
 from k4opt.software.observe import STACK, load
@@ -60,6 +60,19 @@ MAX_KEPT = 100 << 20
 """How much a study keeps in all (on disk); past it, what comes is identified only."""
 
 type State = Literal["available", "altered", "gone"]
+
+PRIVATE_DIRECTORY = 0o700
+"""What only the study's owner may read: the ``software/`` directory and every one below it, made
+so, and made so again when a session opens; each file in it is ``0600``
+(:data:`k4opt.jsonio.PRIVATE`) from the moment it exists. On AFS the directory's access list
+decides instead (``fs listacl``), which k4opt does not change."""
+
+
+def private_directory(path: Path) -> None:
+    """Make ``path`` (and its missing parents) if need be, readable by its owner alone."""
+    path.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIRECTORY)
+    os.chmod(path, PRIVATE_DIRECTORY)
+
 
 _SHA256 = "sha256:"
 _LISTED = "names:"
@@ -105,10 +118,13 @@ class Store:
         compressed = gzip.compress(data, mtime=0)
         if self.used() + len(compressed) > MAX_KEPT:
             raise SoftwareError(f"the study keeps {MAX_KEPT >> 20} MiB at most")
-        path.parent.mkdir(parents=True, exist_ok=True)
+        for parent in (path.parent.parent, path.parent):
+            if not parent.is_dir():
+                private_directory(parent)
         staged = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
         try:
-            with staged.open("xb") as handle:
+            descriptor = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, PRIVATE)
+            with os.fdopen(descriptor, "wb") as handle:
                 handle.write(compressed)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -178,7 +194,8 @@ def take(
     raises for what cannot be read or kept: it is recorded in ``problems``. Raises
     :class:`OSError` if ``directory`` cannot be written."""
     variables = os.environ if environment is None else environment
-    directory.mkdir(parents=True, exist_ok=True)
+    private_directory(directory)
+    private_directory(directory / "blobs")
     store = Store(directory)
     problems: list[str] = []
     release = Release.of(variables.get("KEY4HEP_STACK"))
@@ -213,7 +230,7 @@ def take(
     name = f"software-{hashlib.sha256(text.encode()).hexdigest()[:16]}.json"
     path = directory / name
     with contextlib.suppress(FileExistsError):  # the same state, kept before
-        publish(path, text)
+        publish(path, text, private=True)
     return Taken(path, tuple(problems))
 
 
@@ -238,6 +255,12 @@ def _origin(store: Store, problems: list[str], origin: Origin) -> dict[str, Any]
         elif origin.git.patch is None:
             problems.append(f"the changes of {origin.git.checkout} are too large to keep")
         git = origin.git.to_dict(patch)
+    configuration = None
+    if origin.configuration is not None:
+        try:
+            configuration = store.put_file(origin.configuration)
+        except (SoftwareError, OSError) as exc:
+            problems.append(f"{origin.configuration} not kept: {exc}")
     files: dict[str, Any] = {}
     for relative, (path, sha256) in origin.files.items():
         try:
@@ -256,7 +279,8 @@ def _origin(store: Store, problems: list[str], origin: Origin) -> dict[str, Any]
         "build": origin.build,
         "binaries": [binary.to_dict() for binary in origin.binaries],
         "stale": origin.stale,
-        "rebuildable": origin.rebuildable and (origin.git is None or git is not None),
+        "rebuildable": origin.rebuildable and configuration is not None,
+        "configuration": configuration,
         "git": git,
         "files": files,
         "distributions": list(origin.distributions),
@@ -345,27 +369,29 @@ def _listing(root: str) -> dict[str, str]:
 
 
 def _evaluators(store: Store, problems: list[str], identity: Mapping[str, Any]) -> dict[str, Any]:
-    """The file of each evaluator and the local modules it imports, kept by their SHA-256."""
+    """Each evaluator's file and every local module it imports, as its identity lists them, each
+    with its SHA-256 and what it is kept as (``None`` if it could not be kept): a module missing
+    is said, not left out."""
     found: dict[str, Any] = {}
     for name, entry in (identity.get("implementations") or {}).items():
         source = entry.get("source") if isinstance(entry, Mapping) else None
         if not isinstance(source, Mapping) or not isinstance(source.get("path"), str):
             continue
         path, sha256 = source["path"], source.get("sha256")
-        files: dict[str, Any] = {}
-        try:
-            files[os.path.basename(path)] = store.put_file(path, sha256)
-        except (SoftwareError, OSError) as exc:
-            problems.append(f"evaluator {name!r}: {path} not kept: {exc}")
+        expected = {os.path.basename(path): (path, sha256)}
         for helper, digest in (source.get("helpers") or {}).items():
-            located = _helper(path, helper, digest)
+            expected[helper] = (_helper(path, helper, digest), digest)
+        files: dict[str, Any] = {}
+        for file, (located, digest) in expected.items():
+            kept = None
             if located is None:
-                problems.append(f"evaluator {name!r}: its module {helper} not found to keep")
-                continue
-            try:
-                files[helper] = store.put_file(located, digest)
-            except (SoftwareError, OSError) as exc:
-                problems.append(f"evaluator {name!r}: {located} not kept: {exc}")
+                problems.append(f"evaluator {name!r}: its module {file} not found to keep")
+            else:
+                try:
+                    kept = store.put_file(located, digest if isinstance(digest, str) else None)
+                except (SoftwareError, OSError) as exc:
+                    problems.append(f"evaluator {name!r}: {located} not kept: {exc}")
+            files[file] = {"sha256": digest, "kept": kept}
         found[name] = {"path": path, "sha256": sha256, "files": files}
     return found
 
@@ -389,17 +415,19 @@ def _helper(path: str, relative: str, sha256: object) -> str | None:
 # --- inputs ----------------------------------------------------------------------------------
 
 
-def _inputs(directory: Path) -> dict[str, Any]:
+def kept_inputs(directory: Path) -> list[dict[str, Any]]:
+    """The inputs kept in ``directory`` (:data:`INPUTS`): one entry per file as it was read, by
+    ``path`` and ``identity``, so that one path read as two different files is two entries."""
     try:
         document = json.loads((directory / INPUTS).read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {}
+        return []
     except (OSError, ValueError) as exc:
         raise SoftwareError(f"{directory / INPUTS} cannot be read: {exc}") from exc
     if not isinstance(document, dict) or document.get("schema") != INPUTS_SCHEMA:
         raise SoftwareError(f"{directory / INPUTS} is not of {INPUTS_SCHEMA}")
     inputs = document.get("inputs")
-    return dict(inputs) if isinstance(inputs, dict) else {}
+    return [dict(e) for e in inputs if isinstance(e, dict)] if isinstance(inputs, list) else []
 
 
 def _variable(path: str, variables: Mapping[str, str]) -> str | None:
@@ -422,12 +450,17 @@ def keep_inputs(
     directory: Path,
     inputs: Mapping[str, tuple[str, Iterable[str], str]],
     environment: Mapping[str, str] | None = None,
+    trial: str | None = None,
 ) -> list[str]:
     """Keep each of ``inputs`` (path: its identity as read, the stages that read it, its origin:
-    ``declared`` or ``observed``) not kept before, in ``directory``'s :data:`INPUTS` and blobs;
-    what could not be kept, said for a person. A file on CVMFS is identified, never copied; a
-    directory a stage listed is no input to keep (its names are watched where it was read)."""
-    known = _inputs(directory)
+    ``declared`` or ``observed``) not kept before as that file, in ``directory``'s :data:`INPUTS`
+    and blobs, noting the ``trial`` that read it (its run directory relative to the study); what
+    could not be kept, said for a person. A path read as another file than before is another
+    entry, never merged with the first: the readiness of the study then says so. A file on CVMFS is
+    identified, never copied; a directory a stage listed is no input to keep (its names are watched
+    where it was read)."""
+    known = kept_inputs(directory)
+    by = {(entry.get("path"), entry.get("identity")): entry for entry in known}
     store = Store(directory)
     variables = compared_variables(environment)
     problems: list[str] = []
@@ -435,17 +468,20 @@ def keep_inputs(
     for path, (identity, stages, origin) in sorted(inputs.items()):
         if identity.startswith(_LISTED):  # a directory listed: nothing to keep but its names
             continue
-        entry = known.get(path)
+        entry = by.get((path, identity))
         if entry is not None:
             more = sorted({*entry.get("stages", []), *stages})
-            if more != entry.get("stages"):
-                entry["stages"], changed = more, True
+            trials = sorted({*entry.get("trials", []), *([trial] if trial else [])})
+            if (more, trials) != (entry.get("stages"), entry.get("trials")):
+                entry["stages"], entry["trials"], changed = more, trials, True
             continue
         salt = secrets.token_hex(16)
         entry = {
+            "path": path,
             "identity": identity,
             "origin": origin,
             "stages": sorted(set(stages)),
+            "trials": [trial] if trial else [],
             "variable": _variable(path, variables),
             "salt": salt,
             "commitment": None,
@@ -466,11 +502,12 @@ def keep_inputs(
             entry["why"] = "on CVMFS: identified by its content key, not copied"
         else:
             entry["why"] = "a device, a pipe or a socket: nothing to copy"
-        known[path], changed = entry, True
+        known.append(entry)
+        by[(path, identity)], changed = entry, True
     if changed:
         text = json.dumps({"schema": INPUTS_SCHEMA, "inputs": known}, indent=2, sort_keys=True)
-        directory.mkdir(parents=True, exist_ok=True)
-        replace(directory / INPUTS, text + "\n")
+        private_directory(directory)
+        replace(directory / INPUTS, text + "\n", private=True)
     return problems
 
 
@@ -498,12 +535,19 @@ def _declared(
 
 
 def keep_used(
-    directory: Path, run: Path, footprints: Mapping[str, tuple[str, object]], roots: Sequence[str]
+    directory: Path,
+    run: Path,
+    footprints: Mapping[str, tuple[str, object]],
+    roots: Sequence[str],
+    trial: str | None = None,
+    snapshot: str | None = None,
 ) -> None:
     """Note in ``directory``'s :data:`USED` which files below the local entries ``roots`` each of
     the ``footprints`` (stage label: its file, relative to the run directory ``run`` or absolute,
     and its SHA-256, as :func:`k4opt.record.write.recorded_footprints` gives them) read, each
-    footprint once. A footprint that cannot be read is left out."""
+    footprint once, and which state of the software (``snapshot``: the name of the
+    ``software-*.json`` its session took) the ``trial`` ran with. A footprint that cannot be read is
+    left out."""
     path = directory / USED
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -512,8 +556,11 @@ def keep_used(
     except (OSError, ValueError) as exc:
         raise SoftwareError(f"{path} cannot be read: {exc}") from exc
     seen = document.setdefault("footprints", {})
+    sessions = document.setdefault("trials", {})
     real = [(root.rstrip("/"), os.path.realpath(root)) for root in roots]
     changed = False
+    if trial is not None and snapshot is not None and sessions.get(trial) != snapshot:
+        sessions[trial], changed = snapshot, True
     for label, (file, sha256) in footprints.items():
         if not isinstance(sha256, str) or sha256 in seen or not file:
             continue
@@ -529,8 +576,8 @@ def keep_used(
         seen[sha256] = {"stage": label, "files": dict(sorted(files.items()))}
         changed = True
     if changed:
-        directory.mkdir(parents=True, exist_ok=True)
-        replace(path, json.dumps(document, indent=2, sort_keys=True) + "\n")
+        private_directory(directory)
+        replace(path, json.dumps(document, indent=2, sort_keys=True) + "\n", private=True)
 
 
 __all__ = [
@@ -545,5 +592,6 @@ __all__ = [
     "commitment",
     "keep_inputs",
     "keep_used",
+    "kept_inputs",
     "take",
 ]

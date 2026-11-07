@@ -179,3 +179,59 @@ def test_a_large_untracked_file_is_listed_not_kept(
     found = checkout(str(repo), None)
     assert found is not None and found.git is not None
     assert found.git.large == ("big.root",) and found.git.changed == ()
+
+
+def test_a_checkout_no_remote_has_is_rebuildable_from_its_whole_tree(tmp_path: Path) -> None:
+    repo = tmp_path / "Mine"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.cc").write_text("int a = 1;\n")
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "local only")
+    prefix = build(repo)
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert found.git is not None and found.git.base_is == "none" and found.git.base is None
+    assert "src/a.cc" in found.git.changed and found.rebuildable
+
+
+def test_a_large_untracked_file_makes_a_build_not_rebuildable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(source, "LARGE", 10)
+    repo = make_checkout(tmp_path)
+    (repo / "table.bin").write_bytes(b"x" * 100)  # the only change, not kept
+    prefix = build(repo)
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert found.git is not None and found.git.clean and found.git.large == ("table.bin",)
+    assert not found.rebuildable
+
+
+def test_a_local_binary_of_no_build_is_identified_never_listed_to_keep(tmp_path: Path) -> None:
+    helpers = tmp_path / "plugins"
+    helpers.mkdir()
+    (helpers / "libPatch.so").write_bytes(elf("abcd", b"code"))
+    (helpers / "patch.py").write_text("X = 1\n")
+    (found,) = origins(software(PYTHONPATH=str(helpers), LD_LIBRARY_PATH=str(helpers)).local, None)
+    assert found.kind == "directory" and list(found.files) == ["patch.py"]
+    assert [(b.file, b.build_id) for b in found.binaries] == [("libPatch.so", "abcd")]
+
+
+def test_a_build_keeps_the_cmake_cache_it_was_configured_with(tmp_path: Path) -> None:
+    prefix = build(make_checkout(tmp_path))
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert found.configuration == str(tmp_path / "DDMarlinPandora" / "build" / "CMakeCache.txt")
+
+
+@pytest.mark.parametrize(
+    ("url", "public"),
+    [
+        ("https://user:token@gitlab.cern.ch/a/b.git", "https://gitlab.cern.ch/a/b.git"),
+        ("https://token@github.com/a/b.git", "https://github.com/a/b.git"),
+        ("ssh://git@github.com/a/b.git", "ssh://git@github.com/a/b.git"),
+        ("ssh://git:secret@host:7999/a/b.git", "ssh://git@host:7999/a/b.git"),
+        ("git@github.com:a/b.git", "git@github.com:a/b.git"),
+        ("/home/me/repo", "/home/me/repo"),
+    ],
+)
+def test_a_remote_is_recorded_without_secrets_but_with_its_ssh_user(url: str, public: str) -> None:
+    assert source.public_url(url) == public

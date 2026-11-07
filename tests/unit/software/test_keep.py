@@ -19,6 +19,12 @@ from tests.support.checkouts import build, checkout, variables
 from tests.support.software import lcg_view
 
 
+def one(inputs: list[dict[str, Any]], path: str) -> dict[str, Any]:
+    """The one kept input read at ``path``."""
+    (entry,) = (entry for entry in inputs if entry["path"] == path)
+    return entry
+
+
 def test_bytes_kept_come_back_checked(tmp_path: Path) -> None:
     store = Store(tmp_path)
     sha256 = store.put(b"a patch")
@@ -85,8 +91,8 @@ def test_a_session_keeps_the_release_its_local_builds_and_its_changed_steering(
     release = Release.of(str(view))
     assert release is not None
     repo = checkout(tmp_path)
-    prefix = build(repo)
     (repo / "src" / "DDCaloHitCreator.cc").write_text("energy = 1.05 * eCalToEMGeV * hit;\n")
+    prefix = build(repo)  # built after the edit
     # a copy of the nightly's CLDConfig: one file changed, one added, one removed
     original = Path(release.packages["cldconfig"].prefix) / "share" / "CLDConfig"
     job = shutil.copytree(original, tmp_path / "mine" / "CLDConfig")
@@ -157,13 +163,13 @@ def test_an_input_is_kept_with_a_salted_commitment_and_the_variable_that_names_i
         {"MY_ECAL_SCALE_FILE": str(scale), "HOME": str(tmp_path / "home")},
     )
     assert problems == []
-    entry = json.loads((directory / keep.INPUTS).read_text())["inputs"][str(scale)]
+    entry = one(keep.kept_inputs(directory), str(scale))
     assert entry["variable"] == "MY_ECAL_SCALE_FILE" and entry["bytes"] == 15
     assert entry["commitment"] == commitment(entry["salt"], sha256) != sha256
     assert Store(directory).get(entry["kept"]) == scale.read_bytes()
     # read again by another stage: one entry, both stages, the same salt
     keep_inputs(directory, {str(scale): (f"sha256:{sha256}", ["pi0/analysis"], "observed")})
-    again = json.loads((directory / keep.INPUTS).read_text())["inputs"][str(scale)]
+    again = one(keep.kept_inputs(directory), str(scale))
     assert again["stages"] == ["pi0/analysis", "pi0/reconstruction"]
     assert again["salt"] == entry["salt"]
 
@@ -176,14 +182,14 @@ def test_an_input_changed_since_its_stage_read_it_is_not_kept(tmp_path: Path) ->
         tmp_path / "kept", {str(file): (f"sha256:{then}", ["s/r"], "observed")}
     )
     assert "no longer the file" in problem
-    entry = json.loads((tmp_path / "kept" / keep.INPUTS).read_text())["inputs"][str(file)]
+    entry = one(keep.kept_inputs(tmp_path / "kept"), str(file))
     assert entry["kept"] is None and "no longer" in entry["why"]
 
 
 def test_an_input_on_cvmfs_is_identified_not_copied(tmp_path: Path) -> None:
     path = "/cvmfs/other.cern.ch/data/map.root"
     assert keep_inputs(tmp_path, {path: ("cvmfs:abcd", ["s/r"], "observed")}) == []
-    entry = json.loads((tmp_path / keep.INPUTS).read_text())["inputs"][path]
+    entry = one(keep.kept_inputs(tmp_path), path)
     assert entry["kept"] is None and entry["commitment"] is None
 
 
@@ -226,5 +232,65 @@ def test_a_listed_directory_is_no_input_and_home_names_no_file(tmp_path: Path) -
         str(rootrc): (f"sha256:{sha256}", ["s/r"], "observed"),
     }
     keep_inputs(tmp_path / "kept", found, {"HOME": str(tmp_path), "PYTHONPATH": "/x"})
-    inputs = json.loads((tmp_path / "kept" / keep.INPUTS).read_text())["inputs"]
-    assert list(inputs) == [str(rootrc)] and inputs[str(rootrc)]["variable"] is None
+    (entry,) = keep.kept_inputs(tmp_path / "kept")
+    assert entry["path"] == str(rootrc) and entry["variable"] is None
+
+
+def test_what_a_study_keeps_only_its_owner_can_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import stat as stats
+
+    monkeypatch.setenv("KEY4HEP_STACK", str(lcg_view(tmp_path / "stack")))
+    old = os.umask(0o022)
+    try:
+        directory = tmp_path / "study" / "software"
+        directory.mkdir(parents=True, mode=0o755)  # as an older k4opt, or a person, made it
+        scale = tmp_path / "scale.json"
+        scale.write_text("1.05")
+        digest = hashlib.sha256(b"1.05").hexdigest()
+        take(directory, Software.now({}, site=[]), {"inputs": {}, "implementations": {}})
+        keep_inputs(directory, {str(scale): (f"sha256:{digest}", ["s/r"], "observed")})
+    finally:
+        os.umask(old)
+    for path in [directory, *directory.rglob("*")]:
+        mode = stats.S_IMODE(path.stat().st_mode)
+        assert mode == (0o700 if path.is_dir() else 0o600), (path, oct(mode))
+
+
+def test_a_path_read_as_another_file_is_another_input(tmp_path: Path) -> None:
+    file = tmp_path / "calibration.json"
+    kept = tmp_path / "kept"
+    for version, trial in ((b"A", "trial-000000"), (b"B", "trial-000001")):
+        file.write_bytes(version)
+        digest = hashlib.sha256(version).hexdigest()
+        found = {str(file): (f"sha256:{digest}", ["pi0/reconstruction"], "observed")}
+        keep_inputs(kept, found, trial=trial)
+    entries = keep.kept_inputs(kept)
+    assert [(e["trials"], Store(kept).get(e["kept"])) for e in entries] == [
+        (["trial-000000"], b"A"),
+        (["trial-000001"], b"B"),
+    ]
+
+
+def test_an_evaluator_module_that_cannot_be_kept_is_listed_as_not_kept(tmp_path: Path) -> None:
+    evaluator = tmp_path / "ev.py"
+    evaluator.write_text("from helper import f\n")
+    sha256 = hashlib.sha256(evaluator.read_bytes()).hexdigest()
+    identity = {
+        "inputs": {},
+        "implementations": {
+            "e": {
+                "source": {
+                    "path": str(evaluator),
+                    "sha256": sha256,
+                    "helpers": {"helper.py": "0" * 64},
+                }
+            }
+        },
+    }
+    taken = take(tmp_path / "kept", Software.now({}, site=[]), identity)
+    files = json.loads(taken.path.read_text())["evaluators"]["e"]["files"]
+    assert files["ev.py"]["kept"] == sha256 and files["helper.py"]["kept"] is None
+    assert any("helper.py not found" in problem for problem in taken.problems)

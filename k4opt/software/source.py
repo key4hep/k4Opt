@@ -37,6 +37,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import urllib.parse
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
@@ -62,7 +63,6 @@ _SKIPPED = frozenset(("CMakeFiles", ".git", "__pycache__"))
 _WALKED = 50_000
 """How many entries a look for a build tree's binaries reads at most."""
 _TIMEOUT = 120
-_CREDENTIALS = re.compile(r"(?<=://)[^/@]+@")
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,8 +141,10 @@ class Origin:
     newest binary was made (``None`` where that is not known). ``git`` is the state of its
     checkout, if it is in one; ``files`` the files of a directory in none, by their path relative
     to it (their path and SHA-256), which is all a rerun would have of it; ``distributions`` the
-    ``name==version`` of each distribution an environment holds. ``problem`` says what could not
-    be read."""
+    ``name==version`` of each distribution an environment holds; for a directory of no build,
+    ``binaries`` are those it holds, identified only (their source is not known). ``problem``
+    says what could not be read; ``configuration`` is the CMake cache a build was configured with
+    (its options, compiler and flags), which a rebuild needs as much as its source."""
 
     kind: Kind
     prefix: str
@@ -158,20 +160,24 @@ class Origin:
     files: Mapping[str, tuple[str, str]] = field(default_factory=dict)
     distributions: tuple[str, ...] = ()
     problem: str | None = None
+    configuration: str | None = None
 
     @property
     def rebuildable(self) -> bool:
         """Whether its source is known well enough to build it again: a build whose state is kept
-        (its patch, or nothing to patch) against a known base, linked ``verified`` or ``likely``,
+        (its patch, or nothing to patch) against a known base, or whole if no remote has any of
+        its history, linked ``verified`` or ``likely``,
         and not changed after its binaries were built (``stale``): then the state kept is not
-        what they were built from, and a rebuild from it could do something else."""
+        what they were built from, and a rebuild from it could do something else; nor with an
+        untracked file too large to keep, which the build may need."""
         git = self.git
         return (
             self.kind == "build"
             and self.stale is not True
             and self.link in ("verified", "likely")
             and git is not None
-            and git.base is not None
+            and (git.base is not None or git.base_is == "none")  # none: the whole tree is kept
+            and not git.large  # a file of it not kept: what is kept is not all of it
             and (git.clean or git.patch is not None)
         )
 
@@ -276,6 +282,7 @@ def _build(prefix: str, entries: list[Local], release: Release | None) -> Origin
         stale,
         git,
         problem=problem,
+        configuration=os.path.join(build, _CACHE) if build else None,
     )
 
 
@@ -302,7 +309,13 @@ def _directory(entry: Local, entries: list[Local], release: Release | None) -> O
             git=git,
             problem=problem,
         )
-    return Origin("directory", path, paths, files=_files(entry))
+    files: dict[str, tuple[str, str]] = {}
+    binaries: dict[str, Binary] = {}
+    for each in entries:  # what each variable loads from it: Python's modules, the libraries
+        files |= _files(each)
+        binaries |= {binary.file: binary for binary in _loose(each)}
+    ordered = tuple(sorted(binaries.values(), key=lambda b: b.file))
+    return Origin("directory", path, paths, binaries=ordered, files=files)
 
 
 def checkout(path: str, release: Release | None) -> Origin | None:
@@ -496,9 +509,17 @@ def _distributions(directory: str) -> tuple[str, ...]:
     return tuple(sorted(found, key=str.lower))
 
 
+def _elf(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
 def _files(entry: Local) -> dict[str, tuple[str, str]]:
-    """What can be loaded through ``entry`` (as the software lists it), by its path relative to
-    it: each file's path and SHA-256."""
+    """What can be loaded through ``entry`` (as the software lists it) but binaries, by its path
+    relative to it: each file's path and SHA-256."""
     from k4opt.software.overlays import _LISTED, _file  # the same listing
 
     role = _role(entry) or "files"
@@ -510,8 +531,34 @@ def _files(entry: Local) -> dict[str, tuple[str, str]]:
     for relative, path, status in listed:
         if status is None:
             continue
+        if _elf(path):  # identified among the binaries, never kept
+            continue
         try:
             found[relative or os.path.basename(path)] = (path, sha256_of(path, status))
+        except OSError:
+            continue
+    return found
+
+
+def _loose(entry: Local) -> list[Binary]:
+    """The binaries that can be loaded through ``entry``, a local entry of no build: each by its
+    SHA-256 and build-id, as a build's are."""
+    from k4opt.software.overlays import _LISTED, _file
+
+    role = _role(entry) or "files"
+    listed = (
+        _file(entry.path)
+        if os.path.isfile(entry.path)
+        else _LISTED[role](entry.path, "", frozenset(), [])
+    )
+    found = []
+    for relative, path, status in listed:
+        if status is None or not _elf(path):
+            continue
+        try:
+            found.append(
+                Binary(relative or os.path.basename(path), sha256_of(path, status), build_id(path))
+            )
         except OSError:
             continue
     return found
@@ -591,7 +638,21 @@ def _public(checkout: str, head: str) -> str | None:
 
 def _remote(checkout: str) -> str | None:
     url = _text(_git(checkout, "remote", "get-url", "origin"))
-    return None if url is None else _CREDENTIALS.sub("", url)
+    return None if url is None else public_url(url)
+
+
+def public_url(url: str) -> str:
+    """``url`` without what authenticates: a password, and over HTTP(S) any user part (a token is
+    often written there); an SSH user (``ssh://git@host``, ``git@host:org/repo``) is kept, since
+    the server needs it and it is no secret."""
+    parts = urllib.parse.urlsplit(url)
+    if not parts.scheme or "@" not in parts.netloc:
+        return url  # git@host:org/repo, a path
+    user, _, host = parts.netloc.rpartition("@")
+    name = user.partition(":")[0]
+    keep = name and parts.scheme in ("ssh", "git+ssh", "ssh+git")
+    netloc = f"{name}@{host}" if keep else host
+    return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
 
 
 def _numstat(checkout: str, env: Mapping[str, str], old: str, new: str) -> dict[str, int]:

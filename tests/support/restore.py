@@ -22,7 +22,7 @@ from typing import Any
 
 import yaml
 
-from k4opt.software.keep import INPUTS, Store
+from k4opt.software.keep import Store, kept_inputs
 from k4opt.software.readiness import kept_directory
 
 
@@ -81,9 +81,12 @@ def restore(
             clone = into / "src" / Path(git["checkout"]).name
             if clone.exists():
                 continue
-            _git("clone", "-q", remote, str(clone))
             if git["base"]:
+                _git("clone", "-q", remote, str(clone))
                 _git("checkout", "-q", git["base"], cwd=clone)
+            else:  # no remote has any of its history: the patch holds every file
+                clone.mkdir(parents=True)
+                _git("init", "-q", cwd=clone)
             if git["patch"]:
                 _git("apply", "--whitespace=nowarn", "-", cwd=clone, stdin=store.get(git["patch"]))
             restored.checkouts[origin["prefix"]] = clone
@@ -93,9 +96,8 @@ def restore(
                 (target / relative).parent.mkdir(parents=True, exist_ok=True)
                 (target / relative).write_bytes(store.get(file["kept"]))
             restored.code[origin["prefix"]] = target
-    kept = directory / INPUTS
-    inputs = json.loads(kept.read_text())["inputs"] if kept.is_file() else {}
-    for path, entry in inputs.items():
+    for entry in kept_inputs(directory):
+        path = entry["path"]
         if entry["kept"]:
             target = into / "inputs" / Path(path).name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -103,9 +105,9 @@ def restore(
             restored.inputs[path] = target
     for name, entry in document["evaluators"].items():
         target = into / "evaluators" / name
-        for file, sha256 in entry["files"].items():
+        for file, kept in entry["files"].items():
             (target / file).parent.mkdir(parents=True, exist_ok=True)
-            (target / file).write_bytes(store.get(sha256))
+            (target / file).write_bytes(store.get(kept["kept"]))
         restored.evaluators[name] = target / Path(entry["path"]).name
     restored.problem.write_text(yaml.safe_dump(definition, allow_unicode=True))
     return restored

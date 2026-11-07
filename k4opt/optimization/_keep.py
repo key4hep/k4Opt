@@ -10,6 +10,7 @@ cannot be kept is said once, and recorded.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ class Keeper:
         self.directory = study / DIRECTORY
         self._warn = warn
         self._roots: list[str] = []
+        self._snapshot: str | None = None  # the state of the software this session kept
 
     def open(self, identity: Mapping[str, Any]) -> None:
         """Keep what a session with ``identity`` runs on (:func:`~k4opt.software.keep.take`)."""
@@ -38,6 +40,12 @@ class Keeper:
         except (SoftwareError, OSError, KeyError) as exc:
             self._warn(f"the study keeps nothing of what it runs with: {exc}")
             return
+        self._snapshot = taken.path.name
+        if os.path.realpath(self.directory).startswith("/afs/"):
+            self._warn(
+                f"{self.directory} keeps private copies of local code and inputs; on AFS its "
+                "access list decides who can read them (fs listacl), not its permissions"
+            )
         self._say(list(taken.problems))
 
     def trial(self, run: Path) -> None:
@@ -53,8 +61,13 @@ class Keeper:
             for path, (then, stage) in recorded_inputs(summary).items()
         }
         try:
-            problems = keep_inputs(self.directory, inputs)
-            keep_used(self.directory, run, recorded_footprints(summary), self._roots)
+            where = run.relative_to(self.directory.parent).as_posix()
+        except ValueError:
+            where = str(run)
+        try:
+            problems = keep_inputs(self.directory, inputs, trial=where)
+            footprints = recorded_footprints(summary)
+            keep_used(self.directory, run, footprints, self._roots, where, self._snapshot)
         except (SoftwareError, OSError) as exc:
             problems = [str(exc)]
         self._say(problems)
