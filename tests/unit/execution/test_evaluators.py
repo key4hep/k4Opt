@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -737,6 +738,9 @@ class Clock:
 
     def perf_counter(self) -> float:
         return self.now
+
+    def time_ns(self) -> int:  # the files of the tests are stamped with the real one
+        return time.time_ns()
 
 
 def test_every_second_is_counted_once(

@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -502,6 +503,9 @@ def test_the_candidate_time_counts_the_checks_and_every_task_the_geometry_too(
 
         def perf_counter(self) -> float:
             return self.now
+
+        def time_ns(self) -> int:  # the files of the tests are stamped with the real one
+            return time.time_ns()
 
     clock = Clock()
     for module in (_drive, _session, _work):

@@ -558,7 +558,8 @@ signature and SHA-256, what they read.
 
 Equal signatures mean the same software, local builds included. What lies outside it is the
 stage's [footprint](software.md#what-each-stage-used)'s to vouch for, once per session, the first
-time an output recorded by an earlier session would serve:
+time an output recorded by an earlier session would serve. From then on the session watches that
+output's undeclared inputs as it watches those of its own stages, and a change stops it:
 
 | An output of | Is reused if |
 | --- | --- |
@@ -568,7 +569,7 @@ time an output recorded by an earlier session would serve:
 
 An output that does not qualify is passed over as one that changed is, and the stage that runs
 instead says why in its record (`not_reused`). The record of a stage reused from another study says
-`by_footprint`. A resume does not refuse a study whose undeclared input changed: what depended on it
+`by_footprint`, and `undeclared`, what it depends on. A resume does not refuse a study whose undeclared input changed: what depended on it
 runs again, and the earlier trials stay as they are, so a study that must not mix them starts anew.
 
 ## What ends a candidate, and what stops a session

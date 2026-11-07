@@ -289,6 +289,7 @@ def _stage(
         observe=context.observe,
     )
     inputs = _inputs(spec, root)
+    since = time.time_ns()  # what changed from now on need not be what it read
     outcome, main = make_stage(
         stages, task.name, inputs=inputs, workdir=own, supplied=spec.supplied
     )
@@ -300,6 +301,7 @@ def _stage(
             directory=own,
             own=[p for p in (root, spec.tree, own) if p is not None] + declared,
             local=context.local,
+            since=since,
         )
         artifacts = dict(outcome.artifacts)
         if footprint is not None:

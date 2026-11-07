@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,41 @@ def test_a_connection_to_the_network_is_kept_and_a_local_socket_is_not(tmp_path:
     assert found.connected == ("10.0.0.1:53", "::1:443")
 
 
+def test_a_network_socket_is_network_use_without_a_connection(tmp_path: Path) -> None:
+    found = footprint(
+        traces(
+            tmp_path / "raw",
+            "socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, IPPROTO_IP) = 3<socket:[1]>",
+            "socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP) = -1 EAFNOSUPPORT (Not supported)",
+            "socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 4<socket:[2]>",
+            "socket(AF_NETLINK, SOCK_RAW|SOCK_CLOEXEC, NETLINK_ROUTE) = 5<socket:[3]>",
+        ),
+        "files",
+        [],
+    )
+    assert found.connected == ("AF_INET socket",)
+
+
+def test_a_local_service_may_answer_with_anything_and_the_system_s_own_does_not(
+    tmp_path: Path,
+) -> None:
+    service, absent = tmp_path / "service.sock", tmp_path / "gone.sock"
+    found = footprint(
+        traces(
+            tmp_path / "raw",
+            f'connect(3<socket:[1]>, {{sa_family=AF_UNIX, sun_path="{service}"}}, 110) = 0',
+            f'connect(4<socket:[2]>, {{sa_family=AF_UNIX, sun_path="{absent}"}}, 110)'
+            " = -1 ENOENT (No such file or directory)",
+            'connect(5<socket:[3]>, {sa_family=AF_UNIX, sun_path="/var/lib/sss/pipes/nss"}, 110)'
+            " = 0",
+        ),
+        "files",
+        [],
+    )
+    assert found.connected == (f"unix:{service}",)
+    assert found.missing == (str(absent),)
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -188,6 +224,85 @@ def test_a_footprint_holds_until_what_it_found_is_otherwise(tmp_path: Path) -> N
 
     calibration.unlink()
     assert found.changes() == [f"{calibration} went"]
+
+
+def test_a_link_retargeted_to_another_file_no_longer_holds(tmp_path: Path) -> None:
+    # the old file stays as it was: only the link says what a new run would read
+    old, new, link = tmp_path / "v1", tmp_path / "v2", tmp_path / "current"
+    old.write_text("one")
+    new.write_text("two")
+    link.symlink_to(old)
+    line = f'openat(AT_FDCWD</work>, "{link}", O_RDONLY) = 3<{old}>'
+    found = footprint(traces(tmp_path / "raw", line), "files", [])
+    assert {str(link), str(old)} <= found.read.keys()
+    assert found.changes() == []
+    link.unlink()
+    link.symlink_to(new)
+    assert found.changes() == [f"{link} changed"]
+
+
+def test_a_directory_on_the_way_retargeted_no_longer_holds(tmp_path: Path) -> None:
+    for name, text in (("v1", "one"), ("v2", "two")):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "file").write_text(text)
+    link = tmp_path / "current"
+    link.symlink_to("v1")
+    line = f'openat(AT_FDCWD</work>, "{link}/file", O_RDONLY) = 3<{tmp_path}/v1/file>'
+    found = footprint(traces(tmp_path / "raw", line), "files", [])
+    link.unlink()
+    link.symlink_to("v2")
+    assert found.changes() == [f"{link}/file changed"]
+
+
+def test_a_path_through_a_link_and_up_is_kept_as_the_system_walks_it(tmp_path: Path) -> None:
+    (tmp_path / "real" / "bin").mkdir(parents=True)
+    (tmp_path / "real" / "lib").mkdir()
+    target = tmp_path / "real" / "lib" / "file"
+    target.write_text("x")
+    (tmp_path / "bin").symlink_to("real/bin")
+    named = f"{tmp_path}/bin/../lib/file"  # no such file, were the .. taken before the link
+    line = f'openat(AT_FDCWD</work>, "{named}", O_RDONLY) = 3<{target}>'
+    found = footprint(traces(tmp_path / "raw", line), "files", [])
+    assert found.read[named] == found.read[str(target)] is not None
+
+
+def test_a_link_into_the_kernel_s_files_is_no_input(tmp_path: Path) -> None:
+    line = 'openat(AT_FDCWD</work>, "/etc/mtab", O_RDONLY) = 3</proc/1/mounts>'
+    assert footprint(traces(tmp_path / "raw", line), "files", []).read == {}
+
+
+def test_a_file_written_through_a_link_is_no_input_by_either_name(tmp_path: Path) -> None:
+    made, link = tmp_path / "made", tmp_path / "link"
+    made.touch()
+    link.symlink_to(made)
+    lines = (
+        f'openat(AT_FDCWD</work>, "{link}", O_WRONLY|O_CREAT, 0600) = 3<{made}>',
+        f'openat(AT_FDCWD</work>, "{link}", O_RDONLY) = 4<{made}>',
+    )
+    assert footprint(traces(tmp_path / "raw", *lines), "files", []).read == {}
+
+
+def test_a_file_that_changed_while_the_run_ran_never_holds(tmp_path: Path) -> None:
+    file = tmp_path / "input"
+    file.write_text("read")
+    began = time.time_ns()
+    time.sleep(0.02)  # past a tick of the clock files are stamped with
+    file.write_text("changed after it was read")
+    found = footprint(traces(tmp_path / "raw", opened(file)), "files", [], began)
+    assert found.read == {str(file): None}
+    assert found.changes() == [f"{file} could not be identified"]
+
+
+def test_a_path_looked_for_and_then_made_was_not_missing(tmp_path: Path) -> None:
+    # Python looks for a .pyc, then writes it by a rename, which no trace says
+    made = tmp_path / "helper.cpython-314.pyc"
+    made.touch()
+    assert footprint(traces(tmp_path / "raw", failed(made)), "files", []).missing == ()
+
+
+def test_a_compiled_module_is_never_missing_whoever_makes_it(tmp_path: Path) -> None:
+    cached = tmp_path / "__pycache__" / "helper.cpython-314.pyc"
+    assert footprint(traces(tmp_path / "raw", failed(cached)), "files", []).missing == ()
 
 
 def test_what_could_not_be_identified_never_holds(tmp_path: Path) -> None:
@@ -393,6 +508,33 @@ def test_a_real_run_is_observed_with_its_children(tmp_path: Path) -> None:
     assert str(work / "made") not in found.read  # its own
     assert any(path.endswith("/cat") for path in found.ran)  # a child's program
     assert run.stdout.read_text() == "x"  # the program's own output, as ever
+
+
+@strace
+def test_a_datagram_sent_without_a_connection_is_seen(tmp_path: Path) -> None:
+    code = (
+        "import socket\n"
+        "socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b'', ('127.0.0.1', 9))\n"
+    )
+    run = program.run("python3", ["-c", code], workdir=tmp_path, logs=LOGS, observe="files")
+    assert run.trace is not None
+    assert "AF_INET socket" in footprint(run.trace, "files", [tmp_path]).connected
+
+
+@strace
+def test_a_retargeted_link_is_seen_in_a_real_run(tmp_path: Path) -> None:
+    (tmp_path / "v1").write_text("one")
+    (tmp_path / "v2").write_text("two")
+    link = tmp_path / "current"
+    link.symlink_to("v1")
+    work = tmp_path / "work"
+    work.mkdir()
+    run = program.run("cat", [str(link)], workdir=work, logs=LOGS, observe="files")
+    assert run.trace is not None
+    found = footprint(run.trace, "files", [work])
+    link.unlink()
+    link.symlink_to("v2")
+    assert found.changes() == [f"{link} changed"]
 
 
 @strace

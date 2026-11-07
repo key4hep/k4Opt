@@ -10,17 +10,21 @@ used the network.
 
 Each file the stage read is identified as it is when the stage ended: a file on CVMFS by the
 content key CVMFS keeps of it, without reading it, any other by its SHA-256 (:mod:`k4opt.hashing`),
-and a directory by the names in it (what a scan of it found). What the stage made, what it was
-given and what it wrote, and the kernel's own files (:data:`IGNORED`), are not part of it. A
-footprint *holds* (:meth:`Footprint.changes`) while each file it read is the same, each directory
-holds the same names and no path it failed to find exists: so far as opening files goes, the stage
-would find what it found. A file that could not be identified never holds: what is not known is
-taken to differ.
+and a directory by the names in it (what a scan of it found). A file reached through a link is kept
+under both names, so that a link retargeted to another file is seen though the old file stays. What
+the stage made, what it was given and what it wrote, and the kernel's own files (:data:`IGNORED`),
+are not part of it. A footprint *holds* (:meth:`Footprint.changes`) while each file it read is the
+same, each directory holds the same names and no path it failed to find exists: so far as opening
+files goes, the stage would find what it found. A file that could not be identified, or that
+changed while the stage ran, never holds: what is not known is taken to differ.
 
-What a footprint cannot show: what was decided from a file's size or time, or from whether it
-exists, without opening it (``stat``), an import that failed in Python, which answers from a
-listing it keeps, and a file the stage read and also wrote, which counts as its own. With the same
-software, the first two can only concern files outside the stack and the local builds.
+A footprint is *complete* when its traces could be read to the end: every file the run opened is
+in it. That is not every dependency of the run:
+
+what was decided from a file's size or time, or from whether it exists, without opening it
+(``stat``), an import that failed in Python, which answers from a listing it keeps, and a file the
+stage read and also wrote, which counts as its own, are not in it. With the same software, the
+first two can only concern files outside the stack and the local builds.
 
 At the ``libraries`` level only the libraries the loader loaded are known (``LD_DEBUG``): enough to
 say which packages ran, not what else was read, so such a footprint never holds for another study.
@@ -73,7 +77,7 @@ _REGISTRY = (".rootmap", ".components")
 """Files every package on the library path has read, whether its code runs or not: the registries
 ROOT and Gaudi look a plugin up in."""
 
-_CALLS = frozenset((b"open", b"openat", b"openat2", b"execve", b"execveat", b"connect"))
+_CALLS = frozenset((b"open", b"openat", b"openat2", b"execve", b"execveat", b"connect", b"socket"))
 _RESULT = re.compile(
     rb"^(?P<ret>-?\d+|\?)(?:<(?P<fd>[^>\\]*(?:\\.[^>\\]*)*)>)?(?: (?P<errno>E[A-Z0-9]+)\b.*)?$"
 )
@@ -87,6 +91,8 @@ _ESCAPE = re.compile(rb"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)")
 _SIMPLE = {b"n": b"\n", b"t": b"\t", b"r": b"\r", b"v": b"\v", b"f": b"\f"}
 _WRITES = re.compile(rb"\b(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND|O_TMPFILE)\b")
 _INET = re.compile(rb"sa_family=(AF_INET6?)\b(?P<rest>.*)")
+_UNIX = re.compile(rb'sa_family=AF_UNIX, sun_path=@?"(?P<path>[^"\\]*(?:\\.[^"\\]*)*)"')
+_SOCKET = re.compile(rb"^(?P<family>AF_INET6?)\b")
 _LOADED = re.compile(rb"^\s*\d+:\s+calling init: (?P<path>.+?)\s*$")
 _MISSING = (b"ENOENT", b"ENOTDIR")
 _DENIED = (b"EACCES", b"EPERM")
@@ -116,14 +122,17 @@ def _under(path: str, roots: Iterable[str]) -> bool:
     return any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
 
 
-def identity(path: str) -> str | None:
-    """What identifies ``path`` now, ``None`` if it cannot be read: ``names:`` and the SHA-256 of
-    the names in a directory, ``cvmfs:`` and the content key CVMFS keeps of a file on it (read
-    without the file), ``sha256:`` and the SHA-256 of any other file, read once per version of it
-    (:func:`k4opt.hashing.sha256_of`), or each time while it changed just now, and ``special`` for
-    a device, a pipe or a socket."""
+def identity(path: str, since: int | None = None) -> str | None:
+    """What identifies ``path`` now, ``None`` if it cannot be read or changed at or after the time
+    ``since`` (in nanoseconds): then what it is now need not be what a run that began at that time
+    read. ``names:`` and the SHA-256 of the names in a directory, ``cvmfs:`` and the content key
+    CVMFS keeps of a file on it (read without the file), ``sha256:`` and the SHA-256 of any other
+    file, read once per version of it (:func:`k4opt.hashing.sha256_of`), or each time while it
+    changed just now, and ``special`` for a device, a pipe or a socket."""
     try:
         status = os.stat(path)
+        if since is not None and max(status.st_mtime_ns, status.st_ctime_ns) >= since:
+            return None
         if stat.S_ISDIR(status.st_mode):
             names = "\0".join(sorted(os.listdir(path)))
             return _LISTED + hashlib.sha256(os.fsencode(names)).hexdigest()
@@ -150,7 +159,10 @@ class Footprint:
 
     ``level`` is how it was observed. ``read`` holds each file and directory it opened, by its
     path, with its :func:`identity`; ``missing`` each path it failed to find, ``denied`` each it was
-    refused, ``ran`` each program it started and ``connected`` each network address it connected to.
+    refused, ``ran`` each program it started and ``connected`` what it reached outside this
+    machine's own services: each network address it connected to, each network socket it made
+    (``AF_INET socket``: a datagram needs no connection) and each other local socket it connected
+    to (``unix:<path>``), whose answers may come from anywhere.
     ``unread`` counts the lines of its traces that could not be read: a footprint with any is
     incomplete, and so is one at another level than ``files``."""
 
@@ -202,7 +214,8 @@ class Footprint:
         """What no longer holds of it, each said for a person (the first ``at_most`` found);
         empty if every file it read is the same, every directory holds the same names, nothing
         it failed to find exists and nothing it was refused can be read now. A file that could
-        not be identified when the stage ended does not hold: what it was is not known."""
+        not be identified when the stage ended, or changed while it ran, does not hold: what it
+        read is not known."""
         found: list[str] = []
         for path, then in self.read.items():
             if then is None:
@@ -229,7 +242,8 @@ class Footprint:
         version; never one it only listed, or whose registries alone it read), the ``local``
         entries it read a file from (their paths, of those in ``local``), the ``undeclared`` files
         and directories it read that neither the stack, the system, a local build nor the problem
-        identify (with their identity), and the ``network`` addresses it connected to."""
+        identify (with their identity), and what it reached of the ``network``
+        (:attr:`connected`)."""
         # what it read, not what it listed: Python lists every directory of its path, used or not
         files = [p for p, then in self.read.items() if not (then or "").startswith(_LISTED)]
         packages: dict[str, str] = {}
@@ -279,30 +293,45 @@ class _Seen:
     ran: dict[str, None] = field(default_factory=dict)
     connected: dict[str, None] = field(default_factory=dict)
     written: set[str] = field(default_factory=set)
+    aliases: dict[str, str] = field(default_factory=dict)  # a path opened: the file it reached
     unread: int = 0
 
 
+def _named(given: str, base: str | None) -> str | None:
+    """The path ``given`` to an open from the directory ``base``, as the system walks it: a
+    ``..`` after a link is not the directory before it, so a path with one is kept as it is."""
+    if not os.path.isabs(given):
+        if base is None or not os.path.isabs(base):
+            return None
+        given = os.path.join(base, given)
+    return given if ".." in given.split("/") else os.path.normpath(given)
+
+
 def _opened(seen: _Seen, call: bytes, args: bytes, match: re.Match[bytes]) -> None:
-    named = _DIRFD.match(args) if call != b"open" else _PATH.match(args)
-    if named is None:
+    found = _DIRFD.match(args) if call != b"open" else _PATH.match(args)
+    if found is None:
         seen.unread += 1
         return
     if call == b"open":
-        base, given = None, _unescape(named.group(1))
+        base, given = None, _unescape(found.group(1))
     else:
-        base = None if named.group(1) is None else _unescape(named.group(1))
-        given = _unescape(named.group(2))
-    flags = args[named.end() :]
+        base = None if found.group(1) is None else _unescape(found.group(1))
+        given = _unescape(found.group(2))
+    flags = args[found.end() :]
     if match["ret"] != b"?" and int(match["ret"]) >= 0:
         fd = match["fd"]
         if fd is None:
             seen.unread += 1
             return
         path = _unescape(fd).removesuffix(_DELETED)
+        named = _named(given, base)
         if _WRITES.search(flags):
             seen.written.add(path)
+            seen.written.add(path if named is None else named)
         else:
             seen.read[path] = None
+            if named is not None and named != path:
+                seen.aliases[named] = path
         return
     if os.path.isabs(given):
         path = os.path.normpath(given)
@@ -337,14 +366,32 @@ def _started(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
         seen.denied[path] = None
 
 
-def _connected(seen: _Seen, args: bytes) -> None:
+def _connected(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
+    local = _UNIX.search(args)
+    if local is not None:
+        path = _unescape(local["path"])
+        if _under(path, IGNORED):  # the system's own: the user database, its daemons
+            return
+        if match["ret"] == b"0":
+            seen.connected[f"unix:{path}"] = None
+        elif match["errno"] in _MISSING:
+            seen.missing[path] = None
+        return
     found = _INET.search(args)
-    if found is None:  # a local socket (the user database, a display): no network
+    if found is None:
         return
     address = re.findall(rb'"([^"]*)"|htons\((\d+)\)', found["rest"])
     host = next((a.decode(errors="replace") for a, _ in address if a), "?")
     port = next((p.decode() for _, p in address if p), "?")
     seen.connected[f"{host}:{port}"] = None
+
+
+def _socket(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
+    """A network socket is network use, connected or not: a datagram needs no ``connect``. The
+    programs of the stack make none; those they do make are local."""
+    found = _SOCKET.match(args)
+    if found is not None and match["ret"] not in (b"-1", b"?"):
+        seen.connected[f"{found['family'].decode()} socket"] = None
 
 
 def _lines(trace: Path, prefix: str) -> Iterator[bytes]:
@@ -371,8 +418,10 @@ def _traced(trace: Path) -> _Seen:
             _opened(seen, call, args, match)
         elif call.startswith(b"execve"):
             _started(seen, args, match)
+        elif call == b"socket":
+            _socket(seen, args, match)
         else:
-            _connected(seen, args)
+            _connected(seen, args, match)
     return seen
 
 
@@ -386,11 +435,16 @@ def _loaded(trace: Path) -> _Seen:
     return seen
 
 
-def footprint(trace: Path, level: Observation, own: Sequence[Path]) -> Footprint:
+def footprint(
+    trace: Path, level: Observation, own: Sequence[Path], since: int | None = None
+) -> Footprint:
     """The footprint of the run whose raw traces are in ``trace``, observed at ``level``
     (``files`` or ``libraries``): what it read, found missing and started outside ``own`` (the
     stage's directory, the candidate's, and the files it was given or that the problem names) and
-    :data:`IGNORED`, each file identified now. A file it wrote is none of these, wherever it is.
+    :data:`IGNORED`, each file identified now, unless it changed at or after ``since``, when the
+    run began (:func:`identity`). A file it wrote is none of these, wherever it is, and neither is
+    a path it failed to find that exists now: what it made after looking for it, past what the
+    traces say (a rename), which ``__pycache__`` always is for Python, whoever made it.
     Traces in which no program started are incomplete, whatever they say: every run starts one,
     so they are what a tracer that died or a full disk left."""
     seen = _traced(trace) if level == "files" else _loaded(trace)
@@ -402,10 +456,18 @@ def footprint(trace: Path, level: Observation, own: Sequence[Path]) -> Footprint
     def kept(paths: Iterable[str]) -> list[str]:
         return [p for p in paths if p not in seen.written and not _under(p, skipped)]
 
+    for name, reached in seen.aliases.items():  # /etc/mtab leads into /proc: not an input either
+        if reached not in seen.written and not _under(reached, IGNORED):
+            seen.read.setdefault(name, None)
+    absent = [
+        path
+        for path in kept(seen.missing)
+        if "__pycache__" not in path.split("/") and not os.path.lexists(path)
+    ]
     return Footprint(
         level,
-        {path: identity(path) for path in kept(seen.read)},
-        tuple(sorted(kept(seen.missing))),
+        {path: identity(path, since) for path in kept(seen.read)},
+        tuple(sorted(absent)),
         tuple(sorted(kept(seen.denied))),
         tuple(sorted(kept(seen.ran))),
         tuple(sorted(seen.connected)),
@@ -420,17 +482,19 @@ def observe(
     directory: Path,
     own: Sequence[Path],
     local: Sequence[Local] = (),
+    since: int | None = None,
 ) -> tuple[dict[str, Json], Path | None]:
     """What a stage's record says of how the run whose raw traces are in ``run_trace`` was
     observed (:meth:`Footprint.summary`, of the ``local`` entries, with the size and SHA-256 of
     its ``footprint``), and its footprint file: written into ``directory`` as :data:`FOOTPRINT`,
-    the traces removed. Unobserved (``run_trace`` ``None``), the record says only its ``level``,
+    the traces removed; ``since`` is when the run began (:func:`footprint`). Unobserved
+    (``run_trace`` ``None``), the record says only its ``level``,
     ``none``; traces that cannot be read make no footprint, and the record says why (``problem``).
     Never raises for the traces: a stage runs whether or not it can be observed."""
     if run_trace is None or level == "none":
         return {"level": "none", "complete": False}, None
     try:
-        found = footprint(run_trace, level, own)
+        found = footprint(run_trace, level, own, since)
     except OSError as exc:
         return {"level": level, "complete": False, "problem": f"traces unreadable: {exc}"}, None
     finally:

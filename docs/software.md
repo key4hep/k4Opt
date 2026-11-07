@@ -134,7 +134,7 @@ optimize`; `observe=` in Python):
 
 | Level | How | Says | Another study may reuse its output |
 | --- | --- | --- | --- |
-| `files` (default) | `strace`, limited to opens, program starts and connections | every file read, listed or looked for in vain, by the program and all it started | yes |
+| `files` (default) | `strace`, limited to opens, program starts, connections and sockets | every file read, listed or looked for in vain, by the program and all it started | yes |
 | `libraries` | the loader (`LD_DEBUG`) | the libraries loaded | no |
 | `none` | nothing | nothing | no |
 
@@ -152,11 +152,11 @@ the stage's record, under `observed`:
 
 | Key | What it is |
 | --- | --- |
-| `level`, `complete` | how it was observed, and whether that says every file it opened |
+| `level`, `complete` | how it was observed, and whether its traces could be read to the end: every file it opened is in the footprint, which is not every dependency it has (see below) |
 | `packages` | the LCG packages it read a file of, by name and version; not one it only listed, or whose `.rootmap` or `.components` alone it read, as every package on the library path is |
 | `local` | the [local entries](#local-builds) it read a file from |
 | `undeclared` | the files it read that neither the stack, the system, a local build nor the problem identify, each with its identity: a `~/.rootrc`, a calibration a helper reads through a variable |
-| `network` | the network addresses it tried to connect to |
+| `network` | what it reached outside this machine's own services: the addresses it tried to connect to, a network socket it made (`AF_INET socket`: a datagram needs no connection), a local socket other than the system's (`unix:<path>`, whose answers may come from anywhere). CLD's jobs have none |
 | `footprint` | the size and SHA-256 of the footprint file |
 
 `k4opt study trial` prints this for each stage, with the local entries no stage read a file from: a
@@ -166,16 +166,20 @@ itself, observed at the `files` level.
 
 A footprint identifies what the stage read as it was when the stage ended: a file on CVMFS by the
 content key CVMFS keeps of it, without reading it, any other by its SHA-256, a directory by the names
-in it. It leaves out what the stage made, what it was given, what the problem names, what it wrote
-(a compiler's scratch file), and `/proc`, `/sys`, `/dev`, `/run` and the user database's caches. It
-*holds* while each file is the same, each directory holds the same names and no path looked for in
-vain exists. An empty trace, a line that cannot be read, a file that could not be identified or a
-program started by a relative path never vouch for anything: what is not known is taken to differ.
+in it. A file reached through a link is kept under both names, so a link retargeted to another file
+is seen though the old file stays. It leaves out what the stage made, what it was given, what the
+problem names, what it wrote (a compiler's scratch file), what it looked for and then made (Python's
+`__pycache__`), and `/proc`, `/sys`, `/dev`, `/run` and the user database's caches. It *holds* while
+each file is the same, each directory holds the same names and no path looked for in vain exists. An
+empty trace, a line that cannot be read, a file that could not be identified or that changed while
+the stage ran, or a program started by a relative path never vouch for anything: what is not known
+is taken to differ.
 
 **What it cannot show.** A decision from a file's size or time, or from whether it exists, without
 opening it; an import that failed in Python, which answers from a listing it keeps; a file the stage
 both read and wrote, which counts as its own; whatever an evaluator reads, in k4opt's own process.
-This is why [another study](execution.md#stages-made-once-reuse) reuses an output only on identical
+So a complete footprint is a complete list of what was opened, not proof of every dependency. This
+is why [another study](execution.md#stages-made-once-reuse) reuses an output only on identical
 software: the footprint then guards what lies outside the identity, and is never the proof that a
 change in the software did not matter. Rebuilding a reconstruction package therefore simulates again
 across studies, which costs time and never correctness.
@@ -185,7 +189,7 @@ across studies, which costs time and never correctness.
 | Where | What happens |
 | --- | --- |
 | A child process | Workers and the programs of the stack get exactly `os.environ`, never what a library set beneath Python: ROOT's interpreter sets `CLING_PREBUILT_MODULE_PATH` with C's `setenv` once it is used, and a child would otherwise inherit what no identity holds. |
-| A session | The software is taken when the session opens. Before each candidate, and before its record is written, any difference stops the session: every program inherits this process's variables. An evaluator that sets a variable while it runs inline does the same, unless the variable is on the list above. So does an undeclared input once a record names it: every candidate of a session reads it as it was. |
+| A session | The software is taken when the session opens. Before each candidate, and before its record is written, any difference stops the session: every program inherits this process's variables. An evaluator that sets a variable while it runs inline does the same, unless the variable is on the list above. So does an undeclared input once a record names it, whether its stage ran or was reused: every candidate of a session reads it as it was. A path looked for in vain is checked when an output is reused, not during a session, since a cache another stage makes would look like one that appeared and stop a study. |
 | A worker | It runs with the session's `sys.path`, compares the build, the system and each variable with the session's when it starts, and refuses by name; and compares the variables again after every task. A task that set a variable there (an evaluator writing `os.environ`) fails its candidate with a `ProvenanceError`, and the worker ends: the next task runs in a new one, started from the session's environment. |
 | A stage's signature | It holds the `id`: a stage of another build, of a rebuilt local library, or run with another variable, is not reused, whatever its path. A reconstruction's `directory` is signed by its files, not by its text: the job runs from a copy, so the same job elsewhere makes the same signature. Any other path (an options file run where it is, `data`, a file a ddsim option names) is given to the program as written, which may read it, so its text is signed too. |
 | A study | The `id`, the build and the system are part of its identity. A resume on other software is refused, naming what differs, and each trial's record must have run on the study's software. |

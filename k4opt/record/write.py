@@ -294,14 +294,17 @@ def observed_stages(summary: Mapping[str, object]) -> dict[str, Mapping[str, obj
 def unused_local(summary: Mapping[str, object]) -> list[str]:
     """The local entries of the software that no stage of a ``summary.json`` read from: a local
     build put in front of the stack that did not run. Empty where that is not known: unless every
-    stage ran its program itself, observed at the ``files`` level."""
+    stage ended ``done``, by running its program itself, observed completely, or without one."""
     observed = observed_stages(summary)
     for sample in _within(summary, "samples"):
         for name in _within(summary, "samples", sample, "stages"):
             stage = _within(summary, "samples", sample, "stages", name)
-            if "reused" in stage:
+            if stage.get("status") != DONE or "reused" in stage:
                 return []
-            if "argv" in stage and observed[f"{sample}/{name}"].get("level") != "files":
+            seen = observed.get(f"{sample}/{name}", {})
+            if "argv" in stage and (
+                seen.get("level") != "files" or seen.get("complete") is not True
+            ):
                 return []
     used = {path for entry in observed.values() for path in cast(Any, entry.get("local") or ())}
     software = _within(summary, "environment", "observed", "software")

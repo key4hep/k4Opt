@@ -20,6 +20,7 @@ from pathlib import Path
 from k4opt.execution._baseline import Baseline, candidate_reads, plain
 from k4opt.execution._drive import _finish_plan, _Run
 from k4opt.execution._files import changed_files
+from k4opt.execution._reuse import REUSED
 from k4opt.execution._work import candidate_externals
 from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import Json
@@ -66,14 +67,16 @@ class RunOutcome:
 
 
 def observed_inputs(results: Iterable[TaskResult]) -> dict[str, Json]:
-    """The undeclared inputs the stages that ran read, by path, with their identity, as each
-    stage's provenance says (:meth:`k4opt.software.Footprint.summary`)."""
+    """The undeclared inputs the stages read, by path, with their identity, as each stage's
+    provenance says (:meth:`k4opt.software.Footprint.summary`), or what it reused says of the stage
+    that made its output; none that could not be identified, which nothing could compare."""
     found: dict[str, Json] = {}
     for result in results:
-        observed = result.provenance.get("observed")
-        undeclared = observed.get("undeclared") if isinstance(observed, Mapping) else None
-        if isinstance(undeclared, Mapping):
-            found |= dict(undeclared)
+        for key in ("observed", REUSED):
+            part = result.provenance.get(key)
+            undeclared = part.get("undeclared") if isinstance(part, Mapping) else None
+            if isinstance(undeclared, Mapping):
+                found |= {path: then for path, then in undeclared.items() if then is not None}
     return found
 
 

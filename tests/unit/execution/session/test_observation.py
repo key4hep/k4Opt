@@ -7,6 +7,7 @@ import gzip
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,57 @@ def test_an_undeclared_input_that_changes_stops_the_session(
             session.evaluate({RADIUS: 460.0}, tmp_path / "b")
 
 
+def test_an_input_of_a_reused_output_is_watched_as_one_of_a_stage_that_ran(
+    tmp_path: Path, problem_file: Path, calibration: Path
+) -> None:
+    evaluated(problem_file, tmp_path / "a")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path / "a"])
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+        reused = simulated(tmp_path / "b")["reused"]
+        assert str(calibration) in reused["undeclared"]
+        calibration.write_text('{"scale": 1.10}\n')
+        with pytest.raises(ProvenanceError, match=str(calibration)):
+            session.evaluate({RADIUS: 450.0}, tmp_path / "c")
+
+
+def test_an_input_that_changes_while_a_reusing_candidate_runs_leaves_it_unrecorded(
+    tmp_path: Path, problem_file: Path, calibration: Path
+) -> None:
+    class Changing(cell_count()):  # type: ignore[misc]
+        def evaluate(self, request: Any) -> Any:
+            calibration.write_text('{"scale": 1.10}\n')
+            return super().evaluate(request)
+
+    evaluated(problem_file, tmp_path / "a")
+    with EvaluationSession.open(problem_file, [Changing]) as session:
+        session.reuse([tmp_path / "a"])
+        with pytest.raises(ProvenanceError, match=str(calibration)):
+            session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert not (tmp_path / "b" / SUMMARY_NAME).exists()
+
+
+def test_an_input_that_changed_while_its_stage_ran_vouches_for_nothing(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file, marks = tmp_path / "calibration", tmp_path / "marks"
+    file.write_text("read")
+    marks.mkdir()
+    stack.install(monkeypatch, marks, **{"*": {"read": [str(file)], "sleep": 1}})
+
+    def another_process_changes_it() -> None:  # any time while the stage runs: it cannot tell
+        assert stack.eventually(lambda: (marks / "a.gamma.started").exists())
+        file.write_text("changed while it ran")
+
+    changing = threading.Thread(target=another_process_changes_it)
+    changing.start()
+    made = evaluated(problem_file, tmp_path / "a")
+    changing.join()
+    assert made["observed"]["undeclared"][str(file)] is None  # what it read is not known
+    stage = evaluated(problem_file, tmp_path / "b", reuse=(tmp_path / "a",))
+    assert "reused" not in stage and f"{file} could not be identified" in stage["not_reused"]
+
+
 def test_an_unknown_level_is_refused(problem_file: Path) -> None:
     with pytest.raises(RunError, match="observe must be one of files, libraries, none"):
         EvaluationSession.open(problem_file, [cell_count()], observe="all")  # type: ignore[arg-type]
@@ -191,7 +243,7 @@ def test_a_stage_that_used_the_network_is_not_reused_by_another_study(
 ) -> None:
     stack.install(monkeypatch, **{"*": {"connect": 9}})
     made = evaluated(problem_file, tmp_path / "a")
-    assert made["observed"]["network"] == ["127.0.0.1:9"]
+    assert made["observed"]["network"] == ["127.0.0.1:9", "AF_INET socket"]
     stage = evaluated(problem_file, tmp_path / "b", reuse=(tmp_path / "a",))
     assert "reused" not in stage and "used the network" in stage["not_reused"]
 
