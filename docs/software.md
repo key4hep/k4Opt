@@ -83,16 +83,20 @@ A local build (`k4_local_repo`, a helper directory, a virtual environment) is pu
 stack through the variables that tell programs where to load from. Their text says where it is, not
 what it is: a library rebuilt in place keeps the text, and the same build elsewhere changes it. So
 each entry of such a variable that is a local file or directory is identified by the SHA-256 of what
-can be loaded through it, as the variable uses it. A relative or empty entry (`.`, or the empty one
-in `a::b`) is the directory k4opt runs in, which its own process and its workers import from, as
-Python resolves it when it starts; a program a stage runs starts in the stage's own directory,
-which k4opt makes. entries under `/cvmfs`, `/usr`, `/lib`, `/lib64`,
-`/bin`, `/sbin` and `/etc` stay as text, which the build and the system identify.
+can be loaded through it, as the variable uses it. Entries under `/cvmfs`, `/usr`, `/lib`, `/lib64`,
+`/bin`, `/sbin` and `/etc` stay as text, which the build and the system identify; `/usr/local`, where
+software is installed by hand or by `pip`, is local.
+
+A relative or empty entry (`.`, or the empty one in `a::b`) is the directory k4opt runs in, which
+its own process and its workers import from, as Python resolves it when it starts; so is a file
+named with a `/` (`LD_PRELOAD=./libpatch.so`). A bare library name (`LD_PRELOAD=libpatch.so`) is
+looked up on the library path, whose local directories are identified already. A program a stage
+runs starts in the stage's own directory, which k4opt makes.
 
 | Variable | What can be loaded through a local entry |
 | --- | --- |
 | `LD_LIBRARY_PATH`, `ROOT_LIBRARY_PATH`, `GAUDI_PLUGIN_PATH` | the libraries directly in the directory (`*.so`, `*.so.*`), which the loader looks up by name, and the registries and dictionaries ROOT, DD4hep and Gaudi read (`*.rootmap`, `*.components`, `*.pcm`); not build files, nor a log written there |
-| `ROOT_INCLUDE_PATH` | every header below the directory (`.h`, `.hh`, `.hpp`, `.hxx`, `.icc`, `.inl`, ...), which an `#include` names relative to it |
+| `ROOT_INCLUDE_PATH` | every file below the directory, which an `#include` may name relative to it, with any extension or none |
 | `PYTHONPATH`, and the interpreter's site directories with what their `.pth` files add | what Python can import: modules (`.py`, `.pyc`, `.so`) and `.pth` files, every file of a regular package (one with an `__init__`), the modules of a namespace package (a directory whose name is an identifier), package metadata (`*.dist-info`, `*.egg-info`) and the native libraries a wheel bundles (`*.libs`, which its extension modules load); never `__pycache__` |
 | `MARLIN_DLL`, `LD_PRELOAD` | each file named |
 

@@ -317,13 +317,43 @@ def test_only_what_is_loaded_from_a_library_directory_counts(
         before = after
 
 
-def test_only_headers_are_read_from_an_include_directory(tmp_path: Path) -> None:
-    include = tmp_path / "include"
-    include.mkdir()
-    (include / "Hit.hpp").write_text("struct Hit {};\n")
-    before = software(ROOT_INCLUDE_PATH=str(include))
-    (include / "CMakeLists.txt").write_text("# no header\n")
-    assert software(ROOT_INCLUDE_PATH=str(include)).id == before.id
+@pytest.mark.parametrize("name", ["TrackerConstants", "Hit.C", "Hit.hpp"])
+def test_any_file_an_include_may_name_is_identified(tmp_path: Path, name: str) -> None:
+    include = tmp_path / "include" / "Detector"
+    include.mkdir(parents=True)
+    (include / name).write_text("int x = 1;\n")
+    before = software(ROOT_INCLUDE_PATH=str(include.parent))
+    (include / name).write_text("int x = 22;\n")
+    assert software(ROOT_INCLUDE_PATH=str(include.parent)).id != before.id
+
+
+@pytest.mark.parametrize("variable", ["LD_PRELOAD", "MARLIN_DLL"])
+def test_a_relative_file_is_the_file_it_leads_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "libpatch.so").write_bytes(b"v1")
+    before = software(**{variable: "./libpatch.so"})
+    (entry,) = before.local
+    assert entry.path == str(tmp_path / "libpatch.so")
+    (tmp_path / "libpatch.so").write_bytes(b"v2, rebuilt")
+    assert software(**{variable: "./libpatch.so"}).id != before.id
+
+
+def test_a_bare_library_name_is_looked_up_on_the_library_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "libpatch.so").write_bytes(b"v1")
+    assert identified("LD_PRELOAD", "libpatch.so") == ("libpatch.so", ())
+
+
+def test_what_is_installed_under_usr_local_is_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(overlays.os.path, "exists", lambda path: True)
+    assert overlays._is_local("/usr/local/lib")
+    assert overlays._is_local("/usr/local/lib/python3.14/site-packages")
+    assert not overlays._is_local("/usr/lib64")
+    assert not overlays._is_local("/usr/localized")
 
 
 def test_a_variable_named_like_the_site_directories_is_compared(tmp_path: Path) -> None:

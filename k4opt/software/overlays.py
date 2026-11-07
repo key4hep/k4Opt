@@ -7,13 +7,17 @@ site-packages) is put in front of the stack through variables such as ``LD_LIBRA
 text, and the same build at another prefix changes it. So each entry of such a variable that is a
 local file or directory is replaced by the SHA-256 of what can be loaded through it, as its
 variable uses it (its *role*, :data:`ROLES`); the rest of the value stays as it is. Entries under
-``/cvmfs`` and the system's directories stay as text: the build and the system identify them.
+``/cvmfs`` and the system's directories stay as text: the build and the system identify them, but
+``/usr/local``, where software is installed by hand. A relative entry is what it leads to from the
+directory k4opt runs in, where k4opt's process and its workers resolve it.
 
 What can be loaded through an entry, by role:
 
-- ``libraries``: the files directly in the directory, which a library or a plugin is looked up
-  among by name (the loader, ROOT's and DD4hep's ``.rootmap`` and ``.components`` scans);
-- ``headers``: every file below the directory, which an ``#include`` names relative to it;
+- ``libraries``: the libraries directly in the directory, which the loader looks up by name, and
+  the registries and dictionaries ROOT, DD4hep and Gaudi read there (``.rootmap``, ``.components``,
+  ``.pcm``);
+- ``headers``: every file below the directory, which an ``#include`` may name relative to it,
+  with any extension or none;
 - ``python``: what Python can import from the directory: its modules (``.py``, ``.pyc``, ``.so``)
   and ``.pth`` files, every file of a regular package (one with an ``__init__``), with its data,
   the modules of a namespace package (a directory whose name is an identifier), and the package
@@ -68,6 +72,8 @@ environment set up as documented."""
 
 SHARED = ("/cvmfs", "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc")
 """Where entries are identified by their text: the stack (by its build) and the system."""
+INSTALLED = ("/usr/local",)
+"""Where in :data:`SHARED` software is installed by hand or by ``pip``, not by the system: local."""
 
 MAX_FILES = 50_000
 MAX_BYTES = 4 << 30
@@ -77,8 +83,6 @@ _LIBRARY = re.compile(r"\.so(\.[\w.]*)?$|\.(rootmap|components|pcm)$")
 """What is loaded from a library directory: libraries (``libX.so``, ``libX.so.1.2``), and the
 registries a plugin is looked up in and the dictionaries ROOT reads (``.rootmap``, ``.components``,
 ``.pcm``); never what else lies there (build files, a log being written)."""
-_HEADERS = (".h", ".hh", ".hpp", ".hxx", ".h++", ".icc", ".ipp", ".inl", ".tcc", ".def", ".inc")
-"""What ``#include`` reads from an include directory."""
 _BESIDE = (".dist-info", ".egg-info", ".libs")
 """Directories beside the packages of a site directory that no import names but Python reads:
 package metadata, and the native libraries a wheel bundles (``numpy.libs``), which its extension
@@ -178,7 +182,9 @@ def _replaced(
     kept, local = [], []
     for given in entries:
         entry = given
-        if role != "files" and not os.path.isabs(given):  # "" and "." are the current directory
+        if not os.path.isabs(given) and (role != "files" or "/" in given):
+            # "" and "." are the current directory, as "./libpatch.so" is a file in it; a bare
+            # library name (LD_PRELOAD=libpatch.so) is looked up on the library path instead
             entry = os.path.normpath(os.path.join(os.getcwd(), given))
         if not _is_local(entry):  # a relative one that leads nowhere: as written, wherever it is
             kept.append(entry if os.path.exists(entry) else given)
@@ -194,7 +200,13 @@ def _replaced(
 def _is_local(entry: str) -> bool:
     if not os.path.isabs(entry) or not os.path.exists(entry):
         return False
-    return not any(entry == root or entry.startswith(f"{root}/") for root in SHARED)
+    if _under(entry, INSTALLED):
+        return True
+    return not _under(entry, SHARED)
+
+
+def _under(entry: str, roots: tuple[str, ...]) -> bool:
+    return any(entry == root or entry.startswith(f"{root}/") for root in roots)
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,7 +347,7 @@ def _headers(directory: str, prefix: str, ancestors: frozenset[str], read: _Read
     for entry in _scan(directory, read):
         if _is_dir(entry):
             yield from _headers(entry.path, f"{prefix}{entry.name}/", inside, read)
-        elif _is_file(entry) and entry.name.endswith(_HEADERS):
+        elif _is_file(entry):  # an #include may name any file: "TrackerConstants", "Hit.C"
             yield f"{prefix}{entry.name}", entry.path, _stat(entry)
 
 
