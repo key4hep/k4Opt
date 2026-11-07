@@ -180,7 +180,8 @@ pre-commit run --all-files            # ruff, mypy (strict), codespell, shellche
 The pre-commit hooks run on every `git commit` once `setup.sh` has installed
 them, and CI runs the same hooks plus the tests inside the Key4hep container
 (`.github/workflows/ci.yml`). Dependency updates are proposed weekly by
-dependabot.
+dependabot, and merge by themselves once CI passes (`lint`, `test` and `dashboard` are required
+on `main`).
 
 Repository layout and conventions for adding a component are described in
 [CONTRIBUTING.md](CONTRIBUTING.md): `k4opt/<component>/` for code, `tests/{unit,integration}/<component>/`,
