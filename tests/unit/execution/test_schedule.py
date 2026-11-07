@@ -240,7 +240,182 @@ def test_misuse_is_refused() -> None:
     scheduler.add("a", two_samples())
     with pytest.raises(ValueError, match="added twice"):
         scheduler.add("a", two_samples())
-    with pytest.raises(ValueError, match="not running"):
+    with pytest.raises(ValueError, match="neither running nor parked"):
         scheduler.finished("a", ok(GEOMETRY))
+    with pytest.raises(ValueError, match="not running"):
+        scheduler.park("a", GEOMETRY, "token")
+    with pytest.raises(ValueError, match="not parked"):
+        scheduler.unpark("a", GEOMETRY)
+    assert scheduler.next() == ("a", Task(GEOMETRY))
+    scheduler.park("a", GEOMETRY, "token")
+    with pytest.raises(ValueError, match="not running"):
+        scheduler.park("a", GEOMETRY, "token")
+    scheduler.finished("a", ok(GEOMETRY))
+    with pytest.raises(ValueError, match="neither running nor parked"):
+        scheduler.finished("a", ok(GEOMETRY))  # a task ends once
     with pytest.raises(ValueError, match="without a result"):
         scheduler.remove("a")
+
+
+# --- parked tasks: waiting for something else, holding no slot ----------------------------------
+
+
+def shared() -> Plan:
+    """A simulation, which other candidates make alike, and an evaluation that reads it."""
+    return Plan((Task(GEOMETRY), Task(SIM, (GEOMETRY,)), Task(SHAPE, (GEOMETRY, SIM))))
+
+
+def started_now(scheduler: Scheduler) -> list[tuple[str, TaskId]]:
+    started = []
+    while (item := scheduler.next()) is not None:
+        started.append((str(item[0]), item[1].id))
+    return started
+
+
+def test_a_parked_task_frees_its_slots_and_ends_without_taking_one() -> None:
+    scheduler = Scheduler(2)
+    for key in ("a", "b"):
+        scheduler.add(key, shared(), {SIM: 2})
+    assert started_now(scheduler) == [("a", GEOMETRY), ("b", GEOMETRY)]
+    for key in ("a", "b"):
+        scheduler.finished(key, ok(GEOMETRY))
+    assert started_now(scheduler) == [("a", SIM)] and scheduler.busy == 2
+    scheduler.finished("a", ok(SIM))
+    assert started_now(scheduler) == [("a", SHAPE)]  # b's simulation needs both slots
+    scheduler.finished("a", ok(SHAPE))
+    assert started_now(scheduler) == [("b", SIM)] and scheduler.busy == 2
+    # b's simulation waits for one alike: parked, it holds none of its two slots
+    scheduler.park("b", SIM, "made-alike")
+    assert scheduler.busy == 0 and not scheduler.running and scheduler.idle
+    assert scheduler.parked("made-alike") == [("b", Task(SIM, (GEOMETRY,)))]
+    assert scheduler.parked("other") == []
+    scheduler.finished("b", ok(SIM))  # it reused what was made alike: no slot taken
+    assert scheduler.busy == 0 and scheduler.parked("made-alike") == []
+    assert started_now(scheduler) == [("b", SHAPE)]
+
+
+def test_while_a_task_is_parked_its_slot_goes_to_any_ready_task() -> None:
+    """Each candidate simulates a sample that all share and one of its own: the slot a parked
+    simulation leaves goes to the simulation of the other sample."""
+    plan = Plan((Task(SIM), Task(PI_SIM), Task(SEPARATION, (SIM, PI_SIM))))
+    scheduler = Scheduler(2)
+    for key in ("a", "b"):
+        scheduler.add(key, plan)
+    assert started_now(scheduler) == [("a", SIM), ("a", PI_SIM)]
+    scheduler.finished("a", ok(PI_SIM))
+    assert started_now(scheduler) == [("b", SIM)]
+    scheduler.park("b", SIM, "alike")  # a's runs
+    assert started_now(scheduler) == [("b", PI_SIM)]  # in the slot it left
+    assert scheduler.busy == 2
+    scheduler.finished("a", ok(SIM))
+    scheduler.finished("b", ok(SIM))  # reused
+    assert started_now(scheduler) == [("a", SEPARATION)]
+    scheduler.finished("b", ok(PI_SIM))
+    assert started_now(scheduler) == [("b", SEPARATION)]
+
+
+def test_an_unparked_task_is_ready_again_and_starts_in_its_order() -> None:
+    plan = Plan((Task(SIM), Task(SHAPE, (SIM,))))
+    scheduler = Scheduler(2)
+    for key in ("a", "b", "c"):
+        scheduler.add(key, plan)
+    assert started_now(scheduler) == [("a", SIM), ("b", SIM)]
+    scheduler.park("b", SIM, "alike")  # a's runs
+    assert started_now(scheduler) == [("c", SIM)]
+    scheduler.park("c", SIM, "alike")
+    assert scheduler.busy == 1 and scheduler.idle
+    assert scheduler.parked("alike") == [("b", Task(SIM)), ("c", Task(SIM))]
+    scheduler.unpark("c", SIM)  # what it waited for made nothing: it runs itself
+    assert scheduler.parked("alike") == [("b", Task(SIM))]
+    assert started_now(scheduler) == [("c", SIM)] and scheduler.busy == 2
+    with pytest.raises(ValueError, match="not parked"):
+        scheduler.unpark("c", SIM)
+
+
+def test_a_dropped_candidate_leaves_no_parked_task() -> None:
+    scheduler = Scheduler(2)
+    for key in ("a", "b"):
+        scheduler.add(key, shared())
+    started_now(scheduler)
+    for key in ("a", "b"):
+        scheduler.finished(key, ok(GEOMETRY))
+    started_now(scheduler)
+    scheduler.park("b", SIM, "alike")
+    assert scheduler.drop("b") == set()  # nothing of it runs: nothing to stop
+    assert scheduler.parked("alike") == [] and scheduler.busy == 1
+    assert scheduler.drop("a") == {SIM} and scheduler.busy == 0
+
+
+def test_a_task_parked_on_one_of_its_own_candidate_ends_once_and_its_readers_start_once() -> None:
+    """Two samples alike in one candidate: the second simulation waits for the first."""
+    plan = Plan(
+        (
+            Task(GEOMETRY),
+            Task(SIM, (GEOMETRY,)),
+            Task(PI_SIM, (GEOMETRY,)),
+            Task(SEPARATION, (SIM, PI_SIM)),
+        )
+    )
+    scheduler = Scheduler(2)
+    scheduler.add("a", plan)
+    started_now(scheduler)
+    scheduler.finished("a", ok(GEOMETRY))
+    assert started_now(scheduler) == [("a", SIM), ("a", PI_SIM)]
+    scheduler.park("a", PI_SIM, "alike")
+    assert scheduler.busy == 1
+    scheduler.finished("a", ok(SIM))
+    assert started_now(scheduler) == []  # the combined one reads the parked one too
+    scheduler.finished("a", ok(PI_SIM))
+    assert started_now(scheduler) == [("a", SEPARATION)]
+    scheduler.finished("a", ok(SEPARATION))
+    assert scheduler.done("a") and len(scheduler.remove("a")) == 4
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_parking_never_breaks_the_accounts(seed: int) -> None:
+    """Tasks started, parked, made ready again and ended in random order: the slots in use are
+    always the costs of the running tasks, within the capacity, a parked task never starts, and
+    every task ends once."""
+    pick = random.Random(seed)
+    capacity = pick.randint(1, 6)
+    scheduler = Scheduler(capacity)
+    costs = {}
+    for key in range(pick.randint(1, 4)):
+        # each holds at most every slot
+        costs[f"c{key}"] = {t.id: min(pick.randint(1, 4), capacity) for t in two_samples().tasks}
+        scheduler.add(f"c{key}", two_samples(), costs[f"c{key}"])
+    running: set[tuple[str, TaskId]] = set()
+    parked: set[tuple[str, TaskId]] = set()
+    ended: set[tuple[str, TaskId]] = set()
+    while True:
+        while (item := scheduler.next()) is not None:
+            started = (str(item[0]), item[1].id)
+            assert started not in running | parked | ended  # never twice, never while parked
+            running.add(started)
+        assert scheduler.busy == sum(costs[key][task] for key, task in running) <= capacity
+        assert scheduler.running == bool(running)
+        if not running and not parked:
+            break
+        move = pick.random()
+        if parked and (not running or move < 0.3):
+            key, task = sorted(parked, key=str)[pick.randrange(len(parked))]
+            parked.discard((key, task))
+            if pick.random() < 0.5:
+                scheduler.unpark(key, task)  # to start again
+            else:
+                ended |= {(key, task)} | {
+                    (key, held.id) for held in scheduler.finished(key, ok(task))
+                }
+            continue
+        key, task = sorted(running, key=str)[pick.randrange(len(running))]
+        running.discard((key, task))
+        if move < 0.6:
+            scheduler.park(key, task, task.name)  # tokens shared by the candidates
+            parked.add((key, task))
+            assert (key, task) in {(str(k), t.id) for k, t in scheduler.parked(task.name)}
+        else:
+            ended |= {(key, task)} | {(key, held.id) for held in scheduler.finished(key, ok(task))}
+    for key in costs:
+        assert scheduler.done(key)
+        assert len(scheduler.remove(key)) == len(two_samples().tasks)
+    assert len(ended) == len(costs) * len(two_samples().tasks)

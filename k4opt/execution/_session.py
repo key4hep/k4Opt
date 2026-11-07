@@ -42,7 +42,7 @@ from k4opt.execution._drive import WAIT, Activity, Wait, _drive, _Run
 from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._process import ProcessBackend
 from k4opt.execution._publish import RunOutcome, publish
-from k4opt.execution._reuse import Reuse
+from k4opt.execution._reuse import Reuse, run_directories
 from k4opt.execution._schedule import Scheduler
 from k4opt.execution._stages import DryRuns, input_files, try_reconstruction
 from k4opt.execution._tasks import GeometryWork, TaskOutcome, Workspace
@@ -436,25 +436,24 @@ class EvaluationSession:
 
     def reuse(self, directories: Iterable[str | os.PathLike[str]]) -> int:
         """Let the stages of this session's candidates reuse what the stages of the records in
-        ``directories`` made; how many outputs that adds.
+        ``directories`` made; how many recorded outputs that adds, each checked only when a stage
+        would reuse it.
 
         Each directory is a run directory (it holds a ``summary.json``: ``k4opt evaluate``'s
-        output, a trial of a study) or holds run directories (a study). A stage of a candidate
-        is not run when one with its signature (:mod:`k4opt.record.signature`: the same
-        definition, inputs, geometry, files, programs, environment and k4opt code) made an
-        output that is still there with the SHA-256 its record holds: its record then says
+        output, a trial of a study) or holds run directories at any depth (a study, the studies
+        of every level of a nested one). A stage of a candidate is not run when one with its
+        signature (:mod:`k4opt.record.signature`: the same definition, inputs, geometry, files,
+        programs, environment and k4opt code) made an output that is still there with the size
+        and SHA-256 its record holds, hashed when it would be reused: its record then says
         ``reused``, with where the output comes from. The session's own stages are reused the
-        same way, without being named here. Raises :class:`~k4opt.execution.RunError` for a
-        directory that does not exist."""
+        same way, without being named here. A record already read is not read again. Raises
+        :class:`~k4opt.execution.RunError` for a directory that does not exist."""
         runs: list[Path] = []
         for given in directories:
             path = Path(os.path.abspath(Path(given).expanduser()))
-            if (path / SUMMARY_NAME).is_file():
-                runs.append(path)
-            elif path.is_dir():
-                runs += sorted(each for each in path.iterdir() if (each / SUMMARY_NAME).is_file())
-            else:
+            if not path.is_dir():
                 raise RunError(f"reuse {os.fspath(given)}: {path} is no directory")
+            runs += run_directories(path)
         return self._reuse.index(runs)
 
     def check_limits(self) -> None:
@@ -551,8 +550,11 @@ class EvaluationSession:
         exception that stopped it, if one did (nothing else is then written for it).
 
         The next request is taken from ``requests`` only once the candidates under way leave a
-        slot idle (none of their tasks is ready to take it), and every candidate that ended was
-        yielded before; :data:`~k4opt.execution.WAIT` in place of a request says there is none
+        slot idle (none of their tasks is ready to take it), fewer of them are under way than
+        there are slots, and every candidate that ended was yielded before; a stage that waits
+        for another with its signature holds no slot, which goes to the other tasks under way,
+        but counts with its candidate, so that no request is taken only to wait too.
+        :data:`~k4opt.execution.WAIT` in place of a request says there is none
         now, and the next is taken only once a candidate under way was yielded (it raises a
         :class:`~k4opt.execution.RunError` if none is under way), so whatever makes the
         requests (an optimizer) learns from every outcome it can before it proposes again. With

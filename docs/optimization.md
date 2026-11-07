@@ -279,7 +279,9 @@ k4opt optimize examples/problem/cld-ecal-granularity.yaml \
 
 - **The optimizer is asked for a candidate only when a slot would otherwise be idle**, and only
   after every trial that ended was told. So at most N trials run at once, and fewer when the
-  trials under way have tasks enough for every slot.
+  trials under way have tasks enough for every slot. A trial whose simulation waits for the same
+  simulation of another holds no slot, but still counts among the N: the optimizer is not asked
+  for trials that would only wait too.
 - **Each trial is told as it ends**, in the order the trials end, after the same checks of its
   record as with one worker; its line is printed then.
 - **Every trial keeps its own directory and record**, and a record is the same whatever N
@@ -303,7 +305,8 @@ N: the simulation seed is each sample's own.
 
 **Stages made once.** A trial does not run a stage again whose output a stage with the same
 signature made already, in this session or in an earlier trial of the study (a resume reuses the
-study's own trials), or in the runs and studies `--reuse DIR` names (repeatable): a study that
+study's own trials, at every level of a nested one), or in the runs and studies `--reuse DIR`
+names (repeatable; a directory is searched for runs at any depth): a study that
 varies only the reconstruction, or only evaluators' settings, simulates once. The trial's record
 says where the reused output comes from ([reuse](execution.md#stages-made-once-reuse)). Neither
 the reuse nor `--reuse` is part of the study: a reused stage is the stage that would have run.
@@ -388,13 +391,15 @@ runs/nested/
   ([`--workers`](#trials-at-once---workers)): a study of the level below is asked first, a new trial
   of the level above only when no open study has a candidate. Their stages are reused as any
   stages are: a geometry the trials of a study share is simulated once. A study of a level below
-  whose trials share a stage (one none of the parameters it or a level below searches reaches)
-  asks for one trial first, and for the others once that ended: they would only wait for the
-  shared stage, each holding a worker, and would be proposed knowing nothing. Meanwhile the
-  workers go to the other studies, so the geometries of as many top trials as there are workers
-  are simulated at once; a worker nothing else would use takes a further trial of a study held
-  back all the same. This decides when trials are proposed, so it changes what the optimizer
-  proposes, never how a candidate is evaluated.
+  whose trials share a stage (one none of the parameters it or a level below searches reaches,
+  for any of those levels' evaluations) asks for one trial first, and for the others once that
+  ended: they would only wait for the shared stage, taking places among the N trials under way
+  that other studies could use, and would be proposed knowing nothing. Meanwhile the workers go
+  to the other studies, so the geometries of as many top trials as there are workers are
+  simulated at once; a worker nothing else would use takes a further trial of a study held back
+  all the same. A resumed study is held back again until one of its new trials ended (what its
+  trials share may be gone). This decides when trials are proposed, so it changes what the
+  optimizer proposes, never how a candidate is evaluated.
 - **Interrupted** at any point, the run goes on with `--resume`, from what is stored. Before
   anything new runs, it reads the tree as `load_study` does, and refuses one that does not hold
   up. A trial of a level above stays RUNNING, its study of the level below is resumed (`--trials 0` adds no new
