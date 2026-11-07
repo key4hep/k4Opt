@@ -17,7 +17,8 @@ What can be loaded through an entry, by role:
   the registries and dictionaries ROOT, DD4hep and Gaudi read there (``.rootmap``, ``.components``,
   ``.pcm``);
 - ``headers``: every file below the directory, which an ``#include`` may name relative to it,
-  with any extension or none;
+  with any extension or none; but for the directory k4opt runs in (an empty entry, which
+  ``k4_local_repo`` leaves), which cling looks in whatever the variable says;
 - ``python``: what Python can import from the directory: its modules (``.py``, ``.pyc``, ``.so``)
   and ``.pth`` files, every file of a regular package (one with an ``__init__``), with its data,
   the modules of a namespace package (a directory whose name is an identifier), and the package
@@ -186,6 +187,11 @@ def _replaced(
             # "" and "." are the current directory, as "./libpatch.so" is a file in it; a bare
             # library name (LD_PRELOAD=libpatch.so) is looked up on the library path instead
             entry = os.path.normpath(os.path.join(os.getcwd(), given))
+        if role == "headers" and entry == os.path.normpath(os.getcwd()):
+            # cling looks in the working directory for an #include "...", whatever the variable
+            # says: an entry that is it adds nothing, and its every file would be a study's own
+            kept.append(given)
+            continue
         if not _is_local(entry):  # a relative one that leads nowhere: as written, wherever it is
             kept.append(entry if os.path.exists(entry) else given)
             continue

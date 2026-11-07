@@ -21,6 +21,7 @@ YIELDS = f"{Path(__file__).with_name('yields.py')}:Yields"
 TOY_SIGNIFICANCE = f"{Path(__file__).with_name('toy_significance.py')}:ToySignificance"
 WORKER_PROBE = f"{Path(__file__).with_name('worker_probe.py')}:WorkerProbe"
 LIFECYCLE = f"{Path(__file__).with_name('lifecycle.py')}:Lifecycle"
+PFO_ENERGY = f"{Path(__file__).with_name('pfo_energy.py')}:PfoEnergy"
 
 
 def calo_photon() -> type[Evaluator]:

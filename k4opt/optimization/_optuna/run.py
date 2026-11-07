@@ -32,6 +32,7 @@ from optuna.storages import BaseStorage
 from k4opt.evaluation import EvaluatorProtocol
 from k4opt.execution import Activity, EvaluationSession
 from k4opt.optimization._identity import dirty_checkouts, unhashed
+from k4opt.optimization._keep import Keeper
 from k4opt.optimization._lock import Lock
 from k4opt.optimization._optuna.optimizer import (
     check_optuna_study,
@@ -228,7 +229,9 @@ def _run_study(
                 write_study(directory, document)
             database = database or open_storage(directory, storage)
             study = open_optuna(directory, document, database, resume)
-            run = _Study(directory, document, scope, study, warn)
+            keeper = Keeper(directory, warn)
+            keeper.open(identity)  # before any trial runs, or a resume recovers one
+            run = _Study(directory, document, scope, study, warn, keeper=keeper)
             if resume:
                 check_optuna_study(study, document)
                 _recover(run, progress)

@@ -20,9 +20,11 @@ from k4opt.optimization._results import StudyResults, TrialResult
 from k4opt.optimization._study import INNER_NAME, trial_directory
 from k4opt.problem import MetricRef, Parameter, ProblemSpec
 from k4opt.record import observed_stages, unused_local
+from k4opt.software.readiness import ALL_AVAILABLE, Requirement, requirements
 from k4opt.terminal import Style, printable
 
 LABEL = 12  # the width of a line's label
+_KIND = 12  # the width of a requirement's kind
 
 
 def _measured(value: object, unit: str | None, uncertainty: object = None, *, exact: bool) -> str:
@@ -171,6 +173,63 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
         _print(out, style, "pareto", ["none yet" if not results.trials else "none feasible yet"])
     if results.scope.nested and results.trials:
         _print(out, style, "inner studies", [_inner_line(t, style) for t in results.trials])
+    _rerun(results, out, style)
+
+
+def _summaries(results: StudyResults) -> list[Mapping[str, Any]]:
+    """The records of the study's trials that can be read."""
+    found = []
+    for trial in results.trials:
+        path = results.record_path(trial)
+        try:
+            summary = json.loads(path.read_bytes()) if path is not None else None
+        except (OSError, ValueError):
+            continue
+        if isinstance(summary, Mapping):
+            found.append(summary)
+    return found
+
+
+def _checked(requirement: Requirement, style: Style) -> str:
+    """How the checks of ``requirement`` found it: ``available``, or the first that did not."""
+    for check in requirement.checks:
+        if check.state != "available":
+            word = "not checked" if check.state == "not-checked" else check.state
+            painted = style.dim(word) if check.state == "not-checked" else style.red(word)
+            return f"{painted}: {check.how}"
+    return style.green("available") if requirement.checks else style.dim("not checked")
+
+
+def _need(requirement: Requirement, style: Style) -> list[str]:
+    """A requirement for a person, with its notes on lines of their own."""
+    parts = [f"{style.bold(printable(requirement.label))}: {printable(requirement.identified)}"]
+    if requirement.kind == "package":
+        rebuildable = (requirement.source or {}).get("rebuildable")
+        parts.append("rebuildable from source" if rebuildable else style.red("source unavailable"))
+        parts.append("original binary: fingerprint only")
+    parts.append(_checked(requirement, style))
+    if requirement.used_by:
+        parts.append(style.dim(printable(f"used by {', '.join(requirement.used_by)}")))
+    line = f"{style.dim(requirement.kind.ljust(_KIND))}" + "; ".join(parts)
+    return [line, *(f"{' ' * _KIND}{style.yellow(printable(n))}" for n in requirement.notes)]
+
+
+def _rerun(results: StudyResults, out: TextIO, style: Style) -> None:
+    """What a rerun of the study needs, and what of it was available just now; nothing for a
+    study read from its JSON form, which has no directory."""
+    if results.directory is None:
+        return
+    readiness = requirements(results.directory, _summaries(results), results.document)
+    status = readiness.status
+    painted = style.green(status) if status.startswith(ALL_AVAILABLE) else style.yellow(status)
+    _print(out, style, "rerun", [f"{painted} (checked {printable(readiness.at)})"])
+    needs = [line for requirement in readiness.requirements for line in _need(requirement, style)]
+    if needs:
+        _print(out, style, "needs", needs)
+    if readiness.gaps:
+        _print(out, style, "unknown", [printable(gap) for gap in readiness.gaps])
+    if readiness.problems:
+        _print(out, style, "not kept", [printable(problem) for problem in readiness.problems])
 
 
 _NO_RECORD = {
