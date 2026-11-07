@@ -568,6 +568,8 @@ def test_the_summary_says_what_was_used_and_what_nothing_else_identifies(tmp_pat
             "/usr/lib64/libc.so.6": "sha256:f",
             "/usr/local/lib/libbyhand.so": "sha256:g",
             "/home/someone/.rootrc": "sha256:h",
+            "/cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh": "cvmfs:j",
+            "/cvmfs/experiment.cern.ch/data/calibration.root": "cvmfs:k",  # data like any other
             str(tmp_path / "install/lib/libDDMarlinPandora.so"): "sha256:i",
         },
         connected=("10.0.0.1:53",),
@@ -578,6 +580,7 @@ def test_the_summary_says_what_was_used_and_what_nothing_else_identifies(tmp_pat
         "packages": {"Geant4": "11.4.3-abcde", "sherpa": "3.0.5"},  # no package by a registry
         "local": [local.path],
         "undeclared": {
+            "/cvmfs/experiment.cern.ch/data/calibration.root": "cvmfs:k",
             "/home/someone/.rootrc": "sha256:h",
             "/usr/local/lib/libbyhand.so": "sha256:g",
         },
@@ -732,6 +735,47 @@ def test_a_footprint_comes_back_as_it_was_written() -> None:
         "files", {"/a": "sha256:a", "/b": None}, ("/c",), ("/d",), ("/e",), ("f:1",), 2
     )
     assert Footprint.from_dict(found.to_dict()) == found
+
+
+def test_a_pipe_never_vouches_for_what_was_read_from_it(tmp_path: Path) -> None:
+    pipe = tmp_path / "calibration"
+    os.mkfifo(pipe)
+    assert identity(str(pipe)) == "special"
+    found = footprint(traces(tmp_path / "raw", STARTED, opened(pipe)), "files", [])
+    assert found.changes() == [f"{pipe} could not be identified"]
+
+
+def test_a_local_socket_no_one_was_at_is_missing_wherever_it_is(tmp_path: Path) -> None:
+    line = (
+        'connect(3<socket:[1]>, {sa_family=AF_UNIX, sun_path="/run/my-calibration.sock"}, 110)'
+        " = -1 ENOENT (No such file or directory)"
+    )
+    found = footprint(traces(tmp_path / "raw", STARTED, line), "files", [])
+    assert found.missing == ("/run/my-calibration.sock",)
+
+
+def test_what_a_run_made_outside_its_own_directory_is_kept(tmp_path: Path) -> None:
+    own, cache = tmp_path / "stage", tmp_path / "cache" / "fonts"
+    lines = (
+        STARTED,
+        opened(cache, "O_WRONLY|O_CREAT|O_TRUNC, 0666"),
+        opened(own / "events.root", "O_WRONLY|O_CREAT|O_TRUNC, 0666"),
+        f'mkdir("{tmp_path}/cache", 0755) = 0',
+    )
+    found = footprint(traces(tmp_path / "raw", *lines), "files", [own])
+    assert found.made == (str(tmp_path / "cache"), str(cache))
+
+
+def test_what_appeared_of_what_a_run_looked_for_is_what_a_resume_refuses(tmp_path: Path) -> None:
+    override, cache = tmp_path / "override.json", tmp_path / "cache"
+    found = Footprint(
+        "files",
+        missing=(str(override), str(cache), "/usr/share/absent", "/cvmfs/sft.cern.ch/absent"),
+    )
+    assert found.appeared([]) == []
+    override.touch()
+    cache.touch()
+    assert found.appeared([], made={str(cache)}) == [str(override)]  # the study made the cache
 
 
 def test_inputs_that_changed_are_named(tmp_path: Path) -> None:

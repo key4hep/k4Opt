@@ -337,3 +337,32 @@ def test_a_local_build_no_stage_read_is_named_and_one_that_ran_is_not(
     record = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
     assert str(used) in simulated(tmp_path / "a")["observed"]["local"]
     assert str(unused) in unused_local(record) and str(used) not in unused_local(record)
+
+
+def test_a_resumed_study_one_of_whose_trials_missed_a_file_that_is_there_now_is_refused(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # an optional override, looked for and not found: the trials took the defaults
+    override = tmp_path / "override.json"
+    stack.install(monkeypatch, **{"*": {"read": [str(override)]}})
+    evaluated(problem_file, tmp_path / "a")
+    override.write_text("{}")
+    with (
+        EvaluationSession.open(problem_file, [cell_count()]) as session,
+        pytest.raises(ProvenanceError, match=f"{override}, which a/gamma/simulation looked for"),
+    ):
+        session.reuse([tmp_path], resumed=True)
+
+
+def test_what_a_stage_of_the_study_made_keeps_its_resume(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a looks for a cache and does not find it; b, a later trial, writes it
+    cache = tmp_path / "cache"
+    told = {"a.gamma": {"read": [str(cache)]}, "b.gamma": {"write": {str(cache): "made"}}}
+    stack.install(monkeypatch, **told)
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+        session.evaluate({RADIUS: 460.0}, tmp_path / "b")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path], resumed=True)  # not refused
