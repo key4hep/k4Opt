@@ -367,7 +367,8 @@ with session.evaluate_each(requests) as evaluations:
 ```
 
 The next request is taken only once the candidates under way leave a slot idle, fewer
-candidates are under way than there are slots, and every outcome that ended is given back
+candidates are without an outcome than there are slots (under way, or ended but held until the
+candidate whose output they reused is published), and every outcome that ended is given back
 before it; `evaluate()` is one request through the same path. The second rule limits how many
 candidates are proposed at once, not what runs: a stage that waits for its twin
 ([reuse](#stages-made-once-reuse)) leaves its slot to the other tasks under way, but takes in no

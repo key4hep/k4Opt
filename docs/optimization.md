@@ -280,8 +280,9 @@ k4opt optimize examples/problem/cld-ecal-granularity.yaml \
 - **The optimizer is asked for a candidate only when a slot would otherwise be idle**, and only
   after every trial that ended was told. So at most N trials run at once, and fewer when the
   trials under way have tasks enough for every slot. A trial whose simulation waits for the same
-  simulation of another holds no slot, but still counts among the N: the optimizer is not asked
-  for trials that would only wait too.
+  simulation of another holds no slot, but still counts among the N, and so does one that ended
+  but is held until the record of the trial whose output it reused is written: the optimizer is
+  not asked for trials that would only wait too, nor for more trials than N it has no answer of.
 - **Each trial is told as it ends**, in the order the trials end, after the same checks of its
   record as with one worker; its line is printed then.
 - **Every trial keeps its own directory and record**, and a record is the same whatever N

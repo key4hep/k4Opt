@@ -163,18 +163,19 @@ def _drive(
     tasks ended (``results``), or once its work raised (``error``: its other tasks are stopped).
 
     ``pull`` gives the next candidate, or ``None`` once there is none; it is called only when the
-    scheduler is idle and fewer candidates are under way than it has slots, after every candidate
-    that ended was yielded, so with one slot the candidates run one after another, each in plan
-    order. The second condition limits what an optimizer proposes, not what runs: a slot left
-    free by a stage that waits for its twin (below) goes to the tasks of the candidates under way,
-    never to a further candidate, whose stages would most likely wait too, proposed before
-    anything was learnt from the others. ``pull`` may give :data:`WAIT` instead: none now, but
-    maybe once a candidate under way ended; it is then not called again until one was yielded;
-    the loop raises :class:`~k4opt.execution.RunError` if none is under way then (none would
-    end). ``runs`` holds the candidates under way, by workspace. Leaving the loop early
-    (``close()``, an exception) stops every task still running. ``activity`` is told what runs
-    whenever that changed. ``sign`` gives the signature of a task before it is handed out, which
-    its result then carries in its provenance.
+    scheduler is idle and fewer candidates are under way, or held for another (below), than it
+    has slots, after every candidate that ended was yielded, so with one slot the candidates run
+    one after another, each in plan order. The second condition limits what an optimizer
+    proposes, not what runs: of the candidates it was given, no more than the slots are ever
+    without an answer, and a slot left free by a stage that waits for its twin (below) goes to
+    the tasks of the candidates under way, never to a further candidate, whose stages would most
+    likely wait too, proposed before anything was learnt from the others. ``pull`` may give
+    :data:`WAIT` instead: none now, but maybe once a candidate under way ended; it is then not
+    called again until one was yielded; the loop raises :class:`~k4opt.execution.RunError` if
+    none is under way then (none would end). ``runs`` holds the candidates under way, by
+    workspace. Leaving the loop early (``close()``, an exception) stops every task still running.
+    ``activity`` is told what runs whenever that changed. ``sign`` gives the signature of a task
+    before it is handed out, which its result then carries in its provenance.
 
     With ``reuse``, a stage whose signature already made an output reuses it and is not run, and
     one whose signature runs for another stage (of another candidate, or of another sample of its
@@ -363,9 +364,11 @@ def _drive(
                 paused = False  # what the source waited for may have ended
             yield from ended
             ended.clear()
-            # one candidate per slot at most: the optimizer's proposals, not the slots, are
-            # limited here (a parked stage holds no slot)
-            if pulling and not paused and scheduler.idle and len(runs) < scheduler.capacity:
+            # one candidate per slot at most, under way or held for another's record: the
+            # optimizer's proposals not yet answered, not the slots, are limited here (a parked
+            # stage holds no slot)
+            proposed = len(runs) + len(held)
+            if pulling and not paused and scheduler.idle and proposed < scheduler.capacity:
                 pulled = pull()
                 if pulled is None:
                     pulling = False

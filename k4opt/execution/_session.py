@@ -548,10 +548,12 @@ class EvaluationSession:
         exception that stopped it, if one did (nothing else is then written for it).
 
         The next request is taken from ``requests`` only once the candidates under way leave a
-        slot idle (none of their tasks is ready to take it), fewer of them are under way than
-        there are slots, and every candidate that ended was yielded before; a stage that waits
-        for another with its signature holds no slot, which goes to the other tasks under way,
-        but counts with its candidate, so that no request is taken only to wait too.
+        slot idle (none of their tasks is ready to take it), fewer of them are without an
+        outcome than there are slots (under way, or ended but held until the candidate whose
+        output they reused is published), and every candidate that ended was yielded before; a
+        stage that waits for another with its signature holds no slot, which goes to the other
+        tasks under way, but counts with its candidate, so that no request is taken only to wait
+        too.
         :data:`~k4opt.execution.WAIT` in place of a request says there is none
         now, and the next is taken only once a candidate under way was yielded (it raises a
         :class:`~k4opt.execution.RunError` if none is under way), so whatever makes the
