@@ -312,9 +312,10 @@ class Software:
         return _sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")).encode())
 
     @property
-    def unidentified(self) -> tuple[Local, ...]:
-        """The local entries too large to identify by content: identified by where they are."""
-        return tuple(entry for entry in self.local if entry.sha256 is None)
+    def by_stat(self) -> tuple[Local, ...]:
+        """The local entries too large to identify by content: identified by each file's size and
+        mtime."""
+        return tuple(entry for entry in self.local if not entry.content)
 
     def differences(self, now: Software) -> list[str]:
         """What differs in ``now``, each said for a person; empty for the same software."""
@@ -368,20 +369,22 @@ class Software:
 
 
 _SOFTWARE = frozenset(("id", "build", "system", "variables", "local"))
-_LOCAL = frozenset(("variable", "path", "sha256", "files", "bytes"))
+_LOCAL = frozenset(("variable", "path", "sha256", "files", "bytes", "content"))
 
 
 def _local(data: object) -> Local:
     entry = _keys(data, _LOCAL, "a local entry")
     variable, path, sha256 = entry["variable"], entry["path"], entry["sha256"]
-    files, size = entry["files"], entry["bytes"]
+    files, size, content = entry["files"], entry["bytes"], entry["content"]
     if not isinstance(variable, str) or not isinstance(path, str):
         raise SoftwareError(f"a local entry names no variable and path: {data!r}")
-    if sha256 is not None and not (isinstance(sha256, str) and _SHA256.fullmatch(sha256)):
+    if not isinstance(sha256, str) or not _SHA256.fullmatch(sha256):
         raise SoftwareError(f"a local entry's sha256 is {sha256!r}, no digest")
     if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in (files, size)):
         raise SoftwareError(f"a local entry's files and bytes are no counts: {data!r}")
-    return Local(variable, path, sha256, files, size)  # type: ignore[arg-type]
+    if not isinstance(content, bool):
+        raise SoftwareError(f"a local entry's content is {content!r}, not true or false")
+    return Local(variable, path, sha256, files, size, content)  # type: ignore[arg-type]
 
 
 def _rebuilt(then: Software, now: Software, name: str) -> list[str]:

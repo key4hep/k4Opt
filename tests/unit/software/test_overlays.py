@@ -136,7 +136,7 @@ def test_a_preloaded_library_is_its_content(tmp_path: Path) -> None:
     assert before.differences(after) == [f"the files LD_PRELOAD leads to in {library} changed"]
 
 
-def test_an_entry_too_large_to_hash_is_identified_by_where_it_is(
+def test_an_entry_too_large_to_read_is_identified_by_sizes_and_mtimes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(overlays, "MAX_FILES", 2)
@@ -144,11 +144,16 @@ def test_an_entry_too_large_to_hash_is_identified_by_where_it_is(
     lib.mkdir()
     for name in ("a.so", "b.so", "c.so"):
         (lib / name).write_bytes(name.encode())
+    old = 1_600_000_000_000_000_000
+    for path in lib.iterdir():
+        os.utime(path, ns=(old, old))  # an install of long ago
     first = software(LD_LIBRARY_PATH=str(lib))
-    (entry,) = first.unidentified
-    assert (entry.variable, entry.path, entry.sha256) == ("LD_LIBRARY_PATH", str(lib), None)
-    moved = shutil.copytree(lib, tmp_path / "elsewhere")
-    assert software(LD_LIBRARY_PATH=str(moved)).id != first.id  # by where it is, then
+    (entry,) = first.by_stat
+    assert (entry.variable, entry.files, entry.content) == ("LD_LIBRARY_PATH", 3, False)
+    moved = shutil.copytree(lib, tmp_path / "elsewhere")  # copy2: mtimes kept
+    assert software(LD_LIBRARY_PATH=str(moved)).id == first.id  # never by where it is
+    (moved / "b.so").write_bytes(b"rebuilt")
+    assert software(LD_LIBRARY_PATH=str(moved)).id != first.id
 
 
 def test_a_link_that_leads_nowhere_is_recorded_and_a_new_target_is_other_software(
@@ -203,9 +208,9 @@ def test_a_directory_on_two_variables_is_read_once(
     listed: list[str] = []
     python = overlays._LISTED["python"]
 
-    def counting(directory: str, prefix: str) -> overlays.Listed:
+    def counting(directory: str, prefix: str, ancestors: frozenset[str]) -> overlays.Listed:
         listed.append(directory)
-        return python(directory, prefix)
+        return python(directory, prefix, ancestors)
 
     monkeypatch.setitem(overlays._LISTED, "python", counting)
     monkeypatch.setattr(overlays.site, "getsitepackages", lambda: [str(root)])
@@ -223,3 +228,37 @@ def test_an_unreadable_file_is_recorded_as_such(tmp_path: Path) -> None:
     (lib / "libX.so").chmod(0)
     (entry,) = software(LD_LIBRARY_PATH=str(lib)).local
     assert entry.sha256 is not None and entry.files == 1
+
+
+def test_the_libraries_a_wheel_bundles_are_identified(tmp_path: Path) -> None:
+    root = tmp_path / "site-packages"
+    (root / "numpy" / "_core").mkdir(parents=True)
+    (root / "numpy" / "__init__.py").write_text("")
+    (root / "numpy.libs").mkdir()
+    (root / "numpy.libs" / "libscipy_openblas64_.so").write_bytes(b"v1")
+    before = software(PYTHONPATH=str(root))
+    (root / "numpy.libs" / "libscipy_openblas64_.so").write_bytes(b"v2, rebuilt")
+    assert software(PYTHONPATH=str(root)).id != before.id
+
+
+def test_a_header_directory_reached_through_a_link_is_identified(tmp_path: Path) -> None:
+    include, build = tmp_path / "include", tmp_path / "build" / "include" / "Detector"
+    include.mkdir()
+    build.mkdir(parents=True)
+    (build / "Hit.h").write_text("struct Hit {};\n")
+    (include / "Detector").symlink_to(build)
+    before = software(ROOT_INCLUDE_PATH=str(include))
+    (build / "Hit.h").write_text("struct Hit { int x; };\n")
+    assert software(ROOT_INCLUDE_PATH=str(include)).id != before.id
+
+
+@pytest.mark.parametrize("variable", ["PYTHONPATH", "ROOT_INCLUDE_PATH"])
+def test_a_link_back_up_the_tree_ends(tmp_path: Path, variable: str) -> None:
+    root = tmp_path / "root"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "__init__.py").write_text("")
+    (root / "helper.py").write_text("")
+    (root / "loop").symlink_to(root)  # an identifier: Python could import through it
+    (root / "pkg" / "up").symlink_to(root)
+    (entry,) = software(**{variable: str(root)}).local
+    assert entry.files >= 2

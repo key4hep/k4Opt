@@ -17,13 +17,14 @@ What can be loaded through an entry, by role:
 - ``python``: what Python can import from the directory: its modules (``.py``, ``.pyc``, ``.so``)
   and ``.pth`` files, every file of a regular package (one with an ``__init__``), with its data,
   the modules of a namespace package (a directory whose name is an identifier), and the package
-  metadata (``*.dist-info``, ``*.egg-info``) that ``importlib.metadata`` reads; never
-  ``__pycache__``, which Python writes as it imports;
+  metadata (``*.dist-info``, ``*.egg-info``) that ``importlib.metadata`` reads, and the native
+  libraries a wheel bundles (``*.libs``); never ``__pycache__``, which Python writes as it imports;
 - ``files``: each entry is a file (``MARLIN_DLL``, ``LD_PRELOAD``).
 
 An entry that is a file is its content, whatever its role (a ``.zip`` on ``PYTHONPATH``). An entry
-with more than :data:`MAX_FILES` files or :data:`MAX_BYTES` bytes is not identified by content:
-it stays as text, and :class:`Local` says so (``sha256`` is ``None``).
+with more than :data:`MAX_FILES` files or :data:`MAX_BYTES` bytes is identified by each file's
+size and mtime rather than by its content, which would be read on every session; :class:`Local`
+says so. Links are followed, as a lookup through them is; one back up the tree is not.
 
 Python also imports from the interpreter's site directories, which no variable names: those of a
 virtual environment and the user's (``pip install --user``), and the directories their ``.pth``
@@ -71,7 +72,10 @@ MAX_FILES = 50_000
 MAX_BYTES = 4 << 30
 
 _MODULES = (".py", ".pyc", ".so", ".pth")
-_METADATA = (".dist-info", ".egg-info")
+_BESIDE = (".dist-info", ".egg-info", ".libs")
+"""Directories beside the packages of a site directory that no import names but Python reads:
+package metadata, and the native libraries a wheel bundles (``numpy.libs``), which its extension
+modules load through their run path."""
 _TOKEN = "<{}>"
 
 type Listed = Iterator[tuple[str, str, Stat | None]]
@@ -82,14 +86,16 @@ stat (``None`` for one that cannot be read)."""
 @dataclass(frozen=True, slots=True)
 class Local:
     """A local entry of ``variable``: where it is (``path``), the SHA-256 of what can be loaded
-    through it (``None`` if it is too large to identify by content), and how many ``files`` and
-    ``bytes`` that is."""
+    through it, and how many ``files`` and ``bytes`` that is; by their ``content``, or, for an entry
+    too large to read on every session, by each file's size and mtime (``content`` false): a
+    rebuild still changes it, a copy that keeps mtimes does not."""
 
     variable: str
     path: str
-    sha256: str | None
+    sha256: str
     files: int
     bytes: int
+    content: bool = True
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -98,6 +104,7 @@ class Local:
             "sha256": self.sha256,
             "files": self.files,
             "bytes": self.bytes,
+            "content": self.content,
         }
 
 
@@ -167,7 +174,7 @@ def _replaced(
             seen[(role, entry)] = _identify(variable, role, entry)
         found = replace(seen[(role, entry)], variable=variable)
         local.append(found)
-        kept.append(entry if found.sha256 is None else _TOKEN.format(found.sha256))
+        kept.append(_TOKEN.format(found.sha256))
     return os.pathsep.join(kept), tuple(local)
 
 
@@ -175,10 +182,6 @@ def _is_local(entry: str) -> bool:
     if not os.path.isabs(entry) or not os.path.exists(entry):
         return False
     return not any(entry == root or entry.startswith(f"{root}/") for root in SHARED)
-
-
-class _TooLargeError(Exception):
-    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,30 +237,30 @@ def _identify(variable: str, role: Role, entry: str) -> Local:
 def _walk(
     variable: str, role: Role, entry: str, now: int
 ) -> tuple[Local, list[tuple[str, Stat | None]]]:
-    """What can be loaded through ``entry``, and the stat of each file of it."""
-    files: list[tuple[str, str]] = []
-    stats: list[tuple[str, Stat | None]] = []
-    size = 0
-    try:
-        listed = _file(entry) if os.path.isfile(entry) else _LISTED[role](entry, "")
-        for relative, path, status in listed:
-            stats.append((path, status))
-            if status is None:  # a link that leads nowhere, or a file gone meanwhile
-                files.append((relative, "unreadable"))
-                continue
-            size += status[0]
-            if len(files) >= MAX_FILES or size > MAX_BYTES:
-                raise _TooLargeError
+    """What can be loaded through ``entry``, and the stat of each file of it: by content up to
+    :data:`MAX_FILES` files and :data:`MAX_BYTES` bytes, by each file's size and mtime beyond."""
+    if os.path.isfile(entry):
+        listed = list(_file(entry))
+    else:
+        listed = list(_LISTED[role](entry, "", frozenset()))
+    size = sum(status[0] for _, _, status in listed if status is not None)
+    content = len(listed) <= MAX_FILES and size <= MAX_BYTES
+    files: list[tuple[str, object]] = []
+    for relative, path, status in listed:
+        if status is None:  # a link that leads nowhere, or a file gone meanwhile
+            files.append((relative, "unreadable"))
+        elif not content:  # a rebuild changes them; only a copy that keeps mtimes keeps them
+            files.append((relative, [status[0], status[1]]))
+        else:
             try:
                 recent = _recent(status, now)
                 files.append((relative, read_sha256(path) if recent else sha256_of(path, status)))
             except OSError:
                 files.append((relative, "unreadable"))
-    except _TooLargeError:
-        return Local(variable, entry, None, len(files), size), stats
     text = json.dumps(sorted(files), separators=(",", ":"))
     digest = hashlib.sha256(text.encode()).hexdigest()
-    return Local(variable, entry, digest, len(files), size), stats
+    stats = [(path, status) for _, path, status in listed]
+    return Local(variable, entry, digest, len(listed), size, content), stats
 
 
 def _stat(entry: os.DirEntry[str]) -> Stat | None:
@@ -284,9 +287,16 @@ def _names(directory: str) -> list[str]:
     return [entry.name for entry in _scan(directory)]
 
 
-def _is_dir(entry: os.DirEntry[str], follow: bool = True) -> bool:
+def _within(directory: str, ancestors: frozenset[str]) -> frozenset[str] | None:
+    """``ancestors`` with ``directory`` where its links lead; ``None`` if it is one of them (a
+    link back up the tree), which would never end."""
+    real = os.path.realpath(directory)
+    return None if real in ancestors else ancestors | {real}
+
+
+def _is_dir(entry: os.DirEntry[str]) -> bool:
     try:
-        return entry.is_dir(follow_symlinks=follow)
+        return entry.is_dir()  # links followed, as a lookup through it does
     except OSError:
         return False
 
@@ -308,48 +318,62 @@ def _file(path: str) -> Listed:
     yield "", path, (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
 
 
-def _libraries(directory: str, prefix: str) -> Listed:
+def _libraries(directory: str, prefix: str, ancestors: frozenset[str]) -> Listed:
     for entry in _scan(directory):
         if _is_file(entry):
             yield f"{prefix}{entry.name}", entry.path, _stat(entry)
 
 
-def _headers(directory: str, prefix: str) -> Listed:
+def _headers(directory: str, prefix: str, ancestors: frozenset[str]) -> Listed:
+    inside = _within(directory, ancestors)
+    if inside is None:
+        return
     for entry in _scan(directory):
-        if _is_dir(entry, follow=False):
-            yield from _headers(entry.path, f"{prefix}{entry.name}/")
+        if _is_dir(entry):
+            yield from _headers(entry.path, f"{prefix}{entry.name}/", inside)
         elif _is_file(entry):
             yield f"{prefix}{entry.name}", entry.path, _stat(entry)
 
 
-def _python(directory: str, prefix: str, top: bool = True) -> Listed:
+def _python(directory: str, prefix: str, ancestors: frozenset[str], top: bool = True) -> Listed:
+    inside = _within(directory, ancestors)
+    if inside is None:
+        return
     for entry in _scan(directory):
         if entry.name == "__pycache__":
             continue
         if _is_dir(entry):
-            if top and entry.name.endswith(_METADATA):
-                yield from _package(entry.path, f"{entry.name}/")
+            if top and entry.name.endswith(_BESIDE):
+                yield from _package(entry.path, f"{entry.name}/", inside)
             elif entry.name.isidentifier():
-                inside = _scan(entry.path)
-                if any(item.name.startswith("__init__.") for item in inside):
-                    yield from _package(entry.path, f"{prefix}{entry.name}/", inside)
+                scanned = _scan(entry.path)
+                if any(item.name.startswith("__init__.") for item in scanned):
+                    yield from _package(entry.path, f"{prefix}{entry.name}/", inside, scanned)
                 else:
-                    yield from _python(entry.path, f"{prefix}{entry.name}/", top=False)
+                    yield from _python(entry.path, f"{prefix}{entry.name}/", inside, top=False)
         elif _is_file(entry) and entry.name.endswith(_MODULES):
             yield f"{prefix}{entry.name}", entry.path, _stat(entry)
 
 
-def _package(directory: str, prefix: str, scanned: list[os.DirEntry[str]] | None = None) -> Listed:
+def _package(
+    directory: str,
+    prefix: str,
+    ancestors: frozenset[str],
+    scanned: list[os.DirEntry[str]] | None = None,
+) -> Listed:
+    inside = _within(directory, ancestors)
+    if inside is None:
+        return
     for entry in _scan(directory) if scanned is None else scanned:
         if entry.name == "__pycache__":
             continue
         if _is_dir(entry):
-            yield from _package(entry.path, f"{prefix}{entry.name}/")
+            yield from _package(entry.path, f"{prefix}{entry.name}/", inside)
         elif _is_file(entry):
             yield f"{prefix}{entry.name}", entry.path, _stat(entry)
 
 
-def _nothing(directory: str, prefix: str) -> Listed:
+def _nothing(directory: str, prefix: str, ancestors: frozenset[str]) -> Listed:
     """What a variable of files loads through a directory on it: nothing."""
     return iter(())
 

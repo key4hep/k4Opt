@@ -90,7 +90,7 @@ can be loaded through it, as the variable uses it; entries under `/cvmfs`, `/usr
 | --- | --- |
 | `LD_LIBRARY_PATH`, `ROOT_LIBRARY_PATH`, `GAUDI_PLUGIN_PATH` | the files directly in the directory: a library or a plugin is looked up among them by name (the loader, ROOT's and DD4hep's `.rootmap` and `.components` scans) |
 | `ROOT_INCLUDE_PATH` | every file below the directory, which an `#include` names relative to it |
-| `PYTHONPATH`, and the interpreter's site directories with what their `.pth` files add | what Python can import: modules (`.py`, `.pyc`, `.so`) and `.pth` files, every file of a regular package (one with an `__init__`), the modules of a namespace package (a directory whose name is an identifier), and package metadata (`*.dist-info`, `*.egg-info`); never `__pycache__` |
+| `PYTHONPATH`, and the interpreter's site directories with what their `.pth` files add | what Python can import: modules (`.py`, `.pyc`, `.so`) and `.pth` files, every file of a regular package (one with an `__init__`), the modules of a namespace package (a directory whose name is an identifier), package metadata (`*.dist-info`, `*.egg-info`) and the native libraries a wheel bundles (`*.libs`, which its extension modules load); never `__pycache__` |
 | `MARLIN_DLL`, `LD_PRELOAD` | each file named |
 
 So a library rebuilt in place, a module edited in a helper directory, a package installed with
@@ -102,8 +102,14 @@ its number of files and bytes; a snapshot keeps none of it.
 Each file is read once per version, as the files a problem names are (its size, times and inode
 tell a rewritten file apart); before each candidate a session only looks at those. A worker takes
 what its session read, and after each task looks at the variables alone, since a task changes
-variables, not installed files. An entry of more than 50,000 files or 4 GiB is not identified by
-content: it is identified by where it is, and the record says so.
+variables, not installed files. Links are followed, as a lookup through them is; a link back up
+the tree is not. An entry of more than 50,000 files or 4 GiB is identified by each file's relative
+path, size and mtime instead of its content, which would be read on every session: a rebuild still
+changes it, a copy that keeps mtimes does not, and the record says which it is (`content`).
+
+A local build moved together with an environment that names its prefix in other variables
+(`VIRTUAL_ENV`, `CONDA_PREFIX`, `PATH`) is still other software through those: they are compared as
+text.
 
 What lies outside: `PATH` is compared as text, since the directories on it hold tools that update
 themselves (a program k4opt runs is identified by its content, and by its interpreter); a file a
@@ -119,7 +125,7 @@ are what a later step of this work observes.
 | A child process | Workers and the programs of the stack get exactly `os.environ`, never what a library set beneath Python: ROOT's interpreter sets `CLING_PREBUILT_MODULE_PATH` with C's `setenv` once it is used, and a child would otherwise inherit what no identity holds. |
 | A session | The software is taken when the session opens. Before each candidate, and before its record is written, any difference stops the session: every program inherits this process's variables. An evaluator that sets a variable while it runs inline does the same, unless the variable is on the list above. |
 | A worker | It runs with the session's `sys.path`, compares the build, the system and each variable with the session's when it starts, and refuses by name; and compares the variables again after every task. A task that set a variable there (an evaluator writing `os.environ`) fails its candidate with a `ProvenanceError`, and the worker ends: the next task runs in a new one, started from the session's environment. |
-| A stage's signature | It holds the `id`: a stage of another build, of a rebuilt local library, or run with another variable, is not reused, whatever its path. An option whose files the stage signs by content (a reconstruction's `directory`, a file an option names) is signed by those files, not by its text: the job runs from a copy, so the same job elsewhere makes the same signature. |
+| A stage's signature | It holds the `id`: a stage of another build, of a rebuilt local library, or run with another variable, is not reused, whatever its path. A reconstruction's `directory` is signed by its files, not by its text: the job runs from a copy, so the same job elsewhere makes the same signature. Any other path (an options file run where it is, `data`, a file a ddsim option names) is given to the program as written, which may read it, so its text is signed too. |
 | A study | The `id`, the build and the system are part of its identity. A resume on other software is refused, naming what differs, and each trial's record must have run on the study's software. |
 | A record | `environment.observed.software` holds all of it, and is refused if its `id` is not that of its parts. |
 | A snapshot | It holds the `id`, the build and the system, never the variables, whose names can be private, nor `KEY4HEP_STACK`, a location the build identifies. A catalog and the dashboard name the build that ran. |
