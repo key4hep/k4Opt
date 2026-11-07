@@ -250,9 +250,13 @@ def execute(
 ) -> int | None:
     """Run ``argv`` to its end: its exit status, ``None`` if it ran longer than ``timeout``.
 
-    It runs in a process group of its own, which is killed as a whole when its time runs out or
-    this process is interrupted (Ctrl-C, SIGTERM), so nothing a wrapper script started (a shell
-    script without ``exec``, a container) outlives it; a process that leaves the group does.
+    It runs with exactly this process's ``os.environ``, which is what k4opt identified
+    (:class:`k4opt.software.Software`), not with what a library set beneath Python (ROOT's
+    interpreter sets ``CLING_PREBUILT_MODULE_PATH`` with C's ``setenv``), which a child would
+    otherwise inherit unseen. It runs in a process group of its own, which is killed as a whole
+    when its time runs out or this process is interrupted (Ctrl-C, SIGTERM), so nothing a wrapper
+    script started (a shell script without ``exec``, a container) outlives it; a process that
+    leaves the group does.
     ``started`` is told the id of that group as soon as it exists, and ``measured`` the peak
     resident memory in bytes of the program, and of the processes it started and waited for, once
     it ended by itself (where the system says). With ``die_with_parent`` the
@@ -262,6 +266,7 @@ def execute(
     with subprocess.Popen(
         _launched(argv, die_with_parent),
         cwd=cwd,
+        env=dict(os.environ),
         stdin=subprocess.DEVNULL,
         stdout=stdout,
         stderr=stderr,

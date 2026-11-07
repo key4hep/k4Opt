@@ -161,6 +161,9 @@ class ProcessBackend:
             argv += [str(theirs.fileno()), str(os.getpid())]
             process = subprocess.Popen(
                 argv,
+                # what the session identified, not what a library set beneath Python since
+                # (ROOT's interpreter sets CLING_PREBUILT_MODULE_PATH with C's setenv)
+                env=dict(os.environ),
                 stdin=subprocess.DEVNULL,
                 stdout=2,  # what it prints outside an evaluation: the coordinator's stderr
                 pass_fds=(theirs.fileno(),),

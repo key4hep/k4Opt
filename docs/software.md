@@ -35,7 +35,6 @@ at them, not by their content.
 | Stack | Recognized by | Identified by |
 | --- | --- | --- |
 | LCG view | `…/views/<release>/<slot>/<platform>/setup.sh` with a `# Generated:` line | that time, and the SHA-256 of `setup.sh` and of `LCG_externals_<platform>.txt` and `LCG_contrib_<platform>.txt` in `…/nightlies/<release>/<slot>/` |
-| Spack stack | `setup.sh` with `.spack/spec.json` beside it | the SHA-256 of both |
 | anything else | | *unrecognized*: the SHA-256 of the file `KEY4HEP_STACK` names, or of that text if there is no such file |
 
 Links are followed first, so `latest` and the weekday it points to are one build. No location enters
@@ -58,7 +57,7 @@ These are not compared (`IGNORED` in `k4opt/software/identity.py`; `*` stands fo
 
 | Why | Names |
 | --- | --- |
-| The state of a shell or terminal: nothing a job reads | `_`, `PWD`, `OLDPWD`, `SHLVL`, `SHELL`, `TERM`, `DISPLAY`, `MOTD_SHOWN`, `BASH_FUNC_*` |
+| The state of a shell or terminal: nothing a job reads but for the width of what it prints | `_`, `PWD`, `OLDPWD`, `SHLVL`, `SHELL`, `TERM`, `COLUMNS`, `LINES`, `DISPLAY`, `MOTD_SHOWN`, `BASH_FUNC_*` |
 | The login session and its credentials, which differ between two logins of one person | `USER`, `HOSTNAME`, `TMPDIR`, `KRB5CCNAME`, `SSH_*`, `XDG_*`, `DBUS_*`, `SELINUX_*` |
 | New on every run of a service: without these, no study run by a systemd unit could resume | `INVOCATION_ID`, `JOURNAL_STREAM`, `MANAGERPID`, `SYSTEMD_EXEC_PID` |
 | Bookkeeping of other tools | `MODULEPATH`, `CONDA_SHLVL`, `CONDA_BACKUP_*`, `VSCODE_*`, `GIT_*`, `PYTEST_*` |
@@ -76,6 +75,7 @@ correctness. So the list stays short, and a name joins it only once it is shown 
 
 | Where | What happens |
 | --- | --- |
+| A child process | Workers and the programs of the stack get exactly `os.environ`, never what a library set beneath Python: ROOT's interpreter sets `CLING_PREBUILT_MODULE_PATH` with C's `setenv` once it is used, and a child would otherwise inherit what no identity holds. |
 | A session | The software is taken when the session opens. Before each candidate, and before its record is written, any difference stops the session: every program inherits this process's variables. An evaluator that sets a variable while it runs inline does the same, unless the variable is on the list above. |
 | A worker | It compares the build, the system and each variable with the session's when it starts, and refuses by name. |
 | A stage's signature | It holds the `id`: a stage of another build, or run with another variable, is not reused, whatever its path. |

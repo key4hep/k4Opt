@@ -192,13 +192,10 @@ class StudyResults:
 
     @property
     def key4hep(self) -> str:
-        """The Key4hep build the study ran on, for a person; of a snapshot published before k4opt
-        recorded the build, the stack its problem declared, which is all it says."""
-        software = self.document.get("software")
-        if isinstance(software, Mapping):
-            return Build.from_dict(software.get("build")).label
-        stack = _pin(self.document)
-        return f"{stack['channel']} {stack['version']}"
+        """The Key4hep build the study ran on, for a person (``LCG devkey-head, built ...``)."""
+        software = self.document["software"]
+        assert isinstance(software, Mapping)  # checked when it was read
+        return Build.from_dict(software["build"]).label
 
     @property
     def scope(self) -> StudyScope:
@@ -260,34 +257,21 @@ class StudyResults:
 # --- reading ---------------------------------------------------------------------------------
 
 
-def _pin(document: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The stack the problem of a snapshot published before k4opt recorded the software declared:
-    the only thing such a problem holds that a problem no longer does."""
-    stack: Mapping[str, Any] = document["problem"]["definition"]["environment"]["key4hep"]
-    return stack
-
-
-def recorded_scope(document: Mapping[str, Any], published: bool = False) -> StudyScope:
+def recorded_scope(document: Mapping[str, Any]) -> StudyScope:
     """The scope of the study ``study.json`` records (:class:`StudyScope`, with its problem),
     once the document holds together: its identity digest is that of its parts, it says which
-    build it ran on, and the optimizer it records has the scope's directions and limits. A
-    ``published`` one may be from before k4opt recorded the software: its problem then declares
-    a stack, which :attr:`StudyResults.key4hep` shows and no problem holds now.
+    build it ran on, and the optimizer it records has the scope's directions and limits.
     No geometry, file or evaluator the problem names is needed."""
     if digest(document) != document.get("identity"):
         raise OptimizationError(
             f"{STUDY_NAME} does not hold together: its identity digest is not that of its parts"
         )
-    definition = document["problem"]["definition"]
-    if "software" in document:
-        try:
-            Build.from_dict(document["software"].get("build"))
-        except SoftwareError as exc:
-            raise OptimizationError(f"{STUDY_NAME}: {exc}") from None
-    elif published:
-        definition = {key: value for key, value in definition.items() if key != "environment"}
     try:
-        spec = parse_problem(definition)
+        Build.from_dict(document["software"]["build"])
+    except SoftwareError as exc:
+        raise OptimizationError(f"{STUDY_NAME}: {exc}") from None
+    try:
+        spec = parse_problem(document["problem"]["definition"])
     except ProblemConfigError as exc:
         raise OptimizationError(
             f"{STUDY_NAME}: its problem is no problem k4opt reads: {exc}"
@@ -645,7 +629,7 @@ def _from_dict(data: object) -> StudyResults:
     study = _mapping(form["study"], "study", None)
     document = thaw(study)
     assert isinstance(document, dict)
-    scope = recorded_scope(document, published=True)  # its digest is that of its parts
+    scope = recorded_scope(document)  # its identity digest is that of its parts
     if portable(document) != document:
         _refuse("study", "holds more of study.json than its JSON form keeps")
     entries = form["trials"]

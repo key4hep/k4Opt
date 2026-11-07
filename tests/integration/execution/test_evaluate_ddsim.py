@@ -173,7 +173,6 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
         output = run["samples"][SAMPLE]["stages"]["simulation"]["outputs"]["events"]
         assert output["sha256"] == hashlib.sha256(events.read_bytes()).hexdigest()
         software = run["environment"]["observed"]["software"]
-        assert software["build"]["kind"] in ("lcg", "spack")  # the stack says which build it is
         assert software["id"] == Software.now().id
         assert run["samples"]["gamma_10gev"]["stages"]["simulation"]["returncode"] == 0
 

@@ -16,9 +16,6 @@ The programs of the stack the stages run (ddsim, k4run) are compared apart
 (:func:`program_differences`), by where their executable is (a release of the stack is told
 apart by its path) as much as by its content and its interpreter, so that a refusal names the
 program that differs, and must be the same for a study to resume and for each of its records.
-
-A snapshot published before k4opt recorded the software has no ``software``: its identity holds
-``KEY4HEP_STACK`` instead, as it did then, and its digest still holds.
 """
 
 from __future__ import annotations
@@ -47,10 +44,6 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
     """What must be equal for two runs to belong to one study, from an identity
     (:meth:`k4opt.execution.EvaluationSession.identity`, or ``study.json`` which holds one)."""
     try:
-        if "software" in identity:
-            software = {"software": identity["software"]["id"]}
-        else:
-            software = {"stack": identity["environment"]["KEY4HEP_STACK"]}
         return {
             # but for its name (the file name by default) and the titles: what a reader is shown
             "problem": essential(identity["problem"]["definition"]),
@@ -76,7 +69,7 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
                 "targets": identity["geometry"]["targets"],
                 "externals": _contents(identity["geometry"]["externals"]),
             },
-            **software,
+            "software": identity["software"]["id"],
             "k4opt": identity["k4opt"]["sha256"],
         }
     except (KeyError, TypeError, AttributeError) as exc:
@@ -179,7 +172,7 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
                 f"the geometry's reference {ref} does not read the files the study read (it "
                 f"reads {path or 'no file'} now)"
             )
-    if then.get("software") != now_.get("software"):
+    if then["software"] != now_["software"]:
         found.append(_software_difference(study, current))
     if then["k4opt"] != now_["k4opt"]:
         found.append(

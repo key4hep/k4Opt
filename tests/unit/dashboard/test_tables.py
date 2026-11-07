@@ -60,23 +60,6 @@ def test_a_study_made_on_a_nightly_says_which_build_it_ran_on(
     assert made["Key4hep build"] == "LCG devkey-head, built Sat Nov 7 04:17:32 2026"
 
 
-def test_a_snapshot_published_before_k4opt_recorded_the_software_is_shown_as_it_says(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from k4opt.publication import open_publication
-
-    import tables
-
-    legacy = Path(__file__).resolve().parents[2] / "fixtures" / "publication" / "legacy"
-    publication = open_publication(legacy)
-    for entry in publication.catalog().studies:
-        results = publication.study(entry)
-        made = {row[""]: row["Value"] for row in tables.provenance(results)}
-        assert made["Key4hep build"] == "nightly 2026-10-20"
-        assert made["KEY4HEP_STACK"] == "/stack/2026-10-20" and made["Software id"] is None
-        assert tables.trials(results, results.pareto)
-
-
 def test_the_best_of_each_objective_is_the_first_feasible_trial_to_reach_it(
     tmp_path: Path,
 ) -> None:

@@ -1,8 +1,8 @@
 """Software component: what candidates run on, as one identity.
 
 ``KEY4HEP_STACK`` names a place, and a nightly's slot holds another build every week. So what a
-session runs on is identified by what is there: the build of the stack (its manifests and when it
-was built, or its Spack spec), the system, and every environment variable not known to be
+session runs on is identified by what is there: the build of the stack (an LCG view's manifests
+and when it was built), the system, and every environment variable not known to be
 irrelevant. Two sessions with equal :attr:`Software.id` run on the same software, wherever the
 stack is; :meth:`Software.differences` says what differs, by name. See ``docs/software.md``.
 

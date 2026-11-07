@@ -113,7 +113,6 @@ PORTABLE: Mapping[str, _Kept] = {
     },
     # the build and the system, not the variables, whose names can be private: its id is enough
     "software": {"id": True, "build": True, "system": True},
-    "search": True,  # of a snapshot published before k4opt recorded the software
     "k4opt": {"version": True, "sha256": True, "git": True},
     # what the study searches and fixes, and the level and replicate of its trials
     "scope": {"level": True, "searched": True, "fixed": True, "replicate": True, "parent": True},

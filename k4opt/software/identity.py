@@ -2,10 +2,10 @@
 
 A Key4hep nightly is a slot that a later build overwrites, so a path says nothing of what is in it:
 :class:`Build` reads what the stack says of itself. An LCG view is identified by when it was
-generated and the SHA-256 of its ``setup.sh`` and of both manifests of its release; a Spack stack
-by its ``setup.sh`` and the ``.spack/spec.json`` beside it. Anything else is *unrecognized*, and
-identified by the content of the file ``KEY4HEP_STACK`` names, or by that text if there is no such
-file. No location enters a build, so ``latest`` and the weekday it points to are one build.
+generated and the SHA-256 of its ``setup.sh`` and of both manifests of its release. Anything else
+is *unrecognized*, and identified by the content of the file ``KEY4HEP_STACK`` names, or by that
+text if there is no such file. No location enters a build, so ``latest`` and the weekday it points
+to are one build.
 
 Every environment variable a program would inherit may change what it does, and a value leaves no
 trace in any file. So every variable is compared unless :data:`IGNORED` lists it as known to be
@@ -28,7 +28,7 @@ from typing import Literal, cast
 from k4opt.frozen import FrozenMap
 from k4opt.software.errors import SoftwareError
 
-type Kind = Literal["lcg", "spack", "unrecognized"]
+type Kind = Literal["lcg", "unrecognized"]
 
 IGNORED = (
     # shell and terminal state
@@ -38,6 +38,8 @@ IGNORED = (
     "SHLVL",
     "SHELL",
     "TERM",
+    "COLUMNS",
+    "LINES",
     "DISPLAY",
     "MOTD_SHOWN",
     "BASH_FUNC_*",
@@ -75,7 +77,7 @@ IGNORED = (
 variable is compared. A wrongly compared variable costs a refusal that names it, a wrongly ignored
 one could cost correctness, so the list stays short."""
 
-_KINDS = ("lcg", "spack", "unrecognized")
+_KINDS = ("lcg", "unrecognized")
 _NAMES = frozenset(name for name in IGNORED if not name.endswith("*"))
 _PREFIXES = tuple(name[:-1] for name in IGNORED if name.endswith("*"))
 _GENERATED = re.compile(rb"^#\s*Generated:[ \t]*(.+?)[ \t\r]*$", re.MULTILINE)
@@ -115,7 +117,7 @@ def _text(value: object, where: str) -> str | None:
 class Build:
     """One build of the stack, whichever place holds it.
 
-    ``kind`` says how it was recognized: ``lcg``, ``spack`` or ``unrecognized``. ``release`` and
+    ``kind`` says how it was recognized: ``lcg`` or ``unrecognized``. ``release`` and
     ``platform`` are what its place says (``devkey-head``, ``x86_64-el9-gcc16-opt``), ``built``
     the time an LCG view says it was generated, as it writes it, and ``digests`` the SHA-256 of
     each file that identifies it, by role, ``None`` for one that cannot be read.
@@ -141,15 +143,13 @@ class Build:
         except OSError:
             return cls("unrecognized", None, None, None, {"text": _sha256(stack.encode())})
         unrecognized = cls("unrecognized", None, None, None, {"setup": _sha256(setup)})
-        return _lcg(path, setup) or _spack(path, setup) or unrecognized
+        return _lcg(path, setup) or unrecognized
 
     @property
     def label(self) -> str:
         """The build for a person: ``LCG devkey-head, built Sat Nov 7 04:17:32 2026``."""
         if self.kind == "lcg":
             return f"LCG {self.release}, built {' '.join((self.built or '').split())}"
-        if self.kind == "spack":
-            return f"Spack {self.release}"
         return "unrecognized stack"
 
     def to_dict(self) -> dict[str, object]:
@@ -202,24 +202,6 @@ def _lcg(path: Path, setup: bytes) -> Build | None:
             "LCG_externals": _digest(manifests / f"LCG_externals_{name}.txt"),
             "LCG_contrib": _digest(manifests / f"LCG_contrib_{name}.txt"),
         },
-    )
-
-
-def _spack(path: Path, setup: bytes) -> Build | None:
-    """The build of the Spack stack whose ``setup.sh`` is at ``path``, with its
-    ``.spack/spec.json`` beside it; ``None`` for anything else. A release says what it is as
-    ``…/releases/<release>/<platform>/key4hep-stack/<version>/setup.sh``, any other stack by the
-    name of its directory."""
-    spec = _digest(path.parent / ".spack" / "spec.json")
-    if spec is None:
-        return None
-    released = len(path.parts) > 5 and path.parts[-6] == "releases"
-    return Build(
-        "spack",
-        path.parts[-5] if released else path.parent.name,
-        path.parts[-4] if released else None,
-        None,
-        {"setup": _sha256(setup), "spec": spec},
     )
 
 

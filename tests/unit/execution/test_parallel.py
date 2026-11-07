@@ -828,6 +828,17 @@ def test_the_command_evaluates_with_several_workers(
 # --- what the workers must share with the session ---------------------------------------------
 
 
+def test_a_worker_runs_with_what_the_session_identified_not_what_a_library_set_beneath_it(
+    problem: Path,
+) -> None:
+    from tests.support.common import set_beneath_python
+
+    # ROOT's interpreter sets CLING_PREBUILT_MODULE_PATH so, once the coordinator used it; a
+    # session starts one worker when it opens, which refuses another environment than its own
+    with set_beneath_python("CLING_PREBUILT_MODULE_PATH", "/cvmfs/root/lib:"):
+        EvaluationSession.open(problem, [cell_count()], workers=2).close()
+
+
 def test_a_worker_rebuilds_the_session_from_plain_data(
     problem: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

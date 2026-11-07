@@ -6,14 +6,13 @@ from __future__ import annotations
 import json
 import os
 import pickle
-import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from k4opt.software import IGNORED, Build, Software, SoftwareError, System
-from tests.support.software import PLATFORM, lcg_view, manifest, republish, spack_release
+from tests.support.software import PLATFORM, lcg_view, manifest, republish
 
 
 def software(stack: Path | str | None = None, **variables: str) -> Software:
@@ -73,27 +72,7 @@ def test_a_build_is_the_same_wherever_it_is(tmp_path: Path) -> None:
     assert software(here).id == software(there).id
 
 
-def test_a_spack_stack_is_identified_by_its_spec(tmp_path: Path) -> None:
-    setup = spack_release(tmp_path)
-    build = Build.of(str(setup))
-    assert (build.kind, build.release) == ("spack", "2026-10-20")
-    assert build.platform == "x86_64-almalinux9-gcc14.2.0-opt"
-    assert build.built is None and build.label == "Spack 2026-10-20"
-    assert sorted(build.digests) == ["setup", "spec"]
-    before = software(setup)
-    (setup.parent / ".spack" / "spec.json").write_text("{}")
-    (said,) = before.differences(software(setup))
-    assert said == "the Key4hep build Spack 2026-10-20 is another one (other spec)"
-
-
-def test_a_spack_stack_outside_a_release_goes_by_its_directory(tmp_path: Path) -> None:
-    stack = tmp_path / "my-stack"
-    shutil.copytree(spack_release(tmp_path / "copy").parent, stack)
-    build = Build.of(str(stack / "setup.sh"))
-    assert (build.kind, build.release, build.platform) == ("spack", "my-stack", None)
-
-
-def test_a_file_k4opt_does_not_recognize_is_identified_by_its_content(tmp_path: Path) -> None:
+def test_any_other_stack_is_identified_by_the_content_of_its_setup(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     here, there = tmp_path / "a" / "setup.sh", tmp_path / "b" / "setup.sh"
@@ -138,6 +117,7 @@ def test_every_variable_is_compared_by_its_digest_known_or_not(name: str) -> Non
     [
         "_",
         "OLDPWD",
+        "COLUMNS",
         "BASH_FUNC_module%%",
         "SSH_CONNECTION",
         "XDG_RUNTIME_DIR",
