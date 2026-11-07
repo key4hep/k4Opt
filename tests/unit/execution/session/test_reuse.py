@@ -588,3 +588,21 @@ def test_a_recorded_output_out_of_reach_for_a_while_serves_again_once_back(
     assert len(fake.calls) == 2  # a's, and b's while a's was out of reach
     assert "reused" not in simulated(summary(tmp_path / "b"))
     assert simulated(summary(tmp_path / "c"))["reused"]["run_dir"] == str(tmp_path / "a")
+
+
+def test_a_run_read_through_a_symlink_is_not_read_again_where_it_leads(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "storage" / "a")
+    study = tmp_path / "study"
+    study.mkdir()
+    (study / "trial-000000").symlink_to(tmp_path / "storage" / "a")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        assert session.reuse([study]) == 1
+        assert session.reuse([tmp_path / "storage" / "a"]) == 0  # the same run
+        assert session.reuse([tmp_path / "storage"]) == 0
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert len(fake.calls) == 1
+    # where the first path that reached it puts it
+    assert simulated(summary(tmp_path / "b"))["reused"]["run_dir"] == str(study / "trial-000000")

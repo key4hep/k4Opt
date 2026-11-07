@@ -101,7 +101,7 @@ class Reuse:
     # the signatures of the sources of this session's candidates not yet published, by record
     _unpublished: dict[str, set[str]] = field(default_factory=dict)
     _published: set[str] = field(default_factory=set)  # this session's records published
-    _read: set[Path] = field(default_factory=set)  # the run directories whose record was read
+    _read: set[Path] = field(default_factory=set)  # where the records read are, symlinks resolved
 
     def find(self, signature: str) -> tuple[Source, Stat] | None:
         """The output that stands in for a stage with ``signature``, checked now, with the stat
@@ -186,13 +186,16 @@ class Reuse:
         its document); its output is hashed only when a stage would reuse it, and serves only if
         it is still there with that hash (:meth:`find`). Records that cannot be read, of another
         schema or that do not hold up, and stages without these are left out. A record read
-        once is not read again: a published record never changes."""
+        once is not read again, whatever path reaches it (a symlink, or the directory it leads
+        to): a published record never changes. Its outputs are kept where the first path that
+        reached it puts them."""
         kept = 0
         for run_dir in run_dirs:
             path = Path(run_dir)
-            if path in self._read or not (path / SUMMARY_NAME).is_file():
+            real = Path(os.path.realpath(path))
+            if real in self._read or not (path / SUMMARY_NAME).is_file():
                 continue
-            self._read.add(path)
+            self._read.add(real)
             for signature, source in _recorded(path):
                 kept += self.add(signature, source)
         return kept
