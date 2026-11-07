@@ -569,3 +569,22 @@ def test_a_run_reached_through_symlinks_is_found_once_and_a_loop_ends(
         session.evaluate({RADIUS: 450.0}, tmp_path / "b")
     assert len(fake.calls) == 1
     assert simulated(summary(tmp_path / "b"))["reused"]["record"] == first.summary["id"]
+
+
+def test_a_recorded_output_out_of_reach_for_a_while_serves_again_once_back(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    events = tmp_path / "a" / simulated(summary(tmp_path / "a"))["outputs"]["events"]["path"]
+    away = tmp_path / "away"
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        assert session.reuse([tmp_path / "a"]) == 1
+        events.rename(away)  # a network mount that went away
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+        away.rename(events)  # and came back, the same file
+        assert session.reuse([tmp_path / "a"]) == 0  # read already: nothing to read again
+        session.evaluate({RADIUS: 450.0}, tmp_path / "c")
+    assert len(fake.calls) == 2  # a's, and b's while a's was out of reach
+    assert "reused" not in simulated(summary(tmp_path / "b"))
+    assert simulated(summary(tmp_path / "c"))["reused"]["run_dir"] == str(tmp_path / "a")

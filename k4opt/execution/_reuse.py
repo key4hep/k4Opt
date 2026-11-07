@@ -10,7 +10,8 @@ same events, and so do two samples defined alike.
 own stages that ended ``done``, and of the stages that the records it is given hold
 (:meth:`Reuse.index`: a study's earlier trials on a resume, or runs named by the caller). Only an
 output whose SHA-256 is known is kept, and it is checked before each use: a file that changed or
-went is dropped, and the stage runs. A record is published only once every task of its candidate
+went is skipped (the next one with its signature is tried), and the stage runs if none holds
+up. A record is published only once every task of its candidate
 ended, so an output listed in one was complete; an output of a stage of this session is kept once
 the stage ended ``done``, pending until its candidate is published: it is dropped if the
 candidate stops or is not published (:meth:`Reuse.withdraw`), and a candidate that reused it is
@@ -93,8 +94,9 @@ class Reuse:
     """The outputs that stand in for stages, by signature, and the signatures of the stages that
     run."""
 
-    # every output recorded with a signature, in the order found: the first that holds up serves
-    _sources: dict[str, list[Source]] = field(default_factory=dict)
+    # every output recorded with a signature, by its file, in the order found: the first that
+    # holds up serves
+    _sources: dict[str, dict[Path, Source]] = field(default_factory=dict)
     _running: dict[str, Hashable] = field(default_factory=dict)  # signature: candidate key
     # the signatures of the sources of this session's candidates not yet published, by record
     _unpublished: dict[str, set[str]] = field(default_factory=dict)
@@ -104,28 +106,26 @@ class Reuse:
     def find(self, signature: str) -> tuple[Source, Stat] | None:
         """The output that stands in for a stage with ``signature``, checked now, with the stat
         it was checked at: watched from that stat (:func:`reused`), a file replaced since the
-        check is told apart. ``None`` if there is none; each one tried that changed or went
-        since it was recorded is forgotten, and the next one is tried."""
-        sources = self._sources.get(signature, [])
-        while sources:
-            source = sources[0]
+        check is told apart. The first, in the order they were kept, that is there with the size
+        and SHA-256 recorded, ``None`` if none is. One that is not is skipped, not forgotten: it
+        is checked again at the next use (a stat, and a hash only if its stat changed), so a file
+        that was out of reach for a while (a network mount) serves again once it is back."""
+        for source in self._sources.get(signature, {}).values():
             try:
                 stat, now = snapshot(source.path)  # hashed again only if its stat changed
             except OSError:
-                now = None
+                continue
             if now == {"bytes": source.bytes, "sha256": source.sha256}:
                 return source, stat
-            sources.pop(0)
-        self._sources.pop(signature, None)
         return None
 
     def add(self, signature: str, source: Source) -> bool:
         """Keep ``source`` for the stages with ``signature``, after those kept already; whether
         it was not kept yet (by its file)."""
-        sources = self._sources.setdefault(signature, [])
-        if any(kept.path == source.path for kept in sources):
+        sources = self._sources.setdefault(signature, {})
+        if source.path in sources:
             return False
-        sources.append(source)
+        sources[source.path] = source
         return True
 
     def running(self, signature: str) -> bool:
@@ -160,7 +160,8 @@ class Reuse:
         """The candidate whose record is ``record`` will not be published: its outputs stand in
         for no stage any more, since no record would say where they come from."""
         for signature in self._unpublished.pop(record, set()):
-            kept = [each for each in self._sources.get(signature, []) if each.record != record]
+            sources = self._sources.get(signature, {})
+            kept = {path: each for path, each in sources.items() if each.record != record}
             if kept:
                 self._sources[signature] = kept
             else:

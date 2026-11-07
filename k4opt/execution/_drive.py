@@ -281,33 +281,31 @@ def _drive(
             run.relies.add(source.record)
         complete(run, task, result)
 
-    def settle(digest: str) -> bool:
-        """The stage with signature ``digest`` ran no more: the first stage parked on it reuses
-        what it made or, without an output, is ready to run itself. ``False`` once none is
-        parked on it, or once a stage with it runs again (those parked wait for that one)."""
+    def settle(digest: str) -> None:
+        """The stage with signature ``digest`` ran no more: each stage parked on it reuses what
+        it made or, without an output, is ready to run itself (the first to start then runs it,
+        and those after it park again), unless a stage with it started meanwhile: they wait for
+        that one, which settles them when it ends."""
         assert reuse is not None
-        parked = scheduler.parked(digest)
-        if not parked or reuse.running(digest):
-            return False
-        key, task = parked[0]
-        found = reuse.find(digest)
-        if found is None:
-            scheduler.unpark(key, task.id)
-        else:
-            take(runs[str(key)], task, found)
-        return True
+        for key, task in scheduler.parked(digest):  # once, in their order
+            if str(key) not in runs:  # stopped meanwhile, its parked stages with it
+                continue
+            found = reuse.find(digest)
+            if found is not None:
+                take(runs[str(key)], task, found)
+            elif not reuse.running(digest):
+                scheduler.unpark(key, task.id)
 
     def advance() -> None:
         """Hand out each task the scheduler starts, and settle each signature whose stage ended,
-        one step at a time, until neither is left: what one step makes ready or parks, the next
-        takes up, so no handler calls back into another."""
+        one at a time, until neither is left: what one step makes ready or parks, the next takes
+        up, so no handler calls back into another."""
         while True:
             if (item := scheduler.next()) is not None:
                 key, task = item
                 share(runs[str(key)], task)
             elif settling:
-                if not settle(settling[0]):
-                    settling.popleft()
+                settle(settling.popleft())
             else:
                 return
 
