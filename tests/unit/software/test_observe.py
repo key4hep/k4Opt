@@ -458,6 +458,20 @@ def test_a_path_another_process_made_while_the_run_ran_stays_missing(tmp_path: P
     assert found.changes() == [f"{override} appeared"]
 
 
+def test_a_path_found_there_by_an_exclusive_create_is_an_input(tmp_path: Path) -> None:
+    # a marker probed with O_CREAT|O_EXCL: it exists, so the cached path is taken
+    marker = tmp_path / "initialized"
+    marker.touch()
+    line = (
+        f'openat(AT_FDCWD<{tmp_path}>, "initialized", O_WRONLY|O_CREAT|O_EXCL, 0600)'
+        " = -1 EEXIST (File exists)"
+    )
+    found = footprint(traces(tmp_path / "raw", STARTED, line), "files", [])
+    assert found.read[str(marker)] is not None and found.changes() == []
+    marker.unlink()
+    assert found.changes() == [f"{marker} went"]
+
+
 def test_a_path_a_failed_call_would_have_made_stays_missing(tmp_path: Path) -> None:
     made = tmp_path / "made"
     line = f'mkdir("{made}", 0755) = -1 EROFS (Read-only file system)'

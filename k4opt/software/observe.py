@@ -447,6 +447,8 @@ def _opened(seen: _Seen, call: bytes, args: bytes, match: re.Match[bytes]) -> No
         seen.missing[path] = None
     elif match["errno"] in _DENIED:
         seen.denied[path] = None
+    elif match["errno"] == b"EEXIST":  # a probe that found it there: what is there decides
+        seen.read[path] = None
 
 
 def _started(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:

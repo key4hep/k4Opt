@@ -355,12 +355,14 @@ def test_pi0_example_combines_hashed_histograms_from_two_real_samples(
 
 
 def _unhashed(run: dict[str, Any]) -> dict[str, Any]:
-    """``run`` without the SHA-256 of its stages' outputs."""
+    """``run`` without the SHA-256 of its stages' outputs and footprints: a footprint names the
+    scratch files a run made, whose names are new on every run."""
     run = copy.deepcopy(run)
     for sample in run["samples"].values():
         for stage in sample["stages"].values():
             for output in (stage.get("outputs") or {}).values():
                 output.pop("sha256", None)
+            (stage.get("observed") or {}).pop("footprint", None)
     return run
 
 
