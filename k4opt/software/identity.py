@@ -385,13 +385,14 @@ def _local(data: object) -> Local:
 
 
 def _rebuilt(then: Software, now: Software, name: str) -> list[str]:
-    """The local entries of ``name`` whose content differs between ``then`` and ``now``, if the
-    variable leads to the same places in both and only content differs; empty otherwise."""
-    before = {entry.path: entry.sha256 for entry in then.local if entry.variable == name}
-    after = {entry.path: entry.sha256 for entry in now.local if entry.variable == name}
-    if not before or before.keys() != after.keys():
+    """Where the local entries of ``name`` in ``now`` hold other content than the entries in the
+    same places of the variable in ``then`` (a build rebuilt, here or after it moved); empty if it
+    has other local entries, or the same content in each."""
+    before = [entry.sha256 for entry in then.local if entry.variable == name]
+    after = [entry for entry in now.local if entry.variable == name]
+    if not before or len(before) != len(after):
         return []
-    return [path for path in before if before[path] != after[path]]
+    return [entry.path for entry, old in zip(after, before, strict=True) if entry.sha256 != old]
 
 
 def _build_difference(then: Build, now: Build) -> str:

@@ -777,7 +777,9 @@ class EvaluationSession:
                 "not make new events for them; a replicate makes every stage from its seeds"
             )
         configuration = configure(spec, values, replicate)
-        self._baseline.verify()  # first: a file that is gone changed, more than it is missing
+        # first: a file that is gone changed, more than it is missing; a local build's files are
+        # looked at before the record, which a change refuses
+        self._baseline.verify(local=False)
         prepared = _preflight(self._binding, configuration, self._dry_runs, level)
         if isinstance(prepared, Rejected):
             return values, key, prepared, []

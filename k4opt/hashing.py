@@ -55,6 +55,13 @@ def sha256_of(path: str | os.PathLike[str], stat: Stat | None = None) -> str:
     return found
 
 
+def read_sha256(path: str | os.PathLike[str]) -> str:
+    """SHA-256 of the file at ``path``, read now and kept nowhere: for a file whose stat cannot
+    vouch for its content (one changed within the kernel clock's last tick). Raises
+    :class:`OSError`."""
+    return _read(os.fspath(path))
+
+
 def _read(name: str) -> str:
     """SHA-256 of the file ``name``, read now."""
     digest = hashlib.sha256()

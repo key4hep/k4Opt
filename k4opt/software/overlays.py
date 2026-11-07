@@ -38,11 +38,12 @@ import os
 import re
 import site
 import stat
+import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from k4opt.hashing import Stat, sha256_of
+from k4opt.hashing import Stat, read_sha256, sha256_of, stat_of
 
 type Role = Literal["libraries", "headers", "python", "files"]
 
@@ -180,12 +181,67 @@ class _TooLargeError(Exception):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class _Taken:
+    """What a look at an entry found, and the stat of every file and directory it read: while
+    none of them changed, neither did what can be loaded through the entry."""
+
+    local: Local
+    stats: tuple[tuple[str, Stat | None], ...]
+
+    def unchanged(self) -> bool:
+        return all(stat_of(path) == status for path, status in self.stats)
+
+
+_TAKEN: dict[tuple[Role, str], _Taken] = {}
+"""The last look at each entry in this process: a later look stats what it read (tens of
+milliseconds for a virtual environment) and walks and hashes again only if something changed."""
+
+_READ: list[tuple[str, Stat | None]] | None = None
+"""The directories the look under way scans, with their stat; ``None`` between looks."""
+
+
+RECENT_NS = 2_000_000_000
+"""How recent a change may be for a stat not to vouch for what it is: a file or directory changed
+twice within one tick of the kernel's coarse clock (milliseconds, a second on some network
+filesystems) keeps its stat. What changed more recently is read again on every look, as git
+treats a "racily clean" file."""
+
+
+def _recent(status: Stat | None, now: int) -> bool:
+    return status is not None and max(status[1], status[2]) > now - RECENT_NS
+
+
 def _identify(variable: str, role: Role, entry: str) -> Local:
+    taken = _TAKEN.get((role, entry))
+    if taken is not None and taken.unchanged():
+        return taken.local
+    global _READ
+    _READ = []
+    now = time.time_ns()
+    try:
+        local, files = _walk(variable, role, entry, now)
+        stats = (*_READ, *files)
+    finally:
+        _READ = None
+    if not any(_recent(status, now) for _, status in stats):
+        _TAKEN[(role, entry)] = _Taken(local, stats)
+    else:
+        _TAKEN.pop((role, entry), None)
+    return local
+
+
+def _walk(
+    variable: str, role: Role, entry: str, now: int
+) -> tuple[Local, list[tuple[str, Stat | None]]]:
+    """What can be loaded through ``entry``, and the stat of each file of it."""
     files: list[tuple[str, str]] = []
+    stats: list[tuple[str, Stat | None]] = []
     size = 0
     try:
         listed = _file(entry) if os.path.isfile(entry) else _LISTED[role](entry, "")
         for relative, path, status in listed:
+            stats.append((path, status))
             if status is None:  # a link that leads nowhere, or a file gone meanwhile
                 files.append((relative, "unreadable"))
                 continue
@@ -193,13 +249,15 @@ def _identify(variable: str, role: Role, entry: str) -> Local:
             if len(files) >= MAX_FILES or size > MAX_BYTES:
                 raise _TooLargeError
             try:
-                files.append((relative, sha256_of(path, status)))
+                recent = _recent(status, now)
+                files.append((relative, read_sha256(path) if recent else sha256_of(path, status)))
             except OSError:
                 files.append((relative, "unreadable"))
     except _TooLargeError:
-        return Local(variable, entry, None, len(files), size)
+        return Local(variable, entry, None, len(files), size), stats
     text = json.dumps(sorted(files), separators=(",", ":"))
-    return Local(variable, entry, hashlib.sha256(text.encode()).hexdigest(), len(files), size)
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    return Local(variable, entry, digest, len(files), size), stats
 
 
 def _stat(entry: os.DirEntry[str]) -> Stat | None:
@@ -213,6 +271,8 @@ def _stat(entry: os.DirEntry[str]) -> Stat | None:
 
 
 def _scan(directory: str) -> list[os.DirEntry[str]]:
+    if _READ is not None:  # what it holds by name changes only with its own stat
+        _READ.append((directory, stat_of(directory)))
     try:
         with os.scandir(directory) as found:
             return list(found)

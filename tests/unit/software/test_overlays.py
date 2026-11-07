@@ -105,7 +105,7 @@ def test_a_namespace_package_is_identified_by_its_modules(tmp_path: Path) -> Non
     (root / "space" / "inner").mkdir(parents=True)
     (root / "space" / "inner" / "mod.py").write_text("x = 1\n")
     before = software(PYTHONPATH=str(root))
-    (root / "space" / "inner" / "mod.py").write_text("x = 2\n")
+    (root / "space" / "inner" / "mod.py").write_text("x = 22\n")  # another size: see hashing
     assert software(PYTHONPATH=str(root)).id != before.id
 
 
@@ -131,7 +131,7 @@ def test_a_preloaded_library_is_its_content(tmp_path: Path) -> None:
     library = tmp_path / "libpatch.so"
     library.write_bytes(b"v1")
     before = software(LD_PRELOAD=f"{library} /usr/lib64/libm.so.6")
-    library.write_bytes(b"v2")
+    library.write_bytes(b"v2, rebuilt")
     after = software(LD_PRELOAD=f"{library} /usr/lib64/libm.so.6")
     assert before.differences(after) == [f"the files LD_PRELOAD leads to in {library} changed"]
 

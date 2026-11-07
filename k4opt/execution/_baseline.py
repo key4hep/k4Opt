@@ -35,7 +35,7 @@ from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.program import identify
 from k4opt.record.results import TaskResult
 from k4opt.revision import code_identity, code_unchanged
-from k4opt.software import Software
+from k4opt.software import Build, Software, System, compared_variables
 
 
 def check_code() -> None:
@@ -58,6 +58,7 @@ class Baseline:
     __slots__ = (
         "_listed",
         "_read",
+        "_variables",
         "classes",
         "externals",
         "files",
@@ -86,6 +87,8 @@ class Baseline:
         self.classes = FrozenMap(classes or {})
         # what the external references only candidates have read, by reference, without the path
         self._read: dict[str, Json] = {}
+        # the compared variables as they were, which tell a change apart in microseconds
+        self._variables = compared_variables()
 
     @property
     def software(self) -> Software:
@@ -242,11 +245,13 @@ class Baseline:
                     "same files"
                 )
 
-    def verify(self) -> None:
+    def verify(self, local: bool = True) -> None:
         """Raise :class:`ProvenanceError` if the environment, k4opt's code, a file the stages read,
         what the geometry's external references read, the identity of an implementation or a
-        module it imports changed since the session opened."""
-        self._verify_environment()
+        module it imports changed since the session opened. The files of a local build are looked at
+        only with ``local`` (tens of milliseconds for a virtual environment): before a record is
+        written, which a change since the session opened refuses."""
+        self._verify_environment(local)
         check_code()
         self._verify_programs()
         self.verify_inputs()
@@ -319,7 +324,7 @@ class Baseline:
                     "of a session run the same programs"
                 )
 
-    def _verify_environment(self) -> None:
+    def _verify_environment(self, local: bool) -> None:
         """``KEY4HEP_STACK`` and ``K4GEO`` are what they were when the session opened: the stages
         would run in another environment than the geometry was discovered in, and than the
         records say. So is the software: every program inherits this process's variables, and
@@ -334,7 +339,12 @@ class Baseline:
                     f"{name} changed after the session opened ({then!r} then, {now!r} now); the "
                     "candidates of a session run in one environment"
                 )
-        changed = self.software.differences(Software.now())
+        software = self.software
+        if not local and compared_variables() == self._variables:
+            build = Build.of(os.environ.get("KEY4HEP_STACK"))
+            if build == software.build and System.now() == software.system:
+                return
+        changed = software.differences(Software.now())
         if changed:
             raise ProvenanceError(
                 f"the software changed after the session opened: {'; '.join(changed)}; the "
