@@ -124,12 +124,20 @@ class Release:
         return None
 
     def to_dict(self) -> dict[str, object]:
-        """As JSON data, without the manifests' text (which a study keeps apart, by digest)."""
+        """As JSON data: how many packages it has, and each ``HEAD`` package, the one thing the
+        manifests do not say (the commit it was built from). Every other package is in the
+        manifests, which a study keeps apart, by digest: a thousand packages would repeat them
+        uncompressed (300 kB against 34 kB)."""
         return {
             "build": self.build.to_dict(),
             "setup": self.setup,
             "nightlies": self.nightlies,
-            "packages": {name: p.to_dict() for name, p in sorted(self.packages.items())},
+            "count": len(self.packages),
+            "packages": {
+                name: p.to_dict()
+                for name, p in sorted(self.packages.items())
+                if p.version == "HEAD"
+            },
         }
 
 

@@ -65,3 +65,11 @@ def test_the_latest_link_is_the_release_of_its_weekday(tmp_path: Path) -> None:
     first, second = Release.of(str(view)), Release.of(str(latest))
     assert first is not None and second is not None
     assert first.packages == second.packages and first.setup == second.setup
+
+
+def test_a_study_keeps_only_what_the_manifests_do_not_say(tmp_path: Path) -> None:
+    release = Release.of(str(lcg_view(tmp_path)))
+    assert release is not None
+    kept = release.to_dict()
+    assert kept["count"] == 4
+    assert sorted(kept["packages"]) == ["DD4hep", "cldconfig", "ddmarlinpandora"]  # not ROOT

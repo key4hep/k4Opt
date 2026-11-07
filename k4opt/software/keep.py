@@ -3,7 +3,8 @@
 A study's ``software/`` directory (:data:`DIRECTORY`) holds, for no one but its author:
 
 - ``software-<sha16>.json`` (:data:`SCHEMA`), taken when a session opens (:func:`take`): the
-  software it runs on, what the stack's release says of its packages (:mod:`.stack`), where each
+  software it runs on, the stack's release (:mod:`.stack`: its manifests, kept apart, and the
+  commit of each package built from a repository's head), where each
   local build comes from and the state of its source (:mod:`.source`), each reconstruction's job
   directory against the package of the stack it is a copy of (its *steering*), and the files of
   the evaluators. One file per state, named by its content: a session that opens on the same state
@@ -55,7 +56,7 @@ USED_SCHEMA = "k4opt.used/1"
 
 MAX_INPUT = 100 << 20
 """The largest input a study keeps a copy of; a larger one is identified and located only."""
-MAX_KEPT = 1 << 30
+MAX_KEPT = 100 << 20
 """How much a study keeps in all (on disk); past it, what comes is identified only."""
 
 type State = Literal["available", "altered", "gone"]

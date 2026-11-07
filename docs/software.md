@@ -202,7 +202,7 @@ optimization keeps it for every level). Nothing of it leaves the machine.
 
 | Kept | When | What |
 | --- | --- | --- |
-| the release | a session opens | what the LCG view's manifests say of each package (name, version, build hash, where), and for each package built from a repository's head the commit it was built from and lcgcmake's revision (`.buildinfo_<package>.txt`); the manifests themselves (34 kB gzipped). No file of the build |
+| the release | a session opens | the LCG view's manifests (34 kB gzipped), which name each package's version, build hash and place, and for each package built from a repository's head the commit it was built from and lcgcmake's revision (`.buildinfo_<package>.txt`), which they do not. No file of the build |
 | local builds | a session opens | each local entry of the software grouped into its *origin*: a CMake installation (`<checkout>/install` from `k4_local_repo`), a directory of local code, or an environment of installed distributions. A build is linked to its checkout and the package of the stack it stands in for, and its binaries are identified by SHA-256 and GNU build-id; never kept |
 | sources | a session opens | the complete state of each checkout (`HEAD`, staged, unstaged and untracked files; ignored files, its installation and its build trees left out), as a patch against the revision the nightly built that package from, or the newest commit a remote has. Untracked files over 10 MB are listed, not kept. Local code in no checkout is kept file by file |
 | steering | a session opens | each reconstruction's job directory against the package of the stack it is a copy of (by its name, `CLDConfig`): its changed and added files are kept, the removed ones named |
@@ -210,7 +210,8 @@ optimization keeps it for every level). Nothing of it leaves the machine.
 | inputs | a trial's record is accepted | each file the stages read that the stack, the system and the software do not identify (from the problem or the footprints), up to 100 MB each, with the variable that names it and a salted commitment `sha256(salt ‖ sha256(file))` that a publication can show without letting anyone test a guess |
 | what ran | a trial's record is accepted | which files of local builds each observed stage read |
 
-All of it within 1 GiB per study, content-addressed and gzipped, written whole and checked on every
+All of it within 100 MB per study (a study without large inputs keeps a few hundred kB: the manifests,
+the patches of its checkouts, a few small files), content-addressed and gzipped, written whole and checked on every
 read: bytes altered on disk are reported, never used. What cannot be kept never stops a study: it is
 said once, recorded, and `study show` lists it. Nothing is written into a checkout: its state is a
 git tree made with a temporary index and object store, reading the checkout's objects through

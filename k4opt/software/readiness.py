@@ -264,13 +264,13 @@ def _base(document: Mapping[str, Any], at: str, stages: list[str]) -> Requiremen
     notes: tuple[str, ...] = ()
     if "/nightlies/" in setup or "-nightlies." in setup:
         notes = ("a nightly: a later build overwrites its slot, and this one is then gone",)
-    heads = sum(1 for p in (release.get("packages") or {}).values() if p.get("version") == "HEAD")
+    heads = len(release.get("packages") or {})  # the HEAD ones: the rest are in the manifests
     source = {"release": release.get("build", {}).get("release"), "head_packages": heads}
     return Requirement(
         "base",
         "base",
         f"Key4hep {build.label}",
-        f"{build.platform}, {len(release.get('packages') or {})} packages, {heads} built from "
+        f"{build.platform}, {release.get('count')} packages, {heads} built from "
         "a repository's head, with their revisions",
         tuple(stages),
         source=source,
