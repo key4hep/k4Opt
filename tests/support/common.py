@@ -96,3 +96,32 @@ def set_beneath_python(name: str, value: str) -> Iterator[None]:
         yield
     finally:
         libc.unsetenv(name.encode())
+
+
+class _Uncached(dict[tuple[str, Any], str]):
+    """The hash cache of :mod:`k4opt.hashing`, which keeps nothing below ``root``."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__()
+        self.root = f"{root}/"
+
+    def __setitem__(self, key: tuple[str, Any], value: str) -> None:
+        if not key[0].startswith(self.root):
+            super().__setitem__(key, value)
+
+
+def counted_hashes(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[str]:
+    """Every file below ``root`` that :mod:`k4opt.hashing` reads from now on, in order, each read
+    counted (none cached); the files of the software stay cached as before."""
+    from k4opt import hashing
+
+    read, hashed = hashing._read, []
+
+    def counting(name: str) -> str:
+        if name.startswith(f"{root}/"):
+            hashed.append(name)
+        return read(name)
+
+    monkeypatch.setattr(hashing, "_read", counting)
+    monkeypatch.setattr(hashing, "_HASHES", _Uncached(root) | hashing._HASHES)
+    return hashed

@@ -20,6 +20,6 @@ The command line is ``k4opt software show``.
 from __future__ import annotations
 
 from k4opt.software.errors import SoftwareError
-from k4opt.software.identity import IGNORED, Build, Software, System
+from k4opt.software.identity import IGNORED, Build, Software, System, compared_variables
 
-__all__ = ["IGNORED", "Build", "Software", "SoftwareError", "System"]
+__all__ = ["IGNORED", "Build", "Software", "SoftwareError", "System", "compared_variables"]

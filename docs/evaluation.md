@@ -505,7 +505,7 @@ saying what the stage was made from and the SHA-256 of that document written as 
 | Key | What |
 | --- | --- |
 | `stage` | the stage type (`simulation`) |
-| `definition` | the stage as its candidate configures it: executor, `events`, `seed`, every option with the values parameters set, a path as the problem writes it (relative to the problem file, or through a variable); not its `timeout` |
+| `definition` | the stage as its candidate configures it: executor, `events`, `seed`, every option with the values parameters set; an option whose files `files` signs (a reconstruction's `directory`, a file an option names) as `<its files>`, not its path; not its `timeout` |
 | `reads` | what it read, by name: `geometry` as its fingerprint and the content of what its external references read (no paths); a stage that ran as its signature's SHA-256; a stage given as a file as that file's size and SHA-256 |
 | `files` | each file the problem names for it (`physics.pdgfile`, a reconstruction's job and data files), by key, as its size and SHA-256 |
 | `program` | the executable it ran (`ddsim`, `k4run`): its size and SHA-256, not its path (the record's `environment.observed.programs` has that), and the `interpreter` its `#!` line names as `PATH` found it (path, size and SHA-256; `null` for a program that is no script); `null` for a stage that runs none |
@@ -513,11 +513,10 @@ saying what the stage was made from and the SHA-256 of that document written as 
 | `k4opt` | the SHA-256 of k4opt's code |
 
 What does not change what a stage makes is left out: the sample it belongs to, the candidate, its
-time limit, the workers, where its files and its program are. The definition names the files as
-the problem writes them, so a problem moved with its files, or a variable that points elsewhere,
-keeps the signature; the same file named otherwise (another relative path, an absolute one) makes
-another signature, and the stage runs again: a path decides where a reconstruction's job runs
-from, which its scripts may look at. Two stages with equal signatures were made from the
+time limit, the workers, where its files and its program are. A file the stage reads is signed by
+its content, not by where it is: a reconstruction's job runs from a copy in the stage's own
+directory, so where the original was never reaches it, and the same files elsewhere (another
+checkout, the problem moved, a variable that points elsewhere) make the same signature. Two stages with equal signatures were made from the
 same things, so they made the same events: ddsim makes the same events from the same seed
 (on one thread in the same order, on several in any order; an integration test checks it on
 CLD). A record is read back only if each stage's signature is what the record itself says the stage was

@@ -273,6 +273,25 @@ def test_a_stage_run_with_another_variable_is_not_reused(
     assert len(fake.calls) == 2
 
 
+def test_a_stage_made_before_a_local_library_was_rebuilt_is_not_reused(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lib = tmp_path / "install" / "lib"
+    lib.mkdir(parents=True)
+    (lib / "libDDCore.so").write_bytes(b"ELF v1")
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(lib))
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    (lib / "libDDCore.so").write_bytes(b"ELF v2")  # the same path and variable
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path / "a"])
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert len(fake.calls) == 2
+
+
 def _reused_record(tmp_path: Path, problem_file: Path) -> tuple[EvaluationSession, dict[str, Any]]:
     session = EvaluationSession.open(problem_file, [cell_count()])
     session.evaluate({RADIUS: 450.0}, tmp_path / "a")

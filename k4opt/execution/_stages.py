@@ -51,9 +51,9 @@ from k4opt.ddsim import (
     threads,
 )
 from k4opt.evaluation import EvaluationContractError, EvaluationFailed, count_events
-from k4opt.execution._files import file_identity, readable_identity
 from k4opt.frozen import Json, thaw
 from k4opt.geometry import Catalog
+from k4opt.hashing import file_identity, readable_identity
 from k4opt.problem.candidate import edges, stage_value
 from k4opt.problem.models import Parameter, ProblemSpec, Stage, StageDestination
 from k4opt.problem.stages import (

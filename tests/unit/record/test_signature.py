@@ -59,3 +59,32 @@ def test_the_interpreter_a_program_runs_in_is_signed() -> None:
     venv = {"path": "/cvmfs/venv/bin/python3", "bytes": 9, "sha256": "c" * 64}
     assert signature(venv) != signature({**venv, "path": "/other/venv/bin/python3"})
     assert signature(venv) != signature(None)
+
+
+def test_an_option_whose_files_are_signed_is_not_signed_by_where_they_are() -> None:
+    def signature(directory: str, content: str) -> dict[str, Any]:
+        stage = Stage(
+            "reconstruction",
+            executor="k4run",
+            options={"directory": directory, "options": "CLDReconstruction.py", "cms": 240},
+        )
+        files = {
+            "directory/CLDReconstruction.py": {"bytes": 1, "sha256": content * 64},
+            "directory/PandoraSettings/Default.xml": {"bytes": 2, "sha256": "e" * 64},
+        }
+        return signed(
+            stage_document(
+                "reconstruction",
+                stage,
+                reads={"simulation": "0" * 64},
+                files=files,
+                program=None,
+                software="s" * 64,
+                k4opt="1" * 64,
+            )
+        )
+
+    here = signature("$CLDCONFIG/share/CLDConfig", "a")
+    assert here["document"]["definition"]["directory"] == "<its files>"
+    assert here["document"]["definition"]["options"] == "CLDReconstruction.py"  # a name in it
+    assert here == signature("/home/me/CLDConfig", "a") != signature("/home/me/CLDConfig", "b")

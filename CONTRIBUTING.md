@@ -15,6 +15,7 @@ those before it (`problem` <- `record` <- `execution` <- `optimization` <- `publ
       frozen.py        immutable copies of JSON-like data, shared by components that store it
       yamlio.py        strict YAML loading, shared by components that read YAML files
       jsonio.py        atomic publication of complete files: never over another, or replacing one whole
+      hashing.py       files by content: each version of a file hashed once per process
       revision.py      git revisions and the identity of k4opt's own code, for provenance
       terminal.py      colors and widths of terminal output, shared by the command lines
       cli.py           the `k4opt` command; each component adds a command group
@@ -32,7 +33,7 @@ those before it (`problem` <- `record` <- `execution` <- `optimization` <- `publ
 Rules of thumb:
 
 - Components share the top-level modules (`k4opt.errors`, `k4opt.frozen`,
-  `k4opt.yamlio`, `k4opt.jsonio`, `k4opt.revision`, `k4opt.terminal`). A component uses
+  `k4opt.yamlio`, `k4opt.jsonio`, `k4opt.hashing`, `k4opt.revision`, `k4opt.terminal`). A component uses
   another through its public API (`k4opt.<component>`) or, inside k4opt, through that
   component's modules without a leading underscore (`k4opt.problem.plan`), never through its
   `_private` modules; imports go one way only (a unit test checks it).

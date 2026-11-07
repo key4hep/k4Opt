@@ -12,13 +12,14 @@ identifies a run is what is there:
 | --- | --- |
 | build | the build of the stack, from what the stack says of itself |
 | system | the operating system with its major version, the glibc version, the architecture |
-| variables | the SHA-256 of every environment variable not known to be irrelevant |
+| variables | the SHA-256 of every environment variable not known to be irrelevant, a local build on a search path by its content |
+| site | what the interpreter's site directories hold (a virtual environment, the user's `pip install --user`) |
 
 Their digest is the software's `id`: two sessions with one `id` run on the same software. The build
-is identified wherever the stack is; the variables are compared as they are, so a variable that
-holds the stack's path (`LD_LIBRARY_PATH`) makes the same build at another prefix another `id`.
-`latest` and its weekday are one, since the view writes the paths it was built at. See what this
-shell runs on with
+is identified wherever the stack is, and so is a [local build](#local-builds): by what it holds, not
+where. Other text is compared as it is: a variable that holds a path into the stack differs between
+two prefixes of the stack, and `HOME` between two users. `latest` and its weekday are one, since the
+view writes the paths it was built at. See what this shell runs on with
 
 ```text
 $ k4opt software show
@@ -30,8 +31,7 @@ id:        58e34b81d98af6bbf117d9b8b8ff931267aa58ce87b95cfec432a9e5c1fd01c3
 ```
 
 Nothing in a problem file says which software to use: a problem describes the physics, and the
-shell it runs in says the rest. Local builds are for now seen only through the variables that point
-at them, not by their content.
+shell it runs in says the rest.
 
 ## The build
 
@@ -77,14 +77,49 @@ their values too, since the geometry was found through them.
 A wrongly compared variable costs a refusal that names it; a wrongly ignored one could cost
 correctness. So the list stays short, and a name joins it only once it is shown to be irrelevant.
 
+## Local builds
+
+A local build (`k4_local_repo`, a helper directory, a virtual environment) is put in front of the
+stack through the variables that tell programs where to load from. Their text says where it is, not
+what it is: a library rebuilt in place keeps the text, and the same build elsewhere changes it. So
+each entry of such a variable that is a local file or directory is identified by the SHA-256 of what
+can be loaded through it, as the variable uses it; entries under `/cvmfs`, `/usr`, `/lib`, `/lib64`,
+`/bin`, `/sbin` and `/etc` stay as text, which the build and the system identify.
+
+| Variable | What can be loaded through a local entry |
+| --- | --- |
+| `LD_LIBRARY_PATH`, `ROOT_LIBRARY_PATH`, `GAUDI_PLUGIN_PATH` | the files directly in the directory: a library or a plugin is looked up among them by name (the loader, ROOT's and DD4hep's `.rootmap` and `.components` scans) |
+| `ROOT_INCLUDE_PATH` | every file below the directory, which an `#include` names relative to it |
+| `PYTHONPATH`, and the interpreter's site directories with what their `.pth` files add | what Python can import: modules (`.py`, `.pyc`, `.so`) and `.pth` files, every file of a regular package (one with an `__init__`), the modules of a namespace package (a directory whose name is an identifier), and package metadata (`*.dist-info`, `*.egg-info`); never `__pycache__` |
+| `MARLIN_DLL`, `LD_PRELOAD` | each file named |
+
+So a library rebuilt in place, a module edited in a helper directory, a package installed with
+`pip install --user` and an edited editable install are other software, and the same build at
+another prefix is the same software. A refusal names what changed: *the files LD_LIBRARY_PATH leads
+to in /home/me/install/lib changed*. The record keeps each local entry with where it is, its digest,
+its number of files and bytes; a snapshot keeps none of it.
+
+Each file is read once per version, as the files a problem names are (its size, times and inode
+tell a rewritten file apart); before each candidate a session only looks at those. A worker takes
+what its session read, and after each task looks at the variables alone, since a task changes
+variables, not installed files. An entry of more than 50,000 files or 4 GiB is not identified by
+content: it is identified by where it is, and the record says so.
+
+What lies outside: `PATH` is compared as text, since the directories on it hold tools that update
+themselves (a program k4opt runs is identified by its content, and by its interpreter); a file a
+module reads that Python does not import (data next to a module of a namespace package), a source
+directory an editable install maps without a `.pth` path, and a value that names a file in any
+other variable (`MY_SCALE_FILE`) are identified by their text. The files each stage really opened
+are what a later step of this work observes.
+
 ## What depends on it
 
 | Where | What happens |
 | --- | --- |
 | A child process | Workers and the programs of the stack get exactly `os.environ`, never what a library set beneath Python: ROOT's interpreter sets `CLING_PREBUILT_MODULE_PATH` with C's `setenv` once it is used, and a child would otherwise inherit what no identity holds. |
 | A session | The software is taken when the session opens. Before each candidate, and before its record is written, any difference stops the session: every program inherits this process's variables. An evaluator that sets a variable while it runs inline does the same, unless the variable is on the list above. |
-| A worker | It compares the build, the system and each variable with the session's when it starts, and refuses by name; and again after every task. A task that set a variable there (an evaluator writing `os.environ`) fails its candidate with a `ProvenanceError`, and the worker ends: the next task runs in a new one, started from the session's environment. |
-| A stage's signature | It holds the `id`: a stage of another build, or run with another variable, is not reused, whatever its path. |
+| A worker | It runs with the session's `sys.path`, compares the build, the system and each variable with the session's when it starts, and refuses by name; and compares the variables again after every task. A task that set a variable there (an evaluator writing `os.environ`) fails its candidate with a `ProvenanceError`, and the worker ends: the next task runs in a new one, started from the session's environment. |
+| A stage's signature | It holds the `id`: a stage of another build, of a rebuilt local library, or run with another variable, is not reused, whatever its path. An option whose files the stage signs by content (a reconstruction's `directory`, a file an option names) is signed by those files, not by its text: the job runs from a copy, so the same job elsewhere makes the same signature. |
 | A study | The `id`, the build and the system are part of its identity. A resume on other software is refused, naming what differs, and each trial's record must have run on the study's software. |
 | A record | `environment.observed.software` holds all of it, and is refused if its `id` is not that of its parts. |
 | A snapshot | It holds the `id`, the build and the system, never the variables, whose names can be private, nor `KEY4HEP_STACK`, a location the build identifies. A catalog and the dashboard name the build that ran. |

@@ -1,8 +1,8 @@
 """Internal: the files of a candidate, as its records identify them and its tasks watch them.
 
-A file is identified by its size and SHA-256 (:func:`file_identity`), hashed once per version of
-it, and told apart from a rewritten one, on the filesystem that took it, by its ``stat``: its
-size, times and inode (:data:`Stat`). The stats are machine-specific and never recorded.
+A file is identified by its size and SHA-256 (:func:`k4opt.hashing.file_identity`), hashed once
+per version of it, and told apart from a rewritten one by its ``stat``
+(:data:`k4opt.hashing.Stat`).
 
 The files a task makes in its own directory are :class:`Made`: what the record says of each (an
 :class:`~k4opt.evaluation.Artifact`, hashed once, when the task ends: an evaluator's artifact
@@ -20,8 +20,6 @@ workspace is on this machine.
 
 from __future__ import annotations
 
-import functools
-import hashlib
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -30,59 +28,10 @@ from typing import TYPE_CHECKING
 
 from k4opt.evaluation import Artifact, EvaluationContractError, EvaluationResult
 from k4opt.frozen import FrozenMap, Json
+from k4opt.hashing import Stat, file_identity, stat_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from k4opt.problem.plan import TaskId
-
-
-type Stat = tuple[int, int, int, int]
-"""What tells a file apart from a rewritten one: its size, mtime, ctime and inode."""
-
-
-def stat_of(path: Path) -> Stat | None:
-    try:
-        status = path.stat()
-    except OSError:
-        return None
-    return (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
-
-
-@functools.cache
-def _sha256(path: str, size: int, mtime_ns: int, ctime_ns: int, inode: int) -> str:
-    """SHA-256 of a file. The other arguments only key the cache, so the same file is read once
-    per process however many candidates read it, but a changed one is hashed again: writing to a
-    file or replacing it changes its ctime or inode even if the content keeps its size and its
-    mtime is restored. The cache is not bounded: a session checks every file it identified before
-    each candidate, so a bound smaller than their number would hash each of them every time; an
-    entry is a few hundred bytes per version of a file.
-    The kernel stamps ctime with a coarse clock (milliseconds), so a file rewritten within the
-    same tick as it was hashed is not told apart; input files are assumed not to change while
-    a campaign hashes them."""
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def file_identity(path: Path) -> dict[str, Json]:
-    """``bytes`` and ``sha256`` of the file at ``path``; raises :class:`OSError`."""
-    status = path.stat()
-    return {
-        "bytes": status.st_size,
-        "sha256": _sha256(
-            str(path), status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino
-        ),
-    }
-
-
-def readable_identity(path: Path) -> dict[str, Json] | None:
-    """:func:`file_identity`, or ``None`` for a file that cannot be read: whatever reads it
-    reports that."""
-    try:
-        return file_identity(path)
-    except OSError:
-        return None
 
 
 def snapshot(path: Path) -> tuple[Stat, dict[str, Json]]:

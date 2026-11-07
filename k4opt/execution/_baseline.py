@@ -26,10 +26,10 @@ from k4opt import __version__
 from k4opt.errors import K4OptError
 from k4opt.evaluation.loader import changed_code, evaluator_source
 from k4opt.execution._binding import _Binding, _implementations
-from k4opt.execution._files import readable_identity
 from k4opt.execution._work import content
 from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
+from k4opt.hashing import readable_identity
 from k4opt.problem.candidate import Configuration
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.program import identify

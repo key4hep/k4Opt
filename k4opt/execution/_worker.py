@@ -47,9 +47,10 @@ from k4opt.execution._tasks import Observations, SessionContext, TaskSpec
 from k4opt.execution._work import execute_task
 from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json
+from k4opt.hashing import Known, known, learn
 from k4opt.problem.plan import Kind, TaskId
 from k4opt.revision import code_fingerprint
-from k4opt.software import Software
+from k4opt.software import Software, compared_variables
 
 LOG_NAME = "evaluator.log"
 """The file in an evaluation's own directory that holds what its evaluator printed."""
@@ -77,7 +78,8 @@ class SessionSpec:
     ``environment`` ``KEY4HEP_STACK`` and ``K4GEO`` and ``software`` what it runs on, as the
     session took them; ``implementations`` are loaded first, then ``payload`` is read: the
     :class:`~k4opt.execution._work.SessionContext` and what each evaluation is bound to, whose
-    classes it names by their module and name.
+    classes it names by their module and name; ``hashes`` what the coordinator hashed
+    (:func:`k4opt.hashing.known`), which the worker takes as its own: it runs on this machine.
     """
 
     path: tuple[str, ...]
@@ -86,6 +88,7 @@ class SessionSpec:
     software: Software
     implementations: tuple[Implementation, ...]
     payload: bytes
+    hashes: Known = ()
 
 
 def session_spec(
@@ -142,6 +145,7 @@ def session_spec(
         software,
         tuple(implementations.values()),
         payload,
+        known(),
     )
 
 
@@ -199,12 +203,14 @@ type Message = tuple[object, ...]
 @dataclass(frozen=True, slots=True)
 class Session:
     """A session as a worker holds it: what every task needs (``context``, whose stages report
-    the programs they start), the implementation each evaluation is bound to (``bound``) and
-    what the session runs on (``spec``)."""
+    the programs they start), the implementation each evaluation is bound to (``bound``), what
+    the session runs on (``spec``) and the variables this process had once it set up
+    (``variables``)."""
 
     context: SessionContext
     bound: Mapping[TaskId, _Bound]
     spec: SessionSpec
+    variables: Mapping[str, str]
 
     @classmethod
     def of(cls, spec: SessionSpec, started: Callable[[int], None] | None = None) -> Session:
@@ -217,10 +223,14 @@ class Session:
                 "a worker process runs other k4opt code than the session (another checkout "
                 "first on the path, or the files changed since the session opened)"
             )
+        # the coordinator's path, which is part of what the session runs on (the directory this
+        # k4opt came from is no longer needed on it); and what it hashed, so as not to read again
+        sys.path[:] = spec.path
+        learn(spec.hashes)
         changed = _changed(spec)
         if changed is not None:
             raise ProvenanceError(f"a worker process does not run as the session: {changed}")
-        sys.path[:] = list(dict.fromkeys([*spec.path, *sys.path]))
+        variables = _variables()  # what a task could change of it, looked at after each one
         for implementation in spec.implementations:
             loaded = evaluator_source(load_evaluator(implementation.reference))
             then = {key: implementation.source.get(key) for key in _IDENTITY}
@@ -229,12 +239,11 @@ class Session:
                     f"evaluator {implementation.reference}: {then['path']} or a module it "
                     "imports changed after the session loaded it; open a new session"
                 )
-        changed = _changed(spec)  # an evaluator's module may set variables when imported
-        if changed is not None:
+        if _variables() != variables:  # an evaluator's module may set variables when imported
             raise ProvenanceError(
                 f"a worker process no longer runs as the session once it loaded the evaluators: "
-                f"{changed}; an evaluator's module that sets environment variables when it is "
-                "imported changes what every task runs on"
+                f"{_changed(spec) or 'its environment changed'}; an evaluator's module that sets "
+                "environment variables when it is imported changes what every task runs on"
             )
         context, bound = pickle.loads(spec.payload)
         assert isinstance(context, SessionContext)
@@ -242,15 +251,18 @@ class Session:
             sample: replace(stages, started=started, die_with_parent=True)
             for sample, stages in context.contexts.items()
         }
-        return cls(replace(context, contexts=FrozenMap(contexts)), FrozenMap(bound), spec)
+        return cls(
+            replace(context, contexts=FrozenMap(contexts)), FrozenMap(bound), spec, variables
+        )
 
     def drifted(self, spec: TaskSpec) -> ProvenanceError | None:
         """Why this process no longer runs as the session after the task ``spec``, ``None`` if it
         still does: a task that set a variable (an evaluator writing ``os.environ``) changed what
-        every later task here would run on, which no record would say."""
-        changed = _changed(self.spec)
-        if changed is None:
+        every later task here would run on, which no record would say. A task changes variables,
+        not the files a local build installed, so only those are looked at (in microseconds)."""
+        if _variables() == self.variables:
             return None
+        changed = _changed(self.spec) or "its environment changed"
         return ProvenanceError(
             f"{spec.task.id.label}: the worker process that ran it no longer runs as the session: "
             f"{changed}; a task that sets environment variables changes what every later task "
@@ -310,6 +322,12 @@ def _cancel(signum: int, frame: FrameType | None) -> None:
 
 
 _PR_SET_PDEATHSIG = 1  # prctl(2): the signal a process gets when its parent thread ends
+
+
+def _variables() -> dict[str, str]:
+    """``KEY4HEP_STACK``, ``K4GEO`` and every compared variable, as this process has them."""
+    named = {name: os.environ[name] for name in ("KEY4HEP_STACK", "K4GEO") if name in os.environ}
+    return named | compared_variables()
 
 
 def _changed(spec: SessionSpec) -> str | None:
