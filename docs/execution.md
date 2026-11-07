@@ -574,7 +574,11 @@ output per session; what the stack and the system's package manager hold is take
 a session runs, as the build and the system are checked before each candidate. A resume is refused if an undeclared input the study's trials read changed since, or a path one of
 them looked for in vain outside the stack and the software exists now (a `~/.rootmap`, an optional
 override), naming it: one study holds the trials of one set of inputs, as of one software. What a
-stage of the study made itself (a cache) does not count. Restore the file, or start a new study.
+stage of the study made itself (a cache) does not count, whatever it holds now: this lets caches
+through and is no guarantee that every trial read the same of them. A stage that reused another
+study's output is checked by that stage's footprint, so a study resumes while the outputs it reused
+are there; a footprint gone or altered refuses the resume, since what it looked for cannot be
+checked. Restore the file, or start a new study.
 
 ## What ends a candidate, and what stops a session
 

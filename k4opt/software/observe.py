@@ -131,7 +131,9 @@ _CREATES = (re.compile(rb"\bO_CREAT\b"), re.compile(rb"\bO_EXCL\b"))
 _UNREADABLE = 5
 """How many lines a footprint keeps of those its traces held that could not be read."""
 _INET = re.compile(rb"sa_family=(AF_INET6?)\b(?P<rest>.*)")
-_UNIX = re.compile(rb'sa_family=AF_UNIX, sun_path=@?"(?P<path>[^"\\]*(?:\\.[^"\\]*)*)"')
+_UNIX = re.compile(
+    rb'sa_family=AF_UNIX, sun_path=(?P<abstract>@?)"(?P<path>[^"\\]*(?:\\.[^"\\]*)*)"'
+)
 _SOCKET = re.compile(rb"^(?P<family>AF_INET6?)\b")
 _LOADED = re.compile(rb"^\s*\d+:\s+calling init: (?P<path>.+?)\s*$")
 _MISSING = (b"ENOENT", b"ENOTDIR")
@@ -471,12 +473,17 @@ def _connected(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
     local = _UNIX.search(args)
     if local is not None:
         path = _unescape(local["path"])
+        if local["abstract"]:  # a name no file has: whoever takes it later answers
+            seen.connected[f"unix:@{path}"] = None
+            return
         if _under(path, SERVICES):
             return
-        if match["errno"] in _MISSING:  # no one there: one that comes would be another input
-            seen.sockets[path] = None  # missing wherever it is, under /run as anywhere
-        else:  # connected, connecting or refused: whatever answers there decides
+        if match["errno"] not in _MISSING:  # connected, connecting or refused: it decides
             seen.connected[f"unix:{path}"] = None
+        elif os.path.isabs(path):  # no one there: one that comes would be another input
+            seen.sockets[path] = None  # missing wherever it is, under /run as anywhere
+        else:  # relative to a directory the trace does not say
+            seen.unread += 1
         return
     found = _INET.search(args)
     if found is None:

@@ -51,6 +51,7 @@ from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.geometry import Parameter as GeometryParameter
+from k4opt.hashing import sha256_of
 from k4opt.problem.candidate import (
     Configuration,
     configure,
@@ -200,7 +201,9 @@ def _study_inputs(runs: Iterable[Path], local: Sequence[Local]) -> dict[str, Jso
     (``local``) exists now and no stage of the study made it (its footprint): a resume must not
     add trials made from other inputs."""
     held: dict[str, tuple[str, str]] = {}
-    footprints: list[tuple[str, Footprint]] = []
+    looked: list[tuple[str, list[str]]] = []  # what each stage missed outside the stack, by it
+    made: set[str] = set()
+    checked: set[Path] = set()  # a footprint many trials reused is read once
     for run in runs:
         try:
             summary = json.loads((run / SUMMARY_NAME).read_bytes())
@@ -208,11 +211,15 @@ def _study_inputs(runs: Iterable[Path], local: Sequence[Local]) -> dict[str, Jso
             continue  # a record that cannot be read reuses nothing either
         if not isinstance(summary, Mapping):
             continue
-        for stage, file in recorded_footprints(summary).items():
-            try:
-                footprints.append((f"{run.name}/{stage}", load(run / file)))
-            except SoftwareError:
-                continue  # what it looked for is not known: only another study needs it
+        for stage, (file, sha256) in recorded_footprints(summary).items():
+            at = run / file if file else None  # an absolute file: the one another study made
+            if at is not None and at in checked:
+                continue
+            found = _footprint(at, sha256, f"{run.name}/{stage}")
+            assert at is not None  # _footprint refused a record that names none
+            checked.add(at)
+            made.update(found.made)  # only what the checks need is kept, not the footprint
+            looked.append((f"{run.name}/{stage}", found.appeared(local, ())))
         for path, (then, stage) in recorded_inputs(summary).items():
             first = held.setdefault(path, (then, f"{run.name}/{stage}"))
             if first[0] != then:
@@ -226,15 +233,35 @@ def _study_inputs(runs: Iterable[Path], local: Sequence[Local]) -> dict[str, Jso
             f"{', '.join(changed)}, read by the study's trials, changed since: a resume would add "
             "trials made from other inputs; restore it as it was, or start a new study"
         )
-    made = {path for _, found in footprints for path in found.made}
-    for stage, found in footprints:
-        appeared = found.appeared(local, made)
+    for stage, there in looked:
+        appeared = [path for path in there if path not in made]
         if appeared:
             raise ProvenanceError(
                 f"{', '.join(appeared)}, which {stage} looked for and did not find, exists now: a "
                 "resume would add trials made from other inputs; remove it, or start a new study"
             )
     return {path: then for path, (then, _) in held.items()}
+
+
+def _footprint(path: Path | None, sha256: object, stage: str) -> Footprint:
+    """The footprint a record names for ``stage``, the file it is at with the SHA-256 the record
+    holds. Raises :class:`ProvenanceError` if it is not there, cannot be read or is another file:
+    what the stage looked for could not be checked, and a resume must not assume it."""
+    why = "its record names none where one may be"
+    if path is not None:
+        try:
+            if sha256_of(path) != sha256:
+                why = f"{path} is not the file its record names"
+            else:
+                return load(path)
+        except OSError as exc:
+            why = f"{path} cannot be read ({exc.strerror or exc})"
+        except SoftwareError as exc:
+            why = str(exc)
+    raise ProvenanceError(
+        f"{stage}: what it looked for cannot be checked, since its footprint is not there as "
+        f"recorded: {why}; a study that reused another's outputs resumes while they are there"
+    )
 
 
 def _observation(asked: Observation) -> tuple[Observation, str | None]:

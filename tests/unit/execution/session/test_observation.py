@@ -306,7 +306,7 @@ def test_two_trials_that_read_an_input_as_two_files_cannot_be_resumed(
     record = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
     stage = record["samples"]["gamma"]["stages"]["simulation"]
     stage["observed"]["undeclared"][str(calibration)] = "sha256:" + "0" * 64
-    (tmp_path / "b").mkdir()
+    shutil.copytree(tmp_path / "a" / "samples", tmp_path / "b" / "samples")  # its footprint too
     (tmp_path / "b" / SUMMARY_NAME).write_text(json.dumps(record))
     with (
         EvaluationSession.open(problem_file, [cell_count()]) as session,
@@ -366,3 +366,58 @@ def test_what_a_stage_of_the_study_made_keeps_its_resume(
         session.evaluate({RADIUS: 460.0}, tmp_path / "b")
     with EvaluationSession.open(problem_file, [cell_count()]) as session:
         session.reuse([tmp_path], resumed=True)  # not refused
+
+
+@pytest.mark.parametrize("damage", ["removed", "replaced"])
+def test_a_resumed_study_whose_footprint_is_gone_or_another_is_refused(
+    tmp_path: Path, problem_file: Path, calibration: Path, damage: str
+) -> None:
+    made = evaluated(problem_file, tmp_path / "a")
+    footprint = tmp_path / "a" / made["logs"]["footprint"]
+    if damage == "removed":
+        footprint.unlink()
+    else:
+        footprint.write_bytes(gzip.compress(b"{}"))
+    with (
+        EvaluationSession.open(problem_file, [cell_count()]) as session,
+        pytest.raises(ProvenanceError, match="what it looked for cannot be checked"),
+    ):
+        session.reuse([tmp_path / "a"], resumed=True)
+
+
+def test_a_stage_not_observed_has_no_footprint_to_check_on_resume(
+    tmp_path: Path, problem_file: Path, calibration: Path
+) -> None:
+    evaluated(problem_file, tmp_path / "a", observe="none")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path / "a"], resumed=True)  # nothing to check, nothing refused
+
+
+def test_a_study_that_reused_another_s_output_checks_what_that_stage_missed_on_resume(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # study A simulates without an optional file; study B reuses it; the file appears; B resumes
+    override = tmp_path / "override.json"
+    stack.install(monkeypatch, **{"*": {"read": [str(override)]}})
+    evaluated(problem_file, tmp_path / "A" / "t0")
+    stage = evaluated(problem_file, tmp_path / "B" / "t0", reuse=(tmp_path / "A",))
+    assert stage["reused"]["footprint"]["path"].startswith(str(tmp_path / "A"))
+    override.write_text("{}")
+    with (
+        EvaluationSession.open(problem_file, [cell_count()]) as session,
+        pytest.raises(ProvenanceError, match=f"{override}, which t0/gamma/simulation looked for"),
+    ):
+        session.reuse([tmp_path / "B"], resumed=True)
+
+
+def test_a_study_whose_reused_source_is_gone_cannot_be_resumed(
+    tmp_path: Path, problem_file: Path, calibration: Path
+) -> None:
+    evaluated(problem_file, tmp_path / "A" / "t0")
+    evaluated(problem_file, tmp_path / "B" / "t0", reuse=(tmp_path / "A",))
+    shutil.rmtree(tmp_path / "A")  # its events went with it, and what its stage found
+    with (
+        EvaluationSession.open(problem_file, [cell_count()]) as session,
+        pytest.raises(ProvenanceError, match="resumes while they are there"),
+    ):
+        session.reuse([tmp_path / "B"], resumed=True)

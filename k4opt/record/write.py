@@ -307,15 +307,24 @@ def recorded_inputs(summary: Mapping[str, object]) -> dict[str, tuple[str, str]]
     return found
 
 
-def recorded_footprints(summary: Mapping[str, object]) -> dict[str, str]:
-    """The footprint file of each stage of a ``summary.json`` that ran its program and kept one,
-    by the stage's label: its path relative to the run directory."""
-    found: dict[str, str] = {}
+def recorded_footprints(summary: Mapping[str, object]) -> dict[str, tuple[str, object]]:
+    """The footprint each stage of a ``summary.json`` depends on, by the stage's label: its file
+    and the SHA-256 the record holds of it. A stage that ran its program and kept one names it
+    relative to the run directory; one that reused an output names the footprint of the stage
+    that made it, by its absolute path. A stage that was not observed has none. A file the record
+    names that is not where it may be (``..``) is ``None``, which no footprint matches."""
+    found: dict[str, tuple[str, object]] = {}
     for sample in _within(summary, "samples"):
         for name in _within(summary, "samples", sample, "stages"):
-            file = _within(summary, "samples", sample, "stages", name, "logs").get("footprint")
-            if isinstance(file, str) and not file.startswith("/") and ".." not in file.split("/"):
-                found[f"{sample}/{name}"] = file
+            stage = _within(summary, "samples", sample, "stages", name)
+            file = _within(stage, "logs").get("footprint")
+            if file is not None:
+                sha256 = _within(stage, "observed", "footprint").get("sha256")
+                inside = isinstance(file, str) and not file.startswith("/")
+                inside = inside and ".." not in str(file).split("/")
+                found[f"{sample}/{name}"] = (str(file) if inside else "", sha256)
+            elif reused := _within(stage, "reused", "footprint"):
+                found[f"{sample}/{name}"] = (str(reused.get("path") or ""), reused.get("sha256"))
     return found
 
 

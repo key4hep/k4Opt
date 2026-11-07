@@ -754,6 +754,21 @@ def test_a_local_socket_no_one_was_at_is_missing_wherever_it_is(tmp_path: Path) 
     assert found.missing == ("/run/my-calibration.sock",)
 
 
+def test_a_relative_or_abstract_local_socket_is_never_taken_for_a_file(tmp_path: Path) -> None:
+    relative = (
+        'connect(3<socket:[1]>, {sa_family=AF_UNIX, sun_path="calibration.sock"}, 110)'
+        " = -1 ENOENT (No such file or directory)"
+    )
+    found = footprint(traces(tmp_path / "raw", STARTED, relative), "files", [])
+    assert found.missing == () and not found.complete  # where it looked is not known
+    abstract = (
+        'connect(4<socket:[2]>, {sa_family=AF_UNIX, sun_path=@"/tmp/.X11-unix/X0"}, 20)'
+        " = -1 ECONNREFUSED (Connection refused)"
+    )
+    found = footprint(traces(tmp_path / "again", STARTED, abstract), "files", [])
+    assert found.connected == ("unix:@/tmp/.X11-unix/X0",) and found.missing == ()
+
+
 def test_what_a_run_made_outside_its_own_directory_is_kept(tmp_path: Path) -> None:
     own, cache = tmp_path / "stage", tmp_path / "cache" / "fonts"
     lines = (

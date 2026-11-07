@@ -132,6 +132,9 @@ class Source:
         undeclared = self.observed.get("undeclared") if isinstance(self.observed, Mapping) else None
         if undeclared:  # what the output depends on: watched as what a stage of the session read
             reused["undeclared"] = undeclared
+        if self.footprint is not None:  # what its stage found, for a resume to check again
+            path, sha256 = self.footprint
+            reused["footprint"] = FrozenMap({"path": str(path), "sha256": sha256})
         provenance: dict[str, Json] = {REUSED: FrozenMap(reused)}
         if self.events_read is not None:
             provenance["events_read"] = self.events_read
