@@ -14,7 +14,15 @@ import pytest
 
 from k4opt import program
 from k4opt.software import Footprint, Local, SoftwareError
-from k4opt.software.observe import FOOTPRINT, changed_inputs, footprint, identity, load, observe
+from k4opt.software.observe import (
+    FOOTPRINT,
+    changed_inputs,
+    covered,
+    footprint,
+    identity,
+    load,
+    observe,
+)
 
 LOGS = {"stdout": "out.log", "stderr": "err.log", "command": "command.json"}
 
@@ -174,11 +182,15 @@ def test_a_local_service_may_answer_with_anything_and_the_system_s_own_does_not(
             " = -1 ENOENT (No such file or directory)",
             'connect(5<socket:[3]>, {sa_family=AF_UNIX, sun_path="/var/lib/sss/pipes/nss"}, 110)'
             " = 0",
+            'connect(6<socket:[4]>, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110)'
+            " = -1 ENOENT (No such file or directory)",
+            'connect(7<socket:[5]>, {sa_family=AF_UNIX, sun_path="/run/user/1/agent"}, 110)'
+            " = -1 EINPROGRESS (Operation now in progress)",
         ),
         "files",
         [],
     )
-    assert found.connected == (f"unix:{service}",)
+    assert found.connected == ("unix:/run/user/1/agent", f"unix:{service}")
     assert found.missing == (str(absent),)
 
 
@@ -293,11 +305,86 @@ def test_a_file_that_changed_while_the_run_ran_never_holds(tmp_path: Path) -> No
     assert found.changes() == [f"{file} could not be identified"]
 
 
-def test_a_path_looked_for_and_then_made_was_not_missing(tmp_path: Path) -> None:
-    # Python looks for a .pyc, then writes it by a rename, which no trace says
-    made = tmp_path / "helper.cpython-314.pyc"
+@pytest.mark.parametrize(
+    "making",
+    [
+        'rename("{tmp}/x.tmp", "{path}") = 0',
+        'renameat2(AT_FDCWD<{tmp}>, "x.tmp", AT_FDCWD<{tmp}>, "made", RENAME_NOREPLACE) = 0',
+        'linkat(AT_FDCWD<{tmp}>, "x.tmp", AT_FDCWD<{tmp}>, "made", 0) = 0',
+        'symlink("elsewhere", "{path}") = 0',
+        'symlinkat("elsewhere", AT_FDCWD<{tmp}>, "made") = 0',
+        'mkdir("{path}", 0755) = 0',
+        'mkdirat(AT_FDCWD<{tmp}>, "made", 0777) = 0',
+    ],
+)
+def test_a_path_looked_for_and_then_made_by_the_run_is_its_own(tmp_path: Path, making: str) -> None:
+    made = tmp_path / "made"
     made.touch()
-    assert footprint(traces(tmp_path / "raw", failed(made)), "files", []).missing == ()
+    line = making.format(tmp=tmp_path, path=made)
+    found = footprint(traces(tmp_path / "raw", STARTED, failed(made), line), "files", [])
+    assert found.missing == () and found.complete
+
+
+def test_a_path_another_process_made_while_the_run_ran_stays_missing(tmp_path: Path) -> None:
+    # looked for, not found, defaults taken; then made by someone else before the run ended
+    override = tmp_path / "override.json"
+    override.touch()
+    found = footprint(traces(tmp_path / "raw", STARTED, failed(override)), "files", [])
+    assert found.missing == (str(override),)
+    assert found.changes() == [f"{override} appeared"]
+
+
+def test_a_path_a_failed_call_would_have_made_stays_missing(tmp_path: Path) -> None:
+    made = tmp_path / "made"
+    line = f'mkdir("{made}", 0755) = -1 EROFS (Read-only file system)'
+    found = footprint(traces(tmp_path / "raw", STARTED, failed(made), line), "files", [])
+    assert found.missing == (str(made),)
+
+
+def test_a_link_retargeted_while_the_run_ran_vouches_for_nothing(tmp_path: Path) -> None:
+    # read through current -> v1; while it ran, current -> v2; both files older than the run
+    old, new, link = tmp_path / "v1", tmp_path / "v2", tmp_path / "current"
+    old.write_text("one")
+    new.write_text("two")
+    link.symlink_to(old)
+    began = time.time_ns()
+    time.sleep(0.02)
+    link.unlink()
+    link.symlink_to(new)
+    line = f'openat(AT_FDCWD</work>, "{link}", O_RDONLY) = 3<{old}>'
+    found = footprint(traces(tmp_path / "raw", STARTED, line), "files", [], began)
+    assert found.read[str(link)] is None and found.read[str(old)] is not None
+    assert f"{link} could not be identified" in found.changes()
+
+
+def test_a_link_retargeted_and_back_while_the_run_ran_vouches_for_nothing(tmp_path: Path) -> None:
+    old, link = tmp_path / "v1", tmp_path / "current"
+    old.write_text("one")
+    link.symlink_to(old)
+    began = time.time_ns()
+    time.sleep(0.02)
+    link.unlink()
+    link.symlink_to(old)  # where it was, made anew
+    line = f'openat(AT_FDCWD</work>, "{link}", O_RDONLY) = 3<{old}>'
+    assert (
+        footprint(traces(tmp_path / "raw", STARTED, line), "files", [], began).read[str(link)]
+        is None
+    )
+
+
+def test_a_relative_open_from_a_directory_the_trace_does_not_say_is_unread(tmp_path: Path) -> None:
+    line = f'open("current.root", O_RDONLY) = 3<{tmp_path}/v1.root>'
+    found = footprint(traces(tmp_path / "raw", STARTED, line), "files", [])
+    assert found.unread == 1 and not found.complete
+
+
+def test_python_s_own_cache_is_no_name_of_a_directory(tmp_path: Path) -> None:
+    package = tmp_path / "helpers"
+    package.mkdir()
+    (package / "scale.py").touch()
+    before = identity(str(package))
+    (package / "__pycache__").mkdir()  # another stage imported it
+    assert identity(str(package)) == before
 
 
 def test_a_compiled_module_is_never_missing_whoever_makes_it(tmp_path: Path) -> None:
@@ -362,6 +449,35 @@ def test_the_summary_says_what_was_used_and_what_nothing_else_identifies(tmp_pat
         },
         "network": ["10.0.0.1:53"],
     }
+
+
+def test_what_the_software_does_not_identify_is_undeclared_wherever_it_is(tmp_path: Path) -> None:
+    library = tmp_path / "install" / "lib"
+    library.mkdir(parents=True)
+    for name in ("libX.so", "calibration.dat"):
+        (library / name).touch()
+    helpers = tmp_path / "helpers"
+    (helpers / "package").mkdir(parents=True)
+    for name in ("scale.py", "package/table.json"):
+        (helpers / name).touch()
+    local = [
+        Local("LD_LIBRARY_PATH", str(library), "0" * 64, 2, 0),
+        Local("PYTHONPATH", str(helpers), "0" * 64, 2, 0),
+    ]
+    paths = [
+        str(library / "libX.so"),  # loaded through the entry: the software holds it
+        str(library / "calibration.dat"),  # beside it: nothing does
+        str(helpers / "scale.py"),
+        str(helpers / "package" / "table.json"),
+        "/opt/fcc/calibration.dat",  # no package manager's
+        "/var/data/table.root",
+        "/usr/share/zoneinfo/UTC",  # the system's
+    ]
+    found = Footprint("files", dict.fromkeys(paths, "sha256:a"))
+    assert sorted(found.summary(local)["undeclared"]) == sorted(
+        [paths[1], paths[3], paths[4], paths[5]]
+    )
+    assert covered(paths[0], local) and covered(paths[2], local)
 
 
 def test_a_local_entry_reached_through_a_link_is_named_as_the_variable_names_it(

@@ -13,11 +13,13 @@ import json
 import multiprocessing
 import os
 import pickle
+import re
 import signal
 import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -28,11 +30,13 @@ from typing import Any
 import pytest
 import yaml
 
+from k4opt import program
 from k4opt.cli import main
 from k4opt.evaluation import EvaluationContractError, load_evaluator
 from k4opt.execution import (
     WAIT,
     EvaluationSession,
+    ProvenanceError,
     RunError,
     RunOutcome,
     RunRequest,
@@ -42,11 +46,16 @@ from k4opt.execution import (
     _session,
     _worker,
 )
+from k4opt.execution._publish import observed_inputs
+from k4opt.execution._reuse import REUSED
 from k4opt.execution._tasks import TaskOutcome, TaskSpec
+from k4opt.frozen import FrozenMap
 from k4opt.problem import CandidateError, load_problem
 from k4opt.problem.plan import GEOMETRY, Task, stage_task
 from k4opt.program import Observation
 from k4opt.record import SUMMARY_NAME, Assessment
+from k4opt.record.results import DONE, TaskResult
+from k4opt.software.observe import FOOTPRINT
 from tests.support import stack
 from tests.support.common import scientific
 from tests.support.evaluators import CELL_COUNT, cell_count, implementations, worker_probe
@@ -619,6 +628,52 @@ def test_an_exception_in_a_worker_stops_its_candidate_with_its_traceback(
     assert not (tmp_path / "a" / SUMMARY_NAME).exists()
     # the session goes on, with the same worker processes
     assert session.evaluate({RADIUS: 450.0}, tmp_path / "b").candidate.status == "valid"
+
+
+@pytest.mark.skipif(program.unobservable("files") is not None, reason="strace cannot trace")
+def test_two_stages_of_a_candidate_that_read_an_input_as_two_files_refuse_its_record(
+    tmp_path: Path, marks: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gamma reads the calibration and ends; another process changes it; then pion reads it
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text("X")
+    read = [str(calibration)]
+    stack.install(
+        monkeypatch, marks, gamma={"read": read}, pion={"await": ["changed"], "read": read}
+    )
+
+    def change_between_them() -> None:  # once gamma's footprint says what it read
+        made = tmp_path / "a" / "samples" / "gamma" / "simulation" / FOOTPRINT
+        assert stack.eventually(made.exists)
+        calibration.write_text("Y")
+        (marks / "changed").touch()
+
+    changing = threading.Thread(target=change_between_them)
+    changing.start()
+    session = session_of(2, observe="files")
+    # pion began before the change: what it read is not known, and the change is seen at publish
+    with pytest.raises(ProvenanceError, match=re.escape(str(calibration))):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    changing.join()
+    assert not (tmp_path / "a" / SUMMARY_NAME).exists()
+
+
+def test_two_stages_that_read_an_input_as_two_files_are_named() -> None:
+    # one after the other, each identified it whole: it changed between them
+    def read(sample: str, identity: str, key: str = "observed") -> TaskResult:
+        undeclared = FrozenMap({"/data/calibration.json": identity})
+        provenance = FrozenMap({key: FrozenMap({"undeclared": undeclared})})
+        return TaskResult(stage_task("simulation", sample), DONE, provenance=provenance)
+
+    same = [read("gamma", "sha256:x"), read("pion", "sha256:x", REUSED)]
+    assert observed_inputs(same) == {"/data/calibration.json": "sha256:x"}
+    unknown = [read("gamma", "sha256:x"), read("pion", None)]  # type: ignore[arg-type]
+    assert observed_inputs(unknown) == {"/data/calibration.json": "sha256:x"}
+    with pytest.raises(
+        ProvenanceError,
+        match="not the same file for gamma/simulation and pion/simulation: it changed between",
+    ):
+        observed_inputs([read("gamma", "sha256:x"), read("pion", "sha256:y", REUSED)])
 
 
 def test_an_exception_that_cannot_be_rebuilt_is_raised_as_a_task_error() -> None:

@@ -49,7 +49,7 @@ from k4opt.frozen import Json
 from k4opt.hashing import read_sha256, sha256_of
 from k4opt.program import Observation
 from k4opt.software.errors import SoftwareError
-from k4opt.software.overlays import Local, _recent
+from k4opt.software.overlays import _BESIDE, _LIBRARY, _MODULES, ROLES, SITE, Local, _recent
 
 FOOTPRINT = "footprint.json.gz"
 """The file in a stage's directory that holds its footprint."""
@@ -60,10 +60,22 @@ IGNORED = ("/proc", "/sys", "/dev", "/run", "/var/run", "/var/lib/sss")
 """Where what a stage reads is the kernel's or the session's, never an input: the processes, the
 devices, and the caches of the user database, which change as anyone logs in."""
 
-SYSTEM = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt", "/var")
-"""Where the system keeps what it installed: identified, roughly, by the system
+SYSTEM = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc")
+"""Where the system's package manager installs: identified, roughly, by the system
 (:class:`~k4opt.software.System`), never listed among a stage's undeclared inputs; ``/usr/local``,
-where software is installed by hand, is not the system's."""
+where software is installed by hand, is not the system's, nor are ``/opt`` and ``/var``."""
+
+SERVICES = (
+    "/var/run/nscd/socket",
+    "/run/nscd/socket",
+    "/var/lib/sss/pipes",
+    "/run/systemd/journal",
+    "/dev/log",
+    "/run/dbus/system_bus_socket",
+    "/var/run/dbus/system_bus_socket",
+)
+"""The local sockets of the system's own services (the user database, the journal, the system
+bus), a connection to which is no input; one to any other may answer with anything."""
 
 _LOCAL_SYSTEM = ("/usr/local",)
 
@@ -77,7 +89,12 @@ _REGISTRY = (".rootmap", ".components")
 """Files every package on the library path has read, whether its code runs or not: the registries
 ROOT and Gaudi look a plugin up in."""
 
-_CALLS = frozenset((b"open", b"openat", b"openat2", b"execve", b"execveat", b"connect", b"socket"))
+_MAKES = frozenset(
+    (b"rename", b"renameat", b"renameat2", b"link", b"linkat", b"symlink", b"symlinkat", b"mkdir")
+) | {b"mkdirat"}
+"""The calls by which a program makes a path other than by opening it: the path is the last one
+they name (``rename(from, to)``, ``symlinkat(target, dirfd, path)``)."""
+_CALLS = _MAKES | {b"open", b"openat", b"openat2", b"execve", b"execveat", b"connect", b"socket"}
 _RESULT = re.compile(
     rb"^(?P<ret>-?\d+|\?)(?:<(?P<fd>[^>\\]*(?:\\.[^>\\]*)*)>)?(?: (?P<errno>E[A-Z0-9]+)\b.*)?$"
 )
@@ -86,6 +103,7 @@ descriptor (``3</usr/lib64/libc.so.6>``), or ``-1`` and the error (``-1 ENOENT (
 ``?`` for a process killed in the call."""
 _STRING = rb'"([^"\\]*(?:\\.[^"\\]*)*)"'
 _DIRFD = re.compile(rb"^(?:AT_FDCWD|-?\d+)(?:<([^>\\]*(?:\\.[^>\\]*)*)>)?, " + _STRING)
+_NAMED = re.compile(rb"(?:(?:AT_FDCWD|-?\d+)(?:<([^>\\]*(?:\\.[^>\\]*)*)>)?, )?" + _STRING)
 _PATH = re.compile(rb"^" + _STRING)
 _ESCAPE = re.compile(rb"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)")
 _SIMPLE = {b"n": b"\n", b"t": b"\t", b"r": b"\r", b"v": b"\v", b"f": b"\f"}
@@ -125,7 +143,8 @@ def _under(path: str, roots: Iterable[str]) -> bool:
 def identity(path: str, since: int | None = None) -> str | None:
     """What identifies ``path`` now, ``None`` if it cannot be read or changed at or after the time
     ``since`` (in nanoseconds): then what it is now need not be what a run that began at that time
-    read. ``names:`` and the SHA-256 of the names in a directory, ``cvmfs:`` and the content key
+    read. ``names:`` and the SHA-256 of the names in a directory (but ``__pycache__``, which Python
+    makes as it imports, whoever runs it), ``cvmfs:`` and the content key
     CVMFS keeps of a file on it (read without the file), ``sha256:`` and the SHA-256 of any other
     file, read once per version of it (:func:`k4opt.hashing.sha256_of`), or each time while it
     changed just now, and ``special`` for a device, a pipe or a socket."""
@@ -133,8 +152,8 @@ def identity(path: str, since: int | None = None) -> str | None:
         status = os.stat(path)
         if since is not None and max(status.st_mtime_ns, status.st_ctime_ns) >= since:
             return None
-        if stat.S_ISDIR(status.st_mode):
-            names = "\0".join(sorted(os.listdir(path)))
+        if stat.S_ISDIR(status.st_mode):  # what Python makes of its own accord is no name
+            names = "\0".join(sorted(set(os.listdir(path)) - {"__pycache__"}))
             return _LISTED + hashlib.sha256(os.fsencode(names)).hexdigest()
         if not stat.S_ISREG(status.st_mode):
             return "special"
@@ -241,8 +260,8 @@ class Footprint:
         complete, the ``packages`` of the stack whose files it used (an LCG package's name and
         version; never one it only listed, or whose registries alone it read), the ``local``
         entries it read a file from (their paths, of those in ``local``), the ``undeclared`` files
-        and directories it read that neither the stack, the system, a local build nor the problem
-        identify (with their identity), and what it reached of the ``network``
+        and directories it read that neither the stack, the system, the software (:func:`covered`)
+        nor the problem identify (with their identity), and what it reached of the ``network``
         (:attr:`connected`)."""
         # what it read, not what it listed: Python lists every directory of its path, used or not
         files = [p for p, then in self.read.items() if not (then or "").startswith(_LISTED)]
@@ -258,7 +277,7 @@ class Footprint:
             undeclared = {
                 path: then
                 for path, then in sorted(self.read.items())
-                if _undeclared(path) and not _under(path, roots)
+                if _undeclared(path) and not covered(path, local)
             }
         return {
             "level": self.level,
@@ -274,6 +293,31 @@ def _undeclared(path: str) -> bool:
     if path.startswith("/cvmfs/"):
         return False
     return not _under(path, SYSTEM) or _under(path, _LOCAL_SYSTEM)
+
+
+def covered(path: str, local: Sequence[Local]) -> bool:
+    """Whether the software identifies the file ``path`` by its content: as one of what can be
+    loaded through one of the ``local`` entries, by the entry's role
+    (:mod:`k4opt.software.overlays`). A data file beside the libraries of a local build is not, nor
+    is a directory: what they hold is watched as any undeclared input. A Python package's data is
+    taken as not identified either, which is stricter than the software."""
+    for entry in local:
+        role = "python" if entry.variable == SITE else ROLES.get(entry.variable)
+        for root in {entry.path.rstrip("/"), os.path.realpath(entry.path)}:
+            if path == root:
+                return os.path.isfile(root)
+            if not path.startswith(f"{root}/") or os.path.isdir(path):
+                continue
+            parts = path[len(root) + 1 :].split("/")
+            if role == "headers":
+                return True
+            if role == "libraries" and len(parts) == 1 and _LIBRARY.search(parts[0]):
+                return True
+            if role == "python" and (
+                "__pycache__" in parts or parts[-1].endswith(_MODULES) or parts[0].endswith(_BESIDE)
+            ):
+                return True
+    return False
 
 
 def _roots(local: Sequence[Local]) -> dict[str, str]:
@@ -298,8 +342,9 @@ class _Seen:
 
 
 def _named(given: str, base: str | None) -> str | None:
-    """The path ``given`` to an open from the directory ``base``, as the system walks it: a
-    ``..`` after a link is not the directory before it, so a path with one is kept as it is."""
+    """The path ``given`` to a call from the directory ``base``, as the system walks it: a
+    ``..`` after a link is not the directory before it, so a path with one is kept as it is;
+    ``None`` for a relative path from a directory the trace does not say."""
     if not os.path.isabs(given):
         if base is None or not os.path.isabs(base):
             return None
@@ -325,6 +370,8 @@ def _opened(seen: _Seen, call: bytes, args: bytes, match: re.Match[bytes]) -> No
             return
         path = _unescape(fd).removesuffix(_DELETED)
         named = _named(given, base)
+        if named is None:  # what a relative path was opened by, and whether by a link, is unknown
+            seen.unread += 1
         if _WRITES.search(flags):
             seen.written.add(path)
             seen.written.add(path if named is None else named)
@@ -370,12 +417,12 @@ def _connected(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
     local = _UNIX.search(args)
     if local is not None:
         path = _unescape(local["path"])
-        if _under(path, IGNORED):  # the system's own: the user database, its daemons
+        if _under(path, SERVICES):
             return
-        if match["ret"] == b"0":
-            seen.connected[f"unix:{path}"] = None
-        elif match["errno"] in _MISSING:
+        if match["errno"] in _MISSING:  # no one there: one that comes would be another input
             seen.missing[path] = None
+        else:  # connected, connecting or refused: whatever answers there decides
+            seen.connected[f"unix:{path}"] = None
         return
     found = _INET.search(args)
     if found is None:
@@ -384,6 +431,23 @@ def _connected(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
     host = next((a.decode(errors="replace") for a, _ in address if a), "?")
     port = next((p.decode() for _, p in address if p), "?")
     seen.connected[f"{host}:{port}"] = None
+
+
+def _made(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
+    """A path the program made without opening it is its own, as one it wrote. One named relative
+    to a directory the trace does not say stays unknown, and so stays missing if it was looked
+    for: a footprint that then never holds, which costs a run and never a wrong reuse."""
+    if match["ret"] != b"0":
+        return
+    names = list(_NAMED.finditer(args))
+    if not names:
+        return
+    named = names[-1]
+    base = None if named.group(1) is None else _unescape(named.group(1))
+    path = _named(_unescape(named.group(2)), base)
+    if path is not None:
+        seen.written.add(path)
+        seen.written.add(os.path.normpath(path))
 
 
 def _socket(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
@@ -420,6 +484,8 @@ def _traced(trace: Path) -> _Seen:
             _started(seen, args, match)
         elif call == b"socket":
             _socket(seen, args, match)
+        elif call in _MAKES:
+            _made(seen, args, match)
         else:
             _connected(seen, args, match)
     return seen
@@ -442,9 +508,12 @@ def footprint(
     (``files`` or ``libraries``): what it read, found missing and started outside ``own`` (the
     stage's directory, the candidate's, and the files it was given or that the problem names) and
     :data:`IGNORED`, each file identified now, unless it changed at or after ``since``, when the
-    run began (:func:`identity`). A file it wrote is none of these, wherever it is, and neither is
-    a path it failed to find that exists now: what it made after looking for it, past what the
-    traces say (a rename), which ``__pycache__`` always is for Python, whoever made it.
+    run began (:func:`identity`). A file reached through a link is kept under the path it was
+    opened by too, with no identity if that path leads elsewhere now or a link on its way changed
+    since the run began. A path it wrote or made (by a rename, a link, a directory) is none of
+    these, wherever it is. A path it failed to find stays missing though it exists now, unless it
+    made it: another process may have, while it ran. Only ``__pycache__`` is never missing: Python
+    checks what it finds there against the source, whoever wrote it.
     Traces in which no program started are incomplete, whatever they say: every run starts one,
     so they are what a tracer that died or a full disk left."""
     seen = _traced(trace) if level == "files" else _loaded(trace)
@@ -456,23 +525,41 @@ def footprint(
     def kept(paths: Iterable[str]) -> list[str]:
         return [p for p in paths if p not in seen.written and not _under(p, skipped)]
 
-    for name, reached in seen.aliases.items():  # /etc/mtab leads into /proc: not an input either
-        if reached not in seen.written and not _under(reached, IGNORED):
-            seen.read.setdefault(name, None)
-    absent = [
-        path
-        for path in kept(seen.missing)
-        if "__pycache__" not in path.split("/") and not os.path.lexists(path)
-    ]
+    read = {path: identity(path, since) for path in kept(seen.read)}
+    for name in kept(seen.aliases):  # /etc/mtab leads into /proc: not an input either
+        reached = seen.aliases[name]
+        if reached in seen.written or _under(reached, IGNORED) or name in read:
+            continue
+        read[name] = identity(name, since) if _steady(name, reached, since) else None
+    absent = [path for path in kept(seen.missing) if "__pycache__" not in path.split("/")]
     return Footprint(
         level,
-        {path: identity(path, since) for path in kept(seen.read)},
+        read,
         tuple(sorted(absent)),
         tuple(sorted(kept(seen.denied))),
         tuple(sorted(kept(seen.ran))),
         tuple(sorted(seen.connected)),
         seen.unread,
     )
+
+
+def _steady(name: str, reached: str, since: int | None) -> bool:
+    """Whether the path ``name`` still leads to the file ``reached``, and no link on its way
+    changed at or after ``since``: one retargeted while the run ran, even if back since."""
+    if os.path.realpath(name) != reached:
+        return False
+    if since is None:
+        return True
+    prefix = ""
+    for part in name.split("/")[1:]:
+        prefix += f"/{part}"
+        try:
+            status = os.lstat(prefix)
+        except OSError:
+            return False
+        if stat.S_ISLNK(status.st_mode) and max(status.st_mtime_ns, status.st_ctime_ns) >= since:
+            return False
+    return True
 
 
 def observe(
@@ -532,9 +619,11 @@ __all__ = [
     "FOOTPRINT",
     "IGNORED",
     "SCHEMA",
+    "SERVICES",
     "SYSTEM",
     "Footprint",
     "changed_inputs",
+    "covered",
     "footprint",
     "identity",
     "load",

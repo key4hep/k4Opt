@@ -569,7 +569,9 @@ output's undeclared inputs as it watches those of its own stages, and a change s
 
 An output that does not qualify is passed over as one that changed is, and the stage that runs
 instead says why in its record (`not_reused`). The record of a stage reused from another study says
-`by_footprint`, and `undeclared`, what it depends on. A resume does not refuse a study whose undeclared input changed: what depended on it
+`by_footprint`, and `undeclared`, what it depends on. The full check of a footprint runs once per
+output per session; what the stack and the system's package manager hold is taken not to change while
+a session runs, as the build and the system are checked before each candidate. A resume does not refuse a study whose undeclared input changed: what depended on it
 runs again, and the earlier trials stay as they are, so a study that must not mix them starts anew.
 
 ## What ends a candidate, and what stops a session

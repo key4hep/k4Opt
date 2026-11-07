@@ -69,15 +69,24 @@ class RunOutcome:
 def observed_inputs(results: Iterable[TaskResult]) -> dict[str, Json]:
     """The undeclared inputs the stages read, by path, with their identity, as each stage's
     provenance says (:meth:`k4opt.software.Footprint.summary`), or what it reused says of the stage
-    that made its output; none that could not be identified, which nothing could compare."""
-    found: dict[str, Json] = {}
+    that made its output; none that could not be identified, which nothing could compare. Raises
+    :class:`ProvenanceError` if two stages read a path as different files: it changed between
+    them, and the candidate's stages were not made from one input."""
+    found: dict[str, tuple[Json, str]] = {}
     for result in results:
         for key in ("observed", REUSED):
             part = result.provenance.get(key)
             undeclared = part.get("undeclared") if isinstance(part, Mapping) else None
-            if isinstance(undeclared, Mapping):
-                found |= {path: then for path, then in undeclared.items() if then is not None}
-    return found
+            for path, then in undeclared.items() if isinstance(undeclared, Mapping) else ():
+                if then is None:
+                    continue
+                first = found.setdefault(path, (then, result.id.label))
+                if first[0] != then:
+                    raise ProvenanceError(
+                        f"{path} was not the same file for {first[1]} and {result.id.label}: it "
+                        "changed between them, so the candidate's stages read different inputs"
+                    )
+    return {path: then for path, (then, _) in found.items()}
 
 
 def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> RunOutcome:
