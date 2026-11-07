@@ -69,7 +69,8 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
                 "targets": identity["geometry"]["targets"],
                 "externals": _contents(identity["geometry"]["externals"]),
             },
-            "software": identity["software"]["id"],
+            # by its id, and what a published study keeps of it: its build and system
+            "software": {key: identity["software"][key] for key in ("id", "build", "system")},
             "k4opt": identity["k4opt"]["sha256"],
         }
     except (KeyError, TypeError, AttributeError) as exc:

@@ -49,7 +49,10 @@ IGNORED = (
     "TMPDIR",
     "KRB5CCNAME",
     "SSH_*",
-    "XDG_*",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_*",
+    "XDG_SEAT",
+    "XDG_VTNR",
     "DBUS_*",
     "SELINUX_*",
     # new on every run of a service
@@ -62,13 +65,14 @@ IGNORED = (
     "CONDA_SHLVL",
     "CONDA_BACKUP_*",
     "VSCODE_*",
-    "GIT_*",
+    "GIT_PAGER",
+    "GIT_EDITOR",
+    "GIT_ASKPASS",
     "PYTEST_*",
     # set by ROOT's Python in whatever process imports it, from the build
     "CPPYY_API_PATH",
     "CPPYY_NO_ROOT_FILTER",
-    # identified by what they lead to: the programs and their interpreter, the geometry, the build
-    "PATH",
+    # identified by what they lead to: the geometry, the build
     "K4GEO",
     "KEY4HEP_STACK",
 )

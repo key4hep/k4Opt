@@ -300,7 +300,9 @@ class ProcessBackend:
                 worker.groups.clear()
                 worker.began = worker.deadline = None
                 self._deaths.pop(_name(spec), None)
-                if kind == "failed":
+                if kind == "ended":  # it no longer runs as the session: it goes, untouched
+                    self._end(worker, terminate=False)
+                if kind in ("failed", "ended"):
                     assert isinstance(message[1], Failure)
                     return handle, message[1].error(), Observations()
                 return handle, message[1], message[2]

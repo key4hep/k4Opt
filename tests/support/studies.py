@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from tests.support.geometry import MINI_GEO
+from tests.support.software import VIEW
 
 # what each radius gives with invalid_below 200, failed_below 150 and the limit a <= 400
 MIXED = {300: "feasible", 500: "infeasible", 170: "invalid", 120: "failed"}
@@ -24,7 +25,7 @@ TRADE = {"name": "test.trade_off", "version": "1"}
 def mini_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """The k4geo tree and Key4hep stack a study of the mini geometry is made in."""
     monkeypatch.setenv("K4GEO", str(MINI_GEO))
-    monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-10-20")
+    monkeypatch.setenv("KEY4HEP_STACK", str(VIEW))
 
 
 def study(

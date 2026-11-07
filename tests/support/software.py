@@ -8,6 +8,10 @@ from pathlib import Path
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "software"
 PLATFORM = "x86_64-el9-gcc16-opt"
+VIEW = FIXTURES / "lcg" / "views" / "devkey-head" / "Sat" / PLATFORM / "setup.sh"
+"""The checked-in view, for tests that only read it (``KEY4HEP_STACK`` of a test study)."""
+LABEL = "LCG devkey-head, built Sat Nov 7 04:17:32 2026"
+"""What :attr:`k4opt.software.Build.label` says of :data:`VIEW`."""
 
 
 def lcg_view(root: Path) -> Path:

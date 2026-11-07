@@ -199,10 +199,12 @@ type Message = tuple[object, ...]
 @dataclass(frozen=True, slots=True)
 class Session:
     """A session as a worker holds it: what every task needs (``context``, whose stages report
-    the programs they start) and the implementation each evaluation is bound to (``bound``)."""
+    the programs they start), the implementation each evaluation is bound to (``bound``) and
+    what the session runs on (``spec``)."""
 
     context: SessionContext
     bound: Mapping[TaskId, _Bound]
+    spec: SessionSpec
 
     @classmethod
     def of(cls, spec: SessionSpec, started: Callable[[int], None] | None = None) -> Session:
@@ -215,17 +217,9 @@ class Session:
                 "a worker process runs other k4opt code than the session (another checkout "
                 "first on the path, or the files changed since the session opened)"
             )
-        for name, value in spec.environment.items():
-            now = os.environ.get(name)
-            if now != value:
-                raise ProvenanceError(
-                    f"{name} is {now!r} in a worker process, not {value!r} as in the session"
-                )
-        changed = spec.software.differences(Software.now())
-        if changed:
-            raise ProvenanceError(
-                f"a worker process does not run on the session's software: {'; '.join(changed)}"
-            )
+        changed = _changed(spec)
+        if changed is not None:
+            raise ProvenanceError(f"a worker process does not run as the session: {changed}")
         sys.path[:] = list(dict.fromkeys([*spec.path, *sys.path]))
         for implementation in spec.implementations:
             loaded = evaluator_source(load_evaluator(implementation.reference))
@@ -241,7 +235,20 @@ class Session:
             sample: replace(stages, started=started, die_with_parent=True)
             for sample, stages in context.contexts.items()
         }
-        return cls(replace(context, contexts=FrozenMap(contexts)), FrozenMap(bound))
+        return cls(replace(context, contexts=FrozenMap(contexts)), FrozenMap(bound), spec)
+
+    def drifted(self, spec: TaskSpec) -> ProvenanceError | None:
+        """Why this process no longer runs as the session after the task ``spec``, ``None`` if it
+        still does: a task that set a variable (an evaluator writing ``os.environ``) changed what
+        every later task here would run on, which no record would say."""
+        changed = _changed(self.spec)
+        if changed is None:
+            return None
+        return ProvenanceError(
+            f"{spec.task.id.label}: the worker process that ran it no longer runs as the session: "
+            f"{changed}; a task that sets environment variables changes what every later task "
+            "runs on, so the worker is ended"
+        )
 
     def run(self, spec: TaskSpec, root: Path | None, seen: Observations) -> Message:
         """Do the task ``spec`` in the workspace ``root``: the answer to send."""
@@ -298,6 +305,17 @@ def _cancel(signum: int, frame: FrameType | None) -> None:
 _PR_SET_PDEATHSIG = 1  # prctl(2): the signal a process gets when its parent thread ends
 
 
+def _changed(spec: SessionSpec) -> str | None:
+    """How this process differs from the session ``spec`` in ``KEY4HEP_STACK``, ``K4GEO`` and
+    the software, for a person; ``None`` if it does not."""
+    for name, value in spec.environment.items():
+        now = os.environ.get(name)
+        if now != value:
+            return f"{name} is {now!r}, not {value!r} as in the session"
+    changed = spec.software.differences(Software.now())
+    return None if not changed else f"its software differs: {'; '.join(changed)}"
+
+
 def _die_with(parent: int) -> str | None:
     """Have this process get SIGKILL once its parent ``parent`` ends (Linux); why it cannot,
     ``None`` if it does."""
@@ -337,6 +355,10 @@ def serve(connection: Connection, refused: str | None = None) -> int:
         except EOFError:
             return 0
         answer = session.run(task, root, seen)
+        drifted = session.drifted(task)
+        if drifted is not None:  # the coordinator ends it before it gives it another task
+            connection.send(("ended", Failure.of(drifted)))
+            return 1
         try:
             connection.send(answer)
         except (pickle.PicklingError, TypeError, AttributeError) as exc:  # not sent at all

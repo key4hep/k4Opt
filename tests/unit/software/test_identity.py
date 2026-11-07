@@ -102,7 +102,19 @@ def test_no_stack_is_an_unrecognized_build_with_nothing_to_identify_it() -> None
 
 
 @pytest.mark.parametrize(
-    "name", ["MARLIN_DLL", "GAUDI_PLUGIN_PATH", "LD_PRELOAD", "G4LEDATA", "MY_SCALE", "HOME", "TZ"]
+    "name",
+    [
+        "MARLIN_DLL",
+        "GAUDI_PLUGIN_PATH",
+        "LD_PRELOAD",
+        "G4LEDATA",
+        "MY_SCALE",
+        "HOME",
+        "TZ",
+        "PATH",  # ROOT runs g++ through it, an evaluator any program
+        "XDG_CONFIG_HOME",  # where matplotlib and others read their settings
+        "GIT_DIR",
+    ],
 )
 def test_every_variable_is_compared_by_its_digest_known_or_not(name: str) -> None:
     first, second = software(**{name: "one"}), software(**{name: "two"})
@@ -126,7 +138,8 @@ def test_every_variable_is_compared_by_its_digest_known_or_not(name: str) -> Non
         "PYTEST_CURRENT_TEST",
         "CPPYY_API_PATH",
         "CPPYY_NO_ROOT_FILTER",
-        "PATH",
+        "XDG_SESSION_ID",
+        "GIT_PAGER",
         "K4GEO",
     ],
 )
@@ -135,8 +148,8 @@ def test_a_variable_known_to_be_irrelevant_is_not_compared(name: str) -> None:
 
 
 def test_what_a_listed_prefix_leaves_out_is_only_what_it_starts() -> None:
-    assert "GIT_*" in IGNORED
-    assert software(GITHUB_TOKEN="one").id != software(GITHUB_TOKEN="two").id
+    assert "SSH_*" in IGNORED
+    assert software(SSHFS_OPTIONS="one").id != software(SSHFS_OPTIONS="two").id
 
 
 def test_a_value_that_is_no_text_is_still_a_value() -> None:

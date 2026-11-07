@@ -11,7 +11,8 @@ moment, ``print`` prints that text to stdout and stderr, ``raise`` raises a
 own process SIGKILL, ``stall`` writes the start of an answer to the coordinator and never
 the rest, ``sleep`` sleeps that many seconds, ``ignore_term`` ignores SIGTERM first (so that only
 SIGKILL ends it), ``child`` starts a ``sleep`` program that would outlive it, writing its pid to
-that file. Under the key ``init``, ``sleep``, ``print`` and ``allocate`` do the same while any
+that file, ``setenv`` sets the variables it maps in its process. Under the key ``init``,
+``sleep``, ``print`` and ``allocate`` do the same while any
 instance is created. In a worker process that loaded it, ``{"materialize": {"sleep": S}}`` makes
 every candidate's geometry take S seconds more to make: k4opt's own work hanging there."""
 
@@ -70,6 +71,7 @@ class WorkerProbe(Evaluator):
         }
         if "mark" in told:
             Path(told["mark"]).write_text(str(os.getpid()))
+        os.environ.update(told.get("setenv", {}))
         if "ignore_term" in told:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
         if "child" in told:

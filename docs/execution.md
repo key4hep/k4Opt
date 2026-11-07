@@ -346,7 +346,8 @@ evaluator the problem binds, by name, once however often it is bound), the compa
 source root and fingerprint of the unmodified geometry and what its external references read,
 `KEY4HEP_STACK` and `K4GEO`, the `programs` and `software`, and k4opt's version, code
 SHA-256 and checkout. Each program a stage runs is found on `PATH` once, when the session opens,
-and every candidate runs that executable, whatever `PATH` says later. The environment, the
+and every candidate runs that executable; `PATH` is compared with the rest of the
+[software](software.md), so a change of it stops the session. The environment, the
 programs and k4opt's identity are taken when the session opens, before anything runs, and every summary
 of the session records the same k4opt identity, so an edit to the k4opt checkout during a long
 run is not recorded as the code that ran (a hash cannot prove which code Python executed, only

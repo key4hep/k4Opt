@@ -16,6 +16,7 @@ import yaml
 
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.problems import add_targets
+from tests.support.software import VIEW
 
 RADIUS = "radius"
 # each reads the candidate from its setting x
@@ -27,7 +28,7 @@ B = ("analysis", "b")
 @pytest.fixture(autouse=True)
 def mini_k4geo(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("K4GEO", str(MINI_GEO))
-    monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-10-20")
+    monkeypatch.setenv("KEY4HEP_STACK", str(VIEW))
 
 
 def problem_document(

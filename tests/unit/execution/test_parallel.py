@@ -223,6 +223,32 @@ def test_the_evaluations_of_one_simulation_run_at_once_each_on_an_instance_it_ch
     verified(outcome)
 
 
+def test_a_task_that_sets_a_variable_in_its_worker_fails_its_candidate_and_ends_the_worker(
+    tmp_path: Path,
+    doc: dict[str, Any],
+    marks: Path,
+    session_of: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from k4opt.execution import ProvenanceError
+
+    problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
+    stack.install(monkeypatch)
+    # one worker: without the check, b's simulation would run with MY_SCALE=2 under a's software
+    probe(monkeypatch, **{"a.p": {"setenv": {"MY_SCALE": "2"}, "mark": str(marks / "a")}})
+    session = session_of(1, problem)
+    message = r"gamma/p: the worker process that ran it no longer runs as .* differs in MY_SCALE"
+    with pytest.raises(ProvenanceError, match=message):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert not (tmp_path / "a" / "summary.json").exists()
+    probe(monkeypatch, p={"mark": str(marks / "b")})
+    outcome = session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert outcome.candidate.status == "valid", outcome.candidate.message
+    assert (marks / "a").read_text() != (marks / "b").read_text()  # another worker
+    software = verified(outcome)["environment"]["observed"]["software"]
+    assert software["id"] == session.identity()["software"]["id"]  # type: ignore[index]
+
+
 def test_what_an_evaluator_prints_in_a_worker_goes_to_its_log(
     tmp_path: Path,
     doc: dict[str, Any],
@@ -1033,7 +1059,7 @@ def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
                 replace(args[3], variables={**args[3].variables, "MY_SCALE": "0" * 64}),
             ),
         )
-        message = "a worker process does not run on the session's software: .* differs in MY_SCALE"
+        message = "a worker process does not run as the session: its software .* in MY_SCALE"
     else:
         described = _session.session_spec
         monkeypatch.setattr(
@@ -1043,7 +1069,7 @@ def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
                 *args[:2], {**args[2], "KEY4HEP_STACK": "/other/stack"}, args[3]
             ),
         )
-        message = "KEY4HEP_STACK is .* in a worker process, not '/other/stack' as in the session"
+        message = "does not run as the session: KEY4HEP_STACK is .*, not '/other/stack'"
     with pytest.raises(RunError, match=message):
         EvaluationSession.open(problem, [implementation], workers=2)
     assert stack.workers() == []

@@ -324,8 +324,7 @@ class Baseline:
         would run in another environment than the geometry was discovered in, and than the
         records say. So is the software: every program inherits this process's variables, and
         the records and the stages' signatures say what it was then. A nightly's slot republished
-        since is another build, wherever ``KEY4HEP_STACK`` still points. ``PATH`` may change: the
-        session found its programs once, when it opened, and runs those whatever it says later."""
+        since is another build, wherever ``KEY4HEP_STACK`` still points."""
         opened = self.process["environment"]
         assert isinstance(opened, Mapping)
         for name, then in opened.items():

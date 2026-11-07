@@ -14,8 +14,11 @@ identifies a run is what is there:
 | system | the operating system with its major version, the glibc version, the architecture |
 | variables | the SHA-256 of every environment variable not known to be irrelevant |
 
-Their digest is the software's `id`: two sessions with one `id` run on the same software, wherever
-the stack is. See what this shell runs on with
+Their digest is the software's `id`: two sessions with one `id` run on the same software. The build
+is identified wherever the stack is; the variables are compared as they are, so a variable that
+holds the stack's path (`LD_LIBRARY_PATH`) makes the same build at another prefix another `id`.
+`latest` and its weekday are one, since the view writes the paths it was built at. See what this
+shell runs on with
 
 ```text
 $ k4opt software show
@@ -58,14 +61,16 @@ These are not compared (`IGNORED` in `k4opt/software/identity.py`; `*` stands fo
 | Why | Names |
 | --- | --- |
 | The state of a shell or terminal: nothing a job reads but for the width of what it prints | `_`, `PWD`, `OLDPWD`, `SHLVL`, `SHELL`, `TERM`, `COLUMNS`, `LINES`, `DISPLAY`, `MOTD_SHOWN`, `BASH_FUNC_*` |
-| The login session and its credentials, which differ between two logins of one person | `USER`, `HOSTNAME`, `TMPDIR`, `KRB5CCNAME`, `SSH_*`, `XDG_*`, `DBUS_*`, `SELINUX_*` |
+| The login session and its credentials, which differ between two logins of one person | `USER`, `HOSTNAME`, `TMPDIR`, `KRB5CCNAME`, `SSH_*`, `XDG_RUNTIME_DIR`, `XDG_SESSION_*`, `XDG_SEAT`, `XDG_VTNR`, `DBUS_*`, `SELINUX_*` |
 | New on every run of a service: without these, no study run by a systemd unit could resume | `INVOCATION_ID`, `JOURNAL_STREAM`, `MANAGERPID`, `SYSTEMD_EXEC_PID` |
-| Bookkeeping of other tools | `MODULEPATH`, `CONDA_SHLVL`, `CONDA_BACKUP_*`, `VSCODE_*`, `GIT_*`, `PYTEST_*` |
+| Bookkeeping of other tools, or what only a person at a terminal sees | `MODULEPATH`, `CONDA_SHLVL`, `CONDA_BACKUP_*`, `VSCODE_*`, `GIT_PAGER`, `GIT_EDITOR`, `GIT_ASKPASS`, `PYTEST_*` |
 | Set by ROOT's Python in whatever process imports it, from the build: an evaluator that reads a file through `podio` sets them in the middle of a session | `CPPYY_API_PATH`, `CPPYY_NO_ROOT_FILTER` |
-| Identified by what they lead to: the programs and their interpreter by content, the geometry by its fingerprint, the stack by its build | `PATH`, `K4GEO`, `KEY4HEP_STACK` |
+| Identified by what they lead to: the geometry by its fingerprint, the stack by its build | `K4GEO`, `KEY4HEP_STACK` |
 
-`HOME`, `LANG`, `LC_*`, `TZ` and `CONDA_PREFIX` stay compared: ROOT reads the home directory, and
-cling was seen consulting a conda environment. Within a session `K4GEO` and `KEY4HEP_STACK` must keep
+`PATH`, `HOME`, `LANG`, `LC_*`, `TZ`, `CONDA_PREFIX`, `XDG_CONFIG_HOME` and `GIT_DIR` stay
+compared: ROOT runs `g++` through `PATH` and an evaluator may run any program, ROOT reads the home
+directory, cling was seen consulting a conda environment, and matplotlib reads its settings from
+`XDG_CONFIG_HOME`. Within a session `K4GEO` and `KEY4HEP_STACK` must keep
 their values too, since the geometry was found through them.
 
 A wrongly compared variable costs a refusal that names it; a wrongly ignored one could cost
@@ -77,9 +82,9 @@ correctness. So the list stays short, and a name joins it only once it is shown 
 | --- | --- |
 | A child process | Workers and the programs of the stack get exactly `os.environ`, never what a library set beneath Python: ROOT's interpreter sets `CLING_PREBUILT_MODULE_PATH` with C's `setenv` once it is used, and a child would otherwise inherit what no identity holds. |
 | A session | The software is taken when the session opens. Before each candidate, and before its record is written, any difference stops the session: every program inherits this process's variables. An evaluator that sets a variable while it runs inline does the same, unless the variable is on the list above. |
-| A worker | It compares the build, the system and each variable with the session's when it starts, and refuses by name. |
+| A worker | It compares the build, the system and each variable with the session's when it starts, and refuses by name; and again after every task. A task that set a variable there (an evaluator writing `os.environ`) fails its candidate with a `ProvenanceError`, and the worker ends: the next task runs in a new one, started from the session's environment. |
 | A stage's signature | It holds the `id`: a stage of another build, or run with another variable, is not reused, whatever its path. |
-| A study | The `id` is part of its identity. A resume on other software is refused, naming what differs, and each trial's record must have run on the study's software. |
+| A study | The `id`, the build and the system are part of its identity. A resume on other software is refused, naming what differs, and each trial's record must have run on the study's software. |
 | A record | `environment.observed.software` holds all of it, and is refused if its `id` is not that of its parts. |
 | A snapshot | It holds the `id`, the build and the system, never the variables, whose names can be private. A catalog and the dashboard name the build that ran. |
 

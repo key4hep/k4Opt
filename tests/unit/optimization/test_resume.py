@@ -34,7 +34,7 @@ from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, tr
 from tests.support.geometry import MINI_GEO
 from tests.support.imports import FromFile
 from tests.support.problems import add_targets
-from tests.support.software import lcg_view, republish
+from tests.support.software import VIEW, lcg_view, republish
 from tests.unit.optimization.conftest import (
     RADIUS,
     TRADE,
@@ -568,9 +568,9 @@ def test_another_baseline_geometry_or_stack_refuses(
     monkeypatch.setenv("K4GEO", str(geometry))
     run(problem, output, 1, seed=1)
     monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-11-01")
-    with pytest.raises(OptimizationError, match=r"the Key4hep build .* is another one"):
+    with pytest.raises(OptimizationError, match="the Key4hep build is unrecognized stack, not LCG"):
         run(problem, output, 1, resume=True)
-    monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-10-20")
+    monkeypatch.setenv("KEY4HEP_STACK", str(VIEW))
     tracker = geometry / "compact" / "det_v1" / "tracker.xml"
     tracker.write_text(tracker.read_text().replace("</lccdd>", "<!-- edited --></lccdd>"))
     with pytest.raises(OptimizationError, match="the geometry the candidates start from changed"):
@@ -596,7 +596,10 @@ def test_the_same_path_with_another_build_refuses(
     assert tree_digest(output) == before
 
 
-@pytest.mark.parametrize("name", ["MARLIN_DLL", "G4LEDATA", "MY_SCALE", "LD_PRELOAD", "HOME"])
+@pytest.mark.parametrize(
+    "name",
+    ["MARLIN_DLL", "G4LEDATA", "MY_SCALE", "LD_PRELOAD", "HOME", "XDG_CONFIG_HOME", "GIT_DIR"],
+)
 def test_a_variable_not_known_to_be_irrelevant_refuses_by_name(
     tmp_path: Path,
     write_problem: Callable[..., Path],
@@ -625,7 +628,7 @@ def test_a_variable_a_study_did_not_have_refuses_by_name(
         run(problem, output, 1, resume=True)
 
 
-@pytest.mark.parametrize("name", ["OLDPWD", "SSH_CONNECTION", "XDG_SESSION_ID", "PATH"])
+@pytest.mark.parametrize("name", ["OLDPWD", "SSH_CONNECTION", "XDG_SESSION_ID", "XDG_RUNTIME_DIR"])
 def test_a_variable_known_to_be_irrelevant_does_not_refuse(
     tmp_path: Path,
     write_problem: Callable[..., Path],
@@ -802,7 +805,7 @@ def test_a_left_record_that_does_not_hold_up_refuses_the_resume(
         run(problem, output, 1, seed=1)
     monkeypatch.undo()
     monkeypatch.setenv("K4GEO", str(MINI_GEO))
-    monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-10-20")
+    monkeypatch.setenv("KEY4HEP_STACK", str(VIEW))
     path = output / "trial-000000" / "summary.json"
     data = json.loads(path.read_text())
     data["assessment"]["feasible"] = False  # what its measurements do not give
@@ -1256,10 +1259,12 @@ def test_a_study_resumes_only_with_the_ddsim_it_ran(
     with pytest.raises(OptimizationError, match=f"ddsim is {second} .*, not {first} "):
         run(sampled_problem, output, 1, resume=True, workers=1, evaluators=[cell_count()])
     _first_on_path(monkeypatch, first, base)
-    # another PATH that finds the same ddsim and interpreter (another shell): it goes on
-    monkeypatch.setenv("PATH", f"{os.environ['PATH']}{os.pathsep}{tmp_path / 'elsewhere'}")
     resumed = run(sampled_problem, output, 1, resume=True, workers=1, evaluators=[cell_count()])
     assert [t.status for t in resumed.trials] == ["valid", "valid"]
+    # another PATH that finds the same ddsim: ROOT runs g++ through it, an evaluator anything
+    monkeypatch.setenv("PATH", f"{os.environ['PATH']}{os.pathsep}{tmp_path / 'elsewhere'}")
+    with pytest.raises(OptimizationError, match="differs in PATH"):
+        run(sampled_problem, output, 1, resume=True, workers=1, evaluators=[cell_count()])
 
 
 def test_a_record_that_ran_another_ddsim_than_its_study_is_refused(

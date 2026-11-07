@@ -49,7 +49,7 @@ from tests.support.evaluators import (
 )
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.simulation import COLLECTION
-from tests.support.software import lcg_view, republish
+from tests.support.software import VIEW, lcg_view, republish
 from tests.unit.execution.session.conftest import (
     RADIUS,
     UNEXPECTED,
@@ -1020,7 +1020,7 @@ def test_a_session_runs_its_candidates_in_the_environment_it_opened_in(
     monkeypatch: pytest.MonkeyPatch,
     name: str,
 ) -> None:
-    monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-10-20")
+    monkeypatch.setenv("KEY4HEP_STACK", str(VIEW))
     session = EvaluationSession.open(problem_file, [cell_count()])
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     observed = outcome.summary["environment"]["observed"]  # type: ignore[index]
