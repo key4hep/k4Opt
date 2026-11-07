@@ -61,6 +61,7 @@ from k4opt.problem.plan import GEOMETRY, Kind, TaskId
 from k4opt.problem.stages import stage_output
 from k4opt.record.results import DONE, PeakMemory, declined
 from k4opt.record.write import SUMMARY_NAME
+from k4opt.software.observe import observe
 
 
 def candidate_externals(
@@ -171,6 +172,18 @@ def _own(spec: TaskSpec, root: Path | None) -> Path | None:
     return None if root is None or spec.task.directory is None else root / spec.task.directory
 
 
+def _declared(provenance: Mapping[str, Json]) -> list[Path]:
+    """The files a stage's provenance says it was given by the problem (``files``: those a ddsim
+    option names, a reconstruction's job and data), which its signature identifies."""
+    files = provenance.get("files")
+    entries = files.values() if isinstance(files, Mapping) else ()
+    return [
+        Path(path)
+        for entry in entries
+        if isinstance(entry, Mapping) and isinstance(path := entry.get("path"), str)
+    ]
+
+
 def _geometry(
     context: SessionContext, spec: TaskSpec, root: Path | None, began: float
 ) -> tuple[TaskOutcome, Observations]:
@@ -270,14 +283,32 @@ def _stage(
     if changed:
         return TaskOutcome(task, Status.FAILED, _changed_before(changed)), Observations()
     # as its candidate configures them, the program it runs stopped at the task's time limit
-    stages = replace(context.contexts[task.sample].configured(spec.stages), timeout=spec.timeout)
-    outcome, main = make_stage(
-        stages,
-        task.name,
-        inputs=_inputs(spec, root),
-        workdir=own,
-        supplied=spec.supplied,
+    stages = replace(
+        context.contexts[task.sample].configured(spec.stages),
+        timeout=spec.timeout,
+        observe=context.observe,
     )
+    inputs = _inputs(spec, root)
+    outcome, main = make_stage(
+        stages, task.name, inputs=inputs, workdir=own, supplied=spec.supplied
+    )
+    if "argv" in outcome.provenance and own is not None:  # it ran a program
+        declared = [*inputs.values(), *_declared(outcome.provenance), *stages.files().values()]
+        summary, footprint = observe(
+            outcome.trace,
+            outcome.observed,
+            directory=own,
+            own=[p for p in (root, spec.tree, own) if p is not None] + declared,
+            local=context.local,
+        )
+        artifacts = dict(outcome.artifacts)
+        if footprint is not None:
+            artifacts["footprint"] = footprint
+        outcome = replace(
+            outcome,
+            artifacts=artifacts,
+            provenance={**outcome.provenance, "observed": summary},
+        )
     error = outcome.error
     made: dict[str, Artifact] = {}
     stats: dict[str, Stat] = {}

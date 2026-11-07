@@ -124,19 +124,73 @@ themselves (a program k4opt runs is identified by its content, and by its interp
 module reads that Python does not import (data next to a module of a namespace package), a source
 directory an editable install maps without a `.pth` path, and a value that names a file in any
 other variable (`MY_SCALE_FILE`) are identified by their text. The files each stage really opened
-are what a later step of this work observes.
+are what [a stage's footprint](#what-each-stage-used) says.
+
+## What each stage used
+
+The identity says what a stage could reach; its *footprint* says what it did reach. While a program
+of the stack runs, k4opt watches it, at the level `--observe` names (`k4opt evaluate`, `k4opt
+optimize`; `observe=` in Python):
+
+| Level | How | Says | Another study may reuse its output |
+| --- | --- | --- | --- |
+| `files` (default) | `strace`, limited to opens, program starts and connections | every file read, listed or looked for in vain, by the program and all it started | yes |
+| `libraries` | the loader (`LD_DEBUG`) | the libraries loaded | no |
+| `none` | nothing | nothing | no |
+
+A session tries `strace` on `true` when it opens. Where it is missing or may not trace (some
+containers and batch nodes), the session takes the next level that works and warns once. The level
+is no part of any identity and changes no output: a program's exit status, signals and peak memory
+are its own. On a CLD job `strace` costs 3 to 4% of the wall time, mostly at start-up, and reading
+the traces about 0.2 s for a reconstruction and 0.4 s for a simulation. One real cost: under
+`strace`, ROOT cannot print the backtrace of a crash, so a stage that died by a signal says to
+observe it at the `libraries` level to see one.
+
+The raw traces are removed once they are read. What stays is `footprint.json.gz` in the stage's
+directory (65 to 200 kB, private, with every path the stage touched, and never published), and in
+the stage's record, under `observed`:
+
+| Key | What it is |
+| --- | --- |
+| `level`, `complete` | how it was observed, and whether that says every file it opened |
+| `packages` | the LCG packages it read a file of, by name and version; not one it only listed, or whose `.rootmap` or `.components` alone it read, as every package on the library path is |
+| `local` | the [local entries](#local-builds) it read a file from |
+| `undeclared` | the files it read that neither the stack, the system, a local build nor the problem identify, each with its identity: a `~/.rootrc`, a calibration a helper reads through a variable |
+| `network` | the network addresses it tried to connect to |
+| `footprint` | the size and SHA-256 of the footprint file |
+
+`k4opt study trial` prints this for each stage, with the local entries no stage read a file from: a
+local build that did not run, as a Marlin processor built with `k4_local_repo` on an LCG view, where
+`MARLIN_DLL` still names the nightly's library. That is known only if every stage ran its program
+itself, observed at the `files` level.
+
+A footprint identifies what the stage read as it was when the stage ended: a file on CVMFS by the
+content key CVMFS keeps of it, without reading it, any other by its SHA-256, a directory by the names
+in it. It leaves out what the stage made, what it was given, what the problem names, what it wrote
+(a compiler's scratch file), and `/proc`, `/sys`, `/dev`, `/run` and the user database's caches. It
+*holds* while each file is the same, each directory holds the same names and no path looked for in
+vain exists. An empty trace, a line that cannot be read, a file that could not be identified or a
+program started by a relative path never vouch for anything: what is not known is taken to differ.
+
+**What it cannot show.** A decision from a file's size or time, or from whether it exists, without
+opening it; an import that failed in Python, which answers from a listing it keeps; a file the stage
+both read and wrote, which counts as its own; whatever an evaluator reads, in k4opt's own process.
+This is why [another study](execution.md#stages-made-once-reuse) reuses an output only on identical
+software: the footprint then guards what lies outside the identity, and is never the proof that a
+change in the software did not matter. Rebuilding a reconstruction package therefore simulates again
+across studies, which costs time and never correctness.
 
 ## What depends on it
 
 | Where | What happens |
 | --- | --- |
 | A child process | Workers and the programs of the stack get exactly `os.environ`, never what a library set beneath Python: ROOT's interpreter sets `CLING_PREBUILT_MODULE_PATH` with C's `setenv` once it is used, and a child would otherwise inherit what no identity holds. |
-| A session | The software is taken when the session opens. Before each candidate, and before its record is written, any difference stops the session: every program inherits this process's variables. An evaluator that sets a variable while it runs inline does the same, unless the variable is on the list above. |
+| A session | The software is taken when the session opens. Before each candidate, and before its record is written, any difference stops the session: every program inherits this process's variables. An evaluator that sets a variable while it runs inline does the same, unless the variable is on the list above. So does an undeclared input once a record names it: every candidate of a session reads it as it was. |
 | A worker | It runs with the session's `sys.path`, compares the build, the system and each variable with the session's when it starts, and refuses by name; and compares the variables again after every task. A task that set a variable there (an evaluator writing `os.environ`) fails its candidate with a `ProvenanceError`, and the worker ends: the next task runs in a new one, started from the session's environment. |
 | A stage's signature | It holds the `id`: a stage of another build, of a rebuilt local library, or run with another variable, is not reused, whatever its path. A reconstruction's `directory` is signed by its files, not by its text: the job runs from a copy, so the same job elsewhere makes the same signature. Any other path (an options file run where it is, `data`, a file a ddsim option names) is given to the program as written, which may read it, so its text is signed too. |
 | A study | The `id`, the build and the system are part of its identity. A resume on other software is refused, naming what differs, and each trial's record must have run on the study's software. |
-| A record | `environment.observed.software` holds all of it, and is refused if its `id` is not that of its parts. |
-| A snapshot | It holds the `id`, the build and the system, never the variables, whose names can be private, nor `KEY4HEP_STACK`, a location the build identifies. A catalog and the dashboard name the build that ran. |
+| A record | `environment.observed.software` holds all of it, the variables as one digest, since every record of a session holds the same: `study.json` keeps them by name, for a refused resume to name them. A record is refused if its `id` is not that of its parts. |
+| A snapshot | It holds the `id`, the build and the system, never the variables, whose names can be private, nor `KEY4HEP_STACK`, a location the build identifies, nor anything of a footprint. A catalog and the dashboard name the build that ran. |
 
 **Start a study and resume it the same way.** There is no override and no warning that lets a resume
 through: one study holds one software. From a login shell to a bare `systemd-run` unit about 60
@@ -153,8 +207,9 @@ opened = Software.now()
 print(opened.build.label, opened.system.label, opened.id)
 print(opened.differences(Software.now()))  # what differs, for a person; [] if nothing does
 
-record = opened.to_dict()  # {"id", "build", "system", "variables"}
+record = opened.to_dict()  # {"id", "build", "system", "variables", "local", "site"}
 assert Software.from_dict(record) == opened  # SoftwareError if it is not what its id says
+opened.to_dict(variables=False)  # as a record of a candidate holds it: one digest of the variables
 ```
 
 `Build.of(path)` reads the build `KEY4HEP_STACK` would name, and `System.now()` this machine.

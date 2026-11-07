@@ -12,7 +12,8 @@ constraints (:mod:`k4opt.record.assess`), its record assembled from its task res
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import shutil
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,8 +25,9 @@ from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import Json
 from k4opt.jsonio import write_json
 from k4opt.problem.plan import GEOMETRY, Kind
+from k4opt.program import TRACE
 from k4opt.record.assess import Assessment, assess
-from k4opt.record.results import CandidateRecord
+from k4opt.record.results import CandidateRecord, TaskResult
 from k4opt.record.write import SUMMARY_NAME, assemble
 
 
@@ -63,6 +65,18 @@ class RunOutcome:
         return events
 
 
+def observed_inputs(results: Iterable[TaskResult]) -> dict[str, Json]:
+    """The undeclared inputs the stages that ran read, by path, with their identity, as each
+    stage's provenance says (:meth:`k4opt.software.Footprint.summary`)."""
+    found: dict[str, Json] = {}
+    for result in results:
+        observed = result.provenance.get("observed")
+        undeclared = observed.get("undeclared") if isinstance(observed, Mapping) else None
+        if isinstance(undeclared, Mapping):
+            found |= dict(undeclared)
+    return found
+
+
 def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> RunOutcome:
     """The record of the candidate ``run`` of a session that evaluates with ``baseline``,
     checked and written into its run directory; ``execution`` says how its tasks ran.
@@ -76,6 +90,9 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
     assert run_dir is not None
     record = _finish_plan(run)
     assert run.prepared is not None
+    for task in record.plan.of(Kind.STAGE):  # what a worker that died left of its traces
+        if task.directory is not None:
+            shutil.rmtree(run_dir / task.directory / TRACE, ignore_errors=True)
     geometry = record.results[GEOMETRY]
     externals = candidate_reads(geometry)
     try:
@@ -100,6 +117,8 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
             )
         # again, now: a candidate recorded while this one ran may have read other files
         baseline.check_read(externals)
+        inputs = observed_inputs(record.results.values())
+        baseline.check_observed(inputs)
     except RunError as exc:  # of the kind it is: a ProvenanceError stays one
         raise type(exc)(
             f"{exc} (while the candidate in {run_dir} ran, which has no {SUMMARY_NAME})"
@@ -127,6 +146,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
     except OSError as exc:
         raise RunError(f"cannot write summary in {run_dir}: {exc}") from exc
     baseline.remember(externals)
+    baseline.remember_observed(inputs)
     fingerprint = geometry.provenance.get("fingerprint")  # none for a geometry not made
     assert fingerprint is None or isinstance(fingerprint, str)
     return RunOutcome(record, summary, run_dir, fingerprint, assessment)

@@ -9,16 +9,19 @@ requested event unless told otherwise), which the fake ``podio`` next to it read
 What it does for a run and sample comes from the keys ``"*"``, ``"<sample>"`` and
 ``"<run>.<sample>"`` (the later ones win):
 ``await`` waits until that many simulations started, or until each file of a list exists (a path
-relative to ``dir``, or absolute); ``write`` then writes the text of each file it maps;
+relative to ``dir``, or absolute); ``write`` then writes the text of each file it maps; ``read``
+reads each file of a list, if it is there; ``connect`` tries to connect to that port of this host;
 ``kill`` sends SIGKILL to ``"self"`` or to its ``"parent"`` (the worker that started it);
 ``sleep`` sleeps that many seconds; ``burn`` keeps a processor busy that many seconds of its
 time; ``allocate`` holds that many MiB for a moment; ``hits``
 gives the cells of each event; ``exit`` is its exit status.
 """
 
+import contextlib
 import json
 import os
 import signal
+import socket
 import sys
 import time
 from pathlib import Path
@@ -47,8 +50,17 @@ if waited is not None:
         time.sleep(0.01)
 for name, text in told.get("write", {}).items():
     Path(name).write_text(text)
-if told.get("kill") == "parent":
-    os.kill(os.getppid(), signal.SIGKILL)
+for name in told.get("read", ()):
+    with contextlib.suppress(OSError):
+        Path(name).read_bytes()
+if "connect" in told:
+    with socket.socket() as connection:
+        connection.connect_ex(("127.0.0.1", told["connect"]))
+if told.get("kill") == "parent":  # the worker: above the strace that may observe this
+    parent = os.getppid()
+    if Path(f"/proc/{parent}/comm").read_text().strip() == "strace":
+        parent = int(Path(f"/proc/{parent}/stat").read_text().rpartition(")")[2].split()[1])
+    os.kill(parent, signal.SIGKILL)
 if told.get("kill") == "self":
     os.kill(os.getpid(), signal.SIGKILL)
 time.sleep(told.get("sleep", 0))

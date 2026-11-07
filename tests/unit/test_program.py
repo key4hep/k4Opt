@@ -3,11 +3,14 @@ interpreter that runs it, as ``PATH`` finds it."""
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
+from k4opt import program
 from k4opt.program import identify, run
 from tests.support.common import set_beneath_python
 
@@ -91,3 +94,99 @@ def test_a_program_runs_with_what_k4opt_identified_not_what_a_library_set_beneat
         ran = run("show", [], workdir=tmp_path, logs=logs, executable=script)
     assert ran.error is None
     assert (tmp_path / "out").read_text() == "unset seen\n"
+
+
+LOGS = {"stdout": "out.log", "stderr": "err.log", "command": "command.json"}
+traceable = pytest.mark.skipif(
+    program.unobservable("files") is not None, reason="strace cannot trace here"
+)
+
+
+@traceable
+@pytest.mark.parametrize("observe", ["none", "libraries", "files"])
+@pytest.mark.parametrize(("script", "status"), [("exit 3", 3), ("kill -SEGV $$", -11)])
+def test_a_program_ends_as_it_ends_however_it_is_observed(
+    tmp_path: Path, observe: program.Observation, script: str, status: int
+) -> None:
+    done = run("sh", ["-c", script], workdir=tmp_path, logs=LOGS, observe=observe)
+    assert done.returncode == status and done.error is not None
+    assert done.observed == observe
+    assert json.loads(done.command.read_text())["observed"] == observe
+
+
+@traceable
+def test_a_crash_under_strace_says_how_to_get_its_backtrace(tmp_path: Path) -> None:
+    done = run("sh", ["-c", "kill -SEGV $$"], workdir=tmp_path, logs=LOGS, observe="files")
+    assert done.error is not None and "observe it at the libraries level" in done.error
+
+
+@traceable
+def test_an_observed_program_out_of_time_leaves_nothing_running(tmp_path: Path) -> None:
+    pids = tmp_path / "pids"
+    script = f"sleep 300 & echo $! > {pids}; wait"
+    done = run("sh", ["-c", script], workdir=tmp_path, logs=LOGS, timeout=1.0, observe="files")
+    assert done.returncode is None and done.error is not None
+    child = int(pids.read_text())
+    for _ in range(200):
+        if not Path(f"/proc/{child}").exists():
+            break
+        time.sleep(0.01)
+    assert not Path(f"/proc/{child}").exists()
+
+
+def test_the_loader_says_what_it_loaded_into_the_trace_directory(tmp_path: Path) -> None:
+    done = run("true", [], workdir=tmp_path, logs=LOGS, observe="libraries")
+    assert done.trace == tmp_path / program.TRACE
+    assert any(path.name.startswith("ld.") for path in done.trace.iterdir())
+
+
+def test_a_run_unobserved_leaves_no_trace_directory(tmp_path: Path) -> None:
+    done = run("true", [], workdir=tmp_path, logs=LOGS)
+    assert done.trace is None and done.observed == "none"
+    assert not (tmp_path / program.TRACE).exists()
+
+
+def test_a_trace_directory_that_cannot_be_made_runs_the_program_unobserved(tmp_path: Path) -> None:
+    (tmp_path / program.TRACE).write_text("in the way")
+    done = run("true", [], workdir=tmp_path, logs=LOGS, observe="libraries")
+    assert done.error is None and done.observed == "none" and done.trace is None
+
+
+def test_strace_gone_from_path_runs_the_program_unobserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    true = _executable(tmp_path / "bin" / "true", "#!/bin/sh\nexit 0\n")
+    monkeypatch.setenv("PATH", str(true.parent))
+    work = tmp_path / "work"
+    work.mkdir()
+    done = run("true", [], workdir=work, logs=LOGS, observe="files")
+    assert done.error is None and done.observed == "none"
+    assert not (work / program.TRACE).exists()
+
+
+def test_no_strace_is_why_files_cannot_be_observed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert "strace is not installed" in str(program.unobservable("files"))
+    assert program.unobservable("libraries") is None
+    assert program.unobservable("none") is None
+
+
+def test_a_strace_that_may_not_trace_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _executable(
+        tmp_path / "strace",
+        "#!/bin/sh\necho 'PTRACE_TRACEME: Operation not permitted' >&2\nexit 1\n",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    assert "Operation not permitted" in str(program.unobservable("files"))
+
+
+def test_a_strace_that_traced_nothing_is_no_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _executable(tmp_path / "strace", "#!/bin/sh\nexit 0\n")
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    assert "wrote no trace" in str(program.unobservable("files"))

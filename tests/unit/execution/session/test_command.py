@@ -546,3 +546,27 @@ def test_an_unwritable_evaluator_directory_is_a_recorded_failure(
     assert outcome.summary_path.is_file()
     (evaluation,) = outcome.summary["samples"]["gamma"]["evaluations"].values()  # type: ignore[index]
     assert evaluation["workdir"] is None  # it was not called
+
+
+def test_the_command_observes_as_it_is_told(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    arguments = [str(problem_file), "--param", f"{RADIUS}=450", "--observe", "none"]
+    code, _, err = evaluate(*arguments, "--output", str(tmp_path / "a"))
+    assert code == 0, err
+    record = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
+    assert record["samples"]["gamma"]["stages"]["simulation"]["observed"]["level"] == "none"
+
+
+def test_the_command_refuses_an_unknown_level(tmp_path: Path, problem_file: Path) -> None:
+    with pytest.raises(SystemExit):
+        evaluate(str(problem_file), "--observe", "everything", "--output", str(tmp_path / "a"))
+
+
+def test_a_dry_run_observes_nothing_and_says_so(problem_file: Path) -> None:
+    code, _, err = evaluate(
+        str(problem_file), "--param", f"{RADIUS}=450", "--dry-run", "--observe", "none"
+    )
+    assert code == 2
+    assert "--observe says how a candidate runs, and --dry-run runs none" in err

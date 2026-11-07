@@ -16,6 +16,7 @@ import yaml
 pytest.importorskip("optuna")
 
 from k4opt.evaluation import edm4hep
+from k4opt.execution import _session
 from k4opt.optimization import OptimizationError, StudyResults, load_study, optimize
 from k4opt.optimization._optuna import marks, tree
 from k4opt.optimization._show import render_results
@@ -299,6 +300,23 @@ def test_stages_are_shared_within_an_inner_study_and_across_a_resume(
     study = run(nested, output, 0, resume=True)
     assert study.trials[0].status == "valid"
     assert seeds(fake) == [SEED, replicate_seed(SEED, 1)]  # none of the tuning simulated again
+
+
+@pytest.mark.parametrize("observe", ["files", "libraries", "none", "unavailable"])
+def test_a_nested_study_shares_as_much_however_its_stages_are_observed(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, observe: str
+) -> None:
+    # sharing within a study never depends on observation, even one that does not work here
+    document = yaml.safe_load(nested.read_text())
+    del document["optimization"]["inner"]["objective"]  # the problem's one objective
+    nested.write_text(yaml.safe_dump(document))
+    fake = simulation.install(monkeypatch)
+    if observe == "unavailable":
+        monkeypatch.setattr(_session, "unobservable", lambda level: "no ptrace here")
+    level = "files" if observe == "unavailable" else observe
+    study = run(nested, tmp_path / "s", 1, observe=level)
+    assert study.trials[0].status == "valid"
+    assert seeds(fake) == [SEED, replicate_seed(SEED, 1)]  # one simulation, and the new events
 
 
 def test_study_show_lists_the_inner_studies(

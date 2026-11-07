@@ -46,7 +46,8 @@ Design principles:
 ## Installation
 
 k4opt runs inside the Key4hep stack, which provides Python, lxml, PyYAML and
-`$K4GEO` (the installed k4geo tree). The setup mirrors
+`$K4GEO` (the installed k4geo tree); `strace` from the system lets it record what each stage
+used ([docs/software.md](docs/software.md#what-each-stage-used)). The setup mirrors
 [k4Bench](https://github.com/key4hep/k4Bench):
 
 ```bash

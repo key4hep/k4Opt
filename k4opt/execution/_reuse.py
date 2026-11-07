@@ -28,6 +28,15 @@ only when a stage would reuse it, never before (:meth:`Reuse.find`).
 A reused stage's result names the file where it is, outside the candidate's directory, as a file
 the caller supplies is named, and says where it comes from (``reused``: the record, the stage, its
 path in that run, its size and SHA-256).
+
+An output recorded by an earlier session serves only while what made it would still find what it
+found: its stage's footprint (:mod:`k4opt.software.observe`) must hold, each file it read the same,
+each directory the same names, no path it failed to find there now. That is checked once per
+session, the first time the output would serve. An output of another study (:meth:`Reuse.index`
+with ``across``) needs more: a complete footprint, observed at the ``files`` level, and no network
+connection, since what is not known is taken to differ. With equal signatures both ran on the same
+software, its local builds included. A refused output is skipped, as one that changed is, and the
+stage that runs instead says why (:meth:`Reuse.refusal`).
 """
 
 from __future__ import annotations
@@ -35,14 +44,14 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Hashable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import Artifact
 from k4opt.execution._files import Made, Observed, snapshot
 from k4opt.frozen import FrozenMap, Json
-from k4opt.hashing import Stat
+from k4opt.hashing import Stat, sha256_of
 from k4opt.problem.config import parse_problem
 from k4opt.problem.plan import Task
 from k4opt.problem.stages import stage_output
@@ -50,6 +59,8 @@ from k4opt.record.read import SUMMARY_SCHEMA, check_summary
 from k4opt.record.results import DONE, TaskResult
 from k4opt.record.signature import SIGNATURE, digest
 from k4opt.record.write import SUMMARY_NAME
+from k4opt.software import SoftwareError
+from k4opt.software.observe import load
 
 REUSED = "reused"
 """Where a reused stage's provenance says where its output comes from."""
@@ -60,7 +71,9 @@ class Source:
     """An output that stands in for any stage with its signature: the file ``path`` (absolute)
     with its ``bytes`` and ``sha256``, made by the stage ``task`` (``gamma/simulation``) of the
     candidate whose record is ``record``, in the run directory ``run_dir``, and the events found
-    in it."""
+    in it. One that a record of an earlier session holds says how its stage was ``observed``
+    (as the record says) and where its footprint is (``footprint``: the file and its SHA-256),
+    and whether it comes from another study (``across``)."""
 
     path: Path
     bytes: int
@@ -69,6 +82,35 @@ class Source:
     task: str
     run_dir: Path
     events_read: Json = None
+    observed: Json = None
+    footprint: tuple[Path, str] | None = None
+    recorded: bool = False
+    across: bool = False
+
+    def refused(self) -> str | None:
+        """Why this output may not stand in for a stage now, ``None`` if it may: an output of an
+        earlier session whose footprint no longer holds, or, from another study, one without a
+        complete footprint or that used the network."""
+        if not self.recorded:
+            return None
+        observed = self.observed if isinstance(self.observed, Mapping) else {}
+        if self.across:
+            if observed.get("level") != "files" or observed.get("complete") is not True:
+                return "its stage was not observed at the files level, so what it read is not known"
+            if observed.get("network"):
+                return "its stage used the network, which no footprint can vouch for"
+        if self.footprint is None:
+            return "its footprint is missing" if self.across else None
+        path, sha256 = self.footprint
+        try:
+            if sha256_of(path) != sha256:
+                return f"its footprint {path} is not the file its record names"
+            changes = load(path).changes()
+        except (OSError, SoftwareError) as exc:
+            return f"its footprint cannot be read: {exc}"
+        if changes:
+            return f"what its stage read differs now: {'; '.join(changes)}"
+        return None
 
     def provenance(self) -> dict[str, Json]:
         """What a reused stage's provenance says of it."""
@@ -83,6 +125,8 @@ class Source:
             "path": where,
             "bytes": self.bytes,
             "sha256": self.sha256,
+            # from another study: admitted because its footprint held (Source.refused)
+            "by_footprint": self.across,
         }
         provenance: dict[str, Json] = {REUSED: FrozenMap(reused)}
         if self.events_read is not None:
@@ -103,6 +147,9 @@ class Reuse:
     _unpublished: dict[str, set[str]] = field(default_factory=dict)
     _published: set[str] = field(default_factory=set)  # this session's records published
     _read: set[Path] = field(default_factory=set)  # where the records read are, symlinks resolved
+    # why each output of an earlier session may not serve, None if it may: checked once
+    _verdicts: dict[Path, str | None] = field(default_factory=dict)
+    _refusals: dict[str, str] = field(default_factory=dict)  # signature: why its outputs did not
 
     def find(self, signature: str) -> tuple[Source, Stat] | None:
         """The output that stands in for a stage with ``signature``, checked now, with the stat
@@ -116,9 +163,20 @@ class Reuse:
                 stat, now = snapshot(source.path)  # hashed again only if its stat changed
             except OSError:
                 continue
-            if now == {"bytes": source.bytes, "sha256": source.sha256}:
+            if now != {"bytes": source.bytes, "sha256": source.sha256}:
+                continue
+            if source.path not in self._verdicts:
+                self._verdicts[source.path] = source.refused()
+            why = self._verdicts[source.path]
+            if why is None:
                 return source, stat
+            self._refusals[signature] = f"{source.task} of {source.run_dir}: {why}"
         return None
+
+    def refusal(self, signature: str) -> str | None:
+        """Why an output recorded with ``signature`` did not stand in for a stage, ``None`` if
+        none was refused (:meth:`Source.refused`)."""
+        return self._refusals.get(signature)
 
     def add(self, signature: str, source: Source) -> bool:
         """Keep ``source`` for the stages with ``signature``, after those kept already; whether
@@ -179,9 +237,12 @@ class Reuse:
             del self._running[signature]
         return stopped
 
-    def index(self, run_dirs: Iterable[Path]) -> int:
+    def index(self, run_dirs: Iterable[Path], across: bool = True) -> int:
         """Keep the outputs of the stages that the records in ``run_dirs`` hold, each a run
-        directory with a ``summary.json``; how many were kept, not yet checked. A stage is kept
+        directory with a ``summary.json``; how many were kept, not yet checked. ``across`` says
+        they are of another study, which an output serves only with what its footprint shows
+        (:meth:`Source.refused`); not across, the records are of the study a session resumes,
+        made with its software as the resume checked. A stage is kept
         if its record holds up as any record is read (against the problem it records: each
         signature is then what the record says its stage was made from, and its SHA-256 that of
         its document); its output is hashed only when a stage would reuse it, and serves only if
@@ -198,7 +259,7 @@ class Reuse:
                 continue
             self._read.add(real)
             for signature, source in _recorded(path):
-                kept += self.add(signature, source)
+                kept += self.add(signature, replace(source, across=across))
         return kept
 
 
@@ -280,10 +341,33 @@ def _source(run_dir: Path, record: str, task: str, stage: object) -> tuple[str, 
     path, size, content = output.get("path"), output.get("bytes"), output.get("sha256")
     if not isinstance(path, str) or not isinstance(size, int) or not isinstance(content, str):
         return None
-    if Path(path).is_absolute() or ".." in Path(path).parts:
+    if not _inside(path):
         return None
-    source = Source(run_dir / path, size, content, record, task, run_dir, stage.get("events_read"))
+    observed = stage.get("observed")
+    footprint = None
+    if isinstance(observed, Mapping):
+        file = (stage.get("logs") or {}).get("footprint")
+        held = (observed.get("footprint") or {}).get("sha256")
+        if isinstance(file, str) and _inside(file) and isinstance(held, str):
+            footprint = (run_dir / file, held)
+    source = Source(
+        run_dir / path,
+        size,
+        content,
+        record,
+        task,
+        run_dir,
+        stage.get("events_read"),
+        observed,
+        footprint,
+        recorded=True,
+    )
     return str(sha256), source
+
+
+def _inside(path: str) -> bool:
+    """Whether ``path`` names a file inside the run directory it is relative to."""
+    return not Path(path).is_absolute() and ".." not in Path(path).parts
 
 
 def made(task: Task, result: TaskResult, record: str, run_dir: Path | None) -> Source | None:

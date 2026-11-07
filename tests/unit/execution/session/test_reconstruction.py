@@ -94,7 +94,8 @@ def test_the_reconstruction_runs_on_the_candidate_s_geometry_and_simulation(
     assert argv[argv.index("--IOSvc.Input") + 1] == str(here / "simulation" / "events.edm4hep.root")
     assert any(arg.startswith("--compactFile=") and "geometry" in arg for arg in argv)
     assert record["outputs"]["events"]["path"] == "samples/gamma/reconstruction/events.edm4hep.root"
-    assert sorted(record["logs"]) == ["command", "joboptions", "options", "stderr", "stdout"]
+    logs = ["command", "footprint", "joboptions", "options", "stderr", "stdout"]
+    assert sorted(record["logs"]) == logs
     assert sorted(record["files"]) == [
         "directory/CLDReconstruction.py",
         "directory/PandoraSettingsCLD/Likelihood.xml",

@@ -25,6 +25,7 @@ from k4opt.execution._publish import RunOutcome
 from k4opt.frozen import Json
 from k4opt.problem.models import GeometryDestination, StageDestination
 from k4opt.problem.plan import Kind
+from k4opt.program import OBSERVATIONS
 from k4opt.record.assess import Limit
 from k4opt.record.write import peak_memory
 from k4opt.terminal import size
@@ -108,6 +109,17 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
             "many. 'auto': as many as the processors this process may use. It bounds what k4opt "
             "starts, not the memory of each task. Default inline: one after another, in this "
             "process"
+        ),
+    )
+    evaluate.add_argument(
+        "--observe",
+        choices=OBSERVATIONS,
+        help=(
+            "how closely the program of each stage is watched as it runs: 'files' (default) "
+            "records every file it read, under strace, which another study needs to reuse its "
+            "output; 'libraries' only the libraries it loaded; 'none' nothing. Where strace "
+            "cannot run, the next level that works is taken, with a warning. It changes no "
+            "output and the summary says how each stage was watched"
         ),
     )
     evaluate.add_argument("--output", help="new directory for the geometry, simulation and summary")
@@ -275,9 +287,10 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     if (args.output is None) != args.dry_run:
         print("k4opt evaluate: give exactly one of --output DIR and --dry-run", file=err)
         return 2
-    if args.dry_run and args.workers is not None:
+    told = [name for name in ("workers", "observe") if getattr(args, name) is not None]
+    if args.dry_run and told:
         print(
-            "k4opt evaluate: --workers says how a candidate runs, and --dry-run runs none; "
+            f"k4opt evaluate: --{told[0]} says how a candidate runs, and --dry-run runs none; "
             "leave it out",
             file=err,
         )
@@ -306,6 +319,7 @@ def cmd_evaluate(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         inputs=args.input,
         workers="inline" if args.workers is None else args.workers,
         reuse=args.reuse,
+        observe=args.observe or "files",
         warn=lambda message: print(f"k4opt: warning: {message}", file=err, flush=True),
         replicate=args.replicate,
     )

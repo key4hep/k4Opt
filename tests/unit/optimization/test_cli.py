@@ -14,6 +14,7 @@ import pytest
 
 from k4opt.cli import main
 from k4opt.problem import load_problem
+from tests.support import simulation
 from tests.support.common import tree_digest
 from tests.support.evaluators import TRADE_OFF
 from tests.unit.optimization.conftest import RADIUS, evaluator_from, optuna_study
@@ -146,6 +147,20 @@ def test_the_command_runs_each_trial_in_a_worker_unless_told_inline(
     assert code == 0, err
     summary = json.loads((output / "trial-000000" / "summary.json").read_text())
     assert summary["environment"]["observed"]["execution"] == execution
+
+
+def test_the_command_observes_as_it_is_told(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("optuna")
+    simulation.install(monkeypatch)
+    problem, output = write_problem(), tmp_path / "s"
+    flags = ("--trials", "1", "--workers", "inline", "--observe", "none")
+    code, _, err = optimize(str(problem), *flags, "--output", str(output))
+    assert code == 0, err
+    summary = json.loads((output / "trial-000000" / "summary.json").read_text())
+    stages = [stage for part in summary["samples"].values() for stage in part["stages"].values()]
+    assert all(stage["observed"]["level"] == "none" for stage in stages if "argv" in stage)
 
 
 def test_a_missing_budget_is_a_usage_error(

@@ -86,9 +86,12 @@ No simulation executed; no evaluation output created.
 
 A candidate it refuses is refused with the message an evaluation would give, and the exit status
 is 1; so is one an evaluator [rejects](#what-ends-a-candidate-and-what-stops-a-session), with
-nothing created. `--workers` says how a candidate runs, so `--dry-run` refuses it rather than
-ignore it. A dry run evaluates nothing, so it checks a problem whose evaluations have time limits
+nothing created. `--workers` and `--observe` say how a candidate runs, so `--dry-run` refuses them
+rather than ignore them. A dry run evaluates nothing, so it checks a problem whose evaluations have time limits
 inline too.
+
+`--observe files|libraries|none` says how closely each stage's program is watched
+([software](software.md#what-each-stage-used)).
 
 **Time limits** are part of the problem ([problem](problem.md#time-limits)): a stage or an
 evaluation that runs longer than its `timeout` is stopped and fails, its logs kept, and the
@@ -186,8 +189,9 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
        events found (`events_read`), its `directory`, its `outputs` (the EDM4hep file of a
        simulation that is `done`: its reference `gamma_10gev/simulation#events`, path, size and
        SHA-256, hashed when the stage ended), its `signature` (what it was made from,
-       [docs/evaluation.md](evaluation.md#stage-signatures)) and `logs` (`stdout`, `stderr`,
-       `command`), the tasks
+       [docs/evaluation.md](evaluation.md#stage-signatures)), `logs` (`stdout`, `stderr`,
+       `command`, `footprint`) and, for a stage that ran a program, what it used (`observed`,
+       [docs/software.md](software.md#what-each-stage-used)), the tasks
        it `reads` (labeled `gamma_10gev/generation`, and `geometry`) and those it was
        `blocked_by`, and the time spent on it (`null` if it did not run);
      - `evaluations`, each binding that measures the sample by its name, in problem order: the
@@ -551,6 +555,21 @@ made it has them). Nothing is copied: the output stays in the run that made it, 
 that read it read it there, watched like a file of the candidate until it ends. A reused output
 that is later deleted leaves the records that reused it as they are: they still say, by
 signature and SHA-256, what they read.
+
+Equal signatures mean the same software, local builds included. What lies outside it is the
+stage's [footprint](software.md#what-each-stage-used)'s to vouch for, once per session, the first
+time an output recorded by an earlier session would serve:
+
+| An output of | Is reused if |
+| --- | --- |
+| this session | always; observation plays no part, so nested studies share as much at every level |
+| the study a session resumes | its footprint holds, if it has one |
+| anything else (`--reuse`) | its stage was observed completely at the `files` level, connected to no network, and its footprint, unaltered, holds |
+
+An output that does not qualify is passed over as one that changed is, and the stage that runs
+instead says why in its record (`not_reused`). The record of a stage reused from another study says
+`by_footprint`. A resume does not refuse a study whose undeclared input changed: what depended on it
+runs again, and the earlier trials stay as they are, so a study that must not mix them starts anew.
 
 ## What ends a candidate, and what stops a session
 

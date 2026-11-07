@@ -22,7 +22,7 @@ import time
 import uuid
 import weakref
 from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import Literal
@@ -61,6 +61,7 @@ from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES, executors, plan_stages
+from k4opt.program import OBSERVATIONS, Observation, unobservable
 from k4opt.record.results import DONE, TaskResult
 from k4opt.record.signature import (
     SIGNATURE,
@@ -189,6 +190,26 @@ class Evaluations:
         self.close()
 
 
+def _observation(asked: Observation) -> tuple[Observation, str | None]:
+    """How closely the session observes the programs of its stages: ``asked``, or the next level
+    that works here (:func:`k4opt.program.unobservable`), with why it is not ``asked`` then."""
+    if asked not in OBSERVATIONS:
+        raise RunError(f"observe must be one of {', '.join(OBSERVATIONS)}, got {asked!r}")
+    levels = OBSERVATIONS[OBSERVATIONS.index(asked) :]
+    why = None
+    for level in levels:
+        problem = unobservable(level)
+        if problem is None:
+            break
+        why = why or problem
+    if level == asked:
+        return level, None
+    return level, (
+        f"stages are observed at the {level} level, not {asked}: {why}; what they read beyond "
+        "the libraries they load is not known, and no other study can reuse what they make"
+    )
+
+
 class EvaluationSession:
     """Candidates of one problem, evaluated with the same evaluators: one task after another in
     the caller's thread, or as many at once as it has worker processes (:meth:`open`).
@@ -233,6 +254,7 @@ class EvaluationSession:
         warnings: tuple[str, ...],
         workers: int | None = None,
         dry_runs: DryRuns | None = None,
+        observe: Observation = "none",
     ) -> None:
         """Use :meth:`open`."""
         self._baseline = baseline
@@ -243,8 +265,10 @@ class EvaluationSession:
         self._inputs = FrozenMap(inputs)
         self._warnings = warnings
         # what every task needs, wherever it runs
-        self._context = _context(
-            problem.spec, binding, baseline.externals, problem.source, problem.catalog
+        self._context = replace(
+            _context(problem.spec, binding, baseline.externals, problem.source, problem.catalog),
+            observe=observe,
+            local=baseline.software.local,
         )
         execution: dict[str, Json] = {"backend": "inline"}
         if workers is not None:
@@ -275,6 +299,7 @@ class EvaluationSession:
         *,
         inputs: Mapping[str, str | os.PathLike[str]] | None = None,
         workers: int | Literal["auto", "inline"] = "inline",
+        observe: Observation = "files",
     ) -> EvaluationSession:
         """Load the problem file ``problem_path`` to evaluate its candidates with
         ``implementations``.
@@ -303,6 +328,13 @@ class EvaluationSession:
         evaluations (its ``timeout``) needs workers to evaluate candidates, though not to check
         them (:meth:`check_limits`); a stage's limit stops the program the stage runs. Close a
         session (:meth:`close`, or ``with``) to stop its workers.
+        ``observe`` says how closely the program of each stage is observed while it runs
+        (:data:`k4opt.program.Observation`): ``files``, under ``strace``, records each file it read
+        (its footprint, :mod:`k4opt.software.observe`), which a later study needs to reuse its
+        output; ``libraries`` only the libraries it loaded; ``none`` nothing. Where programs cannot
+        be observed as asked (no ``strace``, or tracing forbidden), the session observes them at
+        the next level that works, and says so in :attr:`warnings`. Observation never changes
+        what a stage makes, nor which stages of the session share an output.
         Raises a :class:`~k4opt.errors.K4OptError` for an invalid problem, evaluator,
         stage or input (an :class:`~k4opt.evaluation.EvaluationContractError` for an evaluator
         class that declares anything but plain data, too), and
@@ -311,6 +343,7 @@ class EvaluationSession:
         """
         path = Path(problem_path).expanduser()  # expanded once: loaded and recorded alike
         count, usable = _workers(workers), usable_cpus()
+        observed, unobserved = _observation(observe)
         problem = resolve_problem(path)
         spec = problem.spec
         supplied = _supplied(spec, inputs or {})
@@ -358,7 +391,10 @@ class EvaluationSession:
                 "identified (size and SHA-256), not verified to be the output of the stage the "
                 "problem defines; the records list it as supplied"
             )
-        return cls(baseline, binding, supplied, (*binding.warnings, *crowded), count, runs)
+        if unobserved is not None:
+            crowded.append(unobserved)
+        warned = (*binding.warnings, *crowded)
+        return cls(baseline, binding, supplied, warned, count, runs, observed)
 
     @property
     def spec(self) -> ProblemSpec:
@@ -434,7 +470,7 @@ class EvaluationSession:
         """
         return self._baseline.identity()
 
-    def reuse(self, directories: Iterable[str | os.PathLike[str]]) -> int:
+    def reuse(self, directories: Iterable[str | os.PathLike[str]], *, resumed: bool = False) -> int:
         """Let the stages of this session's candidates reuse what the stages of the records in
         ``directories`` made; how many recorded outputs that adds, each checked only when a stage
         would reuse it.
@@ -446,15 +482,21 @@ class EvaluationSession:
         programs, software and k4opt code) made an output that is still there with the size
         and SHA-256 its record holds, hashed when it would be reused: its record then says
         ``reused``, with where the output comes from. The session's own stages are reused the
-        same way, without being named here. A record already read is not read again. Raises
-        :class:`~k4opt.execution.RunError` for a directory that does not exist."""
+        same way, without being named here. A record already read is not read again.
+
+        An output recorded by an earlier session serves only while its stage's footprint holds
+        (:mod:`k4opt.software.observe`: what it read is the same, what it did not find is still
+        not there); one of another study only with a complete footprint and no network either.
+        ``resumed`` says the directories are those of the study this session resumes, whose
+        records need no complete footprint. Raises :class:`~k4opt.execution.RunError` for a
+        directory that does not exist."""
         runs: list[Path] = []
         for given in directories:
             path = Path(os.path.abspath(Path(given).expanduser()))
             if not path.is_dir():
                 raise RunError(f"reuse {os.fspath(given)}: {path} is no directory")
             runs += run_directories(path)
-        return self._reuse.index(runs)
+        return self._reuse.index(runs, across=not resumed)
 
     def check_limits(self) -> None:
         """Raise :class:`~k4opt.execution.RunError` if this session could not keep the time

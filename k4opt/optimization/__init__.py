@@ -42,6 +42,7 @@ from k4opt.optimization._results import OUTCOMES, StudyResults, TrialResult
 from k4opt.optimization._study import STUDY_NAME
 from k4opt.optimization._tradeoffs import RULE_KINDS, Rule, TradeOffs, trade_offs
 from k4opt.optimization.errors import OptimizationError
+from k4opt.program import Observation
 
 __all__ = [
     "OUTCOMES",
@@ -85,6 +86,7 @@ def optimize(
     workers: int | Literal["auto", "inline"] = "inline",
     reuse: Sequence[str | os.PathLike[str]] = (),
     fixed: Mapping[str, Scalar] | None = None,
+    observe: Observation = "files",
     warn: Callable[[str], None] | None = None,
     progress: Callable[[TrialResult], None] | None = None,
     activity: Callable[[Activity], None] | None = None,
@@ -112,7 +114,9 @@ def optimize(
     (the same definition, inputs, geometry, files, programs, environment and k4opt code: see
     ``docs/evaluation.md``): in this session, in an earlier trial of the study (on a resume), or
     in the runs and studies ``reuse`` names; its record says where the output comes from. Neither
-    is part of the study.
+    is part of the study, nor is ``observe``: how closely each stage's program is watched, as for
+    :meth:`~k4opt.execution.EvaluationSession.open`; another study reuses an output only if its
+    stage was watched at the ``files`` level.
 
     ``fixed`` gives some parameters one value for every trial (``k4opt optimize --fix``): the
     optimizer proposes only the others, every record holds the complete candidate, and a resume
@@ -143,6 +147,7 @@ def optimize(
         workers=workers,
         reuse=reuse,
         fixed=fixed,
+        observe=observe,
         warn=warn or (lambda message: None),
         progress=progress or (lambda trial: None),
         activity=activity,

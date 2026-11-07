@@ -45,6 +45,7 @@ from k4opt.execution import (
 from k4opt.execution._tasks import TaskOutcome, TaskSpec
 from k4opt.problem import CandidateError, load_problem
 from k4opt.problem.plan import GEOMETRY, Task, stage_task
+from k4opt.program import Observation
 from k4opt.record import SUMMARY_NAME, Assessment
 from tests.support import stack
 from tests.support.common import scientific
@@ -148,13 +149,19 @@ def probe(monkeypatch: pytest.MonkeyPatch, **told: dict[str, Any]) -> None:
 @pytest.fixture
 def session_of(problem: Path) -> Iterator[Opener]:
     """Open sessions of ``problem`` (or ``path``) with ``test.cell_count``, and
-    ``test.worker_probe`` if it binds that, each closed after the test."""
+    ``test.worker_probe`` if it binds that, each closed after the test. Their stages are observed
+    at ``observe``, ``none`` by default: the fake ddsim of these tests waits for others by listing
+    a directory they change, which observation would rightly take for an input that changed."""
     opened: list[EvaluationSession] = []
 
-    def open_(workers: int | str, path: Path = problem) -> EvaluationSession:
+    def open_(
+        workers: int | str, path: Path = problem, observe: Observation = "none"
+    ) -> EvaluationSession:
         named = {entry["name"] for entry in yaml.safe_load(path.read_text())["evaluators"]}
         probes = [worker_probe()] if "test.worker_probe" in named else []
-        session = EvaluationSession.open(path, [cell_count(), *probes], workers=workers)
+        session = EvaluationSession.open(
+            path, [cell_count(), *probes], workers=workers, observe=observe
+        )
         opened.append(session)
         return session
 
@@ -627,6 +634,7 @@ def test_an_exception_that_cannot_be_rebuilt_is_raised_as_a_task_error() -> None
     assert isinstance(error.__cause__, _worker.RemoteTraceback)
 
 
+@pytest.mark.parametrize("observe", ["none", "files"])
 @pytest.mark.parametrize("workers", [1, 2])
 @pytest.mark.parametrize(
     ("killed", "required", "status", "message"),
@@ -648,9 +656,10 @@ def test_a_process_killed_like_the_oom_killer_does_fails_its_task_and_leaves_not
     status: str,
     message: str | None,
     workers: int,
+    observe: Observation,
 ) -> None:
     # with one worker as with several: the crash of an evaluator, or the kernel's OOM killer,
-    # fails its task, never the session that coordinates the candidates
+    # fails its task, never the session that coordinates the candidates; observed or not
     problem = write_problem(tmp_path / "probe.yaml", doc, ("p",), required=required)
     told: dict[str, Any] = {
         "ddsim": {"a.gamma": {"kill": "self"}},
@@ -658,7 +667,7 @@ def test_a_process_killed_like_the_oom_killer_does_fails_its_task_and_leaves_not
     }.get(killed, {})
     stack.install(monkeypatch, marks, **told)
     probe(monkeypatch, **({"a.p": {"kill": True}} if "evaluation" in killed else {}))
-    session = session_of(workers, problem)
+    session = session_of(workers, problem, observe)
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert outcome.candidate.status == status
     summary = verified(outcome)  # a complete record of what happened, on disk
@@ -1192,8 +1201,8 @@ def test_concurrent_candidates_each_run_with_their_own_stage_options(
     path.write_text(yaml.safe_dump(bound))
     radii = {"a": 300.0, "b": 400.0, "c": 500.0, "d": 350.0}
     requests = [RunRequest({RADIUS: r}, tmp_path / n, {"name": n}) for n, r in radii.items()]
-    with (
-        EvaluationSession.open(path, [cell_count()], workers=2) as session,
+    with (  # unobserved: the fake ddsim waits for the other by listing a directory it changes
+        EvaluationSession.open(path, [cell_count()], workers=2, observe="none") as session,
         session.evaluate_each(requests) as evaluations,
     ):
         ended = list(evaluations)

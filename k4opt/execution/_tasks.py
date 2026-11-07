@@ -43,7 +43,9 @@ from k4opt.hashing import Stat
 from k4opt.problem.contract import MetricKey
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec, Stage
 from k4opt.problem.plan import Task, TaskId
+from k4opt.program import Observation
 from k4opt.record.results import PeakMemory
+from k4opt.software import Local
 
 type Output = Callable[[Path], AbstractContextManager[object]]
 """Where an evaluator's output goes while it is called, given its own directory."""
@@ -87,7 +89,10 @@ class SessionContext:
     (``evaluations``), what the external references of the session's geometry read
     (``externals``), which a candidate's own references are compared with, and the geometry
     candidates start from (``source``, discovered as ``catalog``; none where every candidate is
-    given its geometry)."""
+    given its geometry). ``observe`` is how closely the programs of stages are observed, as the
+    session found it can (:data:`k4opt.program.Observation`), and ``local`` the local entries of
+    the software (:attr:`k4opt.software.Software.local`), which a footprint names rather than
+    identifies again."""
 
     spec: ProblemSpec
     contexts: Mapping[str, StageContext]
@@ -102,6 +107,8 @@ class SessionContext:
     listed: dict[tuple[Path, Stat | None], tuple[str, ...] | str] = field(
         default_factory=dict, compare=False
     )
+    observe: Observation = "none"
+    local: tuple[Local, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

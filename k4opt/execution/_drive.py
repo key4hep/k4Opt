@@ -320,6 +320,11 @@ def _drive(
         signature = run.signatures.get(task.id)
         if signature is not None:
             provenance = {**result.provenance, SIGNATURE: signature}
+            if reuse is not None and REUSED not in result.provenance:
+                # an output of an earlier session that it would have reused, and why it did not
+                refused = reuse.refusal(str(signature["sha256"]))
+                if refused is not None:
+                    provenance["not_reused"] = refused
             result = replace(result, provenance=FrozenMap(provenance))
         try:
             if check is not None:

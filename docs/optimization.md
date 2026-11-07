@@ -61,6 +61,7 @@ color off.
 | `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)) |
 | `--storage URL` | an Optuna database URL (SQLite on a local disk, PostgreSQL) in place of the journal file in `DIR`; it needs SQLAlchemy, and the same URL on every resume |
 | `--workers N\|auto\|inline` | run the tasks in N worker processes, up to N at once, of one trial and of several; a simulation on several threads holds as many; `auto`: as many as the processors this process may use ([Trials at once](#trials-at-once---workers)). Default 1: one trial after another, each task in turn in one worker, so that an evaluator that crashes or is killed for its memory fails only its trial; if it does so twice in a row (N + 1 worker deaths), the study stops ([execution](execution.md#execution-inline-or-in-worker-processes)), as it would for any task that cannot run. `inline`: in this process, to debug, where such a crash ends the study (`--resume` continues it). Not part of the study: a resume may give another one |
+| `--observe files\|libraries\|none` | how closely each stage's program is watched ([software](software.md#what-each-stage-used)). Default `files`: under `strace`, which another study needs to reuse an output. Not part of the study |
 
 The exit status is 0 once every trial asked for has ended, even if candidates were `invalid` or
 `failed`. It is 1 if the study cannot start or resume, a trial stops it, or it is interrupted,

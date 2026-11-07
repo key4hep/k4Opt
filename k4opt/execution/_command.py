@@ -22,6 +22,7 @@ from k4opt.execution.errors import RunError
 from k4opt.geometry import Parameter as GeometryParameter
 from k4opt.problem.candidate import Configuration, parse_candidate, validate_candidate
 from k4opt.problem.models import ProblemSpec
+from k4opt.program import Observation
 
 
 def _parse_inputs(assignments: Sequence[str]) -> dict[str, str]:
@@ -65,8 +66,9 @@ def preview_candidate(
     --dry-run``, with the seeds of ``replicate``. ``warn`` is called with each of the session's
     warnings, as there. Raises
     :class:`~k4opt.evaluation.CandidateRejected` if an evaluator's ``check`` rejects it."""
+    # nothing runs: nothing to observe
     with EvaluationSession.open(
-        problem_path, implementations, inputs=_parse_inputs(inputs)
+        problem_path, implementations, inputs=_parse_inputs(inputs), observe="none"
     ) as session:
         values = parse_candidate(session.spec, assignments)
         checked, _ = validate_candidate(session.spec, values)
@@ -88,13 +90,14 @@ def run_candidate(
     warn: Callable[[str], None] | None = None,
     reuse: Sequence[str | os.PathLike[str]] = (),
     replicate: int = 0,
+    observe: Observation = "files",
 ) -> RunOutcome | Rejected:
     """Evaluate the candidate given as ``NAME=VALUE`` strings; ``output`` must not exist. An
     evaluator's ``check`` may reject it instead (:class:`~k4opt.execution.Rejected`), with
     nothing created.
 
     :meth:`EvaluationSession.evaluate` in a session of its own: ``inputs`` are
-    ``SAMPLE/STAGE=FILE`` strings, ``workers`` that of
+    ``SAMPLE/STAGE=FILE`` strings, ``workers`` and ``observe`` those of
     :meth:`EvaluationSession.open`, and ``reuse`` the runs or studies whose stages a stage with
     the same signature reuses (:meth:`EvaluationSession.reuse`), ``replicate`` that of
     :meth:`EvaluationSession.evaluate`. ``warn``
@@ -107,6 +110,7 @@ def run_candidate(
         implementations,
         inputs=_parse_inputs(inputs),
         workers=workers,
+        observe=observe,
     ) as session:
         session.reuse(reuse)
         values = parse_candidate(session.spec, assignments)
