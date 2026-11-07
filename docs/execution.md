@@ -571,9 +571,10 @@ An output that does not qualify is passed over as one that changed is, and the s
 instead says why in its record (`not_reused`). The record of a stage reused from another study says
 `by_footprint`, and `undeclared`, what it depends on. The full check of a footprint runs once per
 output per session; what the stack and the system's package manager hold is taken not to change while
-a session runs, as the build and the system are checked before each candidate. A resume is refused if an undeclared input the study's trials read changed since, naming it:
-one study holds the trials of one set of inputs, as of one software. Restore the file, or start a
-new study.
+a session runs, as the build and the system are checked before each candidate. A resume is refused if an undeclared input the study's trials read changed since, or a path one of
+them looked for in vain outside the stack and the software exists now (a `~/.rootmap`, an optional
+override), naming it: one study holds the trials of one set of inputs, as of one software. What a
+stage of the study made itself (a cache) does not count. Restore the file, or start a new study.
 
 ## What ends a candidate, and what stops a session
 

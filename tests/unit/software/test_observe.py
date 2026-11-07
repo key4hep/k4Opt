@@ -154,8 +154,34 @@ def test_a_short_call_strace_pads_to_its_column_is_read(tmp_path: Path, line: st
 
 
 def test_a_relative_lookup_is_where_its_process_was(tmp_path: Path) -> None:
-    line = 'openat(AT_FDCWD</some/job>, "../rootlogon.C", O_RDONLY) = -1 ENOENT (No such file)'
-    assert footprint(traces(tmp_path / "raw", line), "files", []).missing == ("/some/rootlogon.C",)
+    line = 'openat(AT_FDCWD</some/job>, "rootlogon.C", O_RDONLY) = -1 ENOENT (No such file)'
+    assert footprint(traces(tmp_path / "raw", line), "files", []).missing == (
+        "/some/job/rootlogon.C",
+    )
+
+
+def test_a_lookup_through_a_link_and_up_is_where_the_system_looked(tmp_path: Path) -> None:
+    # current -> data/release/bin: current/.. is data/release, not where current is
+    (tmp_path / "data" / "release" / "bin").mkdir(parents=True)
+    (tmp_path / "work").mkdir()
+    (tmp_path / "work" / "current").symlink_to(tmp_path / "data" / "release" / "bin")
+    looked = f"{tmp_path}/work/current/../calibration.dat"
+    found = footprint(traces(tmp_path / "raw", STARTED, failed(looked)), "files", [])
+    assert found.missing == (looked,) and found.changes() == []
+    (tmp_path / "work" / "calibration.dat").touch()  # where a lexical .. would look: no matter
+    assert found.changes() == []
+    (tmp_path / "data" / "release" / "calibration.dat").touch()  # where the system looks
+    assert found.changes() == [f"{looked} appeared"]
+
+
+def test_a_relative_lookup_up_from_a_link_is_where_the_system_looked(tmp_path: Path) -> None:
+    (tmp_path / "data" / "job").mkdir(parents=True)
+    (tmp_path / "work").mkdir()
+    (tmp_path / "work" / "job").symlink_to(tmp_path / "data" / "job")
+    line = f'openat(AT_FDCWD<{tmp_path}/work/job>, "../override.json", O_RDONLY) = -1 ENOENT (x)'
+    found = footprint(traces(tmp_path / "raw", STARTED, line), "files", [])
+    # whichever directory strace names, the path is kept as the system walks it from there
+    assert found.missing == (f"{tmp_path}/work/job/../override.json",)
 
 
 def test_what_the_stage_made_was_given_or_wrote_is_no_input(tmp_path: Path) -> None:

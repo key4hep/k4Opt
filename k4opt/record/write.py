@@ -307,6 +307,18 @@ def recorded_inputs(summary: Mapping[str, object]) -> dict[str, tuple[str, str]]
     return found
 
 
+def recorded_footprints(summary: Mapping[str, object]) -> dict[str, str]:
+    """The footprint file of each stage of a ``summary.json`` that ran its program and kept one,
+    by the stage's label: its path relative to the run directory."""
+    found: dict[str, str] = {}
+    for sample in _within(summary, "samples"):
+        for name in _within(summary, "samples", sample, "stages"):
+            file = _within(summary, "samples", sample, "stages", name, "logs").get("footprint")
+            if isinstance(file, str) and not file.startswith("/") and ".." not in file.split("/"):
+                found[f"{sample}/{name}"] = file
+    return found
+
+
 def unused_local(summary: Mapping[str, object]) -> list[str]:
     """The local entries of the software that no stage of a ``summary.json`` read from: a local
     build put in front of the stack that did not run. Empty where that is not known: unless every

@@ -40,7 +40,7 @@ import re
 import shutil
 import stat
 import time
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -78,6 +78,18 @@ SERVICES = (
 bus), a connection to which is no input; one to any other may answer with anything."""
 
 _LOCAL_SYSTEM = ("/usr/local",)
+
+STACK = (
+    "/cvmfs/sft.cern.ch",
+    "/cvmfs/sft-nightlies.cern.ch",
+    "/cvmfs/sw.hsf.org",
+    "/cvmfs/sw-nightlies.hsf.org",
+    "/cvmfs/geant4.cern.ch",
+)
+"""The CVMFS repositories the stack and its data come from: the LCG releases and nightlies, the
+Key4hep ones and Geant4's data, all in directories of one version each, which the build and the
+variables that name them (``G4LEDATA``) identify. Any other repository holds data like any other
+filesystem: what a stage reads there is an undeclared input."""
 
 _PACKAGE = re.compile(
     r"^/cvmfs/[^/]+/lcg/(?:nightlies/[^/]+/[^/]+|releases)/(?:[^/]+/)*?"
@@ -124,6 +136,8 @@ _SOCKET = re.compile(rb"^(?P<family>AF_INET6?)\b")
 _LOADED = re.compile(rb"^\s*\d+:\s+calling init: (?P<path>.+?)\s*$")
 _MISSING = (b"ENOENT", b"ENOTDIR")
 _DENIED = (b"EACCES", b"EPERM")
+_SPECIAL = "special"
+"""The identity of a device, a pipe or a socket: none that says what it gives."""
 _LISTED = "names:"
 """What the identity of a directory starts with."""
 _DELETED = " (deleted)"
@@ -157,7 +171,8 @@ def identity(path: str, since: int | None = None) -> str | None:
     makes as it imports, whoever runs it), ``cvmfs:`` and the content key
     CVMFS keeps of a file on it (read without the file), ``sha256:`` and the SHA-256 of any other
     file, read once per version of it (:func:`k4opt.hashing.sha256_of`), or each time while it
-    changed just now, and ``special`` for a device, a pipe or a socket."""
+    changed just now, and ``special`` for a device, a pipe or a socket, which may give other data
+    every time it is read and so never vouches for what was read (:meth:`Footprint.changes`)."""
     try:
         status = os.stat(path)
         if since is not None and max(status.st_mtime_ns, status.st_ctime_ns) >= since:
@@ -166,7 +181,7 @@ def identity(path: str, since: int | None = None) -> str | None:
             names = "\0".join(sorted(set(os.listdir(path)) - {"__pycache__"}))
             return _LISTED + hashlib.sha256(os.fsencode(names)).hexdigest()
         if not stat.S_ISREG(status.st_mode):
-            return "special"
+            return _SPECIAL
         if path.startswith("/cvmfs/"):
             for key in ("user.hash", "user.chunk_list"):
                 try:
@@ -194,7 +209,9 @@ class Footprint:
     to (``unix:<path>``), whose answers may come from anywhere.
     ``unread`` counts the lines of its traces that could not be read, of which ``unreadable``
     holds the first few, or why it is incomplete: a footprint with any is incomplete, and so is
-    one at another level than ``files``."""
+    one at another level than ``files``. ``made`` holds the paths it wrote or made outside what
+    the stage was given or made in its own directory: what a path another stage looked for in
+    vain may have become since (a cache), by the study's own doing."""
 
     level: Observation
     read: Mapping[str, str | None] = field(default_factory=dict)
@@ -204,6 +221,7 @@ class Footprint:
     connected: tuple[str, ...] = ()
     unread: int = 0
     unreadable: tuple[str, ...] = ()
+    made: tuple[str, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -221,13 +239,14 @@ class Footprint:
             "connected": list(self.connected),
             "unread": self.unread,
             "unreadable": list(self.unreadable),
+            "made": list(self.made),
         }
 
     @classmethod
     def from_dict(cls, data: object) -> Footprint:
         """The footprint :meth:`to_dict` wrote; raises :class:`SoftwareError`."""
         keys = {"schema", "level", "read", "missing", "denied", "ran", "connected", "unread"}
-        keys |= {"unreadable"}
+        keys |= {"unreadable", "made"}
         if not isinstance(data, Mapping) or set(data) != keys or data["schema"] != SCHEMA:
             raise SoftwareError(f"no footprint of {SCHEMA}")
         read, unread = data["read"], data["unread"]
@@ -235,13 +254,18 @@ class Footprint:
             raise SoftwareError("a footprint's level or files are not what a footprint holds")
         if not all(isinstance(v, str) or v is None for v in read.values()):
             raise SoftwareError("a footprint's files are not identities by path")
-        lists = [data[key] for key in ("missing", "denied", "ran", "connected", "unreadable")]
+        names = ("missing", "denied", "ran", "connected", "unreadable", "made")
+        lists = [data[key] for key in names]
         if not all(isinstance(x, list) and all(isinstance(i, str) for i in x) for x in lists):
             raise SoftwareError("a footprint's paths are not lists of paths")
         if isinstance(unread, bool) or not isinstance(unread, int) or unread < 0:
             raise SoftwareError(f"a footprint's unread lines are {unread!r}, no count")
-        missing, denied, ran, connected, unreadable = (tuple(cast(list[str], x)) for x in lists)
-        return cls(data["level"], dict(read), missing, denied, ran, connected, unread, unreadable)
+        missing, denied, ran, connected, unreadable, made = (
+            tuple(cast(list[str], x)) for x in lists
+        )
+        return cls(
+            data["level"], dict(read), missing, denied, ran, connected, unread, unreadable, made
+        )
 
     def changes(self, at_most: int = 3) -> list[str]:
         """What no longer holds of it, each said for a person (the first ``at_most`` found);
@@ -251,7 +275,7 @@ class Footprint:
         read is not known."""
         found: list[str] = []
         for path, then in self.read.items():
-            if then is None:
+            if then is None or then == _SPECIAL:  # a pipe gives what it is sent, each time
                 found.append(f"{path} could not be identified")
             elif identity(path) != then:
                 found.append(f"{path} changed" if os.path.lexists(path) else f"{path} went")
@@ -268,6 +292,19 @@ class Footprint:
                 if len(found) >= at_most:
                     return found
         return found
+
+    def appeared(self, local: Sequence[Local], made: Collection[str] = ()) -> list[str]:
+        """The paths it looked for in vain that exist now, of those outside the stack, the system
+        and what the software identifies (:func:`covered`), and but those in ``made``: what the
+        stages of a study made themselves. What a resume refuses, as an input that changed."""
+        return [
+            path
+            for path in self.missing
+            if _undeclared(path)
+            and path not in made
+            and not covered(path, local)
+            and os.path.lexists(path)
+        ]
 
     def summary(self, local: Sequence[Local]) -> dict[str, Json]:
         """What a stage's record keeps of it: how it was observed (``level``), whether that is
@@ -304,7 +341,8 @@ class Footprint:
 
 
 def _undeclared(path: str) -> bool:
-    if path.startswith("/cvmfs/"):
+    """Whether ``path`` is outside what the stack and the system identify."""
+    if _under(path, STACK):
         return False
     return not _under(path, SYSTEM) or _under(path, _LOCAL_SYSTEM)
 
@@ -352,6 +390,7 @@ class _Seen:
     connected: dict[str, None] = field(default_factory=dict)
     written: set[str] = field(default_factory=set)
     aliases: dict[str, str] = field(default_factory=dict)  # a path opened: the file it reached
+    sockets: dict[str, None] = field(default_factory=dict)  # local sockets no one was at
     # files reached by a relative path from a directory the trace does not say
     unresolved: list[str] = field(default_factory=list)
     unread: int = 0
@@ -397,13 +436,11 @@ def _opened(seen: _Seen, call: bytes, args: bytes, match: re.Match[bytes]) -> No
             if named is not None and named != path:
                 seen.aliases[named] = path
         return
-    if os.path.isabs(given):
-        path = os.path.normpath(given)
-    elif base is not None and os.path.isabs(base):
-        path = os.path.normpath(os.path.join(base, given))
-    else:  # relative to a directory no one knows
+    found_at = _named(given, base)  # where the system looked: a .. after a link is not undone
+    if found_at is None:  # relative to a directory no one knows
         seen.unread += 1
         return
+    path = found_at
     if match["errno"] in _MISSING:
         seen.missing[path] = None
     elif match["errno"] in _DENIED:
@@ -420,7 +457,7 @@ def _started(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
     if given is None or not os.path.isabs(given):
         seen.unread += 1  # started from a relative path: its directory is not said
         return
-    path = os.path.normpath(given)
+    path = _named(given, None) or given
     if match["ret"] == b"0" or match["ret"] == b"?":
         seen.ran[path] = None
         seen.read[path] = None
@@ -437,7 +474,7 @@ def _connected(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
         if _under(path, SERVICES):
             return
         if match["errno"] in _MISSING:  # no one there: one that comes would be another input
-            seen.missing[path] = None
+            seen.sockets[path] = None  # missing wherever it is, under /run as anywhere
         else:  # connected, connecting or refused: whatever answers there decides
             seen.connected[f"unix:{path}"] = None
         return
@@ -570,6 +607,8 @@ def footprint(
             continue
         read[name] = identity(name, since) if _steady(name, reached, since) else None
     absent = [path for path in kept(seen.missing) if "__pycache__" not in path.split("/")]
+    absent += [path for path in seen.sockets if path not in seen.written and path not in absent]
+    made = [path for path in sorted(seen.written) if not _under(path, skipped)]
     return Footprint(
         level,
         read,
@@ -579,6 +618,7 @@ def footprint(
         tuple(sorted(seen.connected)),
         seen.unread,
         tuple(seen.unreadable),
+        tuple(made),
     )
 
 
@@ -660,6 +700,7 @@ __all__ = [
     "IGNORED",
     "SCHEMA",
     "SERVICES",
+    "STACK",
     "SYSTEM",
     "Footprint",
     "changed_inputs",

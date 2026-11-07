@@ -71,8 +71,9 @@ from k4opt.record.signature import (
     signed,
     stage_document,
 )
-from k4opt.record.write import SUMMARY_NAME, recorded_inputs
-from k4opt.software.observe import changed_inputs
+from k4opt.record.write import SUMMARY_NAME, recorded_footprints, recorded_inputs
+from k4opt.software import Footprint, Local, SoftwareError
+from k4opt.software.observe import changed_inputs, load
 
 
 def _supplied(
@@ -192,11 +193,14 @@ class Evaluations:
         self.close()
 
 
-def _study_inputs(runs: Iterable[Path]) -> dict[str, Json]:
+def _study_inputs(runs: Iterable[Path], local: Sequence[Local]) -> dict[str, Json]:
     """The undeclared inputs the records in ``runs`` read, by path, each as it is now. Raises
-    :class:`ProvenanceError` if one is not what a record says it read, or two records read it as
-    different files: a resume must not add trials made from other inputs."""
+    :class:`ProvenanceError` if one is not what a record says it read, two records read it as
+    different files, or a path a stage looked for in vain outside the stack and the software
+    (``local``) exists now and no stage of the study made it (its footprint): a resume must not
+    add trials made from other inputs."""
     held: dict[str, tuple[str, str]] = {}
+    footprints: list[tuple[str, Footprint]] = []
     for run in runs:
         try:
             summary = json.loads((run / SUMMARY_NAME).read_bytes())
@@ -204,6 +208,11 @@ def _study_inputs(runs: Iterable[Path]) -> dict[str, Json]:
             continue  # a record that cannot be read reuses nothing either
         if not isinstance(summary, Mapping):
             continue
+        for stage, file in recorded_footprints(summary).items():
+            try:
+                footprints.append((f"{run.name}/{stage}", load(run / file)))
+            except SoftwareError:
+                continue  # what it looked for is not known: only another study needs it
         for path, (then, stage) in recorded_inputs(summary).items():
             first = held.setdefault(path, (then, f"{run.name}/{stage}"))
             if first[0] != then:
@@ -217,6 +226,14 @@ def _study_inputs(runs: Iterable[Path]) -> dict[str, Json]:
             f"{', '.join(changed)}, read by the study's trials, changed since: a resume would add "
             "trials made from other inputs; restore it as it was, or start a new study"
         )
+    made = {path for _, found in footprints for path in found.made}
+    for stage, found in footprints:
+        appeared = found.appeared(local, made)
+        if appeared:
+            raise ProvenanceError(
+                f"{', '.join(appeared)}, which {stage} looked for and did not find, exists now: a "
+                "resume would add trials made from other inputs; remove it, or start a new study"
+            )
     return {path: then for path, (then, _) in held.items()}
 
 
@@ -530,7 +547,8 @@ class EvaluationSession:
                 raise RunError(f"reuse {os.fspath(given)}: {path} is no directory")
             runs += run_directories(path)
         if resumed:
-            self._baseline.remember_observed(_study_inputs(runs))
+            local = self._baseline.software.local
+            self._baseline.remember_observed(_study_inputs(runs, local))
         return self._reuse.index(runs, across=not resumed)
 
     def check_limits(self) -> None:
