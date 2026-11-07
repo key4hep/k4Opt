@@ -36,10 +36,10 @@ from k4opt.evaluation import (
     EvaluationResult,
     RoleInput,
 )
-from k4opt.execution._files import Stat
 from k4opt.execution._stages import StageContext
 from k4opt.frozen import FrozenMap, Json
 from k4opt.geometry import Catalog, GeometrySource, Override
+from k4opt.hashing import Stat
 from k4opt.problem.contract import MetricKey
 from k4opt.problem.models import EvaluatorSpec, ProblemSpec, Stage
 from k4opt.problem.plan import Task, TaskId

@@ -35,14 +35,12 @@ from k4opt.evaluation import (
 )
 from k4opt.execution._files import (
     Made,
-    Stat,
     Tree,
     artifacts,
     local,
     local_artifact,
     portable,
     portable_artifact,
-    stat_of,
 )
 from k4opt.execution._instances import _Bound, _instance
 from k4opt.execution._stages import make_stage
@@ -57,6 +55,7 @@ from k4opt.execution._tasks import (
 from k4opt.execution.errors import RunError
 from k4opt.frozen import Json, thaw
 from k4opt.geometry import GeometryError, GeometrySource
+from k4opt.hashing import Stat, stat_of
 from k4opt.problem.contract import check_result
 from k4opt.problem.plan import GEOMETRY, Kind, TaskId
 from k4opt.problem.stages import stage_output

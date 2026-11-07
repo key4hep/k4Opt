@@ -26,12 +26,12 @@ from k4opt.evaluation import (
     Role,
     RoleInput,
 )
-from k4opt.execution import EvaluationSession, RunError, RunOutcome, _files
+from k4opt.execution import EvaluationSession, RunError, RunOutcome
 from k4opt.frozen import thaw
 from k4opt.problem.plan import Kind, TaskId
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from tests.support import simulation
-from tests.support.common import scientific
+from tests.support.common import counted_hashes, scientific
 from tests.support.evaluators import (
     CELL_COUNT,
     HIT_ENERGY,
@@ -370,10 +370,8 @@ def test_a_sample_whose_simulation_fails_blocks_only_its_own_evaluations(
 
 
 def test_a_file_read_by_two_samples_is_hashed_once_and_named_for_each(
-    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from k4opt.execution._files import _sha256
-
     hepmc = tmp_path / "zh.hepmc"  # next to the problem file
     hepmc.write_bytes(b"HepMC::Version 3\n")
     doc = yaml.safe_load(problem_file.read_text())
@@ -382,12 +380,12 @@ def test_a_file_read_by_two_samples_is_hashed_once_and_named_for_each(
     pion["simulation"] |= {"events": 3, "seed": 6}
     problem_file.write_text(yaml.safe_dump(doc))
     two_samples(problem_file, **pion)
-    _sha256.cache_clear()
+    hashed = counted_hashes(monkeypatch, tmp_path)
     session = EvaluationSession.open(problem_file, [cell_count()])
     inputs = session.identity()["inputs"]
     assert list(inputs) == ["samples.gamma.generation.file", "samples.pion.generation.file"]
     assert inputs["samples.gamma.generation.file"] == inputs["samples.pion.generation.file"]
-    assert _sha256.cache_info().misses == 1  # read once
+    assert hashed.count(str(hepmc)) == 1  # read once
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert [f"--inputFiles={hepmc}" in argv for argv, _ in fake.calls] == [True, True]
     assert outcome.candidate.status == "valid"
@@ -751,13 +749,7 @@ def test_what_a_role_reads_reaches_the_evaluator_unchanged_and_k4opt_computes_no
 def test_a_role_that_reads_a_stage_gets_its_file_hashed_once(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hashed: list[str] = []
-
-    def sha256(path: str, *key: int) -> str:
-        hashed.append(path)
-        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-    monkeypatch.setattr(_files, "_sha256", sha256)  # uncached: every hash is counted
+    hashed = counted_hashes(monkeypatch, tmp_path)  # uncached: every hash is counted
     seen: list[RoleInput] = []
 
     class Files(Evaluator):

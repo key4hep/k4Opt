@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -365,3 +366,24 @@ def test_a_link_in_the_job_s_directory_that_leads_nowhere_is_refused_when_the_se
     (job / "PandoraSettingsCLD" / "old.xml").symlink_to(tmp_path / "removed.xml")
     with pytest.raises(EvaluationContractError, match=r"old\.xml is a link to .*which does not"):
         EvaluationSession.open(reco_file, implementations(reco_cells()))
+
+
+def test_the_same_job_in_another_directory_makes_the_same_reconstruction(
+    tmp_path: Path, reco_file: Path, fake: simulation.FakeDdsim, job: Path
+) -> None:
+    # it runs from a copy: where its files were never reaches it, so it is signed by them
+    def signature(output: Path) -> str:
+        with EvaluationSession.open(reco_file, implementations(reco_cells())) as session:
+            outcome = session.evaluate({RADIUS: 450.0}, output)
+        assert outcome.candidate.status == "valid"
+        reco = outcome.summary["samples"]["gamma"]["stages"]["reconstruction"]  # type: ignore[index]
+        return str(reco["signature"]["sha256"])
+
+    first = signature(tmp_path / "a")
+    moved = shutil.copytree(job, tmp_path / "moved" / "CLDConfig")
+    doc = yaml.safe_load(reco_file.read_text())
+    doc["samples"]["gamma"]["reconstruction"]["directory"] = str(moved)
+    reco_file.write_text(yaml.safe_dump(doc))
+    assert signature(tmp_path / "b") == first
+    (moved / "CLDReconstruction.py").write_text("# another job\n")
+    assert signature(tmp_path / "c") != first

@@ -20,7 +20,7 @@ from k4opt.evaluation import (
     EvaluationRequest,
     result_from,
 )
-from k4opt.execution import EvaluationSession, RunError, _files
+from k4opt.execution import EvaluationSession, RunError
 from k4opt.problem import load_problem
 from k4opt.problem.candidate import configure
 from k4opt.problem.plan import Kind, Task, TaskId
@@ -28,7 +28,7 @@ from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from k4opt.record.results import TaskResult
 from k4opt.record.write import assemble
 from tests.support import simulation
-from tests.support.common import scientific
+from tests.support.common import counted_hashes, scientific
 from tests.support.evaluators import (
     cell_count,
     parameter_echo,
@@ -375,13 +375,7 @@ def test_an_artifact_is_recorded_by_reference_path_size_and_hash(
 def test_an_artifact_and_an_edm4hep_output_are_each_hashed_once(
     tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hashed: list[str] = []
-
-    def sha256(path: str, *key: int) -> str:
-        hashed.append(path)
-        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-    monkeypatch.setattr(_files, "_sha256", sha256)  # uncached: every hash is counted
+    hashed = counted_hashes(monkeypatch, tmp_path)  # uncached: every hash is counted
     run_candidate(problem_file, [f"{RADIUS}=450"], tmp_path / "a", evaluators=[plotting()])
     artifact = tmp_path / "a" / "samples" / "gamma" / "evaluators" / "test.cell_count"
     events = tmp_path / "a" / "samples" / "gamma" / "simulation" / "events.edm4hep.root"

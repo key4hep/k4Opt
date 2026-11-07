@@ -40,8 +40,9 @@ from pathlib import Path
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import Artifact
-from k4opt.execution._files import Made, Observed, Stat, snapshot
+from k4opt.execution._files import Made, Observed, snapshot
 from k4opt.frozen import FrozenMap, Json
+from k4opt.hashing import Stat
 from k4opt.problem.config import parse_problem
 from k4opt.problem.plan import Task
 from k4opt.problem.stages import stage_output

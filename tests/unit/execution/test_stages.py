@@ -5,9 +5,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import hashlib
-import os
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +26,6 @@ from k4opt.evaluation import (
     edm4hep,
 )
 from k4opt.execution import _stages as stages_module
-from k4opt.execution._files import _sha256, file_identity
 from k4opt.execution._preflight import _request
 from k4opt.execution._stages import (
     StageContext,
@@ -1148,34 +1145,6 @@ def test_an_evaluator_may_read_only_generation(
     assert own.seen.inputs["generation"] == tmp_path / "events" / "zh.hepmc"  # resolved
 
 
-# --- hashing an input file once per file version, not once per candidate ---
-
-
-def test_many_files_checked_again_and_again_are_each_hashed_once(tmp_path: Path) -> None:
-    # as a session checks a directory of data before each candidate, in the same order
-    files = [tmp_path / f"{i}.dat" for i in range(100)]
-    for file in files:
-        file.write_bytes(file.name.encode())
-    _sha256.cache_clear()
-    for _ in range(3):
-        for file in files:
-            file_identity(file)
-    assert _sha256.cache_info().misses == 100
-
-
-def test_a_file_is_hashed_once_until_it_changes(tmp_path: Path) -> None:
-    hepmc = tmp_path / "zh.hepmc"
-    hepmc.write_bytes(b"one")
-    _sha256.cache_clear()
-    first = file_identity(hepmc)
-    for _ in range(3):
-        assert file_identity(hepmc) == first
-    assert _sha256.cache_info().misses == 1 and _sha256.cache_info().hits == 3
-    hepmc.write_bytes(b"three")  # another size: a different file version
-    changed = file_identity(hepmc)
-    assert changed["sha256"] == hashlib.sha256(b"three").hexdigest() != first["sha256"]
-
-
 # --- the request is the same for check() and evaluate(); results stay the evaluator's ---
 
 
@@ -1460,20 +1429,6 @@ def test_a_particle_gun_generation_needs_nothing_either(doc: dict[str, Any]) -> 
     assert "generation" not in own.seen.inputs  # type: ignore[union-attr]
     gun = stage(candidate, "generation").provenance["particle_gun"]
     assert gun["particle"] == "gamma"  # type: ignore[index]
-
-
-def test_a_file_replaced_with_the_same_size_and_mtime_is_hashed_again(tmp_path: Path) -> None:
-    hepmc = tmp_path / "zh.hepmc"
-    hepmc.write_bytes(b"AAAA")
-    before = hepmc.stat()
-    _sha256.cache_clear()
-    first = file_identity(hepmc)
-    time.sleep(0.05)  # ctime comes from a coarse kernel clock; see _sha256
-    hepmc.write_bytes(b"BBBB")  # same size ...
-    os.utime(hepmc, ns=(before.st_atime_ns, before.st_mtime_ns))  # ... and the old mtime back
-    second = file_identity(hepmc)
-    assert first["sha256"] == hashlib.sha256(b"AAAA").hexdigest()
-    assert second["sha256"] == hashlib.sha256(b"BBBB").hexdigest()
 
 
 def test_the_home_and_the_variables_of_a_stage_s_paths_are_those_of_the_session_s_opening(

@@ -20,13 +20,14 @@ import json
 import os
 import platform
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
 from k4opt.frozen import FrozenMap
 from k4opt.software.errors import SoftwareError
+from k4opt.software.overlays import SITE, Local, Seen, identified, site_identified, sites
 
 type Kind = Literal["lcg", "unrecognized"]
 
@@ -89,6 +90,14 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 def _compared(name: str) -> bool:
     return name not in _NAMES and not name.startswith(_PREFIXES)
+
+
+def compared_variables(environment: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The variables of ``environment`` (``os.environ`` if ``None``) that are compared, as they
+    are: what a process can change of what it runs on without touching a file, which is far cheaper
+    to look at than :meth:`Software.now`."""
+    variables = os.environ if environment is None else environment
+    return {name: value for name, value in variables.items() if _compared(name)}
 
 
 def _sha256(data: bytes) -> str:
@@ -257,38 +266,59 @@ _SYSTEM = frozenset(("os", "glibc", "architecture"))
 @dataclass(frozen=True, slots=True)
 class Software:
     """What candidates run on: the ``build``, the ``system`` and the SHA-256 of each compared
-    variable by its name (``variables``). Equal :attr:`id`\\ s, the same software."""
+    variable by its name (``variables``), a local entry of a search path by the content it leads to
+    (:mod:`k4opt.software.overlays`). Equal :attr:`id`\\ s, the same software. ``local`` says where
+    each local entry is and what it holds: recorded, never part of the :attr:`id`, so the same
+    build at another prefix is the same software."""
 
     build: Build
     system: System
     variables: Mapping[str, str]
+    local: tuple[Local, ...] = ()
+    site: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "variables", FrozenMap(self.variables))
+        object.__setattr__(self, "local", tuple(self.local))
 
     @classmethod
-    def now(cls, environment: Mapping[str, str] | None = None) -> Software:
-        """What this process would run on now: of ``environment``, ``os.environ`` if ``None``."""
+    def now(
+        cls, environment: Mapping[str, str] | None = None, site: Sequence[str] | None = None
+    ) -> Software:
+        """What this process would run on now: of ``environment`` (``os.environ`` if ``None``) and
+        of the interpreter's ``site`` directories (:func:`~k4opt.software.overlays.sites` if
+        ``None``)."""
         variables = os.environ if environment is None else environment
-        return cls(
-            Build.of(variables.get("KEY4HEP_STACK")),
-            System.now(),
-            {
-                name: _sha256(os.fsencode(value))
-                for name, value in sorted(variables.items())
-                if _compared(name)
-            },
-        )
+        digests: dict[str, str] = {}
+        local: list[Local] = []
+        seen: Seen = {}
+        for name, value in sorted(variables.items()):
+            if _compared(name):
+                text, found = identified(name, value, seen)
+                digests[name] = _sha256(os.fsencode(text))
+                local += found
+        text, found = site_identified(sites() if site is None else site, seen)
+        local += found
+        build = Build.of(variables.get("KEY4HEP_STACK"))
+        site_digest = _sha256(os.fsencode(text))
+        return cls(build, System.now(), digests, tuple(local), site_digest)
 
     @property
     def id(self) -> str:
-        """The SHA-256 of all of it."""
+        """The SHA-256 of all of it but where its local entries are."""
         parts = {
             "build": self.build.to_dict(),
             "system": self.system.to_dict(),
             "variables": dict(self.variables),
+            "site": self.site,
         }
         return _sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")).encode())
+
+    @property
+    def by_stat(self) -> tuple[Local, ...]:
+        """The local entries too large to identify by content: identified by each file's size and
+        mtime."""
+        return tuple(entry for entry in self.local if not entry.content)
 
     def differences(self, now: Software) -> list[str]:
         """What differs in ``now``, each said for a person; empty for the same software."""
@@ -299,8 +329,17 @@ class Software:
             found.append(f"the system is {now.system.label}, not {self.system.label}")
         names = sorted({*self.variables, *now.variables})
         changed = [n for n in names if self.variables.get(n) != now.variables.get(n)]
-        if changed:
-            found.append(f"the environment differs in {', '.join(changed)}")
+        rebuilt = [n for n in changed if _rebuilt(self, now, n)]
+        for name in rebuilt:
+            paths = _rebuilt(self, now, name)
+            found.append(f"the files {name} leads to in {', '.join(paths)} changed")
+        others = [n for n in changed if n not in rebuilt]
+        if others:
+            found.append(f"the environment differs in {', '.join(others)}")
+        if self.site != now.site:
+            paths = _rebuilt(self, now, SITE)
+            where = ", ".join(paths) if paths else "the interpreter's site directories"
+            found.append(f"what Python imports from {where} changed")
         return found
 
     def to_dict(self) -> dict[str, object]:
@@ -309,6 +348,8 @@ class Software:
             "build": self.build.to_dict(),
             "system": self.system.to_dict(),
             "variables": dict(self.variables),
+            "local": [entry.to_dict() for entry in self.local],
+            "site": self.site,
         }
 
     @classmethod
@@ -321,15 +362,52 @@ class Software:
             isinstance(value, str) and _SHA256.fullmatch(value) for value in variables.values()
         ):
             raise SoftwareError("the software's variables are not digests by name")
+        local = entry["local"]
+        if not isinstance(local, Sequence) or isinstance(local, str):
+            raise SoftwareError(f"the software's local entries are {local!r}, not a list")
+        site = entry["site"]
+        if site is not None and not (isinstance(site, str) and _SHA256.fullmatch(site)):
+            raise SoftwareError(f"the software's site is {site!r}, no digest")
         software = cls(
-            Build.from_dict(entry["build"]), System.from_dict(entry["system"]), dict(variables)
+            Build.from_dict(entry["build"]),
+            System.from_dict(entry["system"]),
+            dict(variables),
+            tuple(_local(item) for item in local),
+            site,
         )
         if entry["id"] != software.id:
             raise SoftwareError(f"the software's id {entry['id']!r} is not that of its parts")
         return software
 
 
-_SOFTWARE = frozenset(("id", "build", "system", "variables"))
+_SOFTWARE = frozenset(("id", "build", "system", "variables", "local", "site"))
+_LOCAL = frozenset(("variable", "path", "sha256", "files", "bytes", "content"))
+
+
+def _local(data: object) -> Local:
+    entry = _keys(data, _LOCAL, "a local entry")
+    variable, path, sha256 = entry["variable"], entry["path"], entry["sha256"]
+    files, size, content = entry["files"], entry["bytes"], entry["content"]
+    if not isinstance(variable, str) or not isinstance(path, str):
+        raise SoftwareError(f"a local entry names no variable and path: {data!r}")
+    if not isinstance(sha256, str) or not _SHA256.fullmatch(sha256):
+        raise SoftwareError(f"a local entry's sha256 is {sha256!r}, no digest")
+    if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in (files, size)):
+        raise SoftwareError(f"a local entry's files and bytes are no counts: {data!r}")
+    if not isinstance(content, bool):
+        raise SoftwareError(f"a local entry's content is {content!r}, not true or false")
+    return Local(variable, path, sha256, files, size, content)  # type: ignore[arg-type]
+
+
+def _rebuilt(then: Software, now: Software, name: str) -> list[str]:
+    """Where the local entries of ``name`` in ``now`` hold other content than the entries in the
+    same places of the variable in ``then`` (a build rebuilt, here or after it moved); empty if it
+    has other local entries, or the same content in each."""
+    before = [entry.sha256 for entry in then.local if entry.variable == name]
+    after = [entry for entry in now.local if entry.variable == name]
+    if not before or len(before) != len(after):
+        return []
+    return [entry.path for entry, old in zip(after, before, strict=True) if entry.sha256 != old]
 
 
 def _build_difference(then: Build, now: Build) -> str:

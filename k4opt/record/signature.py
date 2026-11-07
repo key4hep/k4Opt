@@ -10,9 +10,11 @@ and the variables: :class:`k4opt.software.Software`, by its ``id``), and the sam
 sample a stage belongs to, its time limit, how many workers ran it and where its files and its
 program are play no part (the record says where): a stage of another sample or another candidate
 with the same signature made the same events (as far as the program is deterministic for a seed).
-The definition names files as the problem writes them (relative to the problem file, or through
-a variable), so a problem moved with its files keeps its signatures; the same file named
-otherwise makes another one, and its stage runs again rather than being reused.
+A reconstruction's ``directory`` is left out of the definition as text (:data:`COPIED`): the job
+runs from a copy of it, which its files sign, so where it was never reaches the job and the same
+files elsewhere make the same signature. Every other path is signed as the problem writes it
+too. A local build is part of the software by its content, never by where it is installed
+(:mod:`k4opt.software.overlays`).
 
 The writer of a record (:mod:`k4opt.record.write`, through the execution) and its reader
 (:mod:`k4opt.record.read`) build the document with the same functions here, so that a record's
@@ -30,6 +32,13 @@ from k4opt.frozen import Json, thaw
 from k4opt.problem.models import Stage
 
 SIGNATURE = "signature"
+BY_CONTENT = "<its files>"
+"""What a stage's signature holds for an option whose files it signs by content, not its text."""
+COPIED = ("directory",)
+"""The options whose files a stage runs a copy of (a reconstruction's job directory), so that
+where they are never reaches the program: they are signed by their files alone. Any other path
+(an options file, ``data``, a file an option names) is given to the program as it is, which may
+read it, so its text is signed as well."""
 """Where a stage's part of a record holds its signature: ``{"sha256": …, "document": …}``."""
 
 
@@ -88,6 +97,9 @@ def stage_document(
     definition = _plain(stage.to_dict())
     assert isinstance(definition, dict)
     definition.pop("timeout", None)  # how long it may take, not what it makes
+    for key in COPIED:
+        if key in definition and any(label.startswith(f"{key}/") for label in files):
+            definition[key] = BY_CONTENT  # the job runs a copy: where it was never reaches it
     return {
         "stage": name,
         "definition": definition,

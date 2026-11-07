@@ -39,7 +39,7 @@ from k4opt.evaluation import (
 from k4opt.execution._backends import Backend, Handle
 from k4opt.execution._binding import task_cpus
 from k4opt.execution._describe import describe, seen
-from k4opt.execution._files import Made, Observed, Stat, Tree, local, local_artifact
+from k4opt.execution._files import Made, Observed, Tree, local, local_artifact
 from k4opt.execution._preflight import Rejected, _Prepared
 from k4opt.execution._reuse import REUSED, Reuse, Source, made, reused
 from k4opt.execution._schedule import Scheduler
@@ -53,6 +53,7 @@ from k4opt.execution._tasks import (
 from k4opt.execution._work import asked
 from k4opt.execution.errors import RunError
 from k4opt.frozen import FrozenMap, Json
+from k4opt.hashing import Stat
 from k4opt.problem.plan import Kind, Task, TaskId, represents_candidate
 from k4opt.record.results import CandidateRecord, TaskResult
 from k4opt.record.signature import SIGNATURE

@@ -9,6 +9,7 @@ import importlib.abc
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 from collections.abc import Callable
@@ -639,6 +640,26 @@ def test_a_variable_known_to_be_irrelevant_does_not_refuse(
     run(problem, output, 1, seed=1)
     monkeypatch.setenv(name, f"{os.environ.get(name, '')}{os.pathsep}/somewhere/else")
     assert len(run(problem, output, 1, resume=True).trials) == 2
+
+
+def test_a_local_library_rebuilt_in_place_refuses_the_resume_and_a_moved_one_does_not(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lib = tmp_path / "install" / "lib"
+    lib.mkdir(parents=True)
+    (lib / "libDDMarlinPandora.so").write_bytes(b"ELF v1")
+    monkeypatch.setenv("LD_LIBRARY_PATH", f"{lib}:{os.environ.get('LD_LIBRARY_PATH', '')}")
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1)
+    moved = shutil.copytree(lib.parent, tmp_path / "elsewhere" / "install") / "lib"
+    monkeypatch.setenv(
+        "LD_LIBRARY_PATH", os.environ["LD_LIBRARY_PATH"].replace(str(lib), str(moved))
+    )
+    assert len(run(problem, output, 1, resume=True).trials) == 2  # the same build, elsewhere
+    (moved / "libDDMarlinPandora.so").write_bytes(b"ELF v2")  # rebuilt in place
+    message = f"the files LD_LIBRARY_PATH leads to in {moved} changed"
+    with pytest.raises(OptimizationError, match=re.escape(message)):
+        run(problem, output, 1, resume=True)
 
 
 def test_two_runs_of_a_service_resume(
