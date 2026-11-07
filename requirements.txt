@@ -9,7 +9,7 @@ identify==2.6.20
 nodeenv==1.11.1
 virtualenv==21.15.2
 distlib==0.4.4
-filelock==4.2.5
+filelock==4.2.8
 platformdirs==4.14.0
 codespell==2.4.3
 pyyaml==6.0.3
