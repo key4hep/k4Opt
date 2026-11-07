@@ -714,3 +714,175 @@ def test_an_inner_study_that_shares_no_stage_asks_for_its_trials_at_once(
     optimize(nested, [cell_count()], output, trials=1, seed=1, workers=2)
     (_, told), (start, _), _ = asked(output / "inner" / trial_directory(0))
     assert start < told  # nothing to wait for: the second ran beside the first
+
+
+# --- what a resume reuses, at every level --------------------------------------------------------
+
+
+@pytest.fixture
+def repeated(nested: Path) -> Path:
+    """:func:`nested`, whose inner studies are judged by the cells of the simulation (which ``x``
+    does not reach), with a second parameter at the top, ``y``, which reaches no stage: with the
+    radius fixed, every top trial simulates one geometry."""
+    document = yaml.safe_load(nested.read_text())
+    del document["optimization"]["inner"]["objective"]  # the problem's one objective
+    document["evaluators"].append({"name": "test.trade_off", "version": "1", "as": "outer"})
+    document["parameters"]["y"] = {
+        "type": "continuous",
+        "bounds": [1.0, 2.0],
+        "targets": {"evaluators": {"outer": "x"}},
+    }
+    document["optimization"]["parameters"] = [RADIUS, "y"]
+    nested.write_text(yaml.safe_dump(document))
+    return nested
+
+
+FIXED = {RADIUS: 450.0}
+
+
+def optimize_repeated(problem: Path, output: Path, trials: int, **kwargs: Any) -> StudyResults:
+    implementations = [cell_count(), candidate_check(), trade_off()]
+    kwargs.setdefault("seed", None if kwargs.get("resume") else 1)
+    return optimize(problem, implementations, output, trials=trials, fixed=FIXED, **kwargs)
+
+
+def simulation_of(run_dir: Path) -> dict[str, Any]:
+    data = json.loads((run_dir / "summary.json").read_text())
+    stage: dict[str, Any] = data["samples"]["gamma"]["stages"]["simulation"]
+    return stage
+
+
+def test_a_resume_reuses_what_the_inner_studies_of_ended_top_trials_made(
+    tmp_path: Path, repeated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    optimize_repeated(repeated, output, 1)
+    assert seeds(fake) == [SEED, replicate_seed(SEED, 1)]  # tuning, then the new events
+    study = optimize_repeated(repeated, output, 1, resume=True)  # a second top trial
+    assert [t.status for t in study.trials] == ["valid", "valid"]
+    assert seeds(fake) == [SEED, replicate_seed(SEED, 1)]  # nothing simulated again
+    first = output / "inner" / trial_directory(0) / trial_directory(0)
+    made = json.loads((first / "summary.json").read_text())["id"]
+    second = output / "inner" / trial_directory(1)
+    assert all(
+        simulation_of(second / trial_directory(n))["reused"]["record"] == made for n in range(3)
+    )
+    assert load_study(output).to_dict() == study.to_dict()
+
+
+def test_a_resume_of_three_levels_reuses_what_every_level_made(
+    tmp_path: Path, repeated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    three = yaml.safe_load(three_levels(repeated).read_text())
+    del three["optimization"]["inner"]["inner"]["objective"]  # each level by the cells
+    repeated.write_text(yaml.safe_dump(three))
+    fake = simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    optimize_repeated(repeated, output, 1)
+    made = sorted(seeds(fake))
+    assert made == sorted([SEED, replicate_seed(SEED, 1), replicate_seed(SEED, 2)])
+    study = optimize_repeated(repeated, output, 1, resume=True)
+    assert [t.status for t in study.trials] == ["valid", "valid"]
+    assert sorted(seeds(fake)) == made  # every level of the second top trial reused
+    assert load_study(output).to_dict() == study.to_dict()
+
+
+@pytest.mark.parametrize("change", ["rewritten", "removed"])
+def test_a_resume_simulates_again_what_an_inner_trial_made_that_changed_since(
+    tmp_path: Path, repeated: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    fake = simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    optimize_repeated(repeated, output, 1)
+    first = output / "inner" / trial_directory(0) / trial_directory(0)
+    events = first / simulation_of(first)["outputs"]["events"]["path"]
+    if change == "rewritten":
+        events.write_text(events.read_text() + " ")
+    else:
+        events.unlink()
+    study = optimize_repeated(repeated, output, 1, resume=True)
+    assert [t.status for t in study.trials] == ["valid", "valid"]
+    assert seeds(fake) == [SEED, replicate_seed(SEED, 1), SEED]  # the tuning's, once more
+    again = output / "inner" / trial_directory(1) / trial_directory(0)
+    assert "reused" not in simulation_of(again)
+    assert simulation_of(output / trial_directory(1))["reused"]["run_dir"] == str(
+        output / trial_directory(0)
+    )  # the new events of the first top trial still serve
+
+
+def test_a_session_given_a_nested_study_reuses_the_outputs_of_its_every_level(
+    tmp_path: Path, repeated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.execution import EvaluationSession
+
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    optimize_repeated(repeated, output, 1)
+    with EvaluationSession.open(repeated, [cell_count(), candidate_check(), trade_off()]) as s:
+        # the inner study's simulation (its other trials reused it) and the new events
+        assert s.reuse([output]) == 2
+
+
+def test_a_middle_level_shares_what_only_its_own_plan_reads(
+    nested: Path,
+) -> None:
+    """Three levels: the middle one judged by a sample the deepest does not read, whose
+    simulation no parameter of the levels below the top reaches."""
+    from k4opt.optimization._scope import StudyScope
+    from k4opt.problem import load_problem
+
+    document = yaml.safe_load(nested.read_text())
+    pion = copy.deepcopy(document["samples"]["gamma"])
+    pion["generation"]["particle"] = "pi-"
+    pion["simulation"]["seed"] = SEED + 1
+    document["samples"]["pion"] = pion
+    del document["samples"]["gamma"]["generation"]["energy"]
+    document["parameters"]["z"] = {
+        "type": "continuous",
+        "bounds": [5.0, 10.0],
+        "unit": "GeV",
+        "targets": {"generation": {"option": "energy", "samples": ["gamma"]}},
+    }
+    document["evaluators"][0]["samples"] = ["gamma", "pion"]
+    cells = dict(zip(("evaluator", "stage", "metric", "direction"), CELLS, strict=True))
+    document["objectives"] = [cells | {"sample": "gamma"}]
+    document["optimization"]["inner"]["trials"] = 2
+    document["optimization"]["inner"]["objective"] = cells | {"sample": "pion"}
+    document["optimization"]["inner"]["inner"] = {
+        "parameters": ["z"],
+        "trials": 2,
+        "objective": cells | {"sample": "gamma"},
+    }
+    nested.write_text(yaml.safe_dump(document))
+    spec = load_problem(nested)
+    # the deepest level simulates gamma, which z reaches: its trials share nothing
+    assert not tree._shares(StudyScope.of(spec, {RADIUS: 450.0, "x": 1.5}, level=2))
+    # the middle level's own candidates simulate pion, which neither x nor z reaches
+    assert tree._shares(StudyScope.of(spec, {RADIUS: 450.0}, level=1))
+
+
+def test_a_resumed_inner_study_that_shares_a_stage_is_held_back_again(
+    tmp_path: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    with monkeypatch.context() as patched:
+        stop_at_settle(1, 1)(patched)  # its first trial's record written
+        with pytest.raises(Stop):
+            run(shared, output, 1)
+    (output / ".lock").unlink(missing_ok=True)
+    made, held = tree.Tree._node, []
+
+    def watched(self: tree.Tree, run: Any, *args: Any, **kwargs: Any) -> Any:
+        node = made(self, run, *args, **kwargs)
+        held.append((run.scope.level, len(run.study.trials), node.held))
+        return node
+
+    monkeypatch.setattr(tree.Tree, "_node", watched)
+    study = run(shared, output, 0, resume=True)
+    assert study.trials[0].status == "valid"
+    by_level = {level: (trials, flag) for level, trials, flag in held}
+    assert by_level[0] == (1, False)  # the top study is never held back
+    trials, inner = by_level[1]
+    assert trials >= 1 and inner  # though it has trials, it waits again

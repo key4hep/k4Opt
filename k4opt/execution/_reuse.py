@@ -10,13 +10,20 @@ same events, and so do two samples defined alike.
 own stages that ended ``done``, and of the stages that the records it is given hold
 (:meth:`Reuse.index`: a study's earlier trials on a resume, or runs named by the caller). Only an
 output whose SHA-256 is known is kept, and it is checked before each use: a file that changed or
-went is dropped, and the stage runs. A record is published only once every task of its candidate
+went is skipped (the next one with its signature is tried), and the stage runs if none holds
+up. A record is published only once every task of its candidate
 ended, so an output listed in one was complete; an output of a stage of this session is kept once
 the stage ended ``done``, pending until its candidate is published: it is dropped if the
 candidate stops or is not published (:meth:`Reuse.withdraw`), and a candidate that reused it is
-handed on only after that candidate ended, and published only if it was. While a stage runs,
-another with its signature waits for it (:meth:`Reuse.wait`) and then reuses its output, or runs
-itself if it did not succeed.
+handed on only after that candidate ended, and published only if it was. While a stage runs
+(:meth:`Reuse.start`), another with its signature waits for it, parked by the scheduler with no
+slot of its own (:mod:`k4opt.execution._drive`), and then reuses its output, or runs itself if it
+did not succeed: :class:`Reuse` knows which signatures run, not who waits for them.
+
+Where the records are is found apart from what is kept of them: :func:`run_directories` finds the
+run directories below the directories it is given, at any depth (the trials of every level of a
+nested study), and :meth:`Reuse.index` reads each record once. An output a record lists is hashed
+only when a stage would reuse it, never before (:meth:`Reuse.find`).
 
 A reused stage's result names the file where it is, outside the candidate's directory, as a file
 the caller supplies is named, and says where it comes from (``reused``: the record, the stage, its
@@ -26,13 +33,14 @@ path in that run, its size and SHA-256).
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Hashable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from k4opt.errors import K4OptError
 from k4opt.evaluation import Artifact
-from k4opt.execution._files import Made, Observed, Stat, readable_identity, snapshot
+from k4opt.execution._files import Made, Observed, Stat, snapshot
 from k4opt.frozen import FrozenMap, Json
 from k4opt.problem.config import parse_problem
 from k4opt.problem.plan import Task
@@ -82,46 +90,43 @@ class Source:
 
 
 @dataclass(slots=True)
-class _Waiting:
-    """A stage waiting for another with its signature, which runs: its candidate (by key) and
-    task, with whatever the coordinator keeps of it (``item``)."""
-
-    key: Hashable
-    task: Task
-    item: object
-
-
-@dataclass(slots=True)
 class Reuse:
-    """The outputs that stand in for stages, by signature, and the stages that run or wait."""
+    """The outputs that stand in for stages, by signature, and the signatures of the stages that
+    run."""
 
-    _sources: dict[str, Source] = field(default_factory=dict)
+    # every output recorded with a signature, by its file, in the order found: the first that
+    # holds up serves
+    _sources: dict[str, dict[Path, Source]] = field(default_factory=dict)
     _running: dict[str, Hashable] = field(default_factory=dict)  # signature: candidate key
-    _waiting: dict[str, list[_Waiting]] = field(default_factory=dict)
     # the signatures of the sources of this session's candidates not yet published, by record
     _unpublished: dict[str, set[str]] = field(default_factory=dict)
     _published: set[str] = field(default_factory=set)  # this session's records published
+    _read: set[Path] = field(default_factory=set)  # where the records read are, symlinks resolved
 
     def find(self, signature: str) -> tuple[Source, Stat] | None:
         """The output that stands in for a stage with ``signature``, checked now, with the stat
         it was checked at: watched from that stat (:func:`reused`), a file replaced since the
-        check is told apart. ``None`` if there is none, or if it changed or went since it was
-        recorded (then it is forgotten)."""
-        source = self._sources.get(signature)
-        if source is None:
-            return None
-        try:
-            stat, now = snapshot(source.path)  # hashed again only if its stat changed
-        except OSError:
-            now = None
-        if now != {"bytes": source.bytes, "sha256": source.sha256}:
-            del self._sources[signature]
-            return None
-        return source, stat
+        check is told apart. The first, in the order they were kept, that is there with the size
+        and SHA-256 recorded, ``None`` if none is. One that is not is skipped, not forgotten: it
+        is checked again at the next use (a stat, and a hash only if its stat changed), so a file
+        that was out of reach for a while (a network mount) serves again once it is back."""
+        for source in self._sources.get(signature, {}).values():
+            try:
+                stat, now = snapshot(source.path)  # hashed again only if its stat changed
+            except OSError:
+                continue
+            if now == {"bytes": source.bytes, "sha256": source.sha256}:
+                return source, stat
+        return None
 
-    def add(self, signature: str, source: Source) -> None:
-        """Keep ``source`` for the stages with ``signature``; one kept already stays."""
-        self._sources.setdefault(signature, source)
+    def add(self, signature: str, source: Source) -> bool:
+        """Keep ``source`` for the stages with ``signature``, after those kept already; whether
+        it was not kept yet (by its file)."""
+        sources = self._sources.setdefault(signature, {})
+        if source.path in sources:
+            return False
+        sources[source.path] = source
+        return True
 
     def running(self, signature: str) -> bool:
         return signature in self._running
@@ -130,20 +135,12 @@ class Reuse:
         """A stage with ``signature`` of the candidate ``key`` was handed out to run."""
         self._running[signature] = key
 
-    def wait(self, signature: str, key: Hashable, task: Task, item: object) -> None:
-        """``task`` of the candidate ``key`` waits for the stage with ``signature`` that runs."""
-        self._waiting.setdefault(signature, []).append(_Waiting(key, task, item))
-
-    def ended(self, signature: str, source: Source | None) -> list[object]:
+    def ended(self, signature: str, source: Source | None) -> None:
         """The stage with ``signature`` that ran ended, with ``source`` if it made an output that
-        can stand in for others; the items of the stages that waited for it, which now reuse
-        ``source`` or, without one, run themselves."""
+        can stand in for others, pending until its record is published."""
         self._running.pop(signature, None)
-        if source is not None:
-            self.add(signature, source)
-            if self._sources.get(signature) is source:  # pending until its record is published
-                self._unpublished.setdefault(source.record, set()).add(signature)
-        return [waiting.item for waiting in self._waiting.pop(signature, [])]
+        if source is not None and self.add(signature, source):
+            self._unpublished.setdefault(source.record, set()).add(signature)
 
     def pending(self, record: str) -> bool:
         """Whether ``record`` is of a candidate of this session whose outputs stand in for
@@ -163,47 +160,79 @@ class Reuse:
         """The candidate whose record is ``record`` will not be published: its outputs stand in
         for no stage any more, since no record would say where they come from."""
         for signature in self._unpublished.pop(record, set()):
-            source = self._sources.get(signature)
-            if source is not None and source.record == record:
-                del self._sources[signature]
+            sources = self._sources.get(signature, {})
+            kept = {path: each for path, each in sources.items() if each.record != record}
+            if kept:
+                self._sources[signature] = kept
+            else:
+                self._sources.pop(signature, None)
 
-    def forget(self, key: Hashable) -> list[object]:
-        """The candidate ``key`` stopped: its stages wait no more, its outputs stand in for none
-        (it will have no record), and the items of the stages of other candidates that waited
-        for one of its stages, which now run themselves."""
+    def forget(self, key: Hashable) -> list[str]:
+        """The candidate ``key`` stopped: its outputs stand in for none (it will have no record),
+        and the stages of the signatures it ran run no more; those signatures, whose waiting
+        stages now run themselves."""
         if isinstance(key, str):
             self.withdraw(key)
-        for signature, waiting in list(self._waiting.items()):
-            left = [each for each in waiting if each.key != key]
-            if left:
-                self._waiting[signature] = left
-            else:
-                del self._waiting[signature]
-        released: list[object] = []
-        for signature, runner in list(self._running.items()):
-            if runner == key:
-                released += self.ended(signature, None)
-        return released
+        stopped = [signature for signature, runner in self._running.items() if runner == key]
+        for signature in stopped:
+            del self._running[signature]
+        return stopped
 
     def index(self, run_dirs: Iterable[Path]) -> int:
         """Keep the outputs of the stages that the records in ``run_dirs`` hold, each a run
-        directory with a ``summary.json``; how many were kept. A stage is kept if its record
-        holds up as any record is read (against the problem it records: each signature is then
-        what the record says its stage was made from, and its SHA-256 that of its document) and
-        its output, hashed, is still there with that hash. Records that cannot be read, of
-        another schema or that do not hold up, and stages without these are left out."""
+        directory with a ``summary.json``; how many were kept, not yet checked. A stage is kept
+        if its record holds up as any record is read (against the problem it records: each
+        signature is then what the record says its stage was made from, and its SHA-256 that of
+        its document); its output is hashed only when a stage would reuse it, and serves only if
+        it is still there with that hash (:meth:`find`). Records that cannot be read, of another
+        schema or that do not hold up, and stages without these are left out. A record read
+        once is not read again, whatever path reaches it (a symlink, or the directory it leads
+        to): a published record never changes. Its outputs are kept where the first path that
+        reached it puts them."""
         kept = 0
         for run_dir in run_dirs:
-            for signature, source in _recorded(Path(run_dir)):
-                if signature not in self._sources and self.find_file(source):
-                    self.add(signature, source)
-                    kept += 1
+            path = Path(run_dir)
+            real = Path(os.path.realpath(path))
+            if real in self._read or not (path / SUMMARY_NAME).is_file():
+                continue
+            self._read.add(real)
+            for signature, source in _recorded(path):
+                kept += self.add(signature, source)
         return kept
 
-    @staticmethod
-    def find_file(source: Source) -> bool:
-        """Whether ``source``'s file is there with its size and SHA-256."""
-        return readable_identity(source.path) == {"bytes": source.bytes, "sha256": source.sha256}
+
+def run_directories(directory: Path) -> list[Path]:
+    """The run directories in ``directory``: itself, or those below it at any depth (the trials of
+    a study, and of each study of a level below it), in path order. A run directory holds the
+    summary of a k4opt run (:func:`is_run`); nothing below one is looked at, but a file of that
+    name that is no such summary (another program's) hides nothing below it. Symlinks are
+    followed, and each directory is looked at once, wherever it is reached from."""
+    if is_run(directory / SUMMARY_NAME):
+        return [directory]
+    found, seen = [], set()
+    for parent, children, files in os.walk(directory, followlinks=True):
+        real = os.path.realpath(parent)
+        if real in seen:  # reached already, through another link (or a link to itself)
+            children.clear()
+            continue
+        seen.add(real)
+        if SUMMARY_NAME in files and is_run(Path(parent) / SUMMARY_NAME):
+            found.append(Path(parent))
+            children.clear()  # a run directory holds no other
+        children.sort()
+    return sorted(found)
+
+
+def is_run(path: Path) -> bool:
+    """Whether ``path`` is the summary of a k4opt run: a JSON object of its schema. A file of
+    that name that is not one (unreadable, another program's) makes no run directory."""
+    try:
+        if not path.is_file():
+            return False
+        data = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, Mapping) and data.get("schema") == SUMMARY_SCHEMA
 
 
 def _recorded(run_dir: Path) -> list[tuple[str, Source]]:

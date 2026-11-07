@@ -17,7 +17,6 @@ where it runs. Its record is then checked and published (:mod:`k4opt.execution._
 
 from __future__ import annotations
 
-import json
 import os
 import time
 import uuid
@@ -42,7 +41,7 @@ from k4opt.execution._drive import WAIT, Activity, Wait, _drive, _Run
 from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._process import ProcessBackend
 from k4opt.execution._publish import RunOutcome, publish
-from k4opt.execution._reuse import Reuse
+from k4opt.execution._reuse import Reuse, is_run, run_directories
 from k4opt.execution._schedule import Scheduler
 from k4opt.execution._stages import DryRuns, input_files, try_reconstruction
 from k4opt.execution._tasks import GeometryWork, TaskOutcome, Workspace
@@ -62,7 +61,6 @@ from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES, executors, plan_stages
-from k4opt.record.read import SUMMARY_SCHEMA
 from k4opt.record.results import DONE, TaskResult
 from k4opt.record.signature import (
     SIGNATURE,
@@ -436,25 +434,24 @@ class EvaluationSession:
 
     def reuse(self, directories: Iterable[str | os.PathLike[str]]) -> int:
         """Let the stages of this session's candidates reuse what the stages of the records in
-        ``directories`` made; how many outputs that adds.
+        ``directories`` made; how many recorded outputs that adds, each checked only when a stage
+        would reuse it.
 
         Each directory is a run directory (it holds a ``summary.json``: ``k4opt evaluate``'s
-        output, a trial of a study) or holds run directories (a study). A stage of a candidate
-        is not run when one with its signature (:mod:`k4opt.record.signature`: the same
-        definition, inputs, geometry, files, programs, environment and k4opt code) made an
-        output that is still there with the SHA-256 its record holds: its record then says
+        output, a trial of a study) or holds run directories at any depth (a study, the studies
+        of every level of a nested one). A stage of a candidate is not run when one with its
+        signature (:mod:`k4opt.record.signature`: the same definition, inputs, geometry, files,
+        programs, environment and k4opt code) made an output that is still there with the size
+        and SHA-256 its record holds, hashed when it would be reused: its record then says
         ``reused``, with where the output comes from. The session's own stages are reused the
-        same way, without being named here. Raises :class:`~k4opt.execution.RunError` for a
-        directory that does not exist."""
+        same way, without being named here. A record already read is not read again. Raises
+        :class:`~k4opt.execution.RunError` for a directory that does not exist."""
         runs: list[Path] = []
         for given in directories:
             path = Path(os.path.abspath(Path(given).expanduser()))
-            if (path / SUMMARY_NAME).is_file():
-                runs.append(path)
-            elif path.is_dir():
-                runs += sorted(each for each in path.iterdir() if (each / SUMMARY_NAME).is_file())
-            else:
+            if not path.is_dir():
                 raise RunError(f"reuse {os.fspath(given)}: {path} is no directory")
+            runs += run_directories(path)
         return self._reuse.index(runs)
 
     def check_limits(self) -> None:
@@ -551,8 +548,13 @@ class EvaluationSession:
         exception that stopped it, if one did (nothing else is then written for it).
 
         The next request is taken from ``requests`` only once the candidates under way leave a
-        slot idle (none of their tasks is ready to take it), and every candidate that ended was
-        yielded before; :data:`~k4opt.execution.WAIT` in place of a request says there is none
+        slot idle (none of their tasks is ready to take it), fewer of them are without an
+        outcome than there are slots (under way, or ended but held until the candidate whose
+        output they reused is published), and every candidate that ended was yielded before; a
+        stage that waits for another with its signature holds no slot, which goes to the other
+        tasks under way, but counts with its candidate, so that no request is taken only to wait
+        too.
+        :data:`~k4opt.execution.WAIT` in place of a request says there is none
         now, and the next is taken only once a candidate under way was yielded (it raises a
         :class:`~k4opt.execution.RunError` if none is under way), so whatever makes the
         requests (an optimizer) learns from every outcome it can before it proposes again. With
@@ -831,23 +833,11 @@ def _check_output(run_dir: Path, under_way: Iterable[Path]) -> None:
                 "choose a separate directory"
             )
     for parent in real.parents:
-        if _is_run(parent / SUMMARY_NAME):
+        if is_run(parent / SUMMARY_NAME):
             raise RunError(
                 f"output {run_dir} is inside {parent}, the run directory of a recorded "
                 "candidate; choose a directory outside it"
             )
-
-
-def _is_run(path: Path) -> bool:
-    """Whether ``path`` is the summary of a k4opt run: a JSON object of its schema. A file of
-    that name that is not one (unreadable, another program's) makes no run directory."""
-    try:
-        if not path.is_file():
-            return False
-        data = json.loads(path.read_bytes())
-    except (OSError, ValueError):
-        return False
-    return isinstance(data, Mapping) and data.get("schema") == SUMMARY_SCHEMA
 
 
 def _workers(value: int | Literal["auto", "inline"]) -> int | None:

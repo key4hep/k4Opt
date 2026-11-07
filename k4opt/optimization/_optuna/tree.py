@@ -9,10 +9,14 @@ otherwise be idle, from the open studies below first, then a new trial of a stud
 told as those of any study (:mod:`~k4opt.optimization._optuna.tell`).
 
 A study below the top whose trials share a stage (:func:`_shares`) asks for one trial, then
-holds back until something it started ended: the others would wait for that stage, each holding a
-slot, and their proposals would know nothing yet. Meanwhile the slots go to the other studies, and
-to new trials above; a slot nothing else would use goes to a study held back all the same. The top
-study is never held back: nothing else would use the slots.
+holds back until something it started ended: the others would only wait for that stage, and their
+proposals would know nothing yet. A stage that waits holds no slot, but the candidates under way
+are as many as the slots at most (:meth:`~k4opt.execution.EvaluationSession.evaluate_each`), so
+each place they would take is one another study could use. Meanwhile the places go to the other
+studies, and to new trials above; one nothing else would use goes to a study held back all the
+same. A resumed study is held back again until something it started ended: what its trials share
+may never have been made, or be gone. The top study is never held back: nothing else would use
+the places.
 
 A trial of a study with a level below (a *parent* trial) goes through these states, each decided
 from what is stored, so that a run stopped anywhere goes on from where it was:
@@ -109,18 +113,20 @@ class _Node:
 def _shares(scope: StudyScope) -> bool:
     """Whether the candidates a study of ``scope`` below the top has evaluated share a stage that
     makes files: one that no parameter it or a level below it searches reaches, which the first
-    candidate makes and the others reuse (or would wait for)."""
+    candidate makes and the others reuse (or would wait for). Its candidates are those of its own
+    level (its trials, or for a study whose trials stand for studies below, their selected
+    candidates on new events) and those of every level below it, each evaluated as its level
+    plans it."""
     spec = scope.spec
-    searched = {
-        n for level in range(scope.level, spec.depth + 1) for n in spec.parameters_of(level)
-    }
-    searched -= set(scope.fixed)
+    levels = range(scope.level, spec.depth + 1)
+    searched = {n for level in levels for n in spec.parameters_of(level)} - set(scope.fixed)
     return any(
         task.id.kind is Kind.STAGE
         and task.given is None
         and task.directory is not None
         and not searched & set(task.varies)
-        for task in level_plan(spec, spec.depth).tasks
+        for level in levels
+        for task in level_plan(spec, level).tasks
     )
 
 
@@ -173,8 +179,8 @@ class Tree:
         run.study.sampler = optuna.samplers.TPESampler(
             seed=seed, n_startup_trials=STARTUP_TRIALS, constant_liar=CONSTANT_LIAR
         )
-        # a study that ran a trial before (a resume) has made what its trials share, or tried
-        held = run.scope.level > 0 and not run.study.trials and _shares(run.scope)
+        # resumed too: what its trials share may never have been made, or be gone since
+        held = run.scope.level > 0 and _shares(run.scope)
         node = _Node(run, space, seed, budget, held=held)
         self._nodes[run.document["id"]] = node
         for frozen in run.study.get_trials(deepcopy=False):
@@ -235,7 +241,6 @@ class Tree:
         if resume:
             check_optuna_study(study, document)
             _recover(child, lambda result: None)
-            self._session.reuse([directory])  # every trial's record held up: their stages serve
         opened = self._node(child, space, run.scope.child_trials, resume, total=True)
         opened.parent = node
         node.open[number] = (trial, opened)

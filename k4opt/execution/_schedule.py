@@ -19,6 +19,22 @@ may start in is decided here alone, from the tasks each one reads (``Task.needs`
   never happens;
 * the scheduler is *idle* when a slot is free and no task is ready: the time to add another
   candidate, which keeps the candidates under way as few as the slots need.
+
+A task that started may be *parked* (:meth:`Scheduler.park`) on a token, when what it would make
+is being made already (a stage with its signature runs, :mod:`k4opt.execution._reuse`): it then
+holds no slot until it is told how it ended (:meth:`Scheduler.finished`), or put back among the
+ready tasks (:meth:`Scheduler.unpark`). The scheduler is the one place that knows what state each
+task is in, and keeps these invariants:
+
+* each task of a candidate is in one state at a time: *pending* (what it reads has not all
+  ended), *ready*, *running*, *parked* or *ended*; never ready and parked at once;
+* a task moves only from pending to ready (or straight to ended, ``blocked``), from ready to
+  running (:meth:`Scheduler.next`), from running to parked and back to ready, and from running
+  or parked to ended, once: whatever asks for another move is refused (:class:`ValueError`);
+* the slots in use (:attr:`Scheduler.busy`) are the costs of the running tasks, never more than
+  the capacity; a parked task holds none;
+* a candidate dropped (:meth:`Scheduler.drop`) leaves nothing behind: none of its tasks is
+  ready, running or parked any more.
 """
 
 from __future__ import annotations
@@ -43,6 +59,7 @@ class _Candidate:
     readers: dict[TaskId, list[Task]] = field(default_factory=dict)
     results: dict[TaskId, TaskResult] = field(default_factory=dict)
     running: set[TaskId] = field(default_factory=set)
+    parked: dict[TaskId, Hashable] = field(default_factory=dict)  # task: its token
 
 
 class Scheduler:
@@ -118,15 +135,46 @@ class Scheduler:
         self._candidates[key].running.add(task.id)
         return key, task
 
-    def finished(self, key: Hashable, result: TaskResult) -> list[TaskResult]:
-        """Record ``result`` of a running task of ``key`` and free its slots; return the
-        ``blocked`` results this decides for the tasks that read it (and their readers), which
-        are recorded too and never start."""
+    def park(self, key: Hashable, task: TaskId, token: Hashable) -> None:
+        """Park the running ``task`` of ``key`` on ``token``: it waits for something else, and
+        holds no slot until it ended (:meth:`finished`) or is ready again (:meth:`unpark`)."""
         candidate = self._candidates[key]
-        if result.id not in candidate.running:
-            raise ValueError(f"task {result.id.label} of {key!r} is not running")
-        candidate.running.discard(result.id)
-        self._busy -= candidate.costs[result.id]
+        if task not in candidate.running:
+            raise ValueError(f"task {task.label} of {key!r} is not running")
+        candidate.running.discard(task)
+        self._busy -= candidate.costs[task]
+        candidate.parked[task] = token
+
+    def parked(self, token: Hashable) -> list[tuple[Hashable, Task]]:
+        """The tasks parked on ``token``, by candidate (the first added first) and plan order."""
+        found = [
+            (candidate.order, self._index[key][task], key, candidate.plan[task])
+            for key, candidate in self._candidates.items()
+            for task, on in candidate.parked.items()
+            if on == token
+        ]
+        return [(key, task) for _, _, key, task in sorted(found, key=lambda each: each[:2])]
+
+    def unpark(self, key: Hashable, task: TaskId) -> None:
+        """Make the parked ``task`` of ``key`` ready again, to start as any ready task does."""
+        candidate = self._candidates[key]
+        if task not in candidate.parked:
+            raise ValueError(f"task {task.label} of {key!r} is not parked")
+        del candidate.parked[task]
+        self._push(key, candidate.plan[task])
+
+    def finished(self, key: Hashable, result: TaskResult) -> list[TaskResult]:
+        """Record ``result`` of a running or parked task of ``key`` and free the slots it held;
+        return the ``blocked`` results this decides for the tasks that read it (and their
+        readers), which are recorded too and never start."""
+        candidate = self._candidates[key]
+        if result.id in candidate.running:
+            candidate.running.discard(result.id)
+            self._busy -= candidate.costs[result.id]
+        elif result.id in candidate.parked:
+            del candidate.parked[result.id]
+        else:
+            raise ValueError(f"task {result.id.label} of {key!r} is neither running nor parked")
         decided: list[TaskResult] = []
         pending = [result]
         while pending:
@@ -145,8 +193,9 @@ class Scheduler:
         return decided
 
     def drop(self, key: Hashable) -> set[TaskId]:
-        """Forget the candidate ``key``: none of its tasks starts any more, and the slots of its
-        running ones are free. Returns the tasks that were running, which the caller stops."""
+        """Forget the candidate ``key``: none of its tasks starts any more, its parked ones are
+        forgotten and the slots of its running ones are free. Returns the tasks that were
+        running, which the caller stops."""
         candidate = self._candidates.pop(key)
         self._index.pop(key)
         self._ready = [entry for entry in self._ready if entry[2] != key]
@@ -178,7 +227,7 @@ class Scheduler:
 
     @property
     def running(self) -> bool:
-        """Whether any task runs."""
+        """Whether any task runs (a parked one does not)."""
         return any(candidate.running for candidate in self._candidates.values())
 
     @property

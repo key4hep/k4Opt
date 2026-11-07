@@ -1206,3 +1206,40 @@ def test_an_error_of_a_waiting_source_stops_the_evaluation_after_what_ended(
     # it ended, and was published, before the source was asked again
     assert [type(outcome) for outcome in ended] == [RunOutcome]
     assert (tmp_path / "a" / SUMMARY_NAME).is_file()
+
+
+def test_a_candidate_held_for_the_record_of_another_still_counts_as_proposed(
+    tmp_path: Path, doc: dict[str, Any], session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a's last evaluation runs on after b, which reused a's simulations, ended: b is held until
+    a is published. With two slots no third candidate is taken meanwhile, though a slot is idle:
+    the source never has more than two candidates without an outcome."""
+    path = write_problem(tmp_path / "problem.yaml", doc, probes=("slow",))
+    release = tmp_path / "release"
+    probe(monkeypatch, **{"a.slow": {"await": [str(release)]}})
+    stack.install(monkeypatch)
+    taken: list[str] = []
+    told: list[str] = []
+    under_way = [0]
+
+    def requests() -> Iterator[RunRequest]:
+        for name in ("a", "b", "c", "d"):
+            assert len(taken) - len(told) < 2, f"{taken} proposed, only {told} told"
+            taken.append(name)
+            yield RunRequest({RADIUS: 450.0}, tmp_path / name)
+
+    def watch(now: Any) -> None:
+        if under_way[0] == 2 and now.candidates == 1 and not release.exists():
+            release.write_text("")  # b ended, held for a, whose evaluation goes on now
+        under_way[0] = now.candidates
+
+    session = session_of(2, path)
+    with session.evaluate_each(requests(), activity=watch) as evaluations:
+        outcomes = {}
+        for request, outcome in evaluations:
+            told.append(Path(request.output).name)
+            outcomes[told[-1]] = outcome
+    assert release.exists() and told[:2] == ["a", "b"]  # b handed on after a
+    summaries = {name: verified(outcome) for name, outcome in outcomes.items()}  # type: ignore[arg-type]
+    simulated = summaries["b"]["samples"]["gamma"]["stages"]["simulation"]
+    assert simulated["reused"]["record"] == summaries["a"]["id"]

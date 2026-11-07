@@ -366,8 +366,14 @@ with session.evaluate_each(requests) as evaluations:
         ...
 ```
 
-The next request is taken only once the candidates under way leave a slot idle, and every
-outcome that ended is given back before it; `evaluate()` is one request through the same path.
+The next request is taken only once the candidates under way leave a slot idle, fewer
+candidates are without an outcome than there are slots (under way, or ended but held until the
+candidate whose output they reused is published), and every outcome that ended is given back
+before it; `evaluate()` is one request through the same path. The second rule limits how many
+candidates are proposed at once, not what runs: a stage that waits for its twin
+([reuse](#stages-made-once-reuse)) leaves its slot to the other tasks under way, but takes in no
+further candidate, whose stages would most likely wait too, proposed before anything was learnt.
+With 4 workers and 4 candidates whose simulations are one, 3 slots may stay idle until it ends.
 A request may carry a `replicate` (above) and the `level` of a
 [nested optimization](problem.md#optimization) it is evaluated for, whose criteria judge it. A source that has nothing to give now, but may have
 once a candidate under way ended (an optimizer that waits for results), gives `WAIT`
@@ -477,7 +483,8 @@ with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # sto
 
 - **Watching.** `evaluate_each(requests, activity=...)` calls `activity` in the session's thread
   whenever what runs changes, with an `Activity`: the `candidates` under way and the `busy` of
-  the `capacity` slots (`k4opt optimize` shows them in its progress bar).
+  the `capacity` slots, which only running tasks hold (`k4opt optimize` shows them in its
+  progress bar).
 
 A summary is published only after the references only a candidate's geometry names are checked
 again against the candidates recorded meanwhile, so two candidates that ran at once never both
@@ -521,15 +528,20 @@ reusing an output changes nothing a candidate is evaluated with, only the time i
 What a session reuses:
 
 - the outputs of its own stages that ended `done`, as soon as they ended; a stage whose
-  signature is still running for another candidate (or sample) waits for it, holding its slot,
-  then reuses its output, or runs itself if it did not succeed;
+  signature is still running for another candidate (or sample) waits for it without holding a
+  slot, which goes to any other task that is ready, then reuses its output, or runs itself if it
+  did not succeed (the first of those waiting runs, the others wait for it in turn);
 - the outputs of the stages the records it is given hold: `session.reuse(directories)` (a run
-  directory, or a directory of runs such as a study), `k4opt evaluate --reuse DIR` and
-  `k4opt optimize --reuse DIR`; a resumed study reuses its own trials' stages.
+  directory, or a directory with runs at any depth: a study, and every level of a nested one,
+  symlinks followed, each directory once; a `summary.json` of another program hides nothing),
+  `k4opt evaluate --reuse DIR` and `k4opt optimize --reuse DIR`; a resumed study reuses the
+  stages of its own trials, at every level. Each record is read once per session, and
+  `reuse()` returns how many outputs it registered: none of them is hashed yet.
 
 An output is reused only if its record holds its signature, whose SHA-256 is that of its
-document, and its SHA-256; it is hashed again before each use if its stat changed, and one that
-changed or went is not reused (the stage runs). A record is written only once every task of its
+document, and its SHA-256; it is hashed when a stage would reuse it, and again before each later
+use if its stat changed. One that changed or went is never reused: the next output recorded with
+its signature is tried, and without one the stage runs. A record is written only once every task of its
 candidate ended, so nothing half written is ever reused. The reusing stage's record says
 `reused`: the record and stage that made the output, its run directory, its path there, its size
 and SHA-256, and has the same `signature`, but no `outputs` or `logs` of its own (the record that
