@@ -17,7 +17,6 @@ where it runs. Its record is then checked and published (:mod:`k4opt.execution._
 
 from __future__ import annotations
 
-import json
 import os
 import time
 import uuid
@@ -42,7 +41,7 @@ from k4opt.execution._drive import WAIT, Activity, Wait, _drive, _Run
 from k4opt.execution._preflight import Rejected, _preflight, _Prepared
 from k4opt.execution._process import ProcessBackend
 from k4opt.execution._publish import RunOutcome, publish
-from k4opt.execution._reuse import Reuse, run_directories
+from k4opt.execution._reuse import Reuse, is_run, run_directories
 from k4opt.execution._schedule import Scheduler
 from k4opt.execution._stages import DryRuns, input_files, try_reconstruction
 from k4opt.execution._tasks import GeometryWork, TaskOutcome, Workspace
@@ -62,7 +61,6 @@ from k4opt.problem.errors import CandidateError
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.problem.plan import GEOMETRY, Kind, Task, TaskId, stage_task
 from k4opt.problem.stages import STAGE_TYPES, executors, plan_stages
-from k4opt.record.read import SUMMARY_SCHEMA
 from k4opt.record.results import DONE, TaskResult
 from k4opt.record.signature import (
     SIGNATURE,
@@ -833,23 +831,11 @@ def _check_output(run_dir: Path, under_way: Iterable[Path]) -> None:
                 "choose a separate directory"
             )
     for parent in real.parents:
-        if _is_run(parent / SUMMARY_NAME):
+        if is_run(parent / SUMMARY_NAME):
             raise RunError(
                 f"output {run_dir} is inside {parent}, the run directory of a recorded "
                 "candidate; choose a directory outside it"
             )
-
-
-def _is_run(path: Path) -> bool:
-    """Whether ``path`` is the summary of a k4opt run: a JSON object of its schema. A file of
-    that name that is not one (unreadable, another program's) makes no run directory."""
-    try:
-        if not path.is_file():
-            return False
-        data = json.loads(path.read_bytes())
-    except (OSError, ValueError):
-        return False
-    return isinstance(data, Mapping) and data.get("schema") == SUMMARY_SCHEMA
 
 
 def _workers(value: int | Literal["auto", "inline"]) -> int | None:

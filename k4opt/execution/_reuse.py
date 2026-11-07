@@ -198,18 +198,37 @@ class Reuse:
 
 
 def run_directories(directory: Path) -> list[Path]:
-    """The run directories in ``directory`` (each with a ``summary.json``): itself, or those below
-    it at any depth (the trials of a study, and of each study of a level below it), in path
-    order. Nothing below a run directory is looked at, nor any directory a symlink leads to."""
-    if (directory / SUMMARY_NAME).is_file():
+    """The run directories in ``directory``: itself, or those below it at any depth (the trials of
+    a study, and of each study of a level below it), in path order. A run directory holds the
+    summary of a k4opt run (:func:`is_run`); nothing below one is looked at, but a file of that
+    name that is no such summary (another program's) hides nothing below it. Symlinks are
+    followed, and each directory is looked at once, wherever it is reached from."""
+    if is_run(directory / SUMMARY_NAME):
         return [directory]
-    found = []
-    for parent, children, files in os.walk(directory):
-        if SUMMARY_NAME in files:
+    found, seen = [], set()
+    for parent, children, files in os.walk(directory, followlinks=True):
+        real = os.path.realpath(parent)
+        if real in seen:  # reached already, through another link (or a link to itself)
+            children.clear()
+            continue
+        seen.add(real)
+        if SUMMARY_NAME in files and is_run(Path(parent) / SUMMARY_NAME):
             found.append(Path(parent))
             children.clear()  # a run directory holds no other
         children.sort()
     return sorted(found)
+
+
+def is_run(path: Path) -> bool:
+    """Whether ``path`` is the summary of a k4opt run: a JSON object of its schema. A file of
+    that name that is not one (unreadable, another program's) makes no run directory."""
+    try:
+        if not path.is_file():
+            return False
+        data = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, Mapping) and data.get("schema") == SUMMARY_SCHEMA
 
 
 def _recorded(run_dir: Path) -> list[tuple[str, Source]]:

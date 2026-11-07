@@ -531,7 +531,8 @@ What a session reuses:
   slot, which goes to any other task that is ready, then reuses its output, or runs itself if it
   did not succeed (the first of those waiting runs, the others wait for it in turn);
 - the outputs of the stages the records it is given hold: `session.reuse(directories)` (a run
-  directory, or a directory with runs at any depth: a study, and every level of a nested one),
+  directory, or a directory with runs at any depth: a study, and every level of a nested one,
+  symlinks followed, each directory once; a `summary.json` of another program hides nothing),
   `k4opt evaluate --reuse DIR` and `k4opt optimize --reuse DIR`; a resumed study reuses the
   stages of its own trials, at every level. Each record is read once per session, and
   `reuse()` returns how many outputs it registered: none of them is hashed yet.

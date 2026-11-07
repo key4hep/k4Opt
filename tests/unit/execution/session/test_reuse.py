@@ -538,3 +538,34 @@ def test_a_recorded_output_that_changed_is_never_reused(
     assert len(fake.calls) == 2
     assert outcome.candidate.status == "valid"
     assert "reused" not in simulated(summary(tmp_path / "b"))
+
+
+def test_a_summary_of_another_program_hides_no_run_below_it(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    results = tmp_path / "results"
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        first = session.evaluate({RADIUS: 450.0}, results / "study" / "a")
+    (results / SUMMARY_NAME).write_text(json.dumps({"schema": "another.tool/1"}))
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        assert session.reuse([results]) == 1
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert len(fake.calls) == 1
+    assert simulated(summary(tmp_path / "b"))["reused"]["record"] == first.summary["id"]
+
+
+def test_a_run_reached_through_symlinks_is_found_once_and_a_loop_ends(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        first = session.evaluate({RADIUS: 450.0}, tmp_path / "storage" / "a")
+    study = tmp_path / "study"
+    study.mkdir()
+    (study / "trial-000000").symlink_to(tmp_path / "storage" / "a")  # kept elsewhere
+    (study / "again").symlink_to(tmp_path / "storage")  # the same run, another way
+    (study / "loop").symlink_to(study)
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        assert session.reuse([study]) == 1
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert len(fake.calls) == 1
+    assert simulated(summary(tmp_path / "b"))["reused"]["record"] == first.summary["id"]
