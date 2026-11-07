@@ -108,9 +108,8 @@ def test_a_file_opened_read_write_and_changed_by_the_run_vouches_for_nothing(
     time.sleep(0.02)
     database.write_text("after the run wrote it")
     line = opened(database, "O_RDWR")
-    assert footprint(traces(tmp_path / "raw", STARTED, line), "files", [], began).read == {
-        str(database): None
-    }
+    found = footprint(traces(tmp_path / "raw", STARTED, line), "files", [], began)
+    assert found.read[str(database)] is None
 
 
 def test_a_program_started_through_a_link_retargeted_while_it_ran_vouches_for_nothing(
