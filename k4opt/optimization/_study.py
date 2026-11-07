@@ -106,7 +106,6 @@ PORTABLE: Mapping[str, _Kept] = {
         "targets": True,
         "externals": {"*": {"sha256": True, "files": True, "unresolved": True}},
     },
-    "environment": {"KEY4HEP_STACK": True},
     # by content: where a program and its interpreter are is a location, as any other
     "programs": {
         "*": {"bytes": True, "sha256": True, "interpreter": {"bytes": True, "sha256": True}}
@@ -131,9 +130,10 @@ PORTABLE: Mapping[str, _Kept] = {
 """What of ``study.json`` leaves the study directory (:func:`portable`), key by key; ``*`` stands
 for every key of a mapping keyed by name. Left out: every location (the problem file, the files
 the problem names, the evaluators' files, the geometry's source root and the files its external
-references resolve to, ``K4GEO``, the programs of the stack and their interpreters, which are
-kept by size and SHA-256) and the optimizer's storage (a journal name, or a database URL
-with its host and user), and any key not named here."""
+references resolve to, ``K4GEO``, ``KEY4HEP_STACK``, which the software's build identifies,
+the programs of the stack and their interpreters, which are kept by size and SHA-256), the
+software's variables, whose names can be private, the optimizer's storage (a journal name, or a
+database URL with its host and user), and any key not named here."""
 
 
 def portable(document: Mapping[str, Any]) -> dict[str, Any]:

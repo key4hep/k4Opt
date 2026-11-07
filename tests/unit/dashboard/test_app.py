@@ -211,7 +211,7 @@ def test_the_problem_tab_says_what_the_study_optimizes_and_what_it_was_made_with
     assert ":gray-badge[1/mm]" in said and "test.trade\\_off/analysis/b" in said
     assert "**a**" in said and ":red-badge[≤ 400 mm]" in said  # the constraint, by its bound
     frames = [frame.value for frame in at.dataframe]
-    assert any("KEY4HEP_STACK" in list(f.iloc[:, 0]) for f in frames)  # its provenance
+    assert any("Key4hep build" in list(f.iloc[:, 0]) for f in frames)  # its provenance
 
 
 def test_the_trials_are_colored_by_what_a_link_names(

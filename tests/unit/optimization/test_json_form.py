@@ -41,11 +41,10 @@ def test_the_json_form_names_no_location_and_keeps_the_identity(
     data = json.loads(study.to_json())
     held = strings(data)
     assert not [s for s in held if str(tmp_path) in s]
-    # what starts with / is an XPath of the geometry or the Key4hep stack, part of the identity
+    # what starts with / is an XPath of the geometry: the stack is named by its build, not its path
     absolute = {s for s in held if s.startswith("/")}
-    assert absolute == {data["study"]["environment"]["KEY4HEP_STACK"]} | {
-        target["locator"] for target in data["study"]["geometry"]["targets"]
-    }
+    assert absolute == {target["locator"] for target in data["study"]["geometry"]["targets"]}
+    assert "environment" not in data["study"] and "id" in data["study"]["software"]
     document = json.loads((tmp_path / "s" / "study.json").read_text())
     assert any(str(tmp_path) in s for s in strings(document))  # study.json itself has them
     assert data["study"] == portable(document)

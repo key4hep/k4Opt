@@ -60,15 +60,16 @@ These are not compared (`IGNORED` in `k4opt/software/identity.py`; `*` stands fo
 
 | Why | Names |
 | --- | --- |
-| The state of a shell or terminal: nothing a job reads but for the width of what it prints | `_`, `PWD`, `OLDPWD`, `SHLVL`, `SHELL`, `TERM`, `COLUMNS`, `LINES`, `DISPLAY`, `MOTD_SHOWN`, `BASH_FUNC_*` |
+| The state of a shell or terminal: nothing a job reads but for the width of what it prints | `_`, `PWD`, `OLDPWD`, `SHLVL`, `SHELL`, `TERM`, `COLUMNS`, `LINES`, `DISPLAY`, `MOTD_SHOWN` |
 | The login session and its credentials, which differ between two logins of one person | `USER`, `HOSTNAME`, `TMPDIR`, `KRB5CCNAME`, `SSH_*`, `XDG_RUNTIME_DIR`, `XDG_SESSION_*`, `XDG_SEAT`, `XDG_VTNR`, `DBUS_*`, `SELINUX_*` |
 | New on every run of a service: without these, no study run by a systemd unit could resume | `INVOCATION_ID`, `JOURNAL_STREAM`, `MANAGERPID`, `SYSTEMD_EXEC_PID` |
 | Bookkeeping of other tools, or what only a person at a terminal sees | `MODULEPATH`, `CONDA_SHLVL`, `CONDA_BACKUP_*`, `VSCODE_*`, `GIT_PAGER`, `GIT_EDITOR`, `GIT_ASKPASS`, `PYTEST_*` |
 | Set by ROOT's Python in whatever process imports it, from the build: an evaluator that reads a file through `podio` sets them in the middle of a session | `CPPYY_API_PATH`, `CPPYY_NO_ROOT_FILTER` |
 | Identified by what they lead to: the geometry by its fingerprint, the stack by its build | `K4GEO`, `KEY4HEP_STACK` |
 
-`PATH`, `HOME`, `LANG`, `LC_*`, `TZ`, `CONDA_PREFIX`, `XDG_CONFIG_HOME` and `GIT_DIR` stay
-compared: ROOT runs `g++` through `PATH` and an evaluator may run any program, ROOT reads the home
+`PATH`, `BASH_FUNC_*`, `HOME`, `LANG`, `LC_*`, `TZ`, `CONDA_PREFIX`, `XDG_CONFIG_HOME` and `GIT_DIR`
+stay compared: ROOT runs `g++` through `PATH` and an evaluator may run any program, an exported
+shell function is code every `bash` it starts can run, ROOT reads the home
 directory, cling was seen consulting a conda environment, and matplotlib reads its settings from
 `XDG_CONFIG_HOME`. Within a session `K4GEO` and `KEY4HEP_STACK` must keep
 their values too, since the geometry was found through them.
@@ -86,7 +87,7 @@ correctness. So the list stays short, and a name joins it only once it is shown 
 | A stage's signature | It holds the `id`: a stage of another build, or run with another variable, is not reused, whatever its path. |
 | A study | The `id`, the build and the system are part of its identity. A resume on other software is refused, naming what differs, and each trial's record must have run on the study's software. |
 | A record | `environment.observed.software` holds all of it, and is refused if its `id` is not that of its parts. |
-| A snapshot | It holds the `id`, the build and the system, never the variables, whose names can be private. A catalog and the dashboard name the build that ran. |
+| A snapshot | It holds the `id`, the build and the system, never the variables, whose names can be private, nor `KEY4HEP_STACK`, a location the build identifies. A catalog and the dashboard name the build that ran. |
 
 **Start a study and resume it the same way.** There is no override and no warning that lets a resume
 through: one study holds one software. From a login shell to a bare `systemd-run` unit about 60

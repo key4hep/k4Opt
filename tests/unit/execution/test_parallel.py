@@ -865,6 +865,21 @@ def test_a_worker_runs_with_what_the_session_identified_not_what_a_library_set_b
         EvaluationSession.open(problem, [cell_count()], workers=2).close()
 
 
+def test_a_worker_whose_evaluator_sets_a_variable_when_imported_refuses_to_start(
+    tmp_path: Path, problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = REPO / "tests" / "support" / "cell_count.py"
+    module = tmp_path / "count_setting_a_variable.py"
+    setting = 'import os\nos.environ["IMPORTED_IN"] = str(os.getpid())\n'
+    module.write_text(setting + source.read_text())
+    monkeypatch.setenv("IMPORTED_IN", "")  # restored after the test, whatever the import sets
+    implementation = load_evaluator(f"{module}:CellCount")  # here, with this process's id
+    message = "once it loaded the evaluators: its software differs: .* differs in IMPORTED_IN"
+    with pytest.raises(RunError, match=message):
+        EvaluationSession.open(problem, [implementation], workers=2)
+    assert stack.workers() == []
+
+
 def test_a_worker_rebuilds_the_session_from_plain_data(
     problem: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

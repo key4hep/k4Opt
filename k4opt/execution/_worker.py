@@ -229,6 +229,13 @@ class Session:
                     f"evaluator {implementation.reference}: {then['path']} or a module it "
                     "imports changed after the session loaded it; open a new session"
                 )
+        changed = _changed(spec)  # an evaluator's module may set variables when imported
+        if changed is not None:
+            raise ProvenanceError(
+                f"a worker process no longer runs as the session once it loaded the evaluators: "
+                f"{changed}; an evaluator's module that sets environment variables when it is "
+                "imported changes what every task runs on"
+            )
         context, bound = pickle.loads(spec.payload)
         assert isinstance(context, SessionContext)
         contexts = {

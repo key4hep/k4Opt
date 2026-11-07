@@ -295,7 +295,7 @@ def provenance(results: StudyResults) -> list[Row]:
     """What the study was made with, as its ``study.json`` records it: k4opt, the Key4hep stack,
     the geometry and the optimizer."""
     document = results.document
-    k4opt, environment = _get(document, "k4opt"), _get(document, "environment")
+    k4opt = _get(document, "k4opt")
     geometry, optimizer = _get(document, "geometry"), _get(document, "optimizer")
     sampler = _get(optimizer, "sampler")
     rows = [
@@ -304,7 +304,6 @@ def provenance(results: StudyResults) -> list[Row]:
         ("k4opt", f"{_get(k4opt, 'version')} (code SHA-256 {_get(k4opt, 'sha256')})"),
         ("k4opt commit", _get(_get(k4opt, "git"), "commit")),
         ("Key4hep build", results.key4hep),
-        ("KEY4HEP_STACK", _get(environment, "KEY4HEP_STACK")),
         ("Software id", _get(_get(document, "software"), "id")),
         ("Geometry", _get(geometry, "compact")),
         ("Geometry fingerprint", _get(geometry, "fingerprint")),

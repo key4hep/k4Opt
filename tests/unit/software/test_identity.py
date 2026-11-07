@@ -130,7 +130,6 @@ def test_every_variable_is_compared_by_its_digest_known_or_not(name: str) -> Non
         "_",
         "OLDPWD",
         "COLUMNS",
-        "BASH_FUNC_module%%",
         "SSH_CONNECTION",
         "XDG_RUNTIME_DIR",
         "INVOCATION_ID",
@@ -145,6 +144,13 @@ def test_every_variable_is_compared_by_its_digest_known_or_not(name: str) -> Non
 )
 def test_a_variable_known_to_be_irrelevant_is_not_compared(name: str) -> None:
     assert software(**{name: "one"}).id == software(**{name: "two"}).id == software().id
+
+
+def test_an_exported_shell_function_is_code_and_compared() -> None:
+    # bash -c myhelper prints first in one, second in the other
+    first = software(**{"BASH_FUNC_myhelper%%": "() {  printf first\n}"})
+    second = software(**{"BASH_FUNC_myhelper%%": "() {  printf second\n}"})
+    assert first.differences(second) == ["the environment differs in BASH_FUNC_myhelper%%"]
 
 
 def test_what_a_listed_prefix_leaves_out_is_only_what_it_starts() -> None:

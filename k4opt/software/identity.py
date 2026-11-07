@@ -42,7 +42,6 @@ IGNORED = (
     "LINES",
     "DISPLAY",
     "MOTD_SHOWN",
-    "BASH_FUNC_*",
     # session, login, credentials
     "USER",
     "HOSTNAME",

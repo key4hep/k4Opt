@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("optuna")
 
 from k4opt.optimization import Rule, load_study, trade_offs
-from tests.support.software import LABEL, VIEW
+from tests.support.software import LABEL
 from tests.support.studies import mixed_study
 
 
@@ -42,7 +42,7 @@ def test_a_trial_row_holds_its_values_and_nothing_made_up(tmp_path: Path) -> Non
         assert row["Message"] == trial.message and "Record" not in row  # the record: in its sheet
     assert [row["Trial"] for row in tables.trials(results, results.pareto)] == list(results.pareto)
     made = {row[""]: row["Value"] for row in tables.provenance(results)}
-    assert made["KEY4HEP_STACK"] == str(VIEW) and made["Study id"] == results.id
+    assert made["Study id"] == results.id and "KEY4HEP_STACK" not in made
     assert made["Key4hep build"] == LABEL
     assert made["Software id"] == results.document["software"]["id"]
     assert [row["Evaluator"] for row in tables.evaluators(results)] == ["test.trade_off"]
