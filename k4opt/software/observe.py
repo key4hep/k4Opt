@@ -94,7 +94,9 @@ _MAKES = frozenset(
 ) | {b"mkdirat"}
 """The calls by which a program makes a path other than by opening it: the path is the last one
 they name (``rename(from, to)``, ``symlinkat(target, dirfd, path)``)."""
-_CALLS = _MAKES | {b"open", b"openat", b"openat2", b"execve", b"execveat", b"connect", b"socket"}
+_SENDS = frozenset((b"connect", b"sendto", b"sendmsg"))
+"""The calls that name where a socket reaches: a connection, or a datagram sent without one."""
+_CALLS = _MAKES | _SENDS | {b"open", b"openat", b"openat2", b"execve", b"execveat", b"socket"}
 _RESULT = re.compile(
     rb"^(?P<ret>-?\d+|\?)(?:<(?P<fd>[^>\\]*(?:\\.[^>\\]*)*)>)?(?: (?P<errno>E[A-Z0-9]+)\b.*)?$"
 )
@@ -107,7 +109,15 @@ _NAMED = re.compile(rb"(?:(?:AT_FDCWD|-?\d+)(?:<([^>\\]*(?:\\.[^>\\]*)*)>)?, )?"
 _PATH = re.compile(rb"^" + _STRING)
 _ESCAPE = re.compile(rb"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)")
 _SIMPLE = {b"n": b"\n", b"t": b"\t", b"r": b"\r", b"v": b"\v", b"f": b"\f"}
-_WRITES = re.compile(rb"\b(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND|O_TMPFILE)\b")
+_WRITES = re.compile(rb"\b(O_WRONLY|O_TRUNC|O_TMPFILE)\b")
+"""An open whose file the program wrote, never read: write-only, emptied, or a new nameless file.
+Read-write is not one (a database opened to be queried), nor is create without exclusive (an
+existing file opened as it is): such a file is read, and one the run then changed has no
+identity."""
+_CREATES = (re.compile(rb"\bO_CREAT\b"), re.compile(rb"\bO_EXCL\b"))
+"""An open that makes the file anew, or fails: a file of the run's own."""
+_UNREADABLE = 5
+"""How many lines a footprint keeps of those its traces held that could not be read."""
 _INET = re.compile(rb"sa_family=(AF_INET6?)\b(?P<rest>.*)")
 _UNIX = re.compile(rb'sa_family=AF_UNIX, sun_path=@?"(?P<path>[^"\\]*(?:\\.[^"\\]*)*)"')
 _SOCKET = re.compile(rb"^(?P<family>AF_INET6?)\b")
@@ -182,8 +192,9 @@ class Footprint:
     machine's own services: each network address it connected to, each network socket it made
     (``AF_INET socket``: a datagram needs no connection) and each other local socket it connected
     to (``unix:<path>``), whose answers may come from anywhere.
-    ``unread`` counts the lines of its traces that could not be read: a footprint with any is
-    incomplete, and so is one at another level than ``files``."""
+    ``unread`` counts the lines of its traces that could not be read, of which ``unreadable``
+    holds the first few, or why it is incomplete: a footprint with any is incomplete, and so is
+    one at another level than ``files``."""
 
     level: Observation
     read: Mapping[str, str | None] = field(default_factory=dict)
@@ -192,6 +203,7 @@ class Footprint:
     ran: tuple[str, ...] = ()
     connected: tuple[str, ...] = ()
     unread: int = 0
+    unreadable: tuple[str, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -208,12 +220,14 @@ class Footprint:
             "ran": list(self.ran),
             "connected": list(self.connected),
             "unread": self.unread,
+            "unreadable": list(self.unreadable),
         }
 
     @classmethod
     def from_dict(cls, data: object) -> Footprint:
         """The footprint :meth:`to_dict` wrote; raises :class:`SoftwareError`."""
         keys = {"schema", "level", "read", "missing", "denied", "ran", "connected", "unread"}
+        keys |= {"unreadable"}
         if not isinstance(data, Mapping) or set(data) != keys or data["schema"] != SCHEMA:
             raise SoftwareError(f"no footprint of {SCHEMA}")
         read, unread = data["read"], data["unread"]
@@ -221,13 +235,13 @@ class Footprint:
             raise SoftwareError("a footprint's level or files are not what a footprint holds")
         if not all(isinstance(v, str) or v is None for v in read.values()):
             raise SoftwareError("a footprint's files are not identities by path")
-        lists = [data[key] for key in ("missing", "denied", "ran", "connected")]
+        lists = [data[key] for key in ("missing", "denied", "ran", "connected", "unreadable")]
         if not all(isinstance(x, list) and all(isinstance(i, str) for i in x) for x in lists):
             raise SoftwareError("a footprint's paths are not lists of paths")
         if isinstance(unread, bool) or not isinstance(unread, int) or unread < 0:
             raise SoftwareError(f"a footprint's unread lines are {unread!r}, no count")
-        missing, denied, ran, connected = (tuple(cast(list[str], x)) for x in lists)
-        return cls(data["level"], dict(read), missing, denied, ran, connected, unread)
+        missing, denied, ran, connected, unreadable = (tuple(cast(list[str], x)) for x in lists)
+        return cls(data["level"], dict(read), missing, denied, ran, connected, unread, unreadable)
 
     def changes(self, at_most: int = 3) -> list[str]:
         """What no longer holds of it, each said for a person (the first ``at_most`` found);
@@ -339,6 +353,7 @@ class _Seen:
     written: set[str] = field(default_factory=set)
     aliases: dict[str, str] = field(default_factory=dict)  # a path opened: the file it reached
     unread: int = 0
+    unreadable: list[str] = field(default_factory=list)
 
 
 def _named(given: str, base: str | None) -> str | None:
@@ -372,7 +387,7 @@ def _opened(seen: _Seen, call: bytes, args: bytes, match: re.Match[bytes]) -> No
         named = _named(given, base)
         if named is None:  # what a relative path was opened by, and whether by a link, is unknown
             seen.unread += 1
-        if _WRITES.search(flags):
+        if _WRITES.search(flags) or all(flag.search(flags) for flag in _CREATES):
             seen.written.add(path)
             seen.written.add(path if named is None else named)
         else:
@@ -471,24 +486,32 @@ def _traced(trace: Path) -> _Seen:
         line = line.rstrip(b"\n")
         if not line or line.startswith((b"+++", b"---")):
             continue
-        # split at the last ") = ": a path with that in it fails the result, never misleads
-        head, said, result = line.rpartition(b") = ")
-        call, _, args = head.partition(b"(")
-        match = _RESULT.match(result) if said and call in _CALLS else None
-        if match is None:
-            seen.unread += 1
-            continue
-        if call.startswith(b"open"):
-            _opened(seen, call, args, match)
-        elif call.startswith(b"execve"):
-            _started(seen, args, match)
-        elif call == b"socket":
-            _socket(seen, args, match)
-        elif call in _MAKES:
-            _made(seen, args, match)
-        else:
-            _connected(seen, args, match)
+        before = seen.unread
+        _line(seen, line)
+        if seen.unread > before and len(seen.unreadable) < _UNREADABLE:
+            seen.unreadable.append(line[:500].decode(errors="replace"))
     return seen
+
+
+def _line(seen: _Seen, line: bytes) -> None:
+    """What one line of a trace says, into ``seen``."""
+    # split at the last ") = ": a path with that in it fails the result, never misleads
+    head, said, result = line.rpartition(b") = ")
+    call, _, args = head.partition(b"(")
+    match = _RESULT.match(result) if said and call in _CALLS else None
+    if match is None:
+        seen.unread += 1
+        return
+    if call.startswith(b"open"):
+        _opened(seen, call, args, match)
+    elif call.startswith(b"execve"):
+        _started(seen, args, match)
+    elif call == b"socket":
+        _socket(seen, args, match)
+    elif call in _MAKES:
+        _made(seen, args, match)
+    else:  # a connection, or a datagram that says where it goes
+        _connected(seen, args, match)
 
 
 def _loaded(trace: Path) -> _Seen:
@@ -519,6 +542,7 @@ def footprint(
     seen = _traced(trace) if level == "files" else _loaded(trace)
     if level == "files" and not seen.ran:
         seen.unread += 1
+        seen.unreadable.append("no program started")
     skipped = [*IGNORED, *(os.fspath(path) for path in own)]
     skipped += [os.path.realpath(path) for path in own]
 
@@ -526,6 +550,9 @@ def footprint(
         return [p for p in paths if p not in seen.written and not _under(p, skipped)]
 
     read = {path: identity(path, since) for path in kept(seen.read)}
+    for path in kept(seen.ran):  # a program started through a link retargeted since: not known
+        if path in read and not _steady(path, None, since):
+            read[path] = None
     for name in kept(seen.aliases):  # /etc/mtab leads into /proc: not an input either
         reached = seen.aliases[name]
         if reached in seen.written or _under(reached, IGNORED) or name in read:
@@ -540,13 +567,15 @@ def footprint(
         tuple(sorted(kept(seen.ran))),
         tuple(sorted(seen.connected)),
         seen.unread,
+        tuple(seen.unreadable),
     )
 
 
-def _steady(name: str, reached: str, since: int | None) -> bool:
-    """Whether the path ``name`` still leads to the file ``reached``, and no link on its way
-    changed at or after ``since``: one retargeted while the run ran, even if back since."""
-    if os.path.realpath(name) != reached:
+def _steady(name: str, reached: str | None, since: int | None) -> bool:
+    """Whether the path ``name`` still leads to the file ``reached`` (if it is known), and no link
+    on its way changed at or after ``since``: one retargeted while the run ran, even if back
+    since."""
+    if reached is not None and os.path.realpath(name) != reached:
         return False
     if since is None:
         return True

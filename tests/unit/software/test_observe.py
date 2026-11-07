@@ -78,6 +78,69 @@ def test_what_a_run_read_found_missing_and_started_is_its_footprint(tmp_path: Pa
     assert "/usr/bin/true" in found.read  # what a program is, as any file it read
 
 
+@pytest.mark.parametrize(
+    ("flags", "read"),
+    [
+        ("O_RDWR", True),  # a database opened to be queried
+        ("O_RDONLY|O_CREAT, 0666", True),  # an existing file, opened as it is
+        ("O_RDWR|O_APPEND", True),
+        ("O_WRONLY|O_CREAT|O_TRUNC, 0666", False),  # written, never read
+        ("O_WRONLY|O_APPEND", False),
+        ("O_RDWR|O_TRUNC", False),  # emptied first: what it held was never read
+        ("O_RDWR|O_CREAT|O_EXCL, 0600", False),  # made anew
+    ],
+)
+def test_a_file_opened_to_be_written_too_is_still_an_input(
+    tmp_path: Path, flags: str, read: bool
+) -> None:
+    database = tmp_path / "calibration.db"
+    database.write_text("rows")
+    found = footprint(traces(tmp_path / "raw", STARTED, opened(database, flags)), "files", [])
+    assert (str(database) in found.read) is read
+
+
+def test_a_file_opened_read_write_and_changed_by_the_run_vouches_for_nothing(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "cache.db"
+    database.write_text("before")
+    began = time.time_ns()
+    time.sleep(0.02)
+    database.write_text("after the run wrote it")
+    line = opened(database, "O_RDWR")
+    assert footprint(traces(tmp_path / "raw", STARTED, line), "files", [], began).read == {
+        str(database): None
+    }
+
+
+def test_a_program_started_through_a_link_retargeted_while_it_ran_vouches_for_nothing(
+    tmp_path: Path,
+) -> None:
+    for name in ("helper-v1", "helper-v2"):
+        (tmp_path / name).write_text("#!/bin/sh\n")
+    current = tmp_path / "current"
+    current.symlink_to("helper-v1")
+    began = time.time_ns()
+    time.sleep(0.02)
+    current.unlink()
+    current.symlink_to("helper-v2")
+    line = f'execve("{current}", ["current"], 0x7ffc /* 1 var */) = 0'
+    found = footprint(traces(tmp_path / "raw", STARTED, line), "files", [], began)
+    assert found.read[str(current)] is None
+    assert (
+        footprint(traces(tmp_path / "again", STARTED, line), "files", []).read[str(current)]
+        is not None
+    )  # unchanged since it began: identified
+
+
+def test_the_lines_that_could_not_be_read_are_kept(tmp_path: Path) -> None:
+    found = footprint(traces(tmp_path / "raw", STARTED, "garbage"), "files", [])
+    assert found.unreadable == ("garbage",)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert footprint(empty, "files", []).unreadable == ("no program started",)
+
+
 def test_a_relative_lookup_is_where_its_process_was(tmp_path: Path) -> None:
     line = 'openat(AT_FDCWD</some/job>, "../rootlogon.C", O_RDONLY) = -1 ENOENT (No such file)'
     assert footprint(traces(tmp_path / "raw", line), "files", []).missing == ("/some/rootlogon.C",)
@@ -110,7 +173,7 @@ def test_what_the_stage_made_was_given_or_wrote_is_no_input(tmp_path: Path) -> N
 def test_a_file_removed_while_it_was_open_is_the_file_it_was(tmp_path: Path) -> None:
     gone = tmp_path / "scratch"
     line = (
-        f'openat(AT_FDCWD</work>, "{gone}", O_RDWR|O_CREAT, 0600) = 3<{gone} (deleted)>\n'
+        f'openat(AT_FDCWD</work>, "{gone}", O_RDWR|O_CREAT|O_EXCL, 0600) = 3<{gone} (deleted)>\n'
         f'openat(AT_FDCWD</work>, "{gone}", O_RDONLY) = 4<{gone} (deleted)>'
     )
     assert footprint(traces(tmp_path / "raw", line), "files", []).read == {}
@@ -153,6 +216,29 @@ def test_a_connection_to_the_network_is_kept_and_a_local_socket_is_not(tmp_path:
         [],
     )
     assert found.connected == ("10.0.0.1:53", "::1:443")
+
+
+def test_a_datagram_to_a_local_service_is_an_input_and_to_the_system_s_own_is_not(
+    tmp_path: Path,
+) -> None:
+    service = tmp_path / "service.sock"
+    found = footprint(
+        traces(
+            tmp_path / "raw",
+            f'sendto(3<socket:[1]>, "request", 7, 0, {{sa_family=AF_UNIX, sun_path="{service}"}},'
+            " 110) = 7",
+            'sendto(4<socket:[2]>, "<13>log", 7, MSG_NOSIGNAL, {sa_family=AF_UNIX, sun_path='
+            '"/dev/log"}, 110) = 7',
+            "sendto(5<socket:[3]>, [{nlmsg_len=20, nlmsg_type=RTM_GETLINK}, {}], 20, 0, "
+            "{sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12) = 20",
+            f'sendmsg(6<socket:[4]>, {{msg_name={{sa_family=AF_UNIX, sun_path="{service}2"}}, '
+            "msg_namelen=110, msg_iov=[], msg_iovlen=0, msg_controllen=0, msg_flags=0}, 0) = 0",
+            'sendto(7<socket:[5]>, "data", 4, 0, NULL, 0) = 4',  # on a connected socket
+        ),
+        "files",
+        [],
+    )
+    assert found.connected == (f"unix:{service}", f"unix:{service}2")
 
 
 def test_a_network_socket_is_network_use_without_a_connection(tmp_path: Path) -> None:
@@ -619,7 +705,7 @@ def test_a_real_run_is_observed_with_its_children(tmp_path: Path) -> None:
     run = program.run("sh", ["-c", script], workdir=work, logs=LOGS, observe="files")
     assert run.error is None and run.observed == "files" and run.trace == work / program.TRACE
     found = footprint(run.trace, "files", [work])
-    assert found.complete
+    assert found.complete, found.unreadable  # the lines it could not read, if any
     assert identity(str(file)) == found.read[str(file)]
     assert str(work / "made") not in found.read  # its own
     assert any(path.endswith("/cat") for path in found.ran)  # a child's program
@@ -635,6 +721,22 @@ def test_a_datagram_sent_without_a_connection_is_seen(tmp_path: Path) -> None:
     run = program.run("python3", ["-c", code], workdir=tmp_path, logs=LOGS, observe="files")
     assert run.trace is not None
     assert "AF_INET socket" in footprint(run.trace, "files", [tmp_path]).connected
+
+
+@strace
+def test_a_datagram_sent_to_a_local_socket_without_a_connection_is_seen(tmp_path: Path) -> None:
+    import socket
+
+    address = tmp_path / "s"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as service:
+        service.bind(str(address))
+        code = (
+            "import socket\n"
+            f"socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM).sendto(b'?', {str(address)!r})\n"
+        )
+        run = program.run("python3", ["-c", code], workdir=tmp_path, logs=LOGS, observe="files")
+    assert run.error is None and run.trace is not None
+    assert f"unix:{address}" in footprint(run.trace, "files", [tmp_path]).connected
 
 
 @strace

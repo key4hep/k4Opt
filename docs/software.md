@@ -134,7 +134,7 @@ optimize`; `observe=` in Python):
 
 | Level | How | Says | Another study may reuse its output |
 | --- | --- | --- | --- |
-| `files` (default) | `strace`, limited to opens, program starts, connections, sockets and the calls that make a path | every file read, listed or looked for in vain, by the program and all it started | yes |
+| `files` (default) | `strace`, limited to opens, program starts, connections, sockets, datagrams sent and the calls that make a path | every file read, listed or looked for in vain, by the program and all it started | yes |
 | `libraries` | the loader (`LD_DEBUG`) | the libraries loaded | no |
 | `none` | nothing | nothing | no |
 
@@ -156,7 +156,7 @@ the stage's record, under `observed`:
 | `packages` | the LCG packages it read a file of, by name and version; not one it only listed, or whose `.rootmap` or `.components` alone it read, as every package on the library path is |
 | `local` | the [local entries](#local-builds) it read a file from |
 | `undeclared` | the files and directories it read that neither the stack, the system's package manager (`/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`), the software nor the problem identify, each with its identity: a `~/.rootrc`, a calibration a helper reads through a variable, a file under `/opt`, a data file beside the libraries of a local build |
-| `network` | what it reached outside this machine's own services: the addresses it tried to connect to, a network socket it made (`AF_INET socket`: a datagram needs no connection), any attempt at a local socket other than the user database's, the journal's or the system bus's (`unix:<path>`, whose answers may come from anywhere). CLD's jobs have none |
+| `network` | what it reached outside this machine's own services: the addresses it tried to connect to, a network socket it made (`AF_INET socket`: a datagram needs no connection), any attempt at a local socket, by a connection or a datagram, other than the user database's, the journal's or the system bus's (`unix:<path>`, whose answers may come from anywhere). CLD's jobs have none |
 | `footprint` | the size and SHA-256 of the footprint file |
 
 `k4opt study trial` prints this for each stage, with the local entries no stage read a file from: a
@@ -169,11 +169,12 @@ content key CVMFS keeps of it, without reading it, any other by its SHA-256, a d
 in it (but `__pycache__`, which Python makes as it imports). A file reached through a link is kept
 under both names, so a link retargeted to another file is seen though the old file stays; one whose
 link changed while the stage ran has no identity. It leaves out what the stage made, what it was
-given, what the problem names, what it wrote or made (a compiler's scratch file, a file renamed into
-place), Python's `__pycache__`, whose files Python checks against their source, and `/proc`, `/sys`,
+given, what the problem names, what it wrote or made (a file opened write-only, emptied or made anew,
+a compiler's scratch file, a file renamed into place; a file opened read-write is read, and one the
+stage changed has no identity), Python's `__pycache__`, whose files Python checks against their source, and `/proc`, `/sys`,
 `/dev`, `/run` and the user database's caches. A path looked for in vain stays so though it exists
 when the stage ends, unless the stage made it: another process may have, while it ran. It *holds* while
-each file is the same, each directory holds the same names and no path looked for in vain exists. An
+each file is the same, each directory holds the same names and no path looked for in vain exists. A program started through a link that changed while the stage ran has no identity. An
 empty trace, a line that cannot be read, a file that could not be identified or that changed while
 the stage ran, a relative path opened from a directory the trace does not say, or a program started
 by a relative path never vouch for anything: what is not known is taken to differ.

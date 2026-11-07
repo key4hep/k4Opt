@@ -74,14 +74,15 @@ STRACE_OPTIONS = (
     "signal=none",
     "-e",
     "trace=open,openat,openat2,execve,execveat,connect,socket,"
-    "rename,renameat,renameat2,link,linkat,symlink,symlinkat,mkdir,mkdirat",
+    "rename,renameat,renameat2,link,linkat,symlink,symlinkat,mkdir,mkdirat,sendto,sendmsg",
 )
 """How ``strace`` observes a program at the ``files`` level: every process and thread it starts
 (``-f``), each into a file of its own (``-ff``), with the path of every descriptor (``-y``: a
-relative path is then known from the directory it was opened in), the opens, the programs started,
-the connections, the sockets made (a datagram needs no connection) and the calls that make a path
-(a file renamed into place) only, stopped in the kernel for nothing else (``--seccomp-bpf``: a few
-percent of a short job), and the program killed if ``strace`` is (``--kill-on-exit``)."""
+relative path is then known from the directory it was opened in), the opens, the programs
+started, the connections, the sockets made and the datagrams sent (which need no connection) and
+the calls that make a path (a file renamed into place) only, stopped in the kernel for nothing
+else (``--seccomp-bpf``: a few percent of a short job), and the program killed if ``strace`` is
+(``--kill-on-exit``)."""
 
 
 class ProgramError(K4OptError):
