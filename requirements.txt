@@ -10,7 +10,7 @@ nodeenv==1.11.1
 virtualenv==21.15.5
 distlib==0.4.4
 filelock==4.2.8
-platformdirs==4.14.0
+platformdirs==4.14.5
 codespell==2.4.3
 pyyaml==6.0.3
 # The optimizer behind k4opt optimize. Its dependencies (numpy, PyYAML, packaging, tqdm, colorlog)
