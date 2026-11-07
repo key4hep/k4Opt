@@ -65,6 +65,7 @@ from k4opt.optimization._study import (
     write_study,
 )
 from k4opt.optimization.errors import OptimizationError
+from k4opt.program import Observation
 
 type Watch = Callable[[Activity], None]
 
@@ -129,6 +130,7 @@ def optimize(
     activity: Watch | None = None,
     reuse: Sequence[str | os.PathLike[str]] = (),
     fixed: Mapping[str, Any] | None = None,
+    observe: Observation = "files",
 ) -> StudyResults:
     check_trials(trials, resume)
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
@@ -146,7 +148,9 @@ def optimize(
     directory = Path(os.path.abspath(Path(output).expanduser()))
 
     # its workers stop with the study however it ends
-    with EvaluationSession.open(problem, implementations, workers=workers) as session:
+    with EvaluationSession.open(
+        problem, implementations, workers=workers, observe=observe
+    ) as session:
         session.reuse(reuse)
         return _run_study(
             session,
@@ -232,7 +236,7 @@ def _run_study(
                 session, run, space, trials, identity, storage, database, progress, warn, resume
             )
             if resume:  # every record of every level held up: their stages serve, wherever
-                session.reuse([directory])
+                session.reuse([directory], resumed=True)
             _run_trials(tree, session, activity)
             # read back as load_study reads it, from the study still open: with the problem
             # study.json records, whose titles a resume with other titles leaves as they were

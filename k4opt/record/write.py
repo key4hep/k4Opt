@@ -5,13 +5,15 @@ candidate's status, message, required tasks, diagnostics and metrics derive from
 :meth:`~k4opt.record.Assessment.from_summary` derives them again. Every path the record holds
 of a file in the run directory is relative to it, so a record stays true wherever the directory
 is moved; the run directory itself is recorded once, as ``run_dir``. :func:`peak_memory` reads
-back what a record says of the memory its tasks took.
+back what a record says of the memory its tasks took, :func:`observed_stages` what its stages used
+and :func:`unused_local` the local builds none of them read.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, cast
 
 from k4opt import __version__
 from k4opt.evaluation import Artifact, Scalar
@@ -21,8 +23,9 @@ from k4opt.problem.models import EvaluatorSpec, ProblemSpec, Stage
 from k4opt.problem.plan import GEOMETRY, Kind, Task, evaluations
 from k4opt.record.assess import Assessment
 from k4opt.record.errors import RecordError
-from k4opt.record.read import SUMMARY_SCHEMA, _measurement
+from k4opt.record.read import SUMMARY_SCHEMA, _measurement, _within
 from k4opt.record.results import DONE, CandidateRecord, PeakMemory, TaskResult
+from k4opt.software import Software
 
 
 def _relative(path: Path, run_dir: Path) -> str:
@@ -237,7 +240,8 @@ def assemble(
                 # the session's, which the process still had when this candidate started
                 **environment,
                 "programs": thaw(process["programs"]),
-                "software": thaw(process["software"]),
+                # one digest of the variables: study.json, or the session, names each
+                "software": Software.from_dict(process["software"]).to_dict(variables=False),
                 # where and how the tasks ran: provenance, never part of what was evaluated
                 "execution": thaw(execution),
             },
@@ -273,6 +277,75 @@ def peak_memory(summary: Mapping[str, object]) -> dict[str, PeakMemory]:
                 raise RecordError(f"{label}: peak_memory_bytes.{key} is no number of bytes")
         found[label] = PeakMemory(value["process"], value["program"])
     return found
+
+
+def observed_stages(summary: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
+    """What a ``summary.json`` says each stage that ran a program used
+    (:meth:`k4opt.software.Footprint.summary`), by the stage's label (``gamma/simulation``); a
+    stage whose output was reused ran nothing and has none."""
+    return {
+        f"{sample}/{name}": observed
+        for sample in _within(summary, "samples")
+        for name in _within(summary, "samples", sample, "stages")
+        if (observed := _within(summary, "samples", sample, "stages", name, "observed"))
+    }
+
+
+def recorded_inputs(summary: Mapping[str, object]) -> dict[str, tuple[str, str]]:
+    """The undeclared inputs the stages of a ``summary.json`` read, by path: the identity each was
+    read as and the first stage that read it (by label), as each stage that ran says
+    (``observed``) or the stage whose output it reused (``reused``); none that could not be
+    identified. Two stages that read one as different files keep the first."""
+    found: dict[str, tuple[str, str]] = {}
+    for sample in _within(summary, "samples"):
+        for name in _within(summary, "samples", sample, "stages"):
+            for key in ("observed", "reused"):
+                undeclared = _within(summary, "samples", sample, "stages", name, key, "undeclared")
+                for path, then in undeclared.items():
+                    if isinstance(then, str):
+                        found.setdefault(path, (then, f"{sample}/{name}"))
+    return found
+
+
+def recorded_footprints(summary: Mapping[str, object]) -> dict[str, tuple[str, object]]:
+    """The footprint each stage of a ``summary.json`` depends on, by the stage's label: its file
+    and the SHA-256 the record holds of it. A stage that ran its program and kept one names it
+    relative to the run directory; one that reused an output names the footprint of the stage
+    that made it, by its absolute path. A stage that was not observed has none. A file the record
+    names that is not where it may be (``..``) is ``None``, which no footprint matches."""
+    found: dict[str, tuple[str, object]] = {}
+    for sample in _within(summary, "samples"):
+        for name in _within(summary, "samples", sample, "stages"):
+            stage = _within(summary, "samples", sample, "stages", name)
+            file = _within(stage, "logs").get("footprint")
+            if file is not None:
+                sha256 = _within(stage, "observed", "footprint").get("sha256")
+                inside = isinstance(file, str) and not file.startswith("/")
+                inside = inside and ".." not in str(file).split("/")
+                found[f"{sample}/{name}"] = (str(file) if inside else "", sha256)
+            elif reused := _within(stage, "reused", "footprint"):
+                found[f"{sample}/{name}"] = (str(reused.get("path") or ""), reused.get("sha256"))
+    return found
+
+
+def unused_local(summary: Mapping[str, object]) -> list[str]:
+    """The local entries of the software that no stage of a ``summary.json`` read from: a local
+    build put in front of the stack that did not run. Empty where that is not known: unless every
+    stage ended ``done``, by running its program itself, observed completely, or without one."""
+    observed = observed_stages(summary)
+    for sample in _within(summary, "samples"):
+        for name in _within(summary, "samples", sample, "stages"):
+            stage = _within(summary, "samples", sample, "stages", name)
+            if stage.get("status") != DONE or "reused" in stage:
+                return []
+            seen = observed.get(f"{sample}/{name}", {})
+            if "argv" in stage and (
+                seen.get("level") != "files" or seen.get("complete") is not True
+            ):
+                return []
+    used = {path for entry in observed.values() for path in cast(Any, entry.get("local") or ())}
+    software = _within(summary, "environment", "observed", "software")
+    return sorted({entry["path"] for entry in cast(Any, software.get("local") or ())} - used)
 
 
 SUMMARY_NAME = "summary.json"

@@ -53,6 +53,7 @@ def test_a_candidate_whose_simulation_was_made_already_reuses_it(
         "path": events["path"],
         "bytes": events["bytes"],
         "sha256": events["sha256"],
+        "by_footprint": False,  # of this session: no footprint needed
     }
     assert reused["signature"] == made["signature"]
     assert reused["outputs"] == {} and reused["logs"] == {}

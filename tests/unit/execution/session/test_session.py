@@ -206,7 +206,8 @@ def test_summary_is_written_and_truthful(
             "sha256": hashlib.sha256(events.read_bytes()).hexdigest(),
         }
     }
-    assert list(simulated["logs"]) == ["stdout", "stderr", "command"]
+    # and its footprint, of a ddsim that opened nothing (a fake)
+    assert list(simulated["logs"]) == ["stdout", "stderr", "command", "footprint"]
     for path in simulated["logs"].values():
         assert (tmp_path / "a" / path).is_file()
         assert path.startswith("samples/gamma/simulation/")
@@ -219,7 +220,7 @@ def test_summary_is_written_and_truthful(
     assert ddsim["path"] == simulation.DDSIM and ddsim["interpreter"]["path"] == shutil.which(
         "python3"
     )
-    assert on_disk["environment"]["observed"]["software"] == Software.now().to_dict()
+    assert on_disk["environment"]["observed"]["software"] == Software.now().to_dict(variables=False)
     assert on_disk["environment"]["observed"]["k4opt"] == __version__
     # what the version only labels: the content of the code that ran
     assert on_disk["environment"]["observed"]["k4opt_source"] == code_identity()

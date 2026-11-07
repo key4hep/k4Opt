@@ -269,17 +269,31 @@ class Software:
     variable by its name (``variables``), a local entry of a search path by the content it leads to
     (:mod:`k4opt.software.overlays`). Equal :attr:`id`\\ s, the same software. ``local`` says where
     each local entry is and what it holds: recorded, never part of the :attr:`id`, so the same
-    build at another prefix is the same software."""
+    build at another prefix is the same software.
+
+    A record of one candidate holds the variables as one digest (:attr:`variables_sha256`,
+    :meth:`to_dict` without ``variables``), since every record of a session holds the same: read
+    back, ``variables`` is empty and ``digest`` holds it, which identifies them as well but cannot
+    name one that differs."""
 
     build: Build
     system: System
     variables: Mapping[str, str]
     local: tuple[Local, ...] = ()
     site: str | None = None
+    digest: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "variables", FrozenMap(self.variables))
         object.__setattr__(self, "local", tuple(self.local))
+
+    @property
+    def variables_sha256(self) -> str:
+        """The SHA-256 of the variables' digests, by name: one digest of them all."""
+        if self.digest is not None:
+            return self.digest
+        text = json.dumps(dict(self.variables), sort_keys=True, separators=(",", ":"))
+        return _sha256(text.encode())
 
     @classmethod
     def now(
@@ -309,7 +323,7 @@ class Software:
         parts = {
             "build": self.build.to_dict(),
             "system": self.system.to_dict(),
-            "variables": dict(self.variables),
+            "variables": self.variables_sha256,
             "site": self.site,
         }
         return _sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")).encode())
@@ -327,7 +341,12 @@ class Software:
             found.append(_build_difference(self.build, now.build))
         if self.system != now.system:
             found.append(f"the system is {now.system.label}, not {self.system.label}")
-        names = sorted({*self.variables, *now.variables})
+        if self.digest is not None or now.digest is not None:  # one of them names none
+            if self.variables_sha256 != now.variables_sha256:
+                found.append("the environment's variables differ")
+            names: list[str] = []
+        else:
+            names = sorted({*self.variables, *now.variables})
         changed = [n for n in names if self.variables.get(n) != now.variables.get(n)]
         rebuilt = [n for n in changed if _rebuilt(self, now, n)]
         for name in rebuilt:
@@ -342,12 +361,16 @@ class Software:
             found.append(f"what Python imports from {where} changed")
         return found
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self, variables: bool = True) -> dict[str, object]:
+        """As JSON data; the variables each by name, or, without ``variables``, as one digest
+        (:attr:`variables_sha256`)."""
+        if variables and self.digest is not None:
+            raise SoftwareError("software read with one digest of its variables cannot name them")
         return {
             "id": self.id,
             "build": self.build.to_dict(),
             "system": self.system.to_dict(),
-            "variables": dict(self.variables),
+            "variables": dict(self.variables) if variables else self.variables_sha256,
             "local": [entry.to_dict() for entry in self.local],
             "site": self.site,
         }
@@ -357,11 +380,15 @@ class Software:
         """The software :meth:`to_dict` wrote, checked: its ``id`` is that of its parts. Raises
         :class:`SoftwareError`."""
         entry = _keys(data, _SOFTWARE, "the software")
-        variables = entry["variables"]
+        variables: object = entry["variables"]
+        digest: str | None = None
+        if isinstance(variables, str) and _SHA256.fullmatch(variables):
+            digest = variables
+            variables = {}
         if not isinstance(variables, Mapping) or not all(
             isinstance(value, str) and _SHA256.fullmatch(value) for value in variables.values()
         ):
-            raise SoftwareError("the software's variables are not digests by name")
+            raise SoftwareError("the software's variables are neither digests by name nor one")
         local = entry["local"]
         if not isinstance(local, Sequence) or isinstance(local, str):
             raise SoftwareError(f"the software's local entries are {local!r}, not a list")
@@ -374,6 +401,7 @@ class Software:
             dict(variables),
             tuple(_local(item) for item in local),
             site,
+            digest,
         )
         if entry["id"] != software.id:
             raise SoftwareError(f"the software's id {entry['id']!r} is not that of its parts")

@@ -2,6 +2,7 @@
 
     k4opt optimize PROBLEM --evaluator FILE.py:Class [--evaluator ...] --trials N --output DIR
         [--seed S] [--resume] [--storage URL] [--workers N|auto|inline]
+        [--observe files|libraries|none]
     k4opt study show DIR [--storage URL]
     k4opt study trial DIR NUMBER [--storage URL]
     k4opt study export DIR --format {csv,json} [--output FILE] [--storage URL]
@@ -30,6 +31,7 @@ from k4opt.optimization._show import render_results, render_trial
 from k4opt.problem import load_problem
 from k4opt.problem.candidate import parse_candidate
 from k4opt.problem.outline import render_outline
+from k4opt.program import OBSERVATIONS
 from k4opt.terminal import color, interactive, printable
 
 
@@ -117,6 +119,18 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
             "another, in one worker"
         ),
     )
+    parser.add_argument(
+        "--observe",
+        choices=OBSERVATIONS,
+        default="files",
+        help=(
+            "how closely the program of each stage is watched as it runs: 'files' (default) "
+            "records every file it read, under strace, which another study needs to reuse its "
+            "output; 'libraries' only the libraries it loaded; 'none' nothing. Where strace "
+            "cannot run, the next level that works is taken, with a warning. It changes no "
+            "output and is not part of the study"
+        ),
+    )
     parser.set_defaults(func=cmd_optimize)
     _register_study(commands)
 
@@ -198,6 +212,7 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 storage=args.storage,
                 workers=args.workers,
                 reuse=args.reuse,
+                observe=args.observe,
                 fixed=fixed,
                 warn=progress.warning,
                 progress=progress.trial,

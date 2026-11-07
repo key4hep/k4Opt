@@ -3,6 +3,7 @@ simulation, after a resume too, and so does another study given it to reuse."""
 
 from __future__ import annotations
 
+import io
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -11,8 +12,10 @@ from typing import Any
 import pytest
 import yaml
 
-from k4opt.optimization import load_study, optimize
-from tests.support import simulation
+from k4opt.errors import K4OptError
+from k4opt.optimization import OptimizationError, load_study, optimize
+from k4opt.optimization._show import render_trial
+from tests.support import simulation, stack
 from tests.support.evaluators import candidate_check, cell_count
 from tests.unit.optimization.conftest import GUN, summary
 
@@ -86,3 +89,62 @@ def test_a_study_reuses_what_another_one_it_is_given_made(
     assert len(fake.calls) == 1
     record = json.loads((tmp_path / "first" / "trial-000000" / "summary.json").read_text())
     assert _reused(tmp_path / "second", 0)["record"] == record["id"]  # type: ignore[index]
+
+
+@pytest.fixture
+def private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A file the fake ddsim of a study reads, which the problem does not name."""
+    path = tmp_path / "private" / "calibration.json"
+    path.parent.mkdir()
+    path.write_text("{}\n")
+    stack.install(monkeypatch, **{"*": {"read": [str(path)]}})
+    return path
+
+
+def test_a_trial_says_what_its_stages_used_and_a_published_study_does_not(
+    tmp_path: Path, analysis_problem: Path, private: Path
+) -> None:
+    output = tmp_path / "s"
+    _optimize(analysis_problem, output, 1, seed=1)
+    study = load_study(output)
+    out = io.StringIO()
+    render_trial(study, study.trials[0], out)
+    (line,) = [text for text in out.getvalue().splitlines() if "gamma/simulation: " in text]
+    assert "undeclared inputs" in line and str(private) in line
+    public = json.dumps(study.to_dict())
+    assert str(private) not in public and "undeclared" not in public
+
+
+def test_a_study_refuses_an_output_of_another_whose_input_changed(
+    tmp_path: Path, analysis_problem: Path, private: Path
+) -> None:
+    _optimize(analysis_problem, tmp_path / "first", 1, seed=1)
+    private.write_text('{"scale": 2}\n')
+    _optimize(analysis_problem, tmp_path / "second", 1, seed=2, reuse=[tmp_path / "first"])
+    assert _reused(tmp_path / "second", 0) is None
+    stage = summary(tmp_path / "second", 0)["samples"]["gamma"]["stages"]["simulation"]
+    assert f"{private} changed" in stage["not_reused"]
+
+
+def test_a_study_watches_what_its_stages_read_while_it_runs(
+    tmp_path: Path, analysis_problem: Path, private: Path
+) -> None:
+    # the first trial made the simulation; before the next, the file it read changes
+    def changed(trial: Any) -> None:
+        private.write_text('{"scale": 2}\n')
+
+    with pytest.raises(OptimizationError, match=str(private)):
+        _optimize(analysis_problem, tmp_path / "s", 3, seed=1, progress=changed)
+
+
+def test_a_study_whose_input_changed_is_not_resumed(
+    tmp_path: Path, analysis_problem: Path, private: Path
+) -> None:
+    output = tmp_path / "s"
+    _optimize(analysis_problem, output, 1, seed=1)
+    resumed = _optimize(analysis_problem, output, 1, resume=True)  # the same inputs: it goes on
+    assert len(resumed.trials) == 2
+    private.write_text('{"scale": 2}\n')
+    with pytest.raises(K4OptError, match=f"{private}, read by the study's trials, changed"):
+        _optimize(analysis_problem, output, 1, resume=True)
+    assert len(load_study(output).trials) == 2  # nothing added

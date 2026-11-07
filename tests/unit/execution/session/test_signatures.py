@@ -142,6 +142,6 @@ def test_a_record_whose_software_is_not_what_its_id_says_is_refused(
 ) -> None:
     with EvaluationSession.open(problem_file, [cell_count()]) as session:
         record = evaluate(session, 450.0, tmp_path / "a")
-    record["environment"]["observed"]["software"]["variables"]["MY_SCALE"] = "0" * 64
+    record["environment"]["observed"]["software"]["variables"] = "0" * 64  # one digest of all
     with pytest.raises(RecordError, match="is not that of its parts"):
         check_summary(load_problem(problem_file), record)

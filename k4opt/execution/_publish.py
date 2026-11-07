@@ -12,20 +12,23 @@ constraints (:mod:`k4opt.record.assess`), its record assembled from its task res
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import shutil
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from k4opt.execution._baseline import Baseline, candidate_reads, plain
 from k4opt.execution._drive import _finish_plan, _Run
 from k4opt.execution._files import changed_files
+from k4opt.execution._reuse import REUSED
 from k4opt.execution._work import candidate_externals
 from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import Json
 from k4opt.jsonio import write_json
 from k4opt.problem.plan import GEOMETRY, Kind
+from k4opt.program import TRACE
 from k4opt.record.assess import Assessment, assess
-from k4opt.record.results import CandidateRecord
+from k4opt.record.results import CandidateRecord, TaskResult
 from k4opt.record.write import SUMMARY_NAME, assemble
 
 
@@ -63,6 +66,29 @@ class RunOutcome:
         return events
 
 
+def observed_inputs(results: Iterable[TaskResult]) -> dict[str, Json]:
+    """The undeclared inputs the stages read, by path, with their identity, as each stage's
+    provenance says (:meth:`k4opt.software.Footprint.summary`), or what it reused says of the stage
+    that made its output; none that could not be identified, which nothing could compare. Raises
+    :class:`ProvenanceError` if two stages read a path as different files: it changed between
+    them, and the candidate's stages were not made from one input."""
+    found: dict[str, tuple[Json, str]] = {}
+    for result in results:
+        for key in ("observed", REUSED):
+            part = result.provenance.get(key)
+            undeclared = part.get("undeclared") if isinstance(part, Mapping) else None
+            for path, then in undeclared.items() if isinstance(undeclared, Mapping) else ():
+                if then is None:
+                    continue
+                first = found.setdefault(path, (then, result.id.label))
+                if first[0] != then:
+                    raise ProvenanceError(
+                        f"{path} was not the same file for {first[1]} and {result.id.label}: it "
+                        "changed between them, so the candidate's stages read different inputs"
+                    )
+    return {path: then for path, (then, _) in found.items()}
+
+
 def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> RunOutcome:
     """The record of the candidate ``run`` of a session that evaluates with ``baseline``,
     checked and written into its run directory; ``execution`` says how its tasks ran.
@@ -76,6 +102,9 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
     assert run_dir is not None
     record = _finish_plan(run)
     assert run.prepared is not None
+    for task in record.plan.of(Kind.STAGE):  # what a worker that died left of its traces
+        if task.directory is not None:
+            shutil.rmtree(run_dir / task.directory / TRACE, ignore_errors=True)
     geometry = record.results[GEOMETRY]
     externals = candidate_reads(geometry)
     try:
@@ -100,6 +129,8 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
             )
         # again, now: a candidate recorded while this one ran may have read other files
         baseline.check_read(externals)
+        inputs = observed_inputs(record.results.values())
+        baseline.check_observed(inputs)
     except RunError as exc:  # of the kind it is: a ProvenanceError stays one
         raise type(exc)(
             f"{exc} (while the candidate in {run_dir} ran, which has no {SUMMARY_NAME})"
@@ -127,6 +158,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
     except OSError as exc:
         raise RunError(f"cannot write summary in {run_dir}: {exc}") from exc
     baseline.remember(externals)
+    baseline.remember_observed(inputs)
     fingerprint = geometry.provenance.get("fingerprint")  # none for a geometry not made
     assert fingerprint is None or isinstance(fingerprint, str)
     return RunOutcome(record, summary, run_dir, fingerprint, assessment)

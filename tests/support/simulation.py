@@ -125,6 +125,14 @@ class FakeDdsim:
         return self.returncode
 
 
+def unobserved(argv: list[str]) -> list[str]:
+    """The program's own command in ``argv``, as :func:`k4opt.program.execute` is given it: without
+    the ``strace`` that observes it."""
+    if Path(argv[0]).name == "strace":
+        return argv[argv.index("--") + 1 :]
+    return argv
+
+
 def install_events(monkeypatch: pytest.MonkeyPatch, events: Sequence[Any] | None = None) -> None:
     """Make k4opt read ``events`` instead of an EDM4hep file; no ddsim is involved."""
     monkeypatch.setattr(edm4hep, "_frames", lambda path: list(events or []))
@@ -142,7 +150,13 @@ def install(
 
     def execute(argv: list[str], **kwargs: Any) -> int | None:
         # only ddsim is faked: another program (the fake k4run of fake_stack) runs as it is
-        return fake(argv, **kwargs) if Path(argv[0]).name == "ddsim" else real(argv, **kwargs)
+        command = unobserved(argv)
+        if Path(command[0]).name != "ddsim":
+            return real(argv, **kwargs)
+        if command is not argv:  # what strace would say of a program that opened nothing
+            trace = Path(argv[argv.index("-o") + 1] + ".1")
+            trace.write_text('execve("/bin/sh", ["ddsim"], 0x7ffc /* 1 var */) = 0\n')
+        return fake(command, **kwargs)
 
     monkeypatch.setattr(program, "execute", execute)
     monkeypatch.setattr(

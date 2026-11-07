@@ -14,6 +14,13 @@ its links lead, with its size and SHA-256). ddsim and k4run are Python scripts
 (``#!/usr/bin/env python3``): the same script with another ``PYTHONPATH`` runs other code, so what
 they load is identified with the build and the variables they run with
 (:class:`k4opt.software.Software`).
+
+What a program does while it runs can be *observed* (:data:`Observation`): ``files`` runs it under
+``strace``, which keeps each file any of its processes opened or failed to open, each program they
+started and each connection they made; ``libraries`` has the loader say which libraries it loaded
+(``LD_DEBUG``); ``none`` observes nothing. The raw traces are left in :data:`TRACE` in its working
+directory, for :mod:`k4opt.software.observe` to read and remove. Neither changes what the program
+does nor how it ends: its exit status, its signal and its peak memory are its own.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
@@ -43,6 +51,38 @@ LOG_TAIL = 15
 LOG_ROLES = ("stdout", "stderr", "command")
 """The files :func:`run` keeps, by role: the program's standard output and error and the record of
 its command, written once it ended."""
+
+type Observation = Literal["files", "libraries", "none"]
+"""How closely a program is watched while it runs: the files it opens (``strace``), the libraries
+it loads (``LD_DEBUG``), or nothing."""
+
+OBSERVATIONS: tuple[Observation, ...] = ("files", "libraries", "none")
+"""Every :data:`Observation`, from the closest to none."""
+
+TRACE = "trace"
+"""The directory in a program's working directory where :func:`run` leaves the raw traces of an
+observed run, one file by process: ``t.<id>`` (``files``) or ``ld.<id>`` (``libraries``)."""
+
+STRACE_OPTIONS = (
+    "-f",
+    "-ff",
+    "-qq",
+    "-y",
+    "--kill-on-exit",
+    "--seccomp-bpf",
+    "-e",
+    "signal=none",
+    "-e",
+    "trace=open,openat,openat2,execve,execveat,connect,socket,"
+    "rename,renameat,renameat2,link,linkat,symlink,symlinkat,mkdir,mkdirat,sendto,sendmsg",
+)
+"""How ``strace`` observes a program at the ``files`` level: every process and thread it starts
+(``-f``), each into a file of its own (``-ff``), with the path of every descriptor (``-y``: a
+relative path is then known from the directory it was opened in), the opens, the programs
+started, the connections, the sockets made and the datagrams sent (which need no connection) and
+the calls that make a path (a file renamed into place) only, stopped in the kernel for nothing
+else (``--seccomp-bpf``: a few percent of a short job), and the program killed if ``strace`` is
+(``--kill-on-exit``)."""
 
 
 class ProgramError(K4OptError):
@@ -90,6 +130,8 @@ class ProgramRun:
     command: Path
     error: str | None
     peak_memory_bytes: int | None = None
+    observed: Observation = "none"
+    trace: Path | None = None
 
     @property
     def files(self) -> dict[str, Path]:
@@ -197,6 +239,51 @@ def timeout_problem(timeout: float | None) -> str | None:
     return None
 
 
+def unobservable(observation: Observation) -> str | None:
+    """Why programs cannot be observed at ``observation`` here, ``None`` if they can. ``files``
+    needs an ``strace`` on ``PATH`` that knows its :data:`STRACE_OPTIONS` and may trace a process
+    (some containers and batch systems forbid it): tried on ``true``, in milliseconds. The loader
+    of the C library says what it loads (``libraries``) wherever programs run."""
+    if observation != "files":
+        return None
+    strace = shutil.which("strace")
+    if strace is None:
+        return "strace is not installed (none on PATH)"
+    true = shutil.which("true") or "/bin/true"
+    with tempfile.TemporaryDirectory(prefix="k4opt-strace-") as scratch:
+        try:
+            done = subprocess.run(
+                [strace, *STRACE_OPTIONS, "-o", os.path.join(scratch, "t"), "--", true],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"{strace} cannot be run: {exc}"
+        said = " ".join(done.stderr.decode(errors="replace").split())
+        if done.returncode != 0:
+            return f"{strace} cannot trace a program here (exit status {done.returncode}): {said}"
+        if not os.listdir(scratch):
+            return f"{strace} traced a program but wrote no trace"
+    return None
+
+
+def _observed(
+    argv: list[str], observation: Observation, trace: Path | None
+) -> tuple[list[str], dict[str, str], Observation]:
+    """``argv`` as it runs observed at ``observation``, with the variables that adds, and how it
+    is observed then: not at all if ``trace`` is ``None`` or ``strace`` went from ``PATH``."""
+    if trace is None or observation == "none":
+        return argv, {}, "none"
+    if observation == "libraries":
+        return argv, {"LD_DEBUG": "files", "LD_DEBUG_OUTPUT": str(trace / "ld")}, "libraries"
+    strace = shutil.which("strace")
+    if strace is None:
+        return argv, {}, "none"
+    return [strace, *STRACE_OPTIONS, "-o", str(trace / "t"), "--", *argv], {}, "files"
+
+
 _LAUNCHER = Path(__file__).with_name("_launch.py")
 
 
@@ -247,10 +334,12 @@ def execute(
     started: Callable[[int], None] | None = None,
     measured: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
+    added: Mapping[str, str] | None = None,
 ) -> int | None:
     """Run ``argv`` to its end: its exit status, ``None`` if it ran longer than ``timeout``.
 
-    It runs with exactly this process's ``os.environ``, which is what k4opt identified
+    It runs with exactly this process's ``os.environ`` and the variables ``added`` (those of an
+    observation, never compared), which is what k4opt identified
     (:class:`k4opt.software.Software`), not with what a library set beneath Python (ROOT's
     interpreter sets ``CLING_PREBUILT_MODULE_PATH`` with C's ``setenv``), which a child would
     otherwise inherit unseen. It runs in a process group of its own, which is killed as a whole
@@ -266,7 +355,7 @@ def execute(
     with subprocess.Popen(
         _launched(argv, die_with_parent),
         cwd=cwd,
-        env=dict(os.environ),
+        env={**os.environ, **(added or {})},
         stdin=subprocess.DEVNULL,
         stdout=stdout,
         stderr=stderr,
@@ -299,6 +388,7 @@ def run(
     started: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
     executable: Path | None = None,
+    observe: Observation = "none",
 ) -> ProgramRun:
     """Run the program ``name`` with ``arguments`` in the existing directory ``cwd``
     (``workdir`` if ``None``), keeping the files ``logs`` names by role (:data:`LOG_ROLES`) in
@@ -310,8 +400,11 @@ def run(
     killed with every process it started, and the run fails with its logs kept. ``started`` is
     told the id of the process group the program runs in once it started, and
     ``die_with_parent`` kills it when the calling thread ends, even by SIGKILL (see
-    :func:`execute`). The caller checks ``timeout``
-    (:func:`timeout_problem`) and what the program should have written.
+    :func:`execute`). It is observed at ``observe``, its raw traces left in :data:`TRACE` in
+    ``workdir`` (not at all if that directory cannot be made, or ``strace`` is gone from ``PATH``:
+    :attr:`ProgramRun.observed` says). The caller checks ``timeout`` (:func:`timeout_problem`), and
+    whether programs can be observed here (:func:`unobservable`), and what the program should have
+    written.
     """
     stdout, stderr, command = (workdir / logs[role] for role in LOG_ROLES)
     here = workdir if cwd is None else cwd
@@ -323,12 +416,23 @@ def run(
     if found is None:
         return made((), None, f"{name} not found on PATH (is the Key4hep environment set up?)")
     argv = (os.path.abspath(found), *arguments)
+    trace: Path | None = None
+    if observe != "none":
+        trace = workdir / TRACE
+        try:
+            trace.mkdir()
+        except OSError:
+            trace = None
+    launched, added, observed = _observed(list(argv), observe, trace)
+    if observed == "none" and trace is not None:
+        trace.rmdir()
+        trace = None
     peaks: list[int] = []
     try:
         with stdout.open("wb") as out, stderr.open("wb") as err:
             # None: killed when its time ran out
             returncode = execute(
-                list(argv),
+                launched,
                 cwd=here,
                 stdout=out,
                 stderr=err,
@@ -336,8 +440,11 @@ def run(
                 started=started,
                 measured=peaks.append,
                 die_with_parent=die_with_parent,
+                added=added,
             )
     except OSError as exc:
+        if trace is not None:
+            shutil.rmtree(trace, ignore_errors=True)
         return made(argv, None, f"{name} could not be started: {exc}")
     error = None
     if returncode is None:
@@ -345,6 +452,11 @@ def run(
         error += tail(stderr)
     elif returncode != 0:
         error = f"{name} {ended(returncode)} (logs in {workdir}):\n" + tail(stderr)
+        if observed == "files" and returncode < 0 and returncode != -signal.SIGKILL:
+            error += (
+                "\n(observed at the files level, under strace, which keeps ROOT from printing "
+                "the backtrace of a crash: observe it at the libraries level to see it)"
+            )
     peak = peaks[0] if peaks else None
     record = {
         "argv": argv,
@@ -352,10 +464,11 @@ def run(
         "returncode": returncode,
         "timeout": timeout,
         "peak_memory_bytes": peak,
+        "observed": observed,
     }
     try:
         write_json(command, record)
     except OSError as exc:
         failure = f"cannot record {name} command in {command}: {exc}"
         error = failure if error is None else f"{error}\n{failure}"
-    return ProgramRun(argv, here, returncode, stdout, stderr, command, error, peak)
+    return ProgramRun(argv, here, returncode, stdout, stderr, command, error, peak, observed, trace)

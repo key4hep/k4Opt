@@ -54,7 +54,8 @@ class ReconstructionRun:
     ``output``; otherwise it says what went wrong. ``returncode`` is ``None`` if the process never
     ran, or was killed because it ran out of time. ``files`` are those of :data:`LOG_FILES` that
     exist, by role, and ``edm4hep``, the output, if it exists. ``peak_memory_bytes`` is that of
-    k4run (:attr:`k4opt.program.ProgramRun.peak_memory_bytes`).
+    k4run (:attr:`k4opt.program.ProgramRun.peak_memory_bytes`), ``observed`` how it was observed
+    and ``trace`` where its raw traces are (:attr:`k4opt.program.ProgramRun.trace`).
     """
 
     argv: tuple[str, ...]
@@ -64,6 +65,8 @@ class ReconstructionRun:
     files: Mapping[str, Path]
     error: str | None
     peak_memory_bytes: int | None = None
+    observed: program.Observation = "none"
+    trace: Path | None = None
 
 
 def job_files(directory: Path) -> dict[str, Path]:
@@ -217,6 +220,7 @@ def reconstruct(
     started: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
     executable: Path | None = None,
+    observe: program.Observation = "none",
 ) -> ReconstructionRun:
     """Run ``k4run`` (``executable``, or the one found on ``PATH``) on the job's options ``files``
     (absolute, inside
@@ -229,10 +233,10 @@ def reconstruct(
     a writable copy of ``directory`` or an empty directory; ``workdir`` receives
     ``events.edm4hep.root`` and the files of :data:`LOG_FILES`. ``timeout`` limits the whole run,
     the copy of ``directory`` included: a ``k4run`` still running when it is over is killed with
-    every process it started, and the run fails with its logs kept; ``started`` and
-    ``die_with_parent`` are as for :func:`k4opt.program.run`. After the run, the job's resolved
-    options must show that it read ``compact`` and ``input_file`` and wrote
-    the output (:func:`~k4opt.k4run.verify`). Raises :class:`K4runError` for unsupported options,
+    every process it started, and the run fails with its logs kept; ``started``,
+    ``die_with_parent`` and ``observe`` are as for :func:`k4opt.program.run`. After the run, the
+    job's resolved options must show that it read ``compact`` and ``input_file`` and wrote the
+    output (:func:`~k4opt.k4run.verify`). Raises :class:`K4runError` for unsupported options,
     a ``timeout`` that is not a positive number of seconds, or an existing ``workdir``.
     """
     check_options(options)
@@ -245,12 +249,27 @@ def reconstruct(
     paths = {role: workdir / name for role, name in LOG_FILES.items()}
 
     def made(
-        argv: tuple[str, ...], returncode: int | None, error: str | None, peak: int | None = None
+        argv: tuple[str, ...],
+        returncode: int | None,
+        error: str | None,
+        run: program.ProgramRun | None = None,
     ) -> ReconstructionRun:
         present = {role: path for role, path in paths.items() if path.is_file()}
         if output.is_file():
             present["edm4hep"] = output
-        return ReconstructionRun(argv, workdir / JOB, returncode, output, present, error, peak)
+        if run is None:
+            return ReconstructionRun(argv, workdir / JOB, returncode, output, present, error)
+        return ReconstructionRun(
+            argv,
+            workdir / JOB,
+            returncode,
+            output,
+            present,
+            error,
+            run.peak_memory_bytes,
+            run.observed,
+            run.trace,
+        )
 
     began = time.monotonic()
     try:
@@ -280,6 +299,7 @@ def reconstruct(
         started=started,
         die_with_parent=die_with_parent,
         executable=executable,
+        observe=observe,
     )
     error = run.error
     # its limit is what the copy left of the reconstruction's
@@ -307,7 +327,7 @@ def reconstruct(
             )
         if error is None and not output.is_file():
             error = f"k4run finished but wrote no {output.name} (logs in {workdir})"
-    return made(run.argv, run.returncode, error, run.peak_memory_bytes)
+    return made(run.argv, run.returncode, error, run)
 
 
 def dry_run(

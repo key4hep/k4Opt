@@ -13,7 +13,11 @@ changed, a nightly's slot republished as much as a variable set, so that no reco
 programs, software or code other than those its candidate ran with. What
 a reference only candidates name reads is remembered as candidates are recorded
 (:meth:`Baseline.remember`), so that every candidate of the session reads the same files
-through it (:meth:`Baseline.check_read`).
+through it (:meth:`Baseline.check_read`). So are the files a stage read that nothing else
+identifies, its *undeclared inputs* (:mod:`k4opt.software.observe`: a ``~/.rootrc``, a calibration
+file a helper reads through a variable): once a record names one, every later candidate is
+evaluated with it as it was (:meth:`Baseline.check_observed`), and a change to it stops the session
+(:meth:`Baseline.verify`).
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from k4opt.program import identify
 from k4opt.record.results import TaskResult
 from k4opt.revision import code_identity, code_unchanged
 from k4opt.software import Build, Software, System, compared_variables
+from k4opt.software.observe import changed_inputs
 
 
 def check_code() -> None:
@@ -56,6 +61,7 @@ class Baseline:
     environment), and the implementations by name (``classes``)."""
 
     __slots__ = (
+        "_inputs",
         "_listed",
         "_read",
         "_variables",
@@ -89,6 +95,8 @@ class Baseline:
         self._read: dict[str, Json] = {}
         # the compared variables as they were, which tell a change apart in microseconds
         self._variables = compared_variables()
+        # what each undeclared input the records name was, by its path
+        self._inputs: dict[str, Json] = {}
 
     @property
     def software(self) -> Software:
@@ -257,6 +265,34 @@ class Baseline:
         self.verify_inputs()
         self._verify_externals()
         self._verify_implementations()
+        self._verify_observed()
+
+    def _verify_observed(self) -> None:
+        """Each undeclared input a record names is what it was (:meth:`remember_observed`)."""
+        changed = changed_inputs(self._inputs)
+        if changed:
+            raise ProvenanceError(
+                f"{', '.join(changed)}, read by stages of this session, changed after a record "
+                "named it; the candidates of a session read the same files"
+            )
+
+    def check_observed(self, inputs: Mapping[str, Json]) -> None:
+        """Raise :class:`ProvenanceError` if a stage read one of the undeclared ``inputs`` (path:
+        identity) as another file than a stage of a candidate recorded before, or if one is no
+        longer what the stage read."""
+        other = sorted(path for path, now in inputs.items() if self._inputs.get(path, now) != now)
+        changed = changed_inputs(inputs)
+        if other or changed:
+            raise ProvenanceError(
+                f"{', '.join(other or changed)}, read by a stage, is not the file "
+                f"{'earlier candidates read' if other else 'the stage read'}; the candidates of a "
+                "session read the same files"
+            )
+
+    def remember_observed(self, inputs: Mapping[str, Json]) -> None:
+        """The undeclared ``inputs`` a recorded candidate's stages read: later candidates must
+        read the same, and none may change while the session runs."""
+        self._inputs |= inputs
 
     def _verify_implementations(self) -> None:
         """Each implementation is still identified as when the session opened: loading another

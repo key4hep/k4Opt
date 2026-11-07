@@ -7,7 +7,8 @@ with an :class:`Assessment` of the candidate against the problem's objectives an
 (:class:`ObjectiveValue`, :class:`Limit`). :meth:`Assessment.from_summary` reads a record back
 and checks it against its problem before anything trusts it, without the evaluators or any file
 it names: a record holds up only where a live evaluation would have accepted what it says.
-:func:`peak_memory` reads back the memory its tasks took. See ``docs/record.md``.
+:func:`peak_memory` reads back the memory its tasks took, :func:`observed_stages` what its stages
+used and :func:`unused_local` the local builds none of them read. See ``docs/record.md``.
 
 Typical use::
 
@@ -21,7 +22,13 @@ Typical use::
 from k4opt.record.assess import Assessment, Limit, ObjectiveValue
 from k4opt.record.errors import RecordError
 from k4opt.record.results import CandidateRecord, PeakMemory, TaskResult
-from k4opt.record.write import SUMMARY_NAME, peak_memory
+from k4opt.record.write import (
+    SUMMARY_NAME,
+    observed_stages,
+    peak_memory,
+    recorded_inputs,
+    unused_local,
+)
 
 __all__ = [
     "SUMMARY_NAME",
@@ -32,5 +39,8 @@ __all__ = [
     "PeakMemory",
     "RecordError",
     "TaskResult",
+    "observed_stages",
     "peak_memory",
+    "recorded_inputs",
+    "unused_local",
 ]

@@ -66,7 +66,7 @@ from k4opt.problem.stages import (
     stage_type,
     writes_files,
 )
-from k4opt.program import locate
+from k4opt.program import Observation, locate
 
 _VARIABLE = re.compile(
     r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
@@ -127,6 +127,9 @@ class StageContext:
     program ran. A context made without a session (no ``programs``) looks for a program on
     ``PATH`` when it runs.
 
+    ``observe`` is how closely the programs of its stages are observed
+    (:data:`k4opt.program.Observation`), as the session found it can observe them.
+
     ``started`` and ``die_with_parent`` say how the process that runs a stage watches the
     program it starts (:func:`~k4opt.ddsim.simulate`): a worker process reports the program's
     process group, and has it die with the worker. They belong to that process alone and are
@@ -140,6 +143,7 @@ class StageContext:
     sample: str | None = None
     variables: Mapping[str, str] = field(default_factory=dict)
     programs: Mapping[str, str | None] = field(default_factory=dict)
+    observe: Observation = "none"
     started: Callable[[int], None] | None = field(default=None, compare=False, repr=False)
     die_with_parent: bool = field(default=False, compare=False, repr=False)
 
@@ -238,7 +242,8 @@ class StageOutcome:
     files (logs, the command), never an output. ``error`` is ``None`` only if the stage did what
     it should; otherwise it says what failed. ``peak_memory_bytes`` is that of the program it ran
     (:attr:`~k4opt.ddsim.SimulationRun.peak_memory_bytes`), ``None`` if it ran none or it is not
-    known.
+    known. ``observed`` is how the program was observed and ``trace`` where its raw traces are,
+    for whoever runs the stage to read (:func:`k4opt.software.observe.observe`).
     """
 
     outputs: Mapping[str, Path] = field(default_factory=dict)
@@ -246,6 +251,8 @@ class StageOutcome:
     provenance: Mapping[str, Json] = field(default_factory=dict)
     error: str | None = None
     peak_memory_bytes: int | None = None
+    observed: Observation = "none"
+    trace: Path | None = None
 
 
 def provided_provenance(path: Path) -> dict[str, Json]:
@@ -341,6 +348,7 @@ def _run_simulation(
         started=context.started,
         die_with_parent=context.die_with_parent,
         executable=context.executable("ddsim"),
+        observe=context.observe,
     )
     # it ran in workdir, the stage's own directory, which the record names relative to the run
     provenance: dict[str, Json] = {
@@ -359,12 +367,10 @@ def _run_simulation(
                 error = changed if error is None else f"{error}\n{changed}"
         provenance["files"] = recorded
     logs = {role: path for role, path in run.files.items() if role != "edm4hep"}
-    peak = run.peak_memory_bytes
-    if error is not None:
-        return StageOutcome(
-            artifacts=logs, provenance=provenance, error=error, peak_memory_bytes=peak
-        )
-    return StageOutcome({"events": run.output}, logs, provenance, peak_memory_bytes=peak)
+    outputs = {} if error is not None else {"events": run.output}
+    return StageOutcome(
+        outputs, logs, provenance, error, run.peak_memory_bytes, run.observed, run.trace
+    )
 
 
 def _inspect_simulation(
@@ -485,6 +491,7 @@ def _run_reconstruction(
         started=context.started,
         die_with_parent=context.die_with_parent,
         executable=context.executable("k4run"),
+        observe=context.observe,
     )
     # it ran in workdir/job, a copy of the directory; the record names workdir relative to the run
     provenance: dict[str, Json] = {
@@ -512,12 +519,10 @@ def _run_reconstruction(
         error = note if error is None else f"{error}\n{note}"
     provenance["files"] = recorded
     logs = {role: path for role, path in run.files.items() if role != "edm4hep"}
-    peak = run.peak_memory_bytes
-    if error is not None:
-        return StageOutcome(
-            artifacts=logs, provenance=provenance, error=error, peak_memory_bytes=peak
-        )
-    return StageOutcome({"events": run.output}, logs, provenance, peak_memory_bytes=peak)
+    outputs = {} if error is not None else {"events": run.output}
+    return StageOutcome(
+        outputs, logs, provenance, error, run.peak_memory_bytes, run.observed, run.trace
+    )
 
 
 def _inspect_reconstruction(

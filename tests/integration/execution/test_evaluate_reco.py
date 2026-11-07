@@ -94,3 +94,44 @@ def test_a_supplied_simulation_is_reconstructed_again(
     assert stage["status"] == "done" and stage["events_read"] == EVENTS
     # the same events, reconstructed again: the same measurement
     assert [m["value"] for m in summary["metrics"]] == [m["value"] for m in run["metrics"]]
+
+
+def stages(record: dict[str, Any]) -> dict[str, Any]:
+    found: dict[str, Any] = record["samples"]["pi0_50gev"]["stages"]
+    return found
+
+
+def measured(record: dict[str, Any]) -> list[Any]:
+    return [metric["value"] for metric in record["metrics"]]
+
+
+def test_each_stage_says_what_it_used(run: dict[str, Any]) -> None:
+    used = stages(run)
+    simulation, reconstruction = used["simulation"]["observed"], used["reconstruction"]["observed"]
+    for observed in (simulation, reconstruction):
+        assert observed["level"] == "files" and observed["complete"] is True, observed
+        assert observed["network"] == []
+    assert {"DD4hep", "Geant4", "ROOT"} <= simulation["packages"].keys()
+    assert {"Gaudi", "k4fwcore", "marlin"} <= reconstruction["packages"].keys()
+    assert "marlin" not in simulation["packages"]  # only what a stage reads, not what is around
+
+
+def test_another_run_reuses_stages_whose_footprints_hold(
+    problem: Path, run: dict[str, Any], tmp_path: Path
+) -> None:
+    # nothing the jobs read differs from one run to the next, or nothing would ever be reused
+    _, again = evaluate(problem, tmp_path / "again", "--reuse", run["run_dir"])
+    used = stages(again)
+    assert "not_reused" not in used["simulation"], used["simulation"]["not_reused"]
+    assert used["simulation"]["reused"]["by_footprint"] is True
+    assert used["reconstruction"]["reused"]["by_footprint"] is True
+    assert measured(again) == measured(run)
+
+
+@pytest.mark.parametrize("level", ["libraries", "none"])
+def test_how_closely_a_candidate_is_watched_changes_nothing_it_measures(
+    problem: Path, run: dict[str, Any], tmp_path: Path, level: str
+) -> None:
+    _, other = evaluate(problem, tmp_path / level, "--observe", level)
+    assert measured(other) == measured(run)
+    assert stages(other)["reconstruction"]["observed"]["level"] == level

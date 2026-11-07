@@ -10,13 +10,16 @@ or change colors: only the labels and colors are k4opt's own.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import TextIO
+import json
+from collections.abc import Mapping, Sized
+from pathlib import Path
+from typing import Any, TextIO, cast
 
 from k4opt.optimization._render import _counts, _paint, _value
 from k4opt.optimization._results import StudyResults, TrialResult
 from k4opt.optimization._study import INNER_NAME, trial_directory
 from k4opt.problem import MetricRef, Parameter, ProblemSpec
+from k4opt.record import observed_stages, unused_local
 from k4opt.terminal import Style, printable
 
 LABEL = 12  # the width of a line's label
@@ -178,6 +181,35 @@ _NO_RECORD = {
 }
 
 
+def _used(record: Path | None) -> list[str]:
+    """What the stages of the trial whose ``summary.json`` is ``record`` used, for a person: one
+    line by stage, and the local builds none of them read; nothing without a record."""
+    try:
+        summary = json.loads(record.read_bytes()) if record is not None else None
+    except (OSError, ValueError):
+        return []
+    if not isinstance(summary, Mapping):
+        return []
+    lines = []
+    for label, seen in observed_stages(summary).items():
+        level = seen.get("level")
+        if level == "none":
+            lines.append(printable(f"{label}: not observed"))
+            continue
+        parts = [f"{len(cast(Sized, seen.get('packages') or ()))} packages of the stack"]
+        if seen.get("local"):
+            parts.append(f"local builds {', '.join(cast(list[str], seen['local']))}")
+        if seen.get("undeclared"):
+            parts.append(f"undeclared inputs {', '.join(cast(dict[str, Any], seen['undeclared']))}")
+        if seen.get("network"):
+            parts.append(f"network {', '.join(cast(list[str], seen['network']))}")
+        if seen.get("complete") is not True:
+            parts.append(f"{level} level: what else it read is not known")
+        lines.append(printable(f"{label}: {'; '.join(parts)}"))
+    lines += [printable(f"not used by any stage: {path}") for path in unused_local(summary)]
+    return lines
+
+
 def render_trial(
     results: StudyResults, trial: TrialResult, out: TextIO, *, color: bool = False
 ) -> None:
@@ -249,6 +281,9 @@ def render_trial(
         if trial.status == "error":
             record.append("not taken: its values never reached the optimizer")
         _print(out, style, "record", record)
+    used = _used(results.record_path(trial))
+    if used:
+        _print(out, style, "software", used)
     if trial.message is not None:
         _print(out, style, "message", [printable(trial.message)])
     if trial.diagnostics:  # what the status leaves out

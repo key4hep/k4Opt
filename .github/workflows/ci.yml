@@ -55,12 +55,17 @@ jobs:
           docker run --rm \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
+            --cap-add SYS_PTRACE \
             --volume /cvmfs:/cvmfs:shared \
             --volume ${{ github.workspace }}:/workspace \
             --workdir /workspace \
             -e CI=true \
             ${{ env.CONTAINER_IMAGE }} bash -c "
             set -e
+
+            echo '::group::Install strace, which observes the stages'
+            dnf install -y strace
+            echo '::endgroup::'
 
             echo '::group::Set-up key4hep'
             source setup.sh

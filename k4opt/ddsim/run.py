@@ -30,7 +30,8 @@ class SimulationRun:
     because it ran out of time. The files ``stdout``, ``stderr``, ``command`` and ``output`` exist
     only if the process got that far. ``peak_memory_bytes`` is the largest peak resident memory of
     ddsim and of the processes it started and waited for, each on its own (``None`` if it is not
-    known: ddsim did not end by itself, or the system does not say).
+    known: ddsim did not end by itself, or the system does not say). ``observed`` is how it was
+    observed and ``trace`` where its raw traces are (:attr:`k4opt.program.ProgramRun.trace`).
     """
 
     argv: tuple[str, ...]
@@ -42,6 +43,8 @@ class SimulationRun:
     command: Path
     error: str | None
     peak_memory_bytes: int | None = None
+    observed: program.Observation = "none"
+    trace: Path | None = None
 
     @property
     def files(self) -> dict[str, Path]:
@@ -68,6 +71,7 @@ def simulate(
     started: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
     executable: Path | None = None,
+    observe: program.Observation = "none",
 ) -> SimulationRun:
     """Run ``ddsim`` (``executable``, or the one found on ``PATH``) on ``compact``, in the new
     directory ``workdir``.
@@ -83,9 +87,9 @@ def simulate(
     than ``timeout`` seconds is killed with every process it started, and the run fails with its
     logs kept. ``started`` is told the id of the process group ddsim runs in once it started, and
     ``die_with_parent`` kills ddsim when the calling thread ends, even by SIGKILL (see
-    :func:`k4opt.program.execute`). Raises :class:`DdsimError` for unsupported
-    settings or options, a ``timeout`` that
-    is not a positive number of seconds, or an existing ``workdir``.
+    :func:`k4opt.program.execute`); ``observe`` is as for :func:`k4opt.program.run`. Raises
+    :class:`DdsimError` for unsupported settings or options, a ``timeout`` that is not a positive
+    number of seconds, or an existing ``workdir``.
     """
     # ddsim runs inside workdir, so every path in its command line must be absolute
     compact = Path(os.path.abspath(compact))
@@ -124,6 +128,7 @@ def simulate(
         started=started,
         die_with_parent=die_with_parent,
         executable=executable,
+        observe=observe,
     )
     error = run.error
     if error is None and not output.is_file():
@@ -138,4 +143,6 @@ def simulate(
         command,
         error,
         run.peak_memory_bytes,
+        run.observed,
+        run.trace,
     )

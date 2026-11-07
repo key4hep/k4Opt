@@ -13,6 +13,7 @@ its reads made, which it checks before and after it runs.
 from __future__ import annotations
 
 import contextlib
+import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -61,6 +62,7 @@ from k4opt.problem.plan import GEOMETRY, Kind, TaskId
 from k4opt.problem.stages import stage_output
 from k4opt.record.results import DONE, PeakMemory, declined
 from k4opt.record.write import SUMMARY_NAME
+from k4opt.software.observe import observe
 
 
 def candidate_externals(
@@ -171,6 +173,29 @@ def _own(spec: TaskSpec, root: Path | None) -> Path | None:
     return None if root is None or spec.task.directory is None else root / spec.task.directory
 
 
+def _unknown_inputs(summary: Mapping[str, Json]) -> list[str]:
+    """The undeclared files a stage read that could not be identified when it ended: changed
+    while it ran (or gone since), so no record could say what it read, and no later candidate
+    could be compared with it. A directory listed while it changed is not one: another stage's
+    first ``__pycache__`` changes the directory it is in; it only keeps the output from being
+    reused (:meth:`k4opt.software.Footprint.changes`)."""
+    undeclared = summary.get("undeclared")
+    entries = undeclared.items() if isinstance(undeclared, Mapping) else ()
+    return [path for path, then in entries if then is None and not os.path.isdir(path)]
+
+
+def _declared(provenance: Mapping[str, Json]) -> list[Path]:
+    """The files a stage's provenance says it was given by the problem (``files``: those a ddsim
+    option names, a reconstruction's job and data), which its signature identifies."""
+    files = provenance.get("files")
+    entries = files.values() if isinstance(files, Mapping) else ()
+    return [
+        Path(path)
+        for entry in entries
+        if isinstance(entry, Mapping) and isinstance(path := entry.get("path"), str)
+    ]
+
+
 def _geometry(
     context: SessionContext, spec: TaskSpec, root: Path | None, began: float
 ) -> tuple[TaskOutcome, Observations]:
@@ -270,14 +295,37 @@ def _stage(
     if changed:
         return TaskOutcome(task, Status.FAILED, _changed_before(changed)), Observations()
     # as its candidate configures them, the program it runs stopped at the task's time limit
-    stages = replace(context.contexts[task.sample].configured(spec.stages), timeout=spec.timeout)
-    outcome, main = make_stage(
-        stages,
-        task.name,
-        inputs=_inputs(spec, root),
-        workdir=own,
-        supplied=spec.supplied,
+    stages = replace(
+        context.contexts[task.sample].configured(spec.stages),
+        timeout=spec.timeout,
+        observe=context.observe,
     )
+    inputs = _inputs(spec, root)
+    since = time.time_ns()  # what changed from now on need not be what it read
+    outcome, main = make_stage(
+        stages, task.name, inputs=inputs, workdir=own, supplied=spec.supplied
+    )
+    if "argv" in outcome.provenance and own is not None:  # it ran a program
+        declared = [*inputs.values(), *_declared(outcome.provenance), *stages.files().values()]
+        summary, footprint = observe(
+            outcome.trace,
+            outcome.observed,
+            directory=own,
+            own=[p for p in (root, spec.tree, own) if p is not None] + declared,
+            local=context.local,
+            since=since,
+        )
+        artifacts = dict(outcome.artifacts)
+        if footprint is not None:
+            artifacts["footprint"] = footprint
+        outcome = replace(
+            outcome,
+            artifacts=artifacts,
+            provenance={**outcome.provenance, "observed": summary},
+        )
+        unknown = _unknown_inputs(summary)
+        if unknown and outcome.error is None:  # as for a file of the problem that changed
+            outcome = replace(outcome, error=_changed_during(unknown))
     error = outcome.error
     made: dict[str, Artifact] = {}
     stats: dict[str, Stat] = {}

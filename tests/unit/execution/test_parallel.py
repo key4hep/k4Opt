@@ -13,11 +13,13 @@ import json
 import multiprocessing
 import os
 import pickle
+import re
 import signal
 import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -28,11 +30,13 @@ from typing import Any
 import pytest
 import yaml
 
+from k4opt import program
 from k4opt.cli import main
 from k4opt.evaluation import EvaluationContractError, load_evaluator
 from k4opt.execution import (
     WAIT,
     EvaluationSession,
+    ProvenanceError,
     RunError,
     RunOutcome,
     RunRequest,
@@ -42,10 +46,16 @@ from k4opt.execution import (
     _session,
     _worker,
 )
+from k4opt.execution._publish import observed_inputs
+from k4opt.execution._reuse import REUSED
 from k4opt.execution._tasks import TaskOutcome, TaskSpec
+from k4opt.frozen import FrozenMap
 from k4opt.problem import CandidateError, load_problem
 from k4opt.problem.plan import GEOMETRY, Task, stage_task
+from k4opt.program import Observation
 from k4opt.record import SUMMARY_NAME, Assessment
+from k4opt.record.results import DONE, TaskResult
+from k4opt.software.observe import FOOTPRINT
 from tests.support import stack
 from tests.support.common import scientific
 from tests.support.evaluators import CELL_COUNT, cell_count, implementations, worker_probe
@@ -148,13 +158,19 @@ def probe(monkeypatch: pytest.MonkeyPatch, **told: dict[str, Any]) -> None:
 @pytest.fixture
 def session_of(problem: Path) -> Iterator[Opener]:
     """Open sessions of ``problem`` (or ``path``) with ``test.cell_count``, and
-    ``test.worker_probe`` if it binds that, each closed after the test."""
+    ``test.worker_probe`` if it binds that, each closed after the test. Their stages are observed
+    at ``observe``, ``none`` by default: the fake ddsim of these tests waits for others by listing
+    a directory they change, which observation would rightly take for an input that changed."""
     opened: list[EvaluationSession] = []
 
-    def open_(workers: int | str, path: Path = problem) -> EvaluationSession:
+    def open_(
+        workers: int | str, path: Path = problem, observe: Observation = "none"
+    ) -> EvaluationSession:
         named = {entry["name"] for entry in yaml.safe_load(path.read_text())["evaluators"]}
         probes = [worker_probe()] if "test.worker_probe" in named else []
-        session = EvaluationSession.open(path, [cell_count(), *probes], workers=workers)
+        session = EvaluationSession.open(
+            path, [cell_count(), *probes], workers=workers, observe=observe
+        )
         opened.append(session)
         return session
 
@@ -614,6 +630,52 @@ def test_an_exception_in_a_worker_stops_its_candidate_with_its_traceback(
     assert session.evaluate({RADIUS: 450.0}, tmp_path / "b").candidate.status == "valid"
 
 
+@pytest.mark.skipif(program.unobservable("files") is not None, reason="strace cannot trace")
+def test_two_stages_of_a_candidate_that_read_an_input_as_two_files_refuse_its_record(
+    tmp_path: Path, marks: Path, session_of: Opener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gamma reads the calibration and ends; another process changes it; then pion reads it
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text("X")
+    read = [str(calibration)]
+    stack.install(
+        monkeypatch, marks, gamma={"read": read}, pion={"await": ["changed"], "read": read}
+    )
+
+    def change_between_them() -> None:  # once gamma's footprint says what it read
+        made = tmp_path / "a" / "samples" / "gamma" / "simulation" / FOOTPRINT
+        assert stack.eventually(made.exists)
+        calibration.write_text("Y")
+        (marks / "changed").touch()
+
+    changing = threading.Thread(target=change_between_them)
+    changing.start()
+    session = session_of(2, observe="files")
+    # pion began before the change: what it read is not known, and the change is seen at publish
+    with pytest.raises(ProvenanceError, match=re.escape(str(calibration))):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    changing.join()
+    assert not (tmp_path / "a" / SUMMARY_NAME).exists()
+
+
+def test_two_stages_that_read_an_input_as_two_files_are_named() -> None:
+    # one after the other, each identified it whole: it changed between them
+    def read(sample: str, identity: str, key: str = "observed") -> TaskResult:
+        undeclared = FrozenMap({"/data/calibration.json": identity})
+        provenance = FrozenMap({key: FrozenMap({"undeclared": undeclared})})
+        return TaskResult(stage_task("simulation", sample), DONE, provenance=provenance)
+
+    same = [read("gamma", "sha256:x"), read("pion", "sha256:x", REUSED)]
+    assert observed_inputs(same) == {"/data/calibration.json": "sha256:x"}
+    unknown = [read("gamma", "sha256:x"), read("pion", None)]  # type: ignore[arg-type]
+    assert observed_inputs(unknown) == {"/data/calibration.json": "sha256:x"}
+    with pytest.raises(
+        ProvenanceError,
+        match="not the same file for gamma/simulation and pion/simulation: it changed between",
+    ):
+        observed_inputs([read("gamma", "sha256:x"), read("pion", "sha256:y", REUSED)])
+
+
 def test_an_exception_that_cannot_be_rebuilt_is_raised_as_a_task_error() -> None:
     class OddError(Exception):
         def __init__(self, first: str, second: str) -> None:
@@ -627,6 +689,7 @@ def test_an_exception_that_cannot_be_rebuilt_is_raised_as_a_task_error() -> None
     assert isinstance(error.__cause__, _worker.RemoteTraceback)
 
 
+@pytest.mark.parametrize("observe", ["none", "files"])
 @pytest.mark.parametrize("workers", [1, 2])
 @pytest.mark.parametrize(
     ("killed", "required", "status", "message"),
@@ -648,9 +711,10 @@ def test_a_process_killed_like_the_oom_killer_does_fails_its_task_and_leaves_not
     status: str,
     message: str | None,
     workers: int,
+    observe: Observation,
 ) -> None:
     # with one worker as with several: the crash of an evaluator, or the kernel's OOM killer,
-    # fails its task, never the session that coordinates the candidates
+    # fails its task, never the session that coordinates the candidates; observed or not
     problem = write_problem(tmp_path / "probe.yaml", doc, ("p",), required=required)
     told: dict[str, Any] = {
         "ddsim": {"a.gamma": {"kill": "self"}},
@@ -658,7 +722,7 @@ def test_a_process_killed_like_the_oom_killer_does_fails_its_task_and_leaves_not
     }.get(killed, {})
     stack.install(monkeypatch, marks, **told)
     probe(monkeypatch, **({"a.p": {"kill": True}} if "evaluation" in killed else {}))
-    session = session_of(workers, problem)
+    session = session_of(workers, problem, observe)
     outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     assert outcome.candidate.status == status
     summary = verified(outcome)  # a complete record of what happened, on disk
@@ -1192,8 +1256,8 @@ def test_concurrent_candidates_each_run_with_their_own_stage_options(
     path.write_text(yaml.safe_dump(bound))
     radii = {"a": 300.0, "b": 400.0, "c": 500.0, "d": 350.0}
     requests = [RunRequest({RADIUS: r}, tmp_path / n, {"name": n}) for n, r in radii.items()]
-    with (
-        EvaluationSession.open(path, [cell_count()], workers=2) as session,
+    with (  # unobserved: the fake ddsim waits for the other by listing a directory it changes
+        EvaluationSession.open(path, [cell_count()], workers=2, observe="none") as session,
         session.evaluate_each(requests) as evaluations,
     ):
         ended = list(evaluations)

@@ -212,8 +212,8 @@ def _tampered(key: str, value: Any, tmp_path: Path) -> dict[str, Any]:
     [
         ("id", "0" * 64, "is not that of its parts"),
         ("variables", {}, "is not that of its parts"),
-        ("variables", {"MY_SCALE": "1"}, "are not digests by name"),
-        ("variables", [], "are not digests by name"),
+        ("variables", {"MY_SCALE": "1"}, "neither digests by name nor one"),
+        ("variables", [], "neither digests by name nor one"),
         ("build", None, "the build is not an object"),
         ("build", {"kind": "lcg"}, "the build is not an object"),
         ("system", {}, "the system is not an object"),
