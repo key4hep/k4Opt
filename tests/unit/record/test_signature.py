@@ -17,7 +17,7 @@ def _signature(program: Any) -> dict[str, Any]:
         reads={"generation": "0" * 64},
         files={},
         program=program,
-        environment={"KEY4HEP_STACK": "/cvmfs/stack", "search": {}},
+        software="s" * 64,
         k4opt="1" * 64,
     )
     return signed(document)
@@ -32,27 +32,23 @@ def test_a_program_is_signed_by_its_content_not_where_it_is() -> None:
     assert _signature(None)["document"]["program"] is None  # a stage that runs no program
 
 
-def _with_search(search: dict[str, str]) -> dict[str, Any]:
-    program = {"path": "/cvmfs/a/bin/ddsim", "bytes": 5, "sha256": "a" * 64, "interpreter": None}
-    document = stage_document(
-        "simulation",
-        SIMULATION,
-        reads={"generation": "0" * 64},
-        files={},
-        program=program,
-        environment={"KEY4HEP_STACK": "/cvmfs/stack", "search": search},
-        k4opt="1" * 64,
-    )
-    return signed(document)
+def test_the_software_a_stage_runs_on_is_signed() -> None:
+    def signature(software: str) -> dict[str, Any]:
+        program = {"path": "/a/ddsim", "bytes": 5, "sha256": "a" * 64, "interpreter": None}
+        return signed(
+            stage_document(
+                "simulation",
+                SIMULATION,
+                reads={"generation": "0" * 64},
+                files={},
+                program=program,
+                software=software,
+                k4opt="1" * 64,
+            )
+        )
 
-
-def test_path_is_not_signed_but_what_else_decides_what_a_program_loads_is() -> None:
-    # PATH differs between shells that run the same programs; its interpreter is signed instead
-    here = _with_search({"PATH": "p" * 64, "PYTHONPATH": "y" * 64, "LD_LIBRARY_PATH": "l" * 64})
-    there = _with_search({"PATH": "q" * 64, "PYTHONPATH": "y" * 64, "LD_LIBRARY_PATH": "l" * 64})
-    other = _with_search({"PATH": "p" * 64, "PYTHONPATH": "z" * 64, "LD_LIBRARY_PATH": "l" * 64})
-    assert here == there != other
-    assert "PATH" not in here["document"]["environment"]["search"]
+    assert signature("s" * 64) == signature("s" * 64) != signature("t" * 64)
+    assert signature("s" * 64)["document"]["software"] == "s" * 64
 
 
 def test_the_interpreter_a_program_runs_in_is_signed() -> None:

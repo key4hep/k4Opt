@@ -15,6 +15,7 @@ ORDER = (
     "geometry",
     "ddsim",
     "k4run",
+    "software",
     "evaluation",
     "problem",
     "record",

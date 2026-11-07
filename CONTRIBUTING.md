@@ -2,7 +2,8 @@
 
 k4opt is a detector optimization framework for Key4hep. It is organized by
 **component**: each component is a subpackage with its own public API, errors,
-CLI command group, docs page and tests: `geometry`, `ddsim`, `evaluation`, `problem`,
+CLI command group, docs page and tests: `geometry`, `ddsim`, `k4run`, `software`, `evaluation`,
+`problem`,
 `record`, `execution`, `optimization`, `publication` and `visualization`, each depending only on
 those before it (`problem` <- `record` <- `execution` <- `optimization` <- `publication`,
 `visualization`). The Streamlit dashboard is no component: it lives in `dashboard/` and uses

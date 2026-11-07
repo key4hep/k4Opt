@@ -23,6 +23,7 @@ from k4opt.publication import (
 )
 from tests.support.common import tree_digest
 from tests.support.evaluators import trade_off
+from tests.support.software import LABEL
 from tests.support.studies import TRADE, mixed_study, study
 from tests.unit.optimization.conftest import evaluator_from
 
@@ -50,7 +51,7 @@ def test_a_study_is_published_as_its_json_form_and_named_in_its_catalog(tmp_path
         results.created,
     )
     # what a list of studies sorts by: the detector it starts from, the Key4hep stack
-    assert (entry.geometry, entry.key4hep) == (results.problem.geometry, "nightly 2026-10-20")
+    assert (entry.geometry, entry.key4hep) == (results.problem.geometry, LABEL)
     assert (entry.trials, entry.parameters, entry.objectives, entry.constraints) == (8, 1, 2, 1)
     assert entry.outcomes == results.outcomes and entry.finished == 8
     assert Catalog.from_json((tmp_path / "pub" / CATALOG_NAME).read_bytes()) == Catalog((entry,))

@@ -1,15 +1,16 @@
 """Internal: what an evaluation session evaluates with, taken once when it opens, and the checks
 that none of it changed since.
 
-A record says which problem, files, geometry, implementations, environment, programs and code its
+A record says which problem, files, geometry, implementations, software, programs and code its
 candidate was evaluated with. A session takes all of that once, when it opens
 (:meth:`Baseline.take`): the identity (size and SHA-256) of every file the stages read, what the
 geometry's external references read, what the implementations declare and their sources, the
-environment, the programs of the stack its stages run (each executable the stage contexts pinned,
-with its size and SHA-256, and the variables that decide what they load) and k4opt's own code.
-Before a candidate is prepared and again before its record is written, :meth:`Baseline.verify`
-refuses if any of it changed (but the variables, which a process cannot change in its workers),
-so that no record names files, programs or code other than those its candidate ran with. What
+software it runs on (the build of the stack, the system and the variables:
+:class:`k4opt.software.Software`), the programs of the stack its stages run (each executable the
+stage contexts pinned, with its size and SHA-256) and k4opt's own code. Before a candidate is
+prepared and again before its record is written, :meth:`Baseline.verify` refuses if any of it
+changed, a nightly's slot republished as much as a variable set, so that no record names files,
+programs, software or code other than those its candidate ran with. What
 a reference only candidates name reads is remembered as candidates are recorded
 (:meth:`Baseline.remember`), so that every candidate of the session reads the same files
 through it (:meth:`Baseline.check_read`).
@@ -31,9 +32,10 @@ from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.problem.candidate import Configuration
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
-from k4opt.program import identify, search_environment
+from k4opt.program import identify
 from k4opt.record.results import TaskResult
 from k4opt.revision import code_identity, code_unchanged
+from k4opt.software import Software
 
 
 def check_code() -> None:
@@ -86,6 +88,11 @@ class Baseline:
         self._read: dict[str, Json] = {}
 
     @property
+    def software(self) -> Software:
+        """What the session runs on, as it took it when it opened."""
+        return Software.from_dict(self.process["software"])
+
+    @property
     def spec(self) -> ProblemSpec:
         return self.problem.spec
 
@@ -135,7 +142,7 @@ class Baseline:
                 "k4opt": code_identity(),
                 "environment": environment,
                 "programs": programs,
-                "search": search_environment(),
+                "software": Software.now().to_dict(),
             },
             "process",
             RunError,
@@ -167,7 +174,7 @@ class Baseline:
             },
             "environment": process["environment"],
             "programs": process["programs"],
-            "search": process["search"],
+            "software": process["software"],
             "k4opt": {"version": __version__, **process["k4opt"]},
         }
 
@@ -315,10 +322,9 @@ class Baseline:
     def _verify_environment(self) -> None:
         """``KEY4HEP_STACK`` and ``K4GEO`` are what they were when the session opened: the stages
         would run in another environment than the geometry was discovered in, and than the
-        records say. So are the variables that decide what the programs load
-        (:func:`~k4opt.program.search_environment`), which the records and the stages'
-        signatures give as they were then; all but ``PATH``, through which the session found its
-        programs once, when it opened: it runs those whatever ``PATH`` says later."""
+        records say. So is the software: every program inherits this process's variables, and
+        the records and the stages' signatures say what it was then. A nightly's slot republished
+        since is another build, wherever ``KEY4HEP_STACK`` still points."""
         opened = self.process["environment"]
         assert isinstance(opened, Mapping)
         for name, then in opened.items():
@@ -328,17 +334,11 @@ class Baseline:
                     f"{name} changed after the session opened ({then!r} then, {now!r} now); the "
                     "candidates of a session run in one environment"
                 )
-        searched = self.process["search"]
-        assert isinstance(searched, Mapping)
-        changed = [
-            name
-            for name, now in search_environment().items()
-            if name != "PATH" and searched.get(name) != now
-        ]
+        changed = self.software.differences(Software.now())
         if changed:
             raise ProvenanceError(
-                f"{', '.join(changed)} changed after the session opened; the candidates of a "
-                "session run their programs with what these find"
+                f"the software changed after the session opened: {'; '.join(changed)}; the "
+                "candidates of a session run on one software"
             )
 
 

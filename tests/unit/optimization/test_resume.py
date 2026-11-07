@@ -8,6 +8,7 @@ import importlib
 import importlib.abc
 import importlib.util
 import json
+import os
 import shutil
 import sys
 from collections.abc import Callable
@@ -33,6 +34,7 @@ from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, tr
 from tests.support.geometry import MINI_GEO
 from tests.support.imports import FromFile
 from tests.support.problems import add_targets
+from tests.support.software import VIEW, lcg_view, republish
 from tests.unit.optimization.conftest import (
     RADIUS,
     TRADE,
@@ -218,10 +220,8 @@ def test_a_study_resumes_only_with_the_files_its_geometry_reads_outside_its_root
     monkeypatch.setenv("DD4hepINSTALL", str(tmp_path / "dd4hep"))
     problem, output = write_problem(), tmp_path / "s"
     run(problem, output, 1, seed=1)
-    moved = shutil.copytree(tmp_path / "dd4hep", tmp_path / "elsewhere")
-    monkeypatch.setenv("DD4hepINSTALL", str(moved))  # the same file elsewhere
     assert len(run(problem, output, 1, resume=True).trials) == 2
-    (moved / types.relative_to(tmp_path / "dd4hep")).write_text("<define>edited</define>")
+    types.write_text("<define>edited</define>")
     before = tree_digest(output)
     message = (
         r"cannot resume trade-.*the geometry's reference \$\{DD4hepINSTALL\}/DDDetectors/compact/"
@@ -472,7 +472,7 @@ UNITS = """
         settings = {"x": float}  # the candidate's value, which it sets
         # the same code, configured where it is imported to report in another unit
         metrics = {
-            ("analysis", "a"): os.environ.get("K4OPT_TEST_UNIT", "mm"),
+            ("analysis", "a"): os.environ.get("PYTEST_K4OPT_UNIT", "mm"),
             ("analysis", "b"): "1/mm",
         }
 
@@ -487,7 +487,7 @@ def test_a_study_does_not_resume_with_metrics_in_other_units(
 ) -> None:
     problem, output = write_problem(), tmp_path / "s"
     run(problem, output, 1, seed=1, evaluators=[evaluator_from(tmp_path / "e", "units", UNITS)])
-    monkeypatch.setenv("K4OPT_TEST_UNIT", "cm")
+    monkeypatch.setenv("PYTEST_K4OPT_UNIT", "cm")
     other = evaluator_from(tmp_path / "f", "units", UNITS)  # the same bytes, imported again
     with pytest.raises(OptimizationError, match=r"declares other metrics or units: .*'cm'"):
         run(problem, output, 1, resume=True, evaluators=[other])
@@ -502,7 +502,7 @@ ARTIFACTS = """
         settings = {"x": float}  # the candidate's value, which it sets
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
         # the same code, configured where it is imported to name its file otherwise
-        artifacts = {os.environ.get("K4OPT_TEST_ARTIFACT", "plot"): "a and b"}
+        artifacts = {os.environ.get("PYTEST_K4OPT_ARTIFACT", "plot"): "a and b"}
 
         def evaluate(self, request):
             x = request.settings["x"]
@@ -522,7 +522,7 @@ def test_a_study_does_not_resume_with_other_artifacts_declared(
     source = ARTIFACTS
     run(problem, output, 1, seed=1, evaluators=[evaluator_from(tmp_path / "e", "named", source)])
     assert summary(output, 0)["implementations"]["test.trade_off"]["artifacts"] == ["plot"]
-    monkeypatch.setenv("K4OPT_TEST_ARTIFACT", "figure")
+    monkeypatch.setenv("PYTEST_K4OPT_ARTIFACT", "figure")
     other = evaluator_from(tmp_path / "f", "named", source)  # the same bytes, imported again
     with pytest.raises(OptimizationError, match=r"declares other artifacts: \['figure'\]"):
         run(problem, output, 1, resume=True, evaluators=[other])
@@ -568,13 +568,94 @@ def test_another_baseline_geometry_or_stack_refuses(
     monkeypatch.setenv("K4GEO", str(geometry))
     run(problem, output, 1, seed=1)
     monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-11-01")
-    with pytest.raises(OptimizationError, match="KEY4HEP_STACK is '/stack/2026-11-01'"):
+    with pytest.raises(OptimizationError, match="the Key4hep build is unrecognized stack, not LCG"):
         run(problem, output, 1, resume=True)
-    monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-10-20")
+    monkeypatch.setenv("KEY4HEP_STACK", str(VIEW))
     tracker = geometry / "compact" / "det_v1" / "tracker.xml"
     tracker.write_text(tracker.read_text().replace("</lccdd>", "<!-- edited --></lccdd>"))
     with pytest.raises(OptimizationError, match="the geometry the candidates start from changed"):
         run(problem, output, 1, resume=True)
+
+
+def test_the_same_path_with_another_build_refuses(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view = lcg_view(tmp_path / "cvmfs")
+    monkeypatch.setenv("KEY4HEP_STACK", str(view))
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1)
+    assert len(run(problem, output, 1, resume=True).trials) == 2  # the same build
+    republish(view)
+    before = tree_digest(output)
+    message = (
+        r"the Key4hep build is LCG devkey-head, built Sat Nov 14 04:17:32 2026, not LCG "
+        r"devkey-head, built Sat Nov 7 04:17:32 2026"
+    )
+    with pytest.raises(OptimizationError, match=message):
+        run(problem, output, 1, resume=True)
+    assert tree_digest(output) == before
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["MARLIN_DLL", "G4LEDATA", "MY_SCALE", "LD_PRELOAD", "HOME", "XDG_CONFIG_HOME", "GIT_DIR"],
+)
+def test_a_variable_not_known_to_be_irrelevant_refuses_by_name(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    monkeypatch.setenv(name, "as it was made")
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1)
+    monkeypatch.setenv(name, "another value")
+    message = rf"it ran on other software: the environment differs in {name} .*the way it was"
+    with pytest.raises(OptimizationError, match=message):
+        run(problem, output, 1, resume=True)
+    monkeypatch.delenv(name)  # unset is no value either
+    with pytest.raises(OptimizationError, match=rf"differs in {name} "):
+        run(problem, output, 1, resume=True)
+
+
+def test_a_variable_a_study_did_not_have_refuses_by_name(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1)
+    monkeypatch.setenv("MY_SCALE", "1.05")
+    with pytest.raises(OptimizationError, match="differs in MY_SCALE "):
+        run(problem, output, 1, resume=True)
+
+
+@pytest.mark.parametrize("name", ["OLDPWD", "SSH_CONNECTION", "XDG_SESSION_ID", "XDG_RUNTIME_DIR"])
+def test_a_variable_known_to_be_irrelevant_does_not_refuse(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    run(problem, output, 1, seed=1)
+    monkeypatch.setenv(name, f"{os.environ.get(name, '')}{os.pathsep}/somewhere/else")
+    assert len(run(problem, output, 1, resume=True).trials) == 2
+
+
+def test_two_runs_of_a_service_resume(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # what every run of a systemd unit gets anew: without this, no such study could resume
+    def service(run_id: str) -> None:
+        monkeypatch.setenv("INVOCATION_ID", run_id)
+        monkeypatch.setenv("JOURNAL_STREAM", f"8:{run_id}")
+        monkeypatch.setenv("SYSTEMD_EXEC_PID", run_id)
+        monkeypatch.setenv("MANAGERPID", run_id)
+
+    problem, output = write_problem(), tmp_path / "s"
+    service("1001")
+    run(problem, output, 1, seed=1)
+    service("2002")
+    assert len(run(problem, output, 1, resume=True).trials) == 2
 
 
 def _edit_study(output: Path, change: Callable[[dict[str, Any]], None]) -> None:
@@ -724,7 +805,7 @@ def test_a_left_record_that_does_not_hold_up_refuses_the_resume(
         run(problem, output, 1, seed=1)
     monkeypatch.undo()
     monkeypatch.setenv("K4GEO", str(MINI_GEO))
-    monkeypatch.setenv("KEY4HEP_STACK", "/stack/2026-10-20")
+    monkeypatch.setenv("KEY4HEP_STACK", str(VIEW))
     path = output / "trial-000000" / "summary.json"
     data = json.loads(path.read_text())
     data["assessment"]["feasible"] = False  # what its measurements do not give
@@ -986,7 +1067,7 @@ ROLES = """
         settings = {"luminosity_invab": float}
         metrics = {("analysis", "expected_significance"): "1"}
         # the same code, configured where it is imported to read another metric
-        metric = os.environ.get("K4OPT_TEST_METRIC", "selected.sum_weights")
+        metric = os.environ.get("PYTEST_K4OPT_METRIC", "selected.sum_weights")
         roles = {"signal": Role(metrics=[("analysis", metric)]), "backgrounds": Role(many=True)}
 
         def evaluate(self, request):
@@ -1022,7 +1103,7 @@ def test_a_study_does_not_resume_with_other_roles_declared(
     run(combined_problem, output, 1, seed=1, evaluators=[probe, yields()])
     declared = summary(output, 0)["implementations"]["test.toy_significance"]["roles"]
     assert declared["signal"]["metrics"] == [["analysis", "selected.sum_weights"]]
-    monkeypatch.setenv("K4OPT_TEST_METRIC", "generated.sum_weights")
+    monkeypatch.setenv("PYTEST_K4OPT_METRIC", "generated.sum_weights")
     other = evaluator_from(tmp_path / "f", "roles", ROLES)  # the same bytes, other roles
     with pytest.raises(OptimizationError, match=r"'test\.toy_significance' declares other roles"):
         run(combined_problem, output, 1, resume=True, evaluators=[other, yields()])
@@ -1178,33 +1259,12 @@ def test_a_study_resumes_only_with_the_ddsim_it_ran(
     with pytest.raises(OptimizationError, match=f"ddsim is {second} .*, not {first} "):
         run(sampled_problem, output, 1, resume=True, workers=1, evaluators=[cell_count()])
     _first_on_path(monkeypatch, first, base)
-    # the same ddsim with other search paths: resumed, with a warning
-    monkeypatch.setenv("PYTHONPATH", f"{tmp_path / 'local'}{os.pathsep}{os.environ['PYTHONPATH']}")
-    warned: list[str] = []
-    resumed = run(
-        sampled_problem,
-        output,
-        1,
-        resume=True,
-        workers=1,
-        evaluators=[cell_count()],
-        warn=warned.append,
-    )
+    resumed = run(sampled_problem, output, 1, resume=True, workers=1, evaluators=[cell_count()])
     assert [t.status for t in resumed.trials] == ["valid", "valid"]
-    assert [w for w in warned if "PYTHONPATH differ" in w]
-    # another PATH that finds the same ddsim and interpreter (another shell): no warning
+    # another PATH that finds the same ddsim: ROOT runs g++ through it, an evaluator anything
     monkeypatch.setenv("PATH", f"{os.environ['PATH']}{os.pathsep}{tmp_path / 'elsewhere'}")
-    warned.clear()
-    run(
-        sampled_problem,
-        output,
-        1,
-        resume=True,
-        workers=1,
-        evaluators=[cell_count()],
-        warn=warned.append,
-    )
-    assert not [w for w in warned if "PATH" in w and "PYTHONPATH" not in w], warned
+    with pytest.raises(OptimizationError, match="differs in PATH"):
+        run(sampled_problem, output, 1, resume=True, workers=1, evaluators=[cell_count()])
 
 
 def test_a_record_that_ran_another_ddsim_than_its_study_is_refused(
@@ -1223,4 +1283,21 @@ def test_a_record_that_ran_another_ddsim_than_its_study_is_refused(
         "ddsim": {"path": "/other/bin/ddsim", "bytes": 1, "sha256": "0" * 64}
     }
     with pytest.raises(OptimizationError, match="ran other programs than the study: ddsim is"):
+        check_record(document, record, 0, params)
+
+
+def test_a_record_that_ran_on_other_software_than_its_study_is_refused(
+    tmp_path: Path, sampled_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.optimization._study import check_record
+
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    run(sampled_problem, output, 1, seed=1, evaluators=[cell_count()])
+    document = json.loads((output / "study.json").read_text())
+    record = summary(output, 0)
+    params = {RADIUS: record["candidate"][RADIUS]}
+    assert check_record(document, record, 0, params) == []
+    record["environment"]["observed"]["software"]["id"] = "0" * 64
+    with pytest.raises(OptimizationError, match="ran on other software than the study"):
         check_record(document, record, 0, params)

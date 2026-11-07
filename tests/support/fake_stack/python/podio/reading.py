@@ -2,8 +2,8 @@
 
 Self-contained: a worker process imports it as ``podio.reading``, where ``tests`` need not be
 importable (the repository's ``tests`` is no package, and another one may be on the path). The
-environment variable ``FAKE_PODIO_SLEEP`` makes opening a file take that many seconds: k4opt's own
-reading of a stage's output hanging, after the program the stage ran ended.
+environment variable ``PYTEST_FAKE_PODIO_SLEEP`` makes opening a file take that many seconds:
+k4opt's own reading of a stage's output hanging, after the program the stage ran ended.
 """
 
 from __future__ import annotations
@@ -58,5 +58,5 @@ class Reader:
 
 
 def get_reader(path: str) -> Reader:
-    time.sleep(float(os.environ.get("FAKE_PODIO_SLEEP", "0")))
+    time.sleep(float(os.environ.get("PYTEST_FAKE_PODIO_SLEEP", "0")))
     return Reader(path)

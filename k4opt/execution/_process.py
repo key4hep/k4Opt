@@ -161,6 +161,9 @@ class ProcessBackend:
             argv += [str(theirs.fileno()), str(os.getpid())]
             process = subprocess.Popen(
                 argv,
+                # what the session identified, not what a library set beneath Python since
+                # (ROOT's interpreter sets CLING_PREBUILT_MODULE_PATH with C's setenv)
+                env=dict(os.environ),
                 stdin=subprocess.DEVNULL,
                 stdout=2,  # what it prints outside an evaluation: the coordinator's stderr
                 pass_fds=(theirs.fileno(),),
@@ -297,7 +300,9 @@ class ProcessBackend:
                 worker.groups.clear()
                 worker.began = worker.deadline = None
                 self._deaths.pop(_name(spec), None)
-                if kind == "failed":
+                if kind == "ended":  # it no longer runs as the session: it goes, untouched
+                    self._end(worker, terminate=False)
+                if kind in ("failed", "ended"):
                     assert isinstance(message[1], Failure)
                     return handle, message[1].error(), Observations()
                 return handle, message[1], message[2]

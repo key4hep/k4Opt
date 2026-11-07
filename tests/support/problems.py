@@ -13,7 +13,6 @@ from k4opt.record.results import TaskResult
 _BASE: dict[str, object] = {
     "schema_version": "k4opt.problem/v1alpha1",
     "name": "demo",
-    "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
     "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
     "parameters": {
         "ecal_cell_size": {

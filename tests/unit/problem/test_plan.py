@@ -296,7 +296,6 @@ def problem(*parameters: Parameter, optimization: Level | None = None) -> Proble
     """A simulation of ``gamma`` with an evaluator ``tuned`` of it, and ``cost`` of the candidate,
     each the evaluation of an objective."""
     return ProblemSpec(
-        environment=None,  # type: ignore[arg-type]  # nothing here reads it
         geometry="detector.xml",
         parameters=parameters,
         evaluators=(ev("tuned", "simulation"), ev("cost")),

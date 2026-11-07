@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from k4opt.program import identify
+from k4opt.program import identify, run
+from tests.support.common import set_beneath_python
 
 
 def _executable(path: Path, text: str) -> Path:
@@ -76,3 +77,17 @@ def test_a_script_whose_interpreter_is_not_found_is_not_identified(
     monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
     assert identify(script) is None  # what would run is not known
     assert identify(_executable(tmp_path / "empty", "#!\n")) is None
+
+
+def test_a_program_runs_with_what_k4opt_identified_not_what_a_library_set_beneath_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "show"
+    script.write_text('#!/bin/sh\necho "${K4OPT_BENEATH-unset} ${K4OPT_ABOVE-unset}"\n')
+    script.chmod(0o755)
+    monkeypatch.setenv("K4OPT_ABOVE", "seen")
+    logs = {"stdout": "out", "stderr": "err", "command": "command.json"}
+    with set_beneath_python("K4OPT_BENEATH", "unseen"):
+        ran = run("show", [], workdir=tmp_path, logs=logs, executable=script)
+    assert ran.error is None
+    assert (tmp_path / "out").read_text() == "unset seen\n"

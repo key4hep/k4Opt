@@ -5,8 +5,9 @@ decided by one comparison (:func:`compared`) of what must be equal: the problem'
 not its name or titles), the content of every file it names, each evaluator implementation's
 name, version, source hash, declared metrics and declared artifacts, the unmodified geometry's
 fingerprint, the attribute each geometry destination of the parameters resolves to and the
-content of the files its external references read, ``KEY4HEP_STACK`` and the hash of k4opt's
-code. Locations are recorded and never compared, so a study whose files moved resumes.
+content of the files its external references read, the software it runs on (the build of the
+stack, the system and every variable not known to be irrelevant, by its id) and the hash of
+k4opt's code. Locations are recorded and never compared, so a study whose files moved resumes.
 :func:`digest` condenses the comparison, :func:`differences` says what differs, and the revision
 warnings say what a hash leaves out (an evaluator checkout with uncommitted changes, or at
 another commit).
@@ -15,8 +16,6 @@ The programs of the stack the stages run (ddsim, k4run) are compared apart
 (:func:`program_differences`), by where their executable is (a release of the stack is told
 apart by its path) as much as by its content and its interpreter, so that a refusal names the
 program that differs, and must be the same for a study to resume and for each of its records.
-The variables that decide what those programs load (:func:`search_warnings`) only warn: two
-shells differ in them for reasons of their own.
 """
 
 from __future__ import annotations
@@ -28,6 +27,7 @@ from typing import Any
 
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem.models import essential
+from k4opt.software import Software, SoftwareError
 
 
 def _contents(externals: object) -> object:
@@ -69,7 +69,8 @@ def compared(identity: Mapping[str, Any]) -> dict[str, Any]:
                 "targets": identity["geometry"]["targets"],
                 "externals": _contents(identity["geometry"]["externals"]),
             },
-            "stack": identity["environment"]["KEY4HEP_STACK"],
+            # by its id, and what a published study keeps of it: its build and system
+            "software": {key: identity["software"][key] for key in ("id", "build", "system")},
             "k4opt": identity["k4opt"]["sha256"],
         }
     except (KeyError, TypeError, AttributeError) as exc:
@@ -172,14 +173,24 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
                 f"the geometry's reference {ref} does not read the files the study read (it "
                 f"reads {path or 'no file'} now)"
             )
-    if then["stack"] != now_["stack"]:
-        found.append(f"KEY4HEP_STACK is {now_['stack']!r}, not {then['stack']!r}")
+    if then["software"] != now_["software"]:
+        found.append(_software_difference(study, current))
     if then["k4opt"] != now_["k4opt"]:
         found.append(
             "k4opt's code changed; run the study from the code it was made with (a checkout of "
             "its own for a long campaign)"
         )
     return found
+
+
+def _software_difference(study: Mapping[str, Any], current: Mapping[str, Any]) -> str:
+    """How the software of the study differs from ``current``'s, for a person."""
+    try:
+        then = Software.from_dict(study.get("software"))
+    except SoftwareError as exc:
+        return f"the study does not record what it ran on as k4opt reads it: {exc}"
+    said = "; ".join(then.differences(Software.from_dict(current["software"])))
+    return f"it ran on other software: {said} (resume a study the way it was started)"
 
 
 def _program(entry: object) -> str:
@@ -203,25 +214,6 @@ def program_differences(study: Mapping[str, Any], current: Mapping[str, Any]) ->
         f"{name} is {_program(now_.get(name))}, not {_program(then.get(name))} as the study ran"
         for name in dict.fromkeys([*then, *now_])
         if then.get(name) != now_.get(name)
-    ]
-
-
-def search_warnings(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
-    """The variables that decide what the programs load (``search``) that differ between the
-    study and ``current``: the same programs may then run other code (a local build, another
-    virtual environment), which no other part of the identity would show. ``PATH`` is left out:
-    of it, only the interpreter it finds for a program decides what that program runs, and that
-    is compared with the program (:func:`program_differences`)."""
-    then, now_ = study.get("search"), current.get("search")
-    if not isinstance(then, Mapping) or not isinstance(now_, Mapping):
-        return []
-    names = [name for name in dict.fromkeys([*then, *now_]) if name != "PATH"]
-    changed = [name for name in names if then.get(name) != now_.get(name)]
-    if not changed:
-        return []
-    return [
-        f"{', '.join(changed)} differ from when the study was made: ddsim and k4run may load "
-        "other modules or libraries than its trials did (a local build, another environment)"
     ]
 
 

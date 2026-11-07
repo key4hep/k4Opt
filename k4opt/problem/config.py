@@ -39,12 +39,9 @@ from k4opt.problem._samples import _check_options, _check_pipeline, _samples, _s
 from k4opt.problem.errors import ProblemConfigError
 from k4opt.problem.models import (
     SCHEMA_VERSION,
-    Channel,
     Constraint,
     Direction,
-    Environment,
     EvaluatorSpec,
-    Key4hepStack,
     Level,
     MetricRef,
     Objective,
@@ -59,7 +56,6 @@ from k4opt.yamlio import UniqueKeyLoader
 _TOP_KEYS = (
     "schema_version",
     "name",
-    "environment",
     "timeout",
     "geometry",
     "parameters",
@@ -72,13 +68,11 @@ _TOP_KEYS = (
 )
 _REQUIRED_TOP = (
     "schema_version",
-    "environment",
     "geometry",
     "parameters",
     "evaluators",
     "objectives",
 )
-_CHANNELS = ("release", "nightly")
 _DIRECTIONS = ("minimize", "maximize")
 _SCHEMA_FAMILY = "k4opt.problem/"
 
@@ -188,7 +182,6 @@ def _parse(data: object, source: Path | None) -> ProblemSpec:
     name = _optional_text(top, "name", "")
     if name is None and source is not None:
         name = source.stem
-    environment = _environment(top["environment"])
     geometry = _text(top["geometry"], "geometry")
     # each section on its own first, then the parameters' destinations against the samples and
     # evaluators, and the stages' options with what the parameters set
@@ -213,7 +206,6 @@ def _parse(data: object, source: Path | None) -> ProblemSpec:
     )
     return ProblemSpec(
         name=name,
-        environment=environment,
         geometry=geometry,
         parameters=parameters,
         samples=samples,
@@ -237,21 +229,6 @@ def _check_version(value: object) -> None:
         raise _fail(
             "schema_version", f"unsupported version {value!r}; this k4opt reads {SCHEMA_VERSION!r}"
         )
-
-
-def _environment(raw: object) -> Environment:
-    env = _mapping(raw, "environment", ("key4hep",), ("key4hep",))
-    stack = _mapping(
-        env["key4hep"], "environment.key4hep", ("channel", "version"), ("channel", "version")
-    )
-    return Environment(
-        key4hep=Key4hepStack(
-            channel=cast(
-                Channel, _choice(stack["channel"], "environment.key4hep.channel", _CHANNELS)
-            ),
-            version=_text(stack["version"], "environment.key4hep.version"),
-        )
-    )
 
 
 def _owner(

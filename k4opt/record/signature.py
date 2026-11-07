@@ -5,11 +5,11 @@ Two stages with equal signatures were made from the same things: the same stage 
 and definition (events, seed, options, as the candidate configures them), the same inputs (the
 content of the geometry it reads, and the signature or file of each stage it reads), the same
 files the problem names for it (by content), the same program of the stack (its executable, by
-content, and the interpreter it runs in), the same ``KEY4HEP_STACK`` and search variables (but
-``PATH``, of which only that interpreter matters), and the same k4opt code. The sample a
-stage belongs to, its time limit, how many workers ran it and where its files and its program
-are play no part (the record says where): a stage of another sample or another candidate with
-the same signature made the same events (as far as the program is deterministic for a seed).
+content, and the interpreter it runs in), the same software (the build of the stack, the system
+and the variables: :class:`k4opt.software.Software`, by its ``id``), and the same k4opt code. The
+sample a stage belongs to, its time limit, how many workers ran it and where its files and its
+program are play no part (the record says where): a stage of another sample or another candidate
+with the same signature made the same events (as far as the program is deterministic for a seed).
 The definition names files as the problem writes them (relative to the problem file, or through
 a variable), so a problem moved with its files keeps its signatures; the same file named
 otherwise makes another one, and its stage runs again rather than being reused.
@@ -77,15 +77,14 @@ def stage_document(
     reads: Mapping[str, object],
     files: Mapping[str, object],
     program: object,
-    environment: Mapping[str, object],
+    software: object,
     k4opt: object,
 ) -> dict[str, object]:
     """The signature document of the stage ``name``, run as ``stage`` (as its candidate
     configures it): what it ``reads`` by name (``geometry``: :func:`geometry_identity`; a stage:
     its signature's SHA-256, or the :func:`given_identity` of its file), the ``files`` the problem
     names for it by key (size and SHA-256), the size and SHA-256 of the ``program`` it runs, the
-    ``environment`` (``KEY4HEP_STACK`` and the search variables) and the SHA-256 of k4opt's
-    code."""
+    id of the ``software`` it runs on and the SHA-256 of k4opt's code."""
     definition = _plain(stage.to_dict())
     assert isinstance(definition, dict)
     definition.pop("timeout", None)  # how long it may take, not what it makes
@@ -95,7 +94,7 @@ def stage_document(
         "reads": _plain(reads),
         "files": {key: _identity(value) for key, value in files.items()},
         "program": _program(program),
-        "environment": _signed_environment(environment),
+        "software": software,
         "k4opt": k4opt,
     }
 
@@ -114,19 +113,6 @@ def _program(entry: object) -> dict[str, object] | None:
         return None
     assert isinstance(entry, Mapping)
     return {**identity, "interpreter": _plain(entry.get("interpreter"))}
-
-
-def _signed_environment(environment: Mapping[str, object]) -> dict[str, object]:
-    """``environment`` without ``PATH`` among the search variables: of ``PATH``, a program's
-    interpreter is what decides what it runs, and that is signed with the program. The rest of
-    ``PATH`` differs between shells that run the same things (an editor's terminal, a batch
-    job), which would keep stages from being reused for nothing."""
-    plain = _plain(environment)
-    assert isinstance(plain, dict)
-    search = plain.get("search")
-    if isinstance(search, dict):
-        plain["search"] = {name: value for name, value in search.items() if name != "PATH"}
-    return plain
 
 
 def _identity(entry: object) -> dict[str, object] | None:

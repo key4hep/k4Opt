@@ -73,7 +73,6 @@ def problem_file(tmp_path: Path) -> Path:
     data = {
         "schema_version": "k4opt.problem/v1alpha1",
         "name": "contract",
-        "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
         "geometry": MINI_COMPACT,
         "parameters": {
             RADIUS: {

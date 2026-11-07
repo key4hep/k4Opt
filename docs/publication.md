@@ -40,9 +40,9 @@ What leaves the machine with a snapshot, and what does not:
 | the problem's definition, as written | the problem file's path |
 | each trial's candidate, assessment, outcome, times, message and diagnostics | the trial directories and every file in them (records, events, geometries, logs) |
 | each record's id and SHA-256, to identify it | the record's path or any link to it: the record stays in the study |
-| size and SHA-256 of every file the problem names, the evaluators' versions, source hashes and git commits, the geometry's compact file, fingerprint, targets and the hashes of what its external references read | the paths of those files, the geometry's source root, `K4GEO` |
-| `KEY4HEP_STACK` (part of the study's identity), the programs the stages ran (path, size and SHA-256 of `ddsim`, `k4run`) and the SHA-256 of the variables that decide what they load, and k4opt's version, hash and commit | the optimizer's storage (a journal name, or a database URL with its host and user) |
-| the optimizer, its sampler and seed, its directions and distributions | anything of `study.json` not on the list (`PORTABLE` in `k4opt/optimization/_study.py`) |
+| size and SHA-256 of every file the problem names, the evaluators' versions, source hashes and git commits, the geometry's compact file, fingerprint, targets and the hashes of what its external references read | the paths of those files, the geometry's source root, `K4GEO`, `KEY4HEP_STACK` (the build identifies the stack) |
+| the [software](software.md)'s `id`, build and system, the programs the stages ran (size and SHA-256 of `ddsim`, `k4run`), and k4opt's version, hash and commit | the optimizer's storage (a journal name, or a database URL with its host and user) |
+| the optimizer, its sampler and seed, its directions and distributions | the names and digests of the software's variables, which can be private, and anything of `study.json` not on the list (`PORTABLE` in `k4opt/optimization/_study.py`) |
 
 **Publishing makes all of it readable to whoever can read the publication.** The problem
 definition and the messages are published as they are: a stage `file:` given as an absolute
@@ -60,7 +60,7 @@ what it says, and serve or copy the directory only then. Nothing is published au
 publication holds only what someone ran `k4opt publish` for.
 
 **The catalog** names each study once, by its id, with what a list of studies shows and sorts
-by (its problem, the compact file of the detector it starts from, the Key4hep stack) and the
+by (its problem, the compact file of the detector it starts from, the Key4hep build it ran on) and the
 snapshot it is published at:
 
 ```json
@@ -72,7 +72,7 @@ snapshot it is published at:
       "name": "cld-ecal-granularity-3f9c2a1b",
       "problem": "cld-ecal-granularity",
       "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
-      "key4hep": "nightly 2026-10-20",
+      "key4hep": "LCG devkey-head, built Sat Nov 7 04:17:32 2026",
       "created": "2026-10-30T12:00:00+00:00",
       "published": "2026-11-03T10:00:00+00:00",
       "trials": 30,

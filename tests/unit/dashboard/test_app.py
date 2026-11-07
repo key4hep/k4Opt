@@ -17,6 +17,7 @@ from k4opt.optimization import StudyResults, load_study
 from k4opt.publication import CATALOG_NAME, Catalog, CatalogEntry, Snapshot, publish
 from k4opt.visualization import task_graph
 from tests.support.serve import served
+from tests.support.software import LABEL
 from tests.support.studies import mixed_study
 from tests.unit.dashboard.conftest import DASHBOARD
 from tests.unit.publication.test_read import closed_port
@@ -99,14 +100,14 @@ def test_the_studies_of_a_publication_are_listed_and_one_is_shown_by_its_id(
     (listed,) = at.dataframe[0].value.to_dict("records")
     assert (listed["Study"], listed["Problem"], listed["Trials"]) == (results.name, "trade", 8)
     assert listed["Detector"] == PurePosixPath(results.problem.geometry).stem
-    assert listed["Key4hep"] == "nightly 2026-10-20"
+    assert listed["Key4hep"] == LABEL
     assert listed["Feasible"] == results.outcomes["feasible"]
     picker = {box.label: box for box in at.sidebar.selectbox}
     assert picker["Detector"].value == "*" and picker["Key4hep"].options == [
         "Every release",
-        "nightly 2026-10-20",
+        LABEL,
     ]
-    picker["Key4hep"].select("nightly 2026-10-20").run()  # narrows the table
+    picker["Key4hep"].select(LABEL).run()  # narrows the table
     assert not at.exception and len(at.dataframe[0].value) == 1
     picker = {box.label: box for box in at.sidebar.selectbox}
     picker["Study"].select(results.id).run()  # chosen in the sidebar: it opens
@@ -210,7 +211,7 @@ def test_the_problem_tab_says_what_the_study_optimizes_and_what_it_was_made_with
     assert ":gray-badge[1/mm]" in said and "test.trade\\_off/analysis/b" in said
     assert "**a**" in said and ":red-badge[≤ 400 mm]" in said  # the constraint, by its bound
     frames = [frame.value for frame in at.dataframe]
-    assert any("KEY4HEP_STACK" in list(f.iloc[:, 0]) for f in frames)  # its provenance
+    assert any("Key4hep build" in list(f.iloc[:, 0]) for f in frames)  # its provenance
 
 
 def test_the_trials_are_colored_by_what_a_link_names(

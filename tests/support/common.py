@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import hashlib
 import json
 import os
 import shutil
 import subprocess
 import textwrap
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -81,3 +84,15 @@ def scientific(summary: dict[str, Any], dropped: frozenset[str] = frozenset()) -
         json.loads(json.dumps(summary).replace(summary["run_dir"], "<run>"))
     )
     return stripped
+
+
+@contextlib.contextmanager
+def set_beneath_python(name: str, value: str) -> Iterator[None]:
+    """``name`` set as a library does with C's ``setenv`` (ROOT's interpreter does it for
+    ``CLING_PREBUILT_MODULE_PATH``): in the process's environment, not in ``os.environ``."""
+    libc = ctypes.CDLL(None)
+    assert libc.setenv(name.encode(), value.encode(), 1) == 0 and name not in os.environ
+    try:
+        yield
+    finally:
+        libc.unsetenv(name.encode())

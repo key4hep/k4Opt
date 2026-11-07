@@ -198,7 +198,7 @@ def test_a_simulation_that_runs_too_long_is_stopped_by_its_stage_with_its_logs(
     tmp_path: Path, session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     control = {"gamma": {"sleep": 600}}
-    monkeypatch.setenv("FAKE_DDSIM", json.dumps(control))
+    monkeypatch.setenv("PYTEST_FAKE_DDSIM", json.dumps(control))
     outcome = evaluated(session(simulation=1.0), tmp_path / "a")
     simulated = verified(outcome)["samples"]["gamma"]["stages"]["simulation"]
     assert "ddsim ran longer than 1 s and was killed" in simulated["message"]
@@ -212,7 +212,7 @@ def test_a_stage_whose_own_work_hangs_after_its_program_is_stopped_by_its_worker
 ) -> None:
     # ddsim ended in time, but reading its output never does: the worker's own deadline stops it
     monkeypatch.setattr(_process, "_BACKSTOP", 0.5)
-    monkeypatch.setenv("FAKE_PODIO_SLEEP", "600")  # the output of every sample's simulation
+    monkeypatch.setenv("PYTEST_FAKE_PODIO_SLEEP", "600")  # the output of every sample's simulation
     outcome = evaluated(session(default=1.0, workers=2), tmp_path / "a")
     assert outcome.candidate.status == Status.FAILED
     simulated = verified(outcome)["samples"]["gamma"]["stages"]["simulation"]

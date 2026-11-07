@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
@@ -141,7 +142,7 @@ def problem(tmp_path: Path, doc: dict[str, Any]) -> Path:
 
 def probe(monkeypatch: pytest.MonkeyPatch, **told: dict[str, Any]) -> None:
     """Tell ``test.worker_probe`` what to do, by binding or ``<run>.<binding>``."""
-    monkeypatch.setenv("WORKER_PROBE", json.dumps(told))
+    monkeypatch.setenv("PYTEST_WORKER_PROBE", json.dumps(told))
 
 
 @pytest.fixture
@@ -220,6 +221,32 @@ def test_the_evaluations_of_one_simulation_run_at_once_each_on_an_instance_it_ch
         (measured,) = outcome.candidate.record(f"gamma/{name}").result.measurements
         assert (measured.metric, measured.value) == ("checked", 1)
     verified(outcome)
+
+
+def test_a_task_that_sets_a_variable_in_its_worker_fails_its_candidate_and_ends_the_worker(
+    tmp_path: Path,
+    doc: dict[str, Any],
+    marks: Path,
+    session_of: Opener,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from k4opt.execution import ProvenanceError
+
+    problem = write_problem(tmp_path / "probe.yaml", doc, ("p",))
+    stack.install(monkeypatch)
+    # one worker: without the check, b's simulation would run with MY_SCALE=2 under a's software
+    probe(monkeypatch, **{"a.p": {"setenv": {"MY_SCALE": "2"}, "mark": str(marks / "a")}})
+    session = session_of(1, problem)
+    message = r"gamma/p: the worker process that ran it no longer runs as .* differs in MY_SCALE"
+    with pytest.raises(ProvenanceError, match=message):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert not (tmp_path / "a" / "summary.json").exists()
+    probe(monkeypatch, p={"mark": str(marks / "b")})
+    outcome = session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert outcome.candidate.status == "valid", outcome.candidate.message
+    assert (marks / "a").read_text() != (marks / "b").read_text()  # another worker
+    software = verified(outcome)["environment"]["observed"]["software"]
+    assert software["id"] == session.identity()["software"]["id"]  # type: ignore[index]
 
 
 def test_what_an_evaluator_prints_in_a_worker_goes_to_its_log(
@@ -827,6 +854,32 @@ def test_the_command_evaluates_with_several_workers(
 # --- what the workers must share with the session ---------------------------------------------
 
 
+def test_a_worker_runs_with_what_the_session_identified_not_what_a_library_set_beneath_it(
+    problem: Path,
+) -> None:
+    from tests.support.common import set_beneath_python
+
+    # ROOT's interpreter sets CLING_PREBUILT_MODULE_PATH so, once the coordinator used it; a
+    # session starts one worker when it opens, which refuses another environment than its own
+    with set_beneath_python("CLING_PREBUILT_MODULE_PATH", "/cvmfs/root/lib:"):
+        EvaluationSession.open(problem, [cell_count()], workers=2).close()
+
+
+def test_a_worker_whose_evaluator_sets_a_variable_when_imported_refuses_to_start(
+    tmp_path: Path, problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = REPO / "tests" / "support" / "cell_count.py"
+    module = tmp_path / "count_setting_a_variable.py"
+    setting = 'import os\nos.environ["IMPORTED_IN"] = str(os.getpid())\n'
+    module.write_text(setting + source.read_text())
+    monkeypatch.setenv("IMPORTED_IN", "")  # restored after the test, whatever the import sets
+    implementation = load_evaluator(f"{module}:CellCount")  # here, with this process's id
+    message = "once it loaded the evaluators: its software differs: .* differs in IMPORTED_IN"
+    with pytest.raises(RunError, match=message):
+        EvaluationSession.open(problem, [implementation], workers=2)
+    assert stack.workers() == []
+
+
 def test_a_worker_rebuilds_the_session_from_plain_data(
     problem: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -835,7 +888,10 @@ def test_a_worker_rebuilds_the_session_from_plain_data(
         environment = session.identity()["environment"]
         assert isinstance(environment, dict)
         described = _worker.session_spec(
-            session._context, session._binding.evaluations, environment
+            session._context,
+            session._binding.evaluations,
+            environment,
+            session._baseline.software,
         )
     told: list[int] = []
     rebuilt = _worker.Session.of(pickle.loads(pickle.dumps(described)), started=told.append)
@@ -982,7 +1038,7 @@ def test_an_evaluator_given_as_it_is_evaluates_inline(
 
 
 @pytest.mark.parametrize(
-    "differs", ["evaluator file", "evaluator helper", "k4opt code", "KEY4HEP_STACK"]
+    "differs", ["evaluator file", "evaluator helper", "k4opt code", "KEY4HEP_STACK", "a variable"]
 )
 def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
     tmp_path: Path,
@@ -1008,14 +1064,27 @@ def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
     elif differs == "k4opt code":
         monkeypatch.setattr(_worker, "code_fingerprint", lambda: "another checkout")
         message = "a worker process runs other k4opt code than the session"
+    elif differs == "a variable":  # a worker launched otherwise than the session, as it were
+        described = _session.session_spec
+        monkeypatch.setattr(
+            _session,
+            "session_spec",
+            lambda *args: described(
+                *args[:3],
+                replace(args[3], variables={**args[3].variables, "MY_SCALE": "0" * 64}),
+            ),
+        )
+        message = "a worker process does not run as the session: its software .* in MY_SCALE"
     else:
         described = _session.session_spec
         monkeypatch.setattr(
             _session,
             "session_spec",
-            lambda *args: described(*args[:2], {**args[2], "KEY4HEP_STACK": "/other/stack"}),
+            lambda *args: described(
+                *args[:2], {**args[2], "KEY4HEP_STACK": "/other/stack"}, args[3]
+            ),
         )
-        message = "KEY4HEP_STACK is .* in a worker process, not '/other/stack' as in the session"
+        message = "does not run as the session: KEY4HEP_STACK is .*, not '/other/stack'"
     with pytest.raises(RunError, match=message):
         EvaluationSession.open(problem, [implementation], workers=2)
     assert stack.workers() == []

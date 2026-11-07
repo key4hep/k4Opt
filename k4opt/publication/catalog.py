@@ -85,9 +85,10 @@ class CatalogEntry:
 
     ``id``, ``name`` and ``created`` are the study's; ``problem`` the name of its problem (``None``
     if it has none), ``geometry`` the compact file it starts from (relative to the k4geo tree,
-    ``FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml``) and ``key4hep`` the Key4hep stack it names
-    (``nightly 2026-10-20``); ``published`` when this snapshot was published (UTC, ISO 8601).
-    ``trials`` is how many trials the study had, ``outcomes`` how many ended how, every outcome a
+    ``FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml``) and ``key4hep`` the Key4hep build it ran on
+    (``LCG devkey-head, built Sat Nov 7 04:17:32 2026``); ``published`` when this snapshot was
+    published (UTC, ISO 8601). ``trials`` is how many trials the study had, ``outcomes`` how many
+    ended how, every outcome a
     key: a ``running`` trial was running when it was published. ``parameters``, ``objectives``
     and ``constraints`` count those of its problem.
     """
@@ -123,7 +124,7 @@ class CatalogEntry:
             name=results.name,
             problem=spec.name,
             geometry=spec.geometry,
-            key4hep=f"{spec.environment.key4hep.channel} {spec.environment.key4hep.version}",
+            key4hep=results.key4hep,
             created=results.created,
             published=published,
             trials=len(results.trials),

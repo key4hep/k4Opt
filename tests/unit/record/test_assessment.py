@@ -37,7 +37,6 @@ def document(
     data: dict[str, Any] = {
         "schema_version": "k4opt.problem/v1alpha1",
         "name": "judged",
-        "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
         "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
         "parameters": {
             CELL: {

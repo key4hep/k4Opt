@@ -18,6 +18,7 @@ from k4opt.problem import load_problem
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from tests.support import simulation, stack
 from tests.support.evaluators import cell_count
+from tests.support.software import lcg_view, republish
 from tests.support.stack import alive, eventually
 from tests.unit.execution.session.conftest import RADIUS
 
@@ -234,6 +235,42 @@ def test_a_candidate_that_reused_what_one_not_published_made_is_not_published(
     assert all(isinstance(outcome, ProvenanceError) for _, outcome in outcomes)
     assert "were not published" in str(outcomes[1][1])
     assert not (tmp_path / "b" / SUMMARY_NAME).exists()  # it would name a record that is not
+
+
+def test_a_stage_of_the_same_path_with_another_build_is_not_reused(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    view = lcg_view(tmp_path / "cvmfs")
+    monkeypatch.setenv("KEY4HEP_STACK", str(view))
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path / "a"])
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert len(fake.calls) == 1  # the same build: its simulation is reused
+    republish(view)
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path / "a"])
+        session.evaluate({RADIUS: 450.0}, tmp_path / "c")
+    assert len(fake.calls) == 2  # the same path, not the same build
+
+
+def test_a_stage_run_with_another_variable_is_not_reused(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    monkeypatch.setenv("MARLIN_DLL", "/home/me/install/lib/libDDMarlinPandora.so")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path / "a"])
+        session.evaluate({RADIUS: 450.0}, tmp_path / "b")
+    assert len(fake.calls) == 2
 
 
 def _reused_record(tmp_path: Path, problem_file: Path) -> tuple[EvaluationSession, dict[str, Any]]:

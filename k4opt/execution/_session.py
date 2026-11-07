@@ -256,7 +256,9 @@ class EvaluationSession:
         if workers is not None:  # one worker started at once: one that cannot work refuses here
             environment = baseline.process["environment"]
             assert isinstance(environment, Mapping)
-            described = session_spec(self._context, binding.evaluations, environment)
+            described = session_spec(
+                self._context, binding.evaluations, environment, baseline.software
+            )
             backend = self._backend = ProcessBackend(described, workers)
             weakref.finalize(self, backend.close)  # a backstop: close() stops the workers
             try:
@@ -424,11 +426,11 @@ class EvaluationSession:
         (:meth:`~k4opt.geometry.GeometrySource.external_files`); ``environment``:
         ``KEY4HEP_STACK`` and ``K4GEO``; ``programs``: each program of the stack the stages run,
         by name, as the executable the session runs (its path, size and SHA-256, ``None`` if it
-        cannot be read); ``search``: the SHA-256 of each variable that decides what those
-        programs load (:func:`k4opt.program.search_environment`); ``k4opt``: its version, the
-        SHA-256 of its code and its git checkout, as every summary records them. The
-        environment, the programs, k4opt and the external files are taken when the session
-        opened. A fresh copy on every call.
+        cannot be read); ``software``: what it runs on, the build of the stack, the system and
+        the variables (:class:`k4opt.software.Software`); ``k4opt``: its version, the SHA-256 of
+        its code and its git checkout, as every summary records them. The environment, the
+        programs, the software, k4opt and the external files are taken when the session opened.
+        A fresh copy on every call.
         """
         return self._baseline.identity()
 
@@ -441,7 +443,7 @@ class EvaluationSession:
         output, a trial of a study) or holds run directories at any depth (a study, the studies
         of every level of a nested one). A stage of a candidate is not run when one with its
         signature (:mod:`k4opt.record.signature`: the same definition, inputs, geometry, files,
-        programs, environment and k4opt code) made an output that is still there with the size
+        programs, software and k4opt code) made an output that is still there with the size
         and SHA-256 its record holds, hashed when it would be reused: its record then says
         ``reused``, with where the output comes from. The session's own stages are reused the
         same way, without being named here. A record already read is not read again. Raises
@@ -737,9 +739,9 @@ class EvaluationSession:
             if label.startswith(prefix)
         }
         process = self._baseline.process
-        programs, environment, k4opt = process["programs"], process["environment"], process["k4opt"]
+        programs, software, k4opt = process["programs"], process["software"], process["k4opt"]
         assert isinstance(programs, Mapping)
-        assert isinstance(environment, Mapping)
+        assert isinstance(software, Mapping)
         assert isinstance(k4opt, Mapping)
         program = None if stage.executor is None else executors(name)[stage.executor].program
         document = stage_document(
@@ -748,10 +750,7 @@ class EvaluationSession:
             reads=reads,
             files=files,
             program=None if program is None else programs.get(program),
-            environment={
-                "KEY4HEP_STACK": environment.get("KEY4HEP_STACK"),
-                "search": process["search"],
-            },
+            software=software.get("id"),
             k4opt=k4opt.get("sha256"),
         )
         signature = freeze(signed(document), SIGNATURE, RunError)

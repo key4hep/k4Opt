@@ -10,11 +10,10 @@ the peak memory). A program that fails is reported by :attr:`ProgramRun.error`, 
 exception: settings that cannot be run are refused before (:class:`ProgramError`).
 
 What a program runs is identified by :func:`locate` and :func:`identify` (its executable, where
-its links lead, with its size and SHA-256) and :func:`search_environment` (the variables that
-decide which interpreter and which libraries and modules it loads). ddsim and k4run are Python
-scripts (``#!/usr/bin/env python3``): the same script with another ``PYTHONPATH`` runs other
-code, and the libraries behind it are identified only as far as ``KEY4HEP_STACK`` names an
-immutable release.
+its links lead, with its size and SHA-256). ddsim and k4run are Python scripts
+(``#!/usr/bin/env python3``): the same script with another ``PYTHONPATH`` runs other code, so what
+they load is identified with the build and the variables they run with
+(:class:`k4opt.software.Software`).
 """
 
 from __future__ import annotations
@@ -40,11 +39,6 @@ from k4opt.jsonio import write_json
 
 LOG_TAIL = 15
 """Lines of standard error quoted in the message of a program that failed."""
-
-SEARCH_VARIABLES = ("PATH", "PYTHONPATH", "LD_LIBRARY_PATH", "ROOT_INCLUDE_PATH")
-"""The environment variables that decide which interpreter, libraries and modules a program of
-the stack loads (:func:`search_environment`). Of ``PATH``, only the interpreter it finds for a
-program decides what that program runs (:func:`identify`)."""
 
 LOG_ROLES = ("stdout", "stderr", "command")
 """The files :func:`run` keeps, by role: the program's standard output and error and the record of
@@ -167,20 +161,6 @@ def _interpreter(script: Path) -> Path | None:
     return Path(found)
 
 
-def search_environment() -> dict[str, str | None]:
-    """The SHA-256 of each variable of :data:`SEARCH_VARIABLES` as this process has it,
-    ``None`` for one that is not set: what tells apart two shells that would run other code
-    through the same executables (a local build layered over a release)."""
-    return {
-        name: None if (value := os.environ.get(name)) is None else _text_digest(value)
-        for name in SEARCH_VARIABLES
-    }
-
-
-def _text_digest(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
 def tail(path: Path) -> str:
     """The last :data:`LOG_TAIL` lines of the text file ``path``; empty if it cannot be read."""
     try:
@@ -270,9 +250,13 @@ def execute(
 ) -> int | None:
     """Run ``argv`` to its end: its exit status, ``None`` if it ran longer than ``timeout``.
 
-    It runs in a process group of its own, which is killed as a whole when its time runs out or
-    this process is interrupted (Ctrl-C, SIGTERM), so nothing a wrapper script started (a shell
-    script without ``exec``, a container) outlives it; a process that leaves the group does.
+    It runs with exactly this process's ``os.environ``, which is what k4opt identified
+    (:class:`k4opt.software.Software`), not with what a library set beneath Python (ROOT's
+    interpreter sets ``CLING_PREBUILT_MODULE_PATH`` with C's ``setenv``), which a child would
+    otherwise inherit unseen. It runs in a process group of its own, which is killed as a whole
+    when its time runs out or this process is interrupted (Ctrl-C, SIGTERM), so nothing a wrapper
+    script started (a shell script without ``exec``, a container) outlives it; a process that
+    leaves the group does.
     ``started`` is told the id of that group as soon as it exists, and ``measured`` the peak
     resident memory in bytes of the program, and of the processes it started and waited for, once
     it ended by itself (where the system says). With ``die_with_parent`` the
@@ -282,6 +266,7 @@ def execute(
     with subprocess.Popen(
         _launched(argv, die_with_parent),
         cwd=cwd,
+        env=dict(os.environ),
         stdin=subprocess.DEVNULL,
         stdout=stdout,
         stderr=stderr,

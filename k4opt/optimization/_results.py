@@ -44,6 +44,7 @@ from k4opt.problem.candidate import validate_value
 from k4opt.record import SUMMARY_NAME, Assessment, Limit, ObjectiveValue, RecordError
 from k4opt.record.assess import judge_limit
 from k4opt.record.read import seconds
+from k4opt.software import Build, SoftwareError
 
 RESULTS_FORMAT = "k4opt.study-results/1"
 OUTCOMES = (
@@ -190,6 +191,13 @@ class StudyResults:
         return self.directory / trial_directory(trial.number) / SUMMARY_NAME
 
     @property
+    def key4hep(self) -> str:
+        """The Key4hep build the study ran on, for a person (``LCG devkey-head, built ...``)."""
+        software = self.document["software"]
+        assert isinstance(software, Mapping)  # checked when it was read
+        return Build.from_dict(software["build"]).label
+
+    @property
     def scope(self) -> StudyScope:
         """What the study searches and how its trials are judged (its parameters, but those it
         fixes, and the criteria of its level), as ``study.json`` records it; an ordinary study of
@@ -251,13 +259,17 @@ class StudyResults:
 
 def recorded_scope(document: Mapping[str, Any]) -> StudyScope:
     """The scope of the study ``study.json`` records (:class:`StudyScope`, with its problem),
-    once the document holds together: its identity digest is that of its parts, and the optimizer
-    it records has the scope's directions and limits.
+    once the document holds together: its identity digest is that of its parts, it says which
+    build it ran on, and the optimizer it records has the scope's directions and limits.
     No geometry, file or evaluator the problem names is needed."""
     if digest(document) != document.get("identity"):
         raise OptimizationError(
             f"{STUDY_NAME} does not hold together: its identity digest is not that of its parts"
         )
+    try:
+        Build.from_dict(document["software"]["build"])
+    except SoftwareError as exc:
+        raise OptimizationError(f"{STUDY_NAME}: {exc}") from None
     try:
         spec = parse_problem(document["problem"]["definition"])
     except ProblemConfigError as exc:

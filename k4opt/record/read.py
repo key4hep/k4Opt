@@ -66,6 +66,7 @@ from k4opt.record.signature import (
     given_identity,
     stage_document,
 )
+from k4opt.software import Software, SoftwareError
 
 SUMMARY_SCHEMA = "k4opt.run/1"
 
@@ -693,19 +694,27 @@ def _within(value: object, *keys: str) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _software(observed: Mapping[str, object]) -> str:
+    """The id of the software the record says it ran on, once that is what its parts make."""
+    try:
+        return Software.from_dict(observed.get("software")).id
+    except SoftwareError as exc:
+        raise RecordError(str(exc)) from None
+
+
 def _check_signatures(
     configuration: Configuration, record: Mapping[str, object], plan: Plan
 ) -> None:
     """Each stage that ran holds its signature (:mod:`k4opt.record.signature`), and that
     signature is what the record says the stage was made from: its definition, the geometry and
-    the stages it read, the files the problem names for it, the program it ran, the environment
+    the stages it read, the files the problem names for it, the program it ran, the software
     and k4opt's code; its SHA-256 is that of its document. A blocked stage, and one given as a
     file, has none."""
     samples = cast(Mapping[str, Mapping[str, Any]], record["samples"])  # checked by _samples
     geometry = _mapping(record.get("geometry"), "geometry")
     observed = _within(record, "environment", "observed")
     programs = _within(observed, "programs")
-    environment = {"KEY4HEP_STACK": observed.get("KEY4HEP_STACK"), "search": observed.get("search")}
+    software = _software(observed)
     k4opt = _within(observed, "k4opt_source").get("sha256")
     for task in plan.of(Kind.STAGE):
         assert task.id.sample is not None
@@ -743,7 +752,7 @@ def _check_signatures(
             reads=reads,
             files=files,
             program=None if executor.program is None else programs.get(executor.program),
-            environment=environment,
+            software=software,
             k4opt=k4opt,
         )
         if _plain(expected) != _plain(dict(document)):

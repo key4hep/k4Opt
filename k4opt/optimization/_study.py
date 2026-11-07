@@ -106,12 +106,12 @@ PORTABLE: Mapping[str, _Kept] = {
         "targets": True,
         "externals": {"*": {"sha256": True, "files": True, "unresolved": True}},
     },
-    "environment": {"KEY4HEP_STACK": True},
     # by content: where a program and its interpreter are is a location, as any other
     "programs": {
         "*": {"bytes": True, "sha256": True, "interpreter": {"bytes": True, "sha256": True}}
     },
-    "search": True,
+    # the build and the system, not the variables, whose names can be private: its id is enough
+    "software": {"id": True, "build": True, "system": True},
     "k4opt": {"version": True, "sha256": True, "git": True},
     # what the study searches and fixes, and the level and replicate of its trials
     "scope": {"level": True, "searched": True, "fixed": True, "replicate": True, "parent": True},
@@ -130,9 +130,10 @@ PORTABLE: Mapping[str, _Kept] = {
 """What of ``study.json`` leaves the study directory (:func:`portable`), key by key; ``*`` stands
 for every key of a mapping keyed by name. Left out: every location (the problem file, the files
 the problem names, the evaluators' files, the geometry's source root and the files its external
-references resolve to, ``K4GEO``, the programs of the stack and their interpreters, which are
-kept by size and SHA-256) and the optimizer's storage (a journal name, or a database URL
-with its host and user), and any key not named here."""
+references resolve to, ``K4GEO``, ``KEY4HEP_STACK``, which the software's build identifies,
+the programs of the stack and their interpreters, which are kept by size and SHA-256), the
+software's variables, whose names can be private, the optimizer's storage (a journal name, or a
+database URL with its host and user), and any key not named here."""
 
 
 def portable(document: Mapping[str, Any]) -> dict[str, Any]:
@@ -287,8 +288,8 @@ def check_record(
                 f"{where}: evaluator {name!r} declared other roles than in the study"
             )
     observed = _get(summary, "environment", "observed")
-    if _get(observed, "KEY4HEP_STACK") != study["environment"]["KEY4HEP_STACK"]:
-        raise OptimizationError(f"{where} ran in another KEY4HEP_STACK than the study")
+    if _get(observed, "software", "id") != study["software"]["id"]:
+        raise OptimizationError(f"{where} ran on other software than the study")
     if _get(observed, "k4opt_source", "sha256") != study["k4opt"]["sha256"]:
         raise OptimizationError(f"{where} was made by other k4opt code than the study")
     ran = program_differences(study, {"programs": _get(observed, "programs")})

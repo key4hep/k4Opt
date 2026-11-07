@@ -23,7 +23,6 @@ from k4opt.optimization._identity import (
     digest,
     program_differences,
     revision_warnings,
-    search_warnings,
 )
 from k4opt.optimization._optuna.space import search_space
 from k4opt.optimization._optuna.storage import storage_record
@@ -147,8 +146,6 @@ def check_resume(
             "study for this"
         )
     for warning in revision_warnings(document["implementations"], identity["implementations"]):
-        warn(warning)
-    for warning in search_warnings(document, identity):
         warn(warning)
 
 
