@@ -146,7 +146,7 @@ def test_an_input_that_changes_while_a_reusing_candidate_runs_leaves_it_unrecord
     assert not (tmp_path / "b" / SUMMARY_NAME).exists()
 
 
-def test_an_input_that_changed_while_its_stage_ran_vouches_for_nothing(
+def test_a_stage_whose_input_changed_while_it_ran_fails(
     tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     file, marks = tmp_path / "calibration", tmp_path / "marks"
@@ -160,11 +160,14 @@ def test_an_input_that_changed_while_its_stage_ran_vouches_for_nothing(
 
     changing = threading.Thread(target=another_process_changes_it)
     changing.start()
-    made = evaluated(problem_file, tmp_path / "a")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     changing.join()
-    assert made["observed"]["undeclared"][str(file)] is None  # what it read is not known
-    stage = evaluated(problem_file, tmp_path / "b", reuse=(tmp_path / "a",))
-    assert "reused" not in stage and f"{file} could not be identified" in stage["not_reused"]
+    # what it read is not known: no record says it read anything, nor is it reused
+    assert outcome.candidate.status == "failed"
+    made = simulated(tmp_path / "a")
+    assert made["status"] == "failed" and made["observed"]["undeclared"][str(file)] is None
+    assert f"{file} changed while it ran, so the record cannot say what it read" in made["message"]
 
 
 def test_an_unknown_level_is_refused(problem_file: Path) -> None:
@@ -272,13 +275,44 @@ def test_a_resumed_study_needs_no_footprint_of_its_own_stages(
     assert stage["reused"]["by_footprint"] is False
 
 
-def test_a_resumed_study_runs_again_what_its_footprint_no_longer_vouches_for(
+def test_a_resumed_study_whose_input_changed_is_refused(
+    tmp_path: Path, problem_file: Path, calibration: Path
+) -> None:
+    # one study, one set of inputs: trials of another would mix in
+    evaluated(problem_file, tmp_path / "a")
+    calibration.write_text('{"scale": 1.10}\n')
+    with (
+        EvaluationSession.open(problem_file, [cell_count()]) as session,
+        pytest.raises(ProvenanceError, match=f"{calibration}, read by the study's trials"),
+    ):
+        session.reuse([tmp_path / "a"], resumed=True)
+
+
+def test_a_resumed_study_watches_what_its_trials_read(
     tmp_path: Path, problem_file: Path, calibration: Path
 ) -> None:
     evaluated(problem_file, tmp_path / "a")
-    calibration.write_text('{"scale": 1.10}\n')
-    stage = evaluated(problem_file, tmp_path / "b", reuse=(tmp_path / "a",), resumed=True)
-    assert "reused" not in stage and f"{calibration} changed" in stage["not_reused"]
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path / "a"], resumed=True)
+        calibration.write_text('{"scale": 1.10}\n')  # before any trial of this session
+        with pytest.raises(ProvenanceError, match=str(calibration)):
+            session.evaluate({RADIUS: 470.0}, tmp_path / "b")
+
+
+def test_two_trials_that_read_an_input_as_two_files_cannot_be_resumed(
+    tmp_path: Path, problem_file: Path, calibration: Path
+) -> None:
+    evaluated(problem_file, tmp_path / "a")
+    record = json.loads((tmp_path / "a" / SUMMARY_NAME).read_text())
+    stage = record["samples"]["gamma"]["stages"]["simulation"]
+    stage["observed"]["undeclared"][str(calibration)] = "sha256:" + "0" * 64
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / SUMMARY_NAME).write_text(json.dumps(record))
+    with (
+        EvaluationSession.open(problem_file, [cell_count()]) as session,
+        pytest.raises(ProvenanceError, match="was not the same file for a/gamma/simulation"),
+    ):
+        session.reuse([tmp_path], resumed=True)
 
 
 def test_an_output_copied_elsewhere_with_its_record_still_serves(

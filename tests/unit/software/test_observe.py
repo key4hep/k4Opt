@@ -140,6 +140,19 @@ def test_the_lines_that_could_not_be_read_are_kept(tmp_path: Path) -> None:
     assert footprint(empty, "files", []).unreadable == ("no program started",)
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "socket(AF_UNIX, SOCK_STREAM, 0)         = 3<socket:[59859]>",
+        'mkdir("/tmp/x", 0777)                   = -1 EEXIST (File exists)',
+        'open("/etc/hosts", O_RDONLY)           = 3</etc/hosts>',
+    ],
+)
+def test_a_short_call_strace_pads_to_its_column_is_read(tmp_path: Path, line: str) -> None:
+    # strace starts what a call returned at column 40, padding a short call with spaces
+    assert footprint(traces(tmp_path / "raw", STARTED, line), "files", []).complete
+
+
 def test_a_relative_lookup_is_where_its_process_was(tmp_path: Path) -> None:
     line = 'openat(AT_FDCWD</some/job>, "../rootlogon.C", O_RDONLY) = -1 ENOENT (No such file)'
     assert footprint(traces(tmp_path / "raw", line), "files", []).missing == ("/some/rootlogon.C",)
@@ -457,10 +470,20 @@ def test_a_link_retargeted_and_back_while_the_run_ran_vouches_for_nothing(tmp_pa
     )
 
 
+def test_a_relative_open_of_what_the_stage_made_says_nothing_it_needs(tmp_path: Path) -> None:
+    own = tmp_path / "stage"
+    line = f'open("made.root", O_RDONLY) = 3<{own}/made.root>'
+    found = footprint(traces(tmp_path / "raw", STARTED, line), "files", [own])
+    assert found.unread == 0 and found.complete
+
+
 def test_a_relative_open_from_a_directory_the_trace_does_not_say_is_unread(tmp_path: Path) -> None:
     line = f'open("current.root", O_RDONLY) = 3<{tmp_path}/v1.root>'
     found = footprint(traces(tmp_path / "raw", STARTED, line), "files", [])
     assert found.unread == 1 and not found.complete
+    assert found.unreadable == (
+        f"opened by a path relative to an unknown directory: {tmp_path}/v1.root",
+    )
 
 
 def test_python_s_own_cache_is_no_name_of_a_directory(tmp_path: Path) -> None:

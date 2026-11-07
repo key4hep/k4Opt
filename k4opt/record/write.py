@@ -291,6 +291,22 @@ def observed_stages(summary: Mapping[str, object]) -> dict[str, Mapping[str, obj
     }
 
 
+def recorded_inputs(summary: Mapping[str, object]) -> dict[str, tuple[str, str]]:
+    """The undeclared inputs the stages of a ``summary.json`` read, by path: the identity each was
+    read as and the first stage that read it (by label), as each stage that ran says
+    (``observed``) or the stage whose output it reused (``reused``); none that could not be
+    identified. Two stages that read one as different files keep the first."""
+    found: dict[str, tuple[str, str]] = {}
+    for sample in _within(summary, "samples"):
+        for name in _within(summary, "samples", sample, "stages"):
+            for key in ("observed", "reused"):
+                undeclared = _within(summary, "samples", sample, "stages", name, key, "undeclared")
+                for path, then in undeclared.items():
+                    if isinstance(then, str):
+                        found.setdefault(path, (then, f"{sample}/{name}"))
+    return found
+
+
 def unused_local(summary: Mapping[str, object]) -> list[str]:
     """The local entries of the software that no stage of a ``summary.json`` read from: a local
     build put in front of the stack that did not run. Empty where that is not known: unless every

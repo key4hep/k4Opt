@@ -22,7 +22,13 @@ Typical use::
 from k4opt.record.assess import Assessment, Limit, ObjectiveValue
 from k4opt.record.errors import RecordError
 from k4opt.record.results import CandidateRecord, PeakMemory, TaskResult
-from k4opt.record.write import SUMMARY_NAME, observed_stages, peak_memory, unused_local
+from k4opt.record.write import (
+    SUMMARY_NAME,
+    observed_stages,
+    peak_memory,
+    recorded_inputs,
+    unused_local,
+)
 
 __all__ = [
     "SUMMARY_NAME",
@@ -35,5 +41,6 @@ __all__ = [
     "TaskResult",
     "observed_stages",
     "peak_memory",
+    "recorded_inputs",
     "unused_local",
 ]

@@ -352,6 +352,8 @@ class _Seen:
     connected: dict[str, None] = field(default_factory=dict)
     written: set[str] = field(default_factory=set)
     aliases: dict[str, str] = field(default_factory=dict)  # a path opened: the file it reached
+    # files reached by a relative path from a directory the trace does not say
+    unresolved: list[str] = field(default_factory=list)
     unread: int = 0
     unreadable: list[str] = field(default_factory=list)
 
@@ -385,8 +387,8 @@ def _opened(seen: _Seen, call: bytes, args: bytes, match: re.Match[bytes]) -> No
             return
         path = _unescape(fd).removesuffix(_DELETED)
         named = _named(given, base)
-        if named is None:  # what a relative path was opened by, and whether by a link, is unknown
-            seen.unread += 1
+        if named is None:  # what it was opened by, and whether by a link: unknown, if it matters
+            seen.unresolved.append(path)
         if _WRITES.search(flags) or all(flag.search(flags) for flag in _CREATES):
             seen.written.add(path)
             seen.written.add(path if named is None else named)
@@ -495,10 +497,13 @@ def _traced(trace: Path) -> _Seen:
 
 def _line(seen: _Seen, line: bytes) -> None:
     """What one line of a trace says, into ``seen``."""
-    # split at the last ") = ": a path with that in it fails the result, never misleads
-    head, said, result = line.rpartition(b") = ")
-    call, _, args = head.partition(b"(")
-    match = _RESULT.match(result) if said and call in _CALLS else None
+    # split at the last " = ", after which strace writes what the call returned, at column 40 at
+    # least, with spaces before it for a short call; a path with that in it fails the result,
+    # never misleads
+    head, said, result = line.rpartition(b" = ")
+    head = head.rstrip(b" ")
+    call, _, args = head[:-1].partition(b"(")
+    match = _RESULT.match(result) if said and head.endswith(b")") and call in _CALLS else None
     if match is None:
         seen.unread += 1
         return
@@ -548,6 +553,12 @@ def footprint(
 
     def kept(paths: Iterable[str]) -> list[str]:
         return [p for p in paths if p not in seen.written and not _under(p, skipped)]
+
+    # a relative path that led into what the stage made or was given is none of its inputs
+    for path in kept(seen.unresolved):
+        seen.unread += 1
+        if len(seen.unreadable) < _UNREADABLE:
+            seen.unreadable.append(f"opened by a path relative to an unknown directory: {path}")
 
     read = {path: identity(path, since) for path in kept(seen.read)}
     for path in kept(seen.ran):  # a program started through a link retargeted since: not known

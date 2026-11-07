@@ -17,6 +17,7 @@ where it runs. Its record is then checked and published (:mod:`k4opt.execution._
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -70,7 +71,8 @@ from k4opt.record.signature import (
     signed,
     stage_document,
 )
-from k4opt.record.write import SUMMARY_NAME
+from k4opt.record.write import SUMMARY_NAME, recorded_inputs
+from k4opt.software.observe import changed_inputs
 
 
 def _supplied(
@@ -188,6 +190,34 @@ class Evaluations:
         traceback: TracebackType | None,
     ) -> None:
         self.close()
+
+
+def _study_inputs(runs: Iterable[Path]) -> dict[str, Json]:
+    """The undeclared inputs the records in ``runs`` read, by path, each as it is now. Raises
+    :class:`ProvenanceError` if one is not what a record says it read, or two records read it as
+    different files: a resume must not add trials made from other inputs."""
+    held: dict[str, tuple[str, str]] = {}
+    for run in runs:
+        try:
+            summary = json.loads((run / SUMMARY_NAME).read_bytes())
+        except (OSError, ValueError):
+            continue  # a record that cannot be read reuses nothing either
+        if not isinstance(summary, Mapping):
+            continue
+        for path, (then, stage) in recorded_inputs(summary).items():
+            first = held.setdefault(path, (then, f"{run.name}/{stage}"))
+            if first[0] != then:
+                raise ProvenanceError(
+                    f"{path} was not the same file for {first[1]} and {run.name}/{stage}; a "
+                    "study holds the trials of one set of inputs: start a new study"
+                )
+    changed = changed_inputs({path: then for path, (then, _) in held.items()})
+    if changed:
+        raise ProvenanceError(
+            f"{', '.join(changed)}, read by the study's trials, changed since: a resume would add "
+            "trials made from other inputs; restore it as it was, or start a new study"
+        )
+    return {path: then for path, (then, _) in held.items()}
 
 
 def _observation(asked: Observation) -> tuple[Observation, str | None]:
@@ -488,14 +518,19 @@ class EvaluationSession:
         (:mod:`k4opt.software.observe`: what it read is the same, what it did not find is still
         not there); one of another study only with a complete footprint and no network either.
         ``resumed`` says the directories are those of the study this session resumes, whose
-        records need no complete footprint. Raises :class:`~k4opt.execution.RunError` for a
-        directory that does not exist."""
+        records need no complete footprint: one study holds one set of inputs, so every
+        undeclared input its records name must be what they read, and the session watches them
+        from now on as its own. Raises :class:`~k4opt.execution.RunError` for a directory that
+        does not exist, and :class:`~k4opt.execution.ProvenanceError` for a resumed study one of
+        whose undeclared inputs changed since a trial read it."""
         runs: list[Path] = []
         for given in directories:
             path = Path(os.path.abspath(Path(given).expanduser()))
             if not path.is_dir():
                 raise RunError(f"reuse {os.fspath(given)}: {path} is no directory")
             runs += run_directories(path)
+        if resumed:
+            self._baseline.remember_observed(_study_inputs(runs))
         return self._reuse.index(runs, across=not resumed)
 
     def check_limits(self) -> None:

@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import yaml
 
+from k4opt.errors import K4OptError
 from k4opt.optimization import OptimizationError, load_study, optimize
 from k4opt.optimization._show import render_trial
 from tests.support import simulation, stack
@@ -134,3 +135,16 @@ def test_a_study_watches_what_its_stages_read_while_it_runs(
 
     with pytest.raises(OptimizationError, match=str(private)):
         _optimize(analysis_problem, tmp_path / "s", 3, seed=1, progress=changed)
+
+
+def test_a_study_whose_input_changed_is_not_resumed(
+    tmp_path: Path, analysis_problem: Path, private: Path
+) -> None:
+    output = tmp_path / "s"
+    _optimize(analysis_problem, output, 1, seed=1)
+    resumed = _optimize(analysis_problem, output, 1, resume=True)  # the same inputs: it goes on
+    assert len(resumed.trials) == 2
+    private.write_text('{"scale": 2}\n')
+    with pytest.raises(K4OptError, match=f"{private}, read by the study's trials, changed"):
+        _optimize(analysis_problem, output, 1, resume=True)
+    assert len(load_study(output).trials) == 2  # nothing added

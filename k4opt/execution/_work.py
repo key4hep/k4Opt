@@ -13,6 +13,7 @@ its reads made, which it checks before and after it runs.
 from __future__ import annotations
 
 import contextlib
+import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -172,6 +173,17 @@ def _own(spec: TaskSpec, root: Path | None) -> Path | None:
     return None if root is None or spec.task.directory is None else root / spec.task.directory
 
 
+def _unknown_inputs(summary: Mapping[str, Json]) -> list[str]:
+    """The undeclared files a stage read that could not be identified when it ended: changed
+    while it ran (or gone since), so no record could say what it read, and no later candidate
+    could be compared with it. A directory listed while it changed is not one: another stage's
+    first ``__pycache__`` changes the directory it is in; it only keeps the output from being
+    reused (:meth:`k4opt.software.Footprint.changes`)."""
+    undeclared = summary.get("undeclared")
+    entries = undeclared.items() if isinstance(undeclared, Mapping) else ()
+    return [path for path, then in entries if then is None and not os.path.isdir(path)]
+
+
 def _declared(provenance: Mapping[str, Json]) -> list[Path]:
     """The files a stage's provenance says it was given by the problem (``files``: those a ddsim
     option names, a reconstruction's job and data), which its signature identifies."""
@@ -311,6 +323,9 @@ def _stage(
             artifacts=artifacts,
             provenance={**outcome.provenance, "observed": summary},
         )
+        unknown = _unknown_inputs(summary)
+        if unknown and outcome.error is None:  # as for a file of the problem that changed
+            outcome = replace(outcome, error=_changed_during(unknown))
     error = outcome.error
     made: dict[str, Artifact] = {}
     stats: dict[str, Stat] = {}
