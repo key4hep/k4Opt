@@ -242,8 +242,8 @@ back from disk and checked:
 - it was made for this study and trial;
 - its candidate is the trial's, type and value, on the problem's own events (replicate 0, not
   [another replicate](execution.md#k4opt-evaluate) of it);
-- its evaluators, Key4hep stack, k4opt code, input files and the files the geometry's external
-  references read are the study's;
+- its evaluators, [software](software.md), k4opt code, input files and the files the geometry's
+  external references read are the study's;
 - a file that only candidates name (a `ref` parameter choosing `${CAD}/other.stl`), which the
   study cannot know beforehand, reads as it did for every earlier trial that named it, in this
   session or an earlier one;
@@ -345,8 +345,8 @@ keeps its geometry and its EDM4hep file.
   a stage given as a file), as the executable the session found on `PATH` when it opened, where
   its links lead, with its size and SHA-256, and the `interpreter` its `#!` line names as `PATH`
   found it (`null` for a program that is no script); `null` for a program not found;
-- `search`: the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`,
-  which decide what those programs load;
+- `software`: what it runs on, the build of the stack, the system and the SHA-256 of every
+  variable not known to be irrelevant, with their `id` ([software](software.md));
 - k4opt's version, the SHA-256 of its code and its git checkout;
 - the `identity` digest;
 - `scope`: what the study searches (`searched`, the parameters the optimizer proposes), the
@@ -432,18 +432,18 @@ directory itself is fine: a trial's record names the files of its run directory 
 | files the problem names | size and SHA-256 of each | their paths |
 | evaluators | each one the problem binds: name, version, SHA-256 of the source file (one without a hash, or whose hash is not known to be of the code that runs, `executed: false`, cannot make a study) and of the modules it imports from beside it (`helpers`), the metrics it declares with their units and the artifacts it declares (read from its class, where an evaluator declares them) | path, the reference it was loaded by, whether the bytes were `executed`, the git revision (a change warns) |
 | geometry | the fingerprint of the unmodified geometry, which covers every reachable file below its root, the attribute each geometry target of the parameters resolves to (its file below the root, locator, attribute and unmodified value; every trial's record must change exactly those) and the SHA-256 of each file its external references read (`null` for one that names no file) | compact path, source root, the paths the external references resolve to, `K4GEO` |
-| stack | `KEY4HEP_STACK` | |
-| programs | each program the stages run (`ddsim`, `k4run`): the path of its executable, where its links lead (a release of the stack is told apart by its path), its size and SHA-256, and its interpreter; every trial's record must have run the same | the SHA-256 of `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH` (a change warns; `PATH` is recorded, but of it only the interpreter matters) |
+| software | its `id`: the build of the stack, the system and every variable not known to be irrelevant ([software](software.md)); every trial's record must have run on the same | `KEY4HEP_STACK` |
+| programs | each program the stages run (`ddsim`, `k4run`): the path of its executable, where its links lead (a release of the stack is told apart by its path), its size and SHA-256, and its interpreter; every trial's record must have run the same | |
 | k4opt | the SHA-256 of its code | version, git commit |
 | Optuna | its exact version; the study's directions, id, identity digest and limit names; the storage | |
 
 The `identity` digest covers the compared column only, but for the programs, which are compared
 apart, so that a refusal names the program that differs. Both
 ddsim and k4run are Python scripts: the same script with another `PYTHONPATH` (a local build
-layered over the release) runs other code, which only the warning about the search variables
-shows; the libraries behind the scripts are identified as far as `KEY4HEP_STACK` names an
-immutable release. A resume is refused, with what changed,
-for any difference in it. It is also refused for `--seed` with `--resume` (a study keeps its
+layered over the release) runs other code, so any difference in the software refuses a resume,
+naming the variable or the build. **Resume a study the way it was started**: a login shell and a
+bare service unit differ in dozens of variables, and each refusal names them. A resume is refused,
+with what changed, for any difference in it. It is also refused for `--seed` with `--resume` (a study keeps its
 seed), for a recorded optimizer (sampler, seed, startup trials, distributions, limits,
 constraint-value policy) other than the one this k4opt would run the study with, and for a
 directory that holds no `study.json`; using a study directory without
@@ -454,7 +454,7 @@ uncommitted changes: the evaluator's file and the modules it imports are unchang
 either refuses the resume), but other files beside them, such as data it reads, may not be.
 
 Within a session, the files the problem names, the files the geometry's external references
-read, `KEY4HEP_STACK`, `K4GEO`, the programs and k4opt's code are checked before each
+read, `KEY4HEP_STACK`, `K4GEO`, the software, the programs and k4opt's code are checked before each
 candidate and again after it ran, before its record is written; the geometry's own files are checked by its
 materialization. A change while a candidate runs leaves its directory without a
 `summary.json`, and the trial stops the study.
@@ -591,7 +591,7 @@ it. Counts cover every trial of the study, from all its sessions, recovered ones
 parts, so an edited problem definition is refused. The optimizer's study must be the one it
 describes (id, identity, directions, limits). Every trial the optimizer was told a record of
 must still have it, with the bytes whose SHA-256 it was told and the id it was told, made for
-this trial of this study with its candidate, evaluators, Key4hep stack, k4opt code and files,
+this trial of this study with its candidate, evaluators, software, k4opt code and files,
 and its assessment must recompute from its raw measurements
 ([`Assessment.from_summary`](record.md#assessment-objectives-limits-and-feasibility)).
 What the optimizer holds must agree: a COMPLETE trial has a valid record with the same objective

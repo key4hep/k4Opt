@@ -44,6 +44,7 @@ repos:
     hooks:
       - id: shellcheck
         args: [--severity=warning]
+        exclude: ^tests/fixtures/
 
   # pip-packaged actionlint (the upstream hook compiles Go, which is fragile on shared hosts)
   - repo: https://github.com/Mateusz-Grzelinski/actionlint-py

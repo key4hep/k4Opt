@@ -1,0 +1,1133 @@
+{
+  "format": "k4opt.study-results/1",
+  "study": {
+    "schema": "k4opt.study/1",
+    "id": "91f3f906-2bdd-4e12-af31-083b1c2facaa",
+    "created": "2026-11-07T16:24:08+00:00",
+    "identity": "ab970b8a983efefb1cfa812be5fdc085eaa9ac6cbab98154a8108927481a6373",
+    "problem": {
+      "definition": {
+        "schema_version": "k4opt.problem/v1alpha1",
+        "name": "trade",
+        "environment": {
+          "key4hep": {
+            "channel": "nightly",
+            "version": "2026-10-20"
+          }
+        },
+        "geometry": "compact/det_v1/det_v1.xml",
+        "parameters": {
+          "radius": {
+            "type": "continuous",
+            "bounds": [
+              100.0,
+              600.0
+            ],
+            "targets": {
+              "geometry": "InnerTracker_Barrel_radius_1"
+            }
+          },
+          "x": {
+            "type": "continuous",
+            "bounds": [
+              1.0,
+              2.0
+            ],
+            "targets": {
+              "evaluators": {
+                "test.candidate_check": "x"
+              }
+            }
+          }
+        },
+        "samples": {
+          "gamma": {
+            "generation": {
+              "executor": "gun",
+              "direction": {
+                "distribution": "uniform",
+                "phi": [
+                  0,
+                  360
+                ],
+                "theta": [
+                  80,
+                  100
+                ],
+                "unit": "deg"
+              },
+              "energy": {
+                "unit": "GeV",
+                "value": 10
+              },
+              "particle": "gamma"
+            },
+            "simulation": {
+              "executor": "ddsim",
+              "events": 2,
+              "seed": 1
+            }
+          }
+        },
+        "evaluators": [
+          {
+            "name": "test.cell_count",
+            "version": "1",
+            "stage": "simulation",
+            "samples": [
+              "gamma"
+            ],
+            "collections": {
+              "hits": "ECalBarrelCollection"
+            }
+          },
+          {
+            "name": "test.candidate_check",
+            "version": "1"
+          }
+        ],
+        "objectives": [
+          {
+            "sample": "gamma",
+            "evaluator": "test.cell_count",
+            "stage": "simulation",
+            "metric": "ecal_barrel.mean_hit_cells",
+            "direction": "minimize"
+          }
+        ],
+        "optimization": {
+          "parameters": [
+            "radius"
+          ],
+          "inner": {
+            "parameters": [
+              "x"
+            ],
+            "trials": 3,
+            "objective": {
+              "evaluator": "test.candidate_check",
+              "stage": "analysis",
+              "metric": "seen",
+              "direction": "minimize"
+            }
+          }
+        }
+      }
+    },
+    "inputs": {},
+    "implementations": {
+      "test.cell_count": {
+        "version": "1",
+        "stage": "simulation",
+        "metrics": [
+          {
+            "stage": "simulation",
+            "metric": "ecal_barrel.mean_hit_cells",
+            "unit": "1"
+          }
+        ],
+        "artifacts": null,
+        "roles": null,
+        "source": {
+          "bytes": 700,
+          "sha256": "0679f92fb45d1774fa17cd41875591bfffd5c43c2217ddba49bbafc15b5eac47",
+          "helpers": {},
+          "executed": true,
+          "revision": {
+            "commit": "3157c81652cdddd437e9baff36ddd8810da18f44",
+            "dirty": false
+          }
+        }
+      },
+      "test.candidate_check": {
+        "version": "1",
+        "stage": null,
+        "metrics": [
+          {
+            "stage": "analysis",
+            "metric": "seen",
+            "unit": "1"
+          }
+        ],
+        "artifacts": null,
+        "roles": null,
+        "source": {
+          "bytes": 1404,
+          "sha256": "dbacad0b576d0924f46fab454f9ef42a534f931598d3323222d3a8f6ddd9da34",
+          "helpers": {},
+          "executed": true,
+          "revision": {
+            "commit": "3157c81652cdddd437e9baff36ddd8810da18f44",
+            "dirty": false
+          }
+        }
+      }
+    },
+    "geometry": {
+      "compact": "compact/det_v1/det_v1.xml",
+      "fingerprint": "e4c9b0a8bdb25645c7c7de8968f8ac0d64c9740aae096e47acfbb7dd6b22f1c0",
+      "targets": [
+        {
+          "parameter": "radius",
+          "target": "constants.InnerTracker_Barrel_radius_1",
+          "file": "compact/det_v1/tracker.xml",
+          "locator": "/lccdd/define/constant[2]",
+          "attribute": "value",
+          "value": "400*mm"
+        }
+      ],
+      "externals": {
+        "${DD4hepINSTALL}/DDDetectors/compact/detector_types.xml": {
+          "sha256": "e54242c3ee38e06a6bd85c16d7a31105d6ee659b44c4e821408a5154bfa27bff",
+          "files": {}
+        }
+      }
+    },
+    "environment": {
+      "KEY4HEP_STACK": "/stack/2026-10-20"
+    },
+    "programs": {
+      "ddsim": {
+        "bytes": 2983,
+        "sha256": "df60ea5dd23511064371ca26f9e614f157172c700edcda4f1563ba6322237ee3",
+        "interpreter": {
+          "bytes": 19096,
+          "sha256": "32f9e05134e56cbfdb4b9d6bf3a469540c4109e6db323be43dd46556d516a071"
+        }
+      }
+    },
+    "search": {
+      "PATH": "59d3859c62e3e9462e5897388b6514c0bd655326d9d2692f2ec39b739cbff28b",
+      "PYTHONPATH": "fb612838a27e1b76cbb606610c9da1c18ec85778dcc2906d01995c9ee571c813",
+      "LD_LIBRARY_PATH": "8b03ea9b02c6d019d4ee9f16f5fd2507a3f59cd9f67efa2bd6a0170e37cae9d7",
+      "ROOT_INCLUDE_PATH": "d40d05e8c89e6c64e5566fb8c46e36662b09ea9939b867e0ad1d601e3d4a1e4e"
+    },
+    "k4opt": {
+      "version": "0.1.0",
+      "sha256": "b602e6ec8bca9c91039c5a846ac145b9b3f2a0ccefa299aae3723fc0e5efa555",
+      "git": {
+        "commit": "3157c81652cdddd437e9baff36ddd8810da18f44",
+        "dirty": false
+      }
+    },
+    "scope": {
+      "level": 0,
+      "searched": [
+        "radius"
+      ],
+      "fixed": {},
+      "replicate": 1,
+      "parent": null
+    },
+    "optimizer": {
+      "backend": "optuna",
+      "version": "5.0.0",
+      "study": "trade-91f3f906",
+      "sampler": {
+        "name": "TPESampler",
+        "seed": 1,
+        "n_startup_trials": 10,
+        "constant_liar": true,
+        "seeding": "per session, from the seed and the number of trials"
+      },
+      "objectives": [
+        "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells"
+      ],
+      "directions": [
+        "minimize"
+      ],
+      "parameters": {
+        "radius": {
+          "name": "FloatDistribution",
+          "attributes": {
+            "step": null,
+            "low": 100.0,
+            "high": 600.0,
+            "log": false
+          }
+        }
+      },
+      "constraints": [],
+      "constraint_values": "margin / scale"
+    }
+  },
+  "outcomes": {
+    "feasible": 2,
+    "infeasible": 0,
+    "invalid": 0,
+    "failed": 0,
+    "rejected": 0,
+    "unscored": 0,
+    "interrupted": 0,
+    "error": 0,
+    "running": 0
+  },
+  "pareto": [
+    0,
+    1
+  ],
+  "trials": [
+    {
+      "number": 0,
+      "status": "valid",
+      "outcome": "feasible",
+      "recovered": false,
+      "candidate": {
+        "radius": 498.78582224598927,
+        "x": 1.1723554057917587
+      },
+      "assessment": {
+        "feasible": true,
+        "objectives": [
+          {
+            "evaluator": "test.cell_count",
+            "sample": "gamma",
+            "stage": "simulation",
+            "metric": "ecal_barrel.mean_hit_cells",
+            "direction": "minimize",
+            "value": 1.0,
+            "unit": "1",
+            "uncertainty": 0.0
+          }
+        ],
+        "limits": []
+      },
+      "elapsed_seconds": 0.03496328555047512,
+      "stage_seconds": {
+        "gamma/generation": 8.006952702999115e-05,
+        "gamma/simulation": 0.0026311855763196945
+      },
+      "message": null,
+      "diagnostics": [],
+      "record": {
+        "id": "5815adf1-38d6-404b-8b60-40d0a8ee344e",
+        "sha256": "fde3ff2572d633e7af2af8c6fcdb55166984ec42e9bc5d2c6b050f600a8a0492"
+      },
+      "selected": {
+        "study": "41df4d69-e569-5e10-bb18-b6e499d0fb96",
+        "trial": 1,
+        "values": {
+          "x": 1.1723554057917587
+        }
+      },
+      "inner": {
+        "format": "k4opt.study-results/1",
+        "study": {
+          "schema": "k4opt.study/1",
+          "id": "41df4d69-e569-5e10-bb18-b6e499d0fb96",
+          "created": "2026-11-07T16:24:08+00:00",
+          "identity": "ab970b8a983efefb1cfa812be5fdc085eaa9ac6cbab98154a8108927481a6373",
+          "problem": {
+            "definition": {
+              "schema_version": "k4opt.problem/v1alpha1",
+              "name": "trade",
+              "environment": {
+                "key4hep": {
+                  "channel": "nightly",
+                  "version": "2026-10-20"
+                }
+              },
+              "geometry": "compact/det_v1/det_v1.xml",
+              "parameters": {
+                "radius": {
+                  "type": "continuous",
+                  "bounds": [
+                    100.0,
+                    600.0
+                  ],
+                  "targets": {
+                    "geometry": "InnerTracker_Barrel_radius_1"
+                  }
+                },
+                "x": {
+                  "type": "continuous",
+                  "bounds": [
+                    1.0,
+                    2.0
+                  ],
+                  "targets": {
+                    "evaluators": {
+                      "test.candidate_check": "x"
+                    }
+                  }
+                }
+              },
+              "samples": {
+                "gamma": {
+                  "generation": {
+                    "executor": "gun",
+                    "direction": {
+                      "distribution": "uniform",
+                      "phi": [
+                        0,
+                        360
+                      ],
+                      "theta": [
+                        80,
+                        100
+                      ],
+                      "unit": "deg"
+                    },
+                    "energy": {
+                      "unit": "GeV",
+                      "value": 10
+                    },
+                    "particle": "gamma"
+                  },
+                  "simulation": {
+                    "executor": "ddsim",
+                    "events": 2,
+                    "seed": 1
+                  }
+                }
+              },
+              "evaluators": [
+                {
+                  "name": "test.cell_count",
+                  "version": "1",
+                  "stage": "simulation",
+                  "samples": [
+                    "gamma"
+                  ],
+                  "collections": {
+                    "hits": "ECalBarrelCollection"
+                  }
+                },
+                {
+                  "name": "test.candidate_check",
+                  "version": "1"
+                }
+              ],
+              "objectives": [
+                {
+                  "sample": "gamma",
+                  "evaluator": "test.cell_count",
+                  "stage": "simulation",
+                  "metric": "ecal_barrel.mean_hit_cells",
+                  "direction": "minimize"
+                }
+              ],
+              "optimization": {
+                "parameters": [
+                  "radius"
+                ],
+                "inner": {
+                  "parameters": [
+                    "x"
+                  ],
+                  "trials": 3,
+                  "objective": {
+                    "evaluator": "test.candidate_check",
+                    "stage": "analysis",
+                    "metric": "seen",
+                    "direction": "minimize"
+                  }
+                }
+              }
+            }
+          },
+          "inputs": {},
+          "implementations": {
+            "test.cell_count": {
+              "version": "1",
+              "stage": "simulation",
+              "metrics": [
+                {
+                  "stage": "simulation",
+                  "metric": "ecal_barrel.mean_hit_cells",
+                  "unit": "1"
+                }
+              ],
+              "artifacts": null,
+              "roles": null,
+              "source": {
+                "bytes": 700,
+                "sha256": "0679f92fb45d1774fa17cd41875591bfffd5c43c2217ddba49bbafc15b5eac47",
+                "helpers": {},
+                "executed": true,
+                "revision": {
+                  "commit": "3157c81652cdddd437e9baff36ddd8810da18f44",
+                  "dirty": false
+                }
+              }
+            },
+            "test.candidate_check": {
+              "version": "1",
+              "stage": null,
+              "metrics": [
+                {
+                  "stage": "analysis",
+                  "metric": "seen",
+                  "unit": "1"
+                }
+              ],
+              "artifacts": null,
+              "roles": null,
+              "source": {
+                "bytes": 1404,
+                "sha256": "dbacad0b576d0924f46fab454f9ef42a534f931598d3323222d3a8f6ddd9da34",
+                "helpers": {},
+                "executed": true,
+                "revision": {
+                  "commit": "3157c81652cdddd437e9baff36ddd8810da18f44",
+                  "dirty": false
+                }
+              }
+            }
+          },
+          "geometry": {
+            "compact": "compact/det_v1/det_v1.xml",
+            "fingerprint": "e4c9b0a8bdb25645c7c7de8968f8ac0d64c9740aae096e47acfbb7dd6b22f1c0",
+            "targets": [
+              {
+                "parameter": "radius",
+                "target": "constants.InnerTracker_Barrel_radius_1",
+                "file": "compact/det_v1/tracker.xml",
+                "locator": "/lccdd/define/constant[2]",
+                "attribute": "value",
+                "value": "400*mm"
+              }
+            ],
+            "externals": {
+              "${DD4hepINSTALL}/DDDetectors/compact/detector_types.xml": {
+                "sha256": "e54242c3ee38e06a6bd85c16d7a31105d6ee659b44c4e821408a5154bfa27bff",
+                "files": {}
+              }
+            }
+          },
+          "environment": {
+            "KEY4HEP_STACK": "/stack/2026-10-20"
+          },
+          "programs": {
+            "ddsim": {
+              "bytes": 2983,
+              "sha256": "df60ea5dd23511064371ca26f9e614f157172c700edcda4f1563ba6322237ee3",
+              "interpreter": {
+                "bytes": 19096,
+                "sha256": "32f9e05134e56cbfdb4b9d6bf3a469540c4109e6db323be43dd46556d516a071"
+              }
+            }
+          },
+          "search": {
+            "PATH": "59d3859c62e3e9462e5897388b6514c0bd655326d9d2692f2ec39b739cbff28b",
+            "PYTHONPATH": "fb612838a27e1b76cbb606610c9da1c18ec85778dcc2906d01995c9ee571c813",
+            "LD_LIBRARY_PATH": "8b03ea9b02c6d019d4ee9f16f5fd2507a3f59cd9f67efa2bd6a0170e37cae9d7",
+            "ROOT_INCLUDE_PATH": "d40d05e8c89e6c64e5566fb8c46e36662b09ea9939b867e0ad1d601e3d4a1e4e"
+          },
+          "k4opt": {
+            "version": "0.1.0",
+            "sha256": "b602e6ec8bca9c91039c5a846ac145b9b3f2a0ccefa299aae3723fc0e5efa555",
+            "git": {
+              "commit": "3157c81652cdddd437e9baff36ddd8810da18f44",
+              "dirty": false
+            }
+          },
+          "scope": {
+            "level": 1,
+            "searched": [
+              "x"
+            ],
+            "fixed": {
+              "radius": 498.78582224598927
+            },
+            "replicate": 0,
+            "parent": {
+              "study": "91f3f906-2bdd-4e12-af31-083b1c2facaa",
+              "trial": 0
+            }
+          },
+          "optimizer": {
+            "backend": "optuna",
+            "version": "5.0.0",
+            "study": "trade-41df4d69-e569-5e10-bb18-b6e499d0fb96",
+            "sampler": {
+              "name": "TPESampler",
+              "seed": 2791857979,
+              "n_startup_trials": 10,
+              "constant_liar": true,
+              "seeding": "per session, from the seed and the number of trials"
+            },
+            "objectives": [
+              "test.candidate_check/analysis/seen"
+            ],
+            "directions": [
+              "minimize"
+            ],
+            "parameters": {
+              "x": {
+                "name": "FloatDistribution",
+                "attributes": {
+                  "step": null,
+                  "low": 1.0,
+                  "high": 2.0,
+                  "log": false
+                }
+              }
+            },
+            "constraints": [],
+            "constraint_values": "margin / scale"
+          }
+        },
+        "outcomes": {
+          "feasible": 3,
+          "infeasible": 0,
+          "invalid": 0,
+          "failed": 0,
+          "rejected": 0,
+          "unscored": 0,
+          "interrupted": 0,
+          "error": 0,
+          "running": 0
+        },
+        "pareto": [
+          1
+        ],
+        "trials": [
+          {
+            "number": 0,
+            "status": "valid",
+            "outcome": "feasible",
+            "recovered": false,
+            "candidate": {
+              "radius": 498.78582224598927,
+              "x": 1.272344834568808
+            },
+            "assessment": {
+              "feasible": true,
+              "objectives": [
+                {
+                  "evaluator": "test.candidate_check",
+                  "sample": null,
+                  "stage": "analysis",
+                  "metric": "seen",
+                  "direction": "minimize",
+                  "value": 1.272344834568808,
+                  "unit": "1",
+                  "uncertainty": null
+                }
+              ],
+              "limits": []
+            },
+            "elapsed_seconds": 0.029370062053203583,
+            "stage_seconds": {},
+            "message": null,
+            "diagnostics": [],
+            "record": {
+              "id": "c2b8bea5-8ab5-48fe-92f5-644cef600099",
+              "sha256": "bfcb692499e8af965c43bd9904aa100529ad9734f5cbc60dd3a3328fdd62535c"
+            },
+            "selected": null,
+            "inner": null,
+            "pareto": false
+          },
+          {
+            "number": 1,
+            "status": "valid",
+            "outcome": "feasible",
+            "recovered": false,
+            "candidate": {
+              "radius": 498.78582224598927,
+              "x": 1.1723554057917587
+            },
+            "assessment": {
+              "feasible": true,
+              "objectives": [
+                {
+                  "evaluator": "test.candidate_check",
+                  "sample": null,
+                  "stage": "analysis",
+                  "metric": "seen",
+                  "direction": "minimize",
+                  "value": 1.1723554057917587,
+                  "unit": "1",
+                  "uncertainty": null
+                }
+              ],
+              "limits": []
+            },
+            "elapsed_seconds": 0.029838064685463905,
+            "stage_seconds": {},
+            "message": null,
+            "diagnostics": [],
+            "record": {
+              "id": "455020b9-0bbc-4895-98f1-bcbbff6043ad",
+              "sha256": "f02e2b26996a2ebc2cb71450535eb1592d50c2e201a5bd955ab670f948ca042c"
+            },
+            "selected": null,
+            "inner": null,
+            "pareto": true
+          },
+          {
+            "number": 2,
+            "status": "valid",
+            "outcome": "feasible",
+            "recovered": false,
+            "candidate": {
+              "radius": 498.78582224598927,
+              "x": 1.845812677097018
+            },
+            "assessment": {
+              "feasible": true,
+              "objectives": [
+                {
+                  "evaluator": "test.candidate_check",
+                  "sample": null,
+                  "stage": "analysis",
+                  "metric": "seen",
+                  "direction": "minimize",
+                  "value": 1.845812677097018,
+                  "unit": "1",
+                  "uncertainty": null
+                }
+              ],
+              "limits": []
+            },
+            "elapsed_seconds": 0.028805576264858246,
+            "stage_seconds": {},
+            "message": null,
+            "diagnostics": [],
+            "record": {
+              "id": "47a9b0aa-6f9d-4ee6-9976-4dcbb8bdd69c",
+              "sha256": "09d78948e646b9ebc8f7a846aacc53122aed504bdbf92f663f1a64db22754cf5"
+            },
+            "selected": null,
+            "inner": null,
+            "pareto": false
+          }
+        ]
+      },
+      "pareto": true
+    },
+    {
+      "number": 1,
+      "status": "valid",
+      "outcome": "feasible",
+      "recovered": false,
+      "candidate": {
+        "radius": 178.4512680474968,
+        "x": 1.5113331420401495
+      },
+      "assessment": {
+        "feasible": true,
+        "objectives": [
+          {
+            "evaluator": "test.cell_count",
+            "sample": "gamma",
+            "stage": "simulation",
+            "metric": "ecal_barrel.mean_hit_cells",
+            "direction": "minimize",
+            "value": 1.0,
+            "unit": "1",
+            "uncertainty": 0.0
+          }
+        ],
+        "limits": []
+      },
+      "elapsed_seconds": 0.03810066729784012,
+      "stage_seconds": {
+        "gamma/generation": 9.423866868019104e-05,
+        "gamma/simulation": 0.0026842262595891953
+      },
+      "message": null,
+      "diagnostics": [],
+      "record": {
+        "id": "3f5a4ba0-e20d-4d59-8183-d595edf63834",
+        "sha256": "3eae9236af1d2a13801af85056d450ba5f7e6ed2588ef4820e1107a32d1190a8"
+      },
+      "selected": {
+        "study": "a2a5431e-0886-5c5d-be19-8cee1e51c319",
+        "trial": 2,
+        "values": {
+          "x": 1.5113331420401495
+        }
+      },
+      "inner": {
+        "format": "k4opt.study-results/1",
+        "study": {
+          "schema": "k4opt.study/1",
+          "id": "a2a5431e-0886-5c5d-be19-8cee1e51c319",
+          "created": "2026-11-07T16:24:08+00:00",
+          "identity": "ab970b8a983efefb1cfa812be5fdc085eaa9ac6cbab98154a8108927481a6373",
+          "problem": {
+            "definition": {
+              "schema_version": "k4opt.problem/v1alpha1",
+              "name": "trade",
+              "environment": {
+                "key4hep": {
+                  "channel": "nightly",
+                  "version": "2026-10-20"
+                }
+              },
+              "geometry": "compact/det_v1/det_v1.xml",
+              "parameters": {
+                "radius": {
+                  "type": "continuous",
+                  "bounds": [
+                    100.0,
+                    600.0
+                  ],
+                  "targets": {
+                    "geometry": "InnerTracker_Barrel_radius_1"
+                  }
+                },
+                "x": {
+                  "type": "continuous",
+                  "bounds": [
+                    1.0,
+                    2.0
+                  ],
+                  "targets": {
+                    "evaluators": {
+                      "test.candidate_check": "x"
+                    }
+                  }
+                }
+              },
+              "samples": {
+                "gamma": {
+                  "generation": {
+                    "executor": "gun",
+                    "direction": {
+                      "distribution": "uniform",
+                      "phi": [
+                        0,
+                        360
+                      ],
+                      "theta": [
+                        80,
+                        100
+                      ],
+                      "unit": "deg"
+                    },
+                    "energy": {
+                      "unit": "GeV",
+                      "value": 10
+                    },
+                    "particle": "gamma"
+                  },
+                  "simulation": {
+                    "executor": "ddsim",
+                    "events": 2,
+                    "seed": 1
+                  }
+                }
+              },
+              "evaluators": [
+                {
+                  "name": "test.cell_count",
+                  "version": "1",
+                  "stage": "simulation",
+                  "samples": [
+                    "gamma"
+                  ],
+                  "collections": {
+                    "hits": "ECalBarrelCollection"
+                  }
+                },
+                {
+                  "name": "test.candidate_check",
+                  "version": "1"
+                }
+              ],
+              "objectives": [
+                {
+                  "sample": "gamma",
+                  "evaluator": "test.cell_count",
+                  "stage": "simulation",
+                  "metric": "ecal_barrel.mean_hit_cells",
+                  "direction": "minimize"
+                }
+              ],
+              "optimization": {
+                "parameters": [
+                  "radius"
+                ],
+                "inner": {
+                  "parameters": [
+                    "x"
+                  ],
+                  "trials": 3,
+                  "objective": {
+                    "evaluator": "test.candidate_check",
+                    "stage": "analysis",
+                    "metric": "seen",
+                    "direction": "minimize"
+                  }
+                }
+              }
+            }
+          },
+          "inputs": {},
+          "implementations": {
+            "test.cell_count": {
+              "version": "1",
+              "stage": "simulation",
+              "metrics": [
+                {
+                  "stage": "simulation",
+                  "metric": "ecal_barrel.mean_hit_cells",
+                  "unit": "1"
+                }
+              ],
+              "artifacts": null,
+              "roles": null,
+              "source": {
+                "bytes": 700,
+                "sha256": "0679f92fb45d1774fa17cd41875591bfffd5c43c2217ddba49bbafc15b5eac47",
+                "helpers": {},
+                "executed": true,
+                "revision": {
+                  "commit": "3157c81652cdddd437e9baff36ddd8810da18f44",
+                  "dirty": false
+                }
+              }
+            },
+            "test.candidate_check": {
+              "version": "1",
+              "stage": null,
+              "metrics": [
+                {
+                  "stage": "analysis",
+                  "metric": "seen",
+                  "unit": "1"
+                }
+              ],
+              "artifacts": null,
+              "roles": null,
+              "source": {
+                "bytes": 1404,
+                "sha256": "dbacad0b576d0924f46fab454f9ef42a534f931598d3323222d3a8f6ddd9da34",
+                "helpers": {},
+                "executed": true,
+                "revision": {
+                  "commit": "3157c81652cdddd437e9baff36ddd8810da18f44",
+                  "dirty": false
+                }
+              }
+            }
+          },
+          "geometry": {
+            "compact": "compact/det_v1/det_v1.xml",
+            "fingerprint": "e4c9b0a8bdb25645c7c7de8968f8ac0d64c9740aae096e47acfbb7dd6b22f1c0",
+            "targets": [
+              {
+                "parameter": "radius",
+                "target": "constants.InnerTracker_Barrel_radius_1",
+                "file": "compact/det_v1/tracker.xml",
+                "locator": "/lccdd/define/constant[2]",
+                "attribute": "value",
+                "value": "400*mm"
+              }
+            ],
+            "externals": {
+              "${DD4hepINSTALL}/DDDetectors/compact/detector_types.xml": {
+                "sha256": "e54242c3ee38e06a6bd85c16d7a31105d6ee659b44c4e821408a5154bfa27bff",
+                "files": {}
+              }
+            }
+          },
+          "environment": {
+            "KEY4HEP_STACK": "/stack/2026-10-20"
+          },
+          "programs": {
+            "ddsim": {
+              "bytes": 2983,
+              "sha256": "df60ea5dd23511064371ca26f9e614f157172c700edcda4f1563ba6322237ee3",
+              "interpreter": {
+                "bytes": 19096,
+                "sha256": "32f9e05134e56cbfdb4b9d6bf3a469540c4109e6db323be43dd46556d516a071"
+              }
+            }
+          },
+          "search": {
+            "PATH": "59d3859c62e3e9462e5897388b6514c0bd655326d9d2692f2ec39b739cbff28b",
+            "PYTHONPATH": "fb612838a27e1b76cbb606610c9da1c18ec85778dcc2906d01995c9ee571c813",
+            "LD_LIBRARY_PATH": "8b03ea9b02c6d019d4ee9f16f5fd2507a3f59cd9f67efa2bd6a0170e37cae9d7",
+            "ROOT_INCLUDE_PATH": "d40d05e8c89e6c64e5566fb8c46e36662b09ea9939b867e0ad1d601e3d4a1e4e"
+          },
+          "k4opt": {
+            "version": "0.1.0",
+            "sha256": "b602e6ec8bca9c91039c5a846ac145b9b3f2a0ccefa299aae3723fc0e5efa555",
+            "git": {
+              "commit": "3157c81652cdddd437e9baff36ddd8810da18f44",
+              "dirty": false
+            }
+          },
+          "scope": {
+            "level": 1,
+            "searched": [
+              "x"
+            ],
+            "fixed": {
+              "radius": 178.4512680474968
+            },
+            "replicate": 0,
+            "parent": {
+              "study": "91f3f906-2bdd-4e12-af31-083b1c2facaa",
+              "trial": 1
+            }
+          },
+          "optimizer": {
+            "backend": "optuna",
+            "version": "5.0.0",
+            "study": "trade-a2a5431e-0886-5c5d-be19-8cee1e51c319",
+            "sampler": {
+              "name": "TPESampler",
+              "seed": 3602223452,
+              "n_startup_trials": 10,
+              "constant_liar": true,
+              "seeding": "per session, from the seed and the number of trials"
+            },
+            "objectives": [
+              "test.candidate_check/analysis/seen"
+            ],
+            "directions": [
+              "minimize"
+            ],
+            "parameters": {
+              "x": {
+                "name": "FloatDistribution",
+                "attributes": {
+                  "step": null,
+                  "low": 1.0,
+                  "high": 2.0,
+                  "log": false
+                }
+              }
+            },
+            "constraints": [],
+            "constraint_values": "margin / scale"
+          }
+        },
+        "outcomes": {
+          "feasible": 3,
+          "infeasible": 0,
+          "invalid": 0,
+          "failed": 0,
+          "rejected": 0,
+          "unscored": 0,
+          "interrupted": 0,
+          "error": 0,
+          "running": 0
+        },
+        "pareto": [
+          2
+        ],
+        "trials": [
+          {
+            "number": 0,
+            "status": "valid",
+            "outcome": "feasible",
+            "recovered": false,
+            "candidate": {
+              "radius": 178.4512680474968,
+              "x": 1.599674579201462
+            },
+            "assessment": {
+              "feasible": true,
+              "objectives": [
+                {
+                  "evaluator": "test.candidate_check",
+                  "sample": null,
+                  "stage": "analysis",
+                  "metric": "seen",
+                  "direction": "minimize",
+                  "value": 1.599674579201462,
+                  "unit": "1",
+                  "uncertainty": null
+                }
+              ],
+              "limits": []
+            },
+            "elapsed_seconds": 0.03023822046816349,
+            "stage_seconds": {},
+            "message": null,
+            "diagnostics": [],
+            "record": {
+              "id": "848a85e4-f73d-41e0-b8dc-44bc8de08115",
+              "sha256": "13404505987ba61707df75eef4e3ecb80bb5105ca5f92eb6ccde0bdeba8b3f1d"
+            },
+            "selected": null,
+            "inner": null,
+            "pareto": false
+          },
+          {
+            "number": 1,
+            "status": "valid",
+            "outcome": "feasible",
+            "recovered": false,
+            "candidate": {
+              "radius": 178.4512680474968,
+              "x": 1.8837515135474643
+            },
+            "assessment": {
+              "feasible": true,
+              "objectives": [
+                {
+                  "evaluator": "test.candidate_check",
+                  "sample": null,
+                  "stage": "analysis",
+                  "metric": "seen",
+                  "direction": "minimize",
+                  "value": 1.8837515135474643,
+                  "unit": "1",
+                  "uncertainty": null
+                }
+              ],
+              "limits": []
+            },
+            "elapsed_seconds": 0.031644564121961594,
+            "stage_seconds": {},
+            "message": null,
+            "diagnostics": [],
+            "record": {
+              "id": "faaa83d2-9d98-4616-92aa-c02e5149dc0a",
+              "sha256": "5ba1b2f0ca366e028b405745d2eb1c2705c097183be4b37a765b05f1065b31a0"
+            },
+            "selected": null,
+            "inner": null,
+            "pareto": false
+          },
+          {
+            "number": 2,
+            "status": "valid",
+            "outcome": "feasible",
+            "recovered": false,
+            "candidate": {
+              "radius": 178.4512680474968,
+              "x": 1.5113331420401495
+            },
+            "assessment": {
+              "feasible": true,
+              "objectives": [
+                {
+                  "evaluator": "test.candidate_check",
+                  "sample": null,
+                  "stage": "analysis",
+                  "metric": "seen",
+                  "direction": "minimize",
+                  "value": 1.5113331420401495,
+                  "unit": "1",
+                  "uncertainty": null
+                }
+              ],
+              "limits": []
+            },
+            "elapsed_seconds": 0.031010309234261513,
+            "stage_seconds": {},
+            "message": null,
+            "diagnostics": [],
+            "record": {
+              "id": "00ebd954-a736-4c5c-a7b6-9907ccc0e22f",
+              "sha256": "40418f450f05cc512e3d751286c2dc0a4b44011ed8bbdeea3cb52e5d166c8da0"
+            },
+            "selected": null,
+            "inner": null,
+            "pareto": true
+          }
+        ]
+      },
+      "pareto": true
+    }
+  ]
+}

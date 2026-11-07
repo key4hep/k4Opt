@@ -92,7 +92,6 @@ def test_a_problem_that_makes_no_events_from_a_seed_has_no_replicate() -> None:
     spec = parse_problem(
         {
             "schema_version": "k4opt.problem/v1alpha1",
-            "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
             "geometry": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
             "parameters": {
                 "cell": {

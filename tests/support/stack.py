@@ -43,14 +43,14 @@ def install(monkeypatch: pytest.MonkeyPatch, marks: Path | None = None, **told: 
     monkeypatch.syspath_prepend(str(FAKE_STACK / "python"))
     monkeypatch.setattr(edm4hep, "_frames", lambda path: READING.Reader(str(path)).events)
     control = dict(told) | ({} if marks is None else {"dir": str(marks)})
-    monkeypatch.setenv("FAKE_DDSIM", json.dumps(control))
+    monkeypatch.setenv("PYTEST_FAKE_DDSIM", json.dumps(control))
 
 
 def install_k4run(monkeypatch: pytest.MonkeyPatch, **told: Any) -> None:
     """Run the fake ``k4run`` of ``fake_stack/bin``, here and in every worker started from now
     on; ``told`` says what it does (see ``fake_stack/bin/k4run``)."""
     monkeypatch.setenv("PATH", f"{FAKE_STACK / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("FAKE_K4RUN", json.dumps(told))
+    monkeypatch.setenv("PYTEST_FAKE_K4RUN", json.dumps(told))
 
 
 def eventually(condition: Callable[[], bool], timeout: float = 30.0) -> bool:

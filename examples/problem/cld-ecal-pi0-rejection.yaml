@@ -16,8 +16,6 @@
 # Needs the Key4hep environment (ddsim, podio, $K4GEO); about 11 minutes per sample on one core.
 schema_version: k4opt.problem/v1alpha1
 name: cld-ecal-pi0-rejection
-environment:
-  key4hep: {channel: nightly, version: "2026-10-20"}
 geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 parameters:
   # CLD uses 5.1 mm; at 20 mm a 50 GeV pi0 looks like one photon

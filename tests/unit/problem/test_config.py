@@ -52,8 +52,6 @@ def test_loads_the_checked_in_example() -> None:
     # the CLD geometry is not part of the repository, so only the parse is checked
     problem = parse_problem(yaml.safe_load(EXAMPLE.read_text()), source=EXAMPLE)
     assert problem.name == "cld-ecal-granularity"
-    assert problem.environment.key4hep.channel == "nightly"
-    assert problem.environment.key4hep.version == "2026-10-20"
     assert problem.geometry == "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml"
     (parameter,) = problem.parameters
     (destination,) = parameter.targets
@@ -95,12 +93,6 @@ def test_name_defaults_to_the_file_stem(doc: dict[str, Any], tmp_path: Path) -> 
     del doc["name"]
     assert parse_problem(doc).name is None
     assert parse_problem(doc, source=tmp_path / "my-study.yaml").name == "my-study"
-
-
-@pytest.mark.parametrize("channel", ["release", "nightly"])
-def test_accepts_both_channels(doc: dict[str, Any], channel: str) -> None:
-    doc["environment"]["key4hep"] = {"channel": channel, "version": "2026-04-08"}
-    assert parse_problem(doc).environment.key4hep.channel == channel
 
 
 def test_minimal_document(doc: dict[str, Any]) -> None:
@@ -267,9 +259,7 @@ def test_wrong_version_is_reported_before_unknown_keys(doc: dict[str, Any]) -> N
     reject(doc, "unsupported version")
 
 
-@pytest.mark.parametrize(
-    "key", ["environment", "geometry", "parameters", "evaluators", "objectives"]
-)
+@pytest.mark.parametrize("key", ["geometry", "parameters", "evaluators", "objectives"])
 def test_missing_top_level_sections(doc: dict[str, Any], key: str) -> None:
     del doc[key]
     reject(doc, f"missing required key(s) ['{key}']")
@@ -279,8 +269,6 @@ def test_missing_top_level_sections(doc: dict[str, Any], key: str) -> None:
     ("path", "message"),
     [
         ((), "top level: unknown key(s) ['extra']"),
-        (("environment",), "environment: unknown key(s) ['extra']"),
-        (("environment", "key4hep"), "environment.key4hep: unknown key(s) ['extra']"),
         (("parameters", "ecal_cell_size"), "parameters.ecal_cell_size: unknown key(s) ['extra']"),
         (
             ("parameters", "ecal_cell_size", "targets"),
@@ -510,8 +498,6 @@ def test_an_objective_names_a_binding_not_an_implementation(doc: dict[str, Any])
 @pytest.mark.parametrize(
     ("section", "value", "message"),
     [
-        ("environment", [], "environment: must be a mapping, got list"),
-        ("environment", {}, "missing required key(s) ['key4hep']"),
         ("geometry", {"entry": "a.xml"}, "geometry: must be a non-empty string, got dict"),
         ("parameters", [], "parameters: must be a mapping, got list"),
         ("parameters", {}, "parameters: must name at least one parameter"),
@@ -540,17 +526,9 @@ def test_document_must_be_a_mapping(data: object) -> None:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda d: d["environment"]["key4hep"].update(channel="stable"), "channel: must be one of"),
-        (
-            lambda d: d["environment"]["key4hep"].update(version=""),
-            "key4hep.version: must be a non-empty",
-        ),
-        (lambda d: d["environment"]["key4hep"].update(version=2026), "got int 2026; quote it"),
-        (
-            lambda d: d["environment"]["key4hep"].update(version=datetime.date(2026, 10, 20)),
-            "got date",
-        ),
         (lambda d: d.update(geometry="  "), "geometry: must be a non-empty string"),
+        (lambda d: d.update(geometry=2026), "got int 2026; quote it"),
+        (lambda d: d.update(geometry=datetime.date(2026, 10, 20)), "got date"),
         (lambda d: d.update(name=""), "name: must be a non-empty string"),
         (
             lambda d: d["evaluators"][0].update(name=""),
@@ -951,7 +929,7 @@ def test_yaml_level_errors(write: Write, text: str) -> None:
 
 def test_an_unconstructible_value_names_its_position(write: Write) -> None:
     with pytest.raises(ProblemConfigError, match=r"(?s)invalid timestamp '2026-02-30'.*line 2"):
-        load_problem(write("name: x\nenvironment: {key4hep: 2026-02-30}\n"))
+        load_problem(write("name: x\ngeometry: {when: 2026-02-30}\n"))
 
 
 def test_duplicate_key_message_has_the_line(write: Write) -> None:
@@ -977,10 +955,8 @@ def test_non_string_key_in_a_file(write: Write) -> None:
 
 
 def test_unquoted_date_is_flagged(write: Write) -> None:
-    text = good_yaml().replace('version: "2026-10-20"', "version: 2026-10-20")
-    with pytest.raises(
-        ProblemConfigError, match=r"key4hep\.version: must be a non-empty string, got date"
-    ):
+    text = re.sub(r"^name: .*$", "name: 2026-10-20", good_yaml(), flags=re.MULTILINE)
+    with pytest.raises(ProblemConfigError, match=r"name: must be a non-empty string, got date"):
         load_problem(write(text))
 
 
@@ -1025,7 +1001,6 @@ def test_very_deep_yaml_is_a_clean_error(write: Write) -> None:
 def test_aliases_and_merge_keys_are_supported(write: Write) -> None:
     text = """
 schema_version: k4opt.problem/v1alpha1
-environment: {key4hep: {channel: release, version: "2026-04-08"}}
 geometry: g.xml
 parameters:
   x: {targets: {geometry: X}, type: integer, bounds: [1, 3]}

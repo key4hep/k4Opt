@@ -46,7 +46,7 @@ GATED = """
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
         def evaluate(self, request):
-            told = json.loads(os.environ["K4OPT_TEST_GATE"])
+            told = json.loads(os.environ["PYTEST_K4OPT_GATE"])
             run = request.workdir.parents[1].name  # <trial>/evaluators/test.trade_off
             marks = Path(told["marks"])
             (marks / f"{run}.started").write_text(str(os.getpid()))
@@ -79,7 +79,7 @@ def gated(tmp_path: Path) -> Any:
 
 def gate(monkeypatch: pytest.MonkeyPatch, marks: Path, **told: Any) -> dict[str, str]:
     """Tell ``GATED`` what to do, here and in every worker started from now on."""
-    environment = {"K4OPT_TEST_GATE": json.dumps({"marks": str(marks), **told})}
+    environment = {"PYTEST_K4OPT_GATE": json.dumps({"marks": str(marks), **told})}
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
     return environment

@@ -10,11 +10,10 @@ the peak memory). A program that fails is reported by :attr:`ProgramRun.error`, 
 exception: settings that cannot be run are refused before (:class:`ProgramError`).
 
 What a program runs is identified by :func:`locate` and :func:`identify` (its executable, where
-its links lead, with its size and SHA-256) and :func:`search_environment` (the variables that
-decide which interpreter and which libraries and modules it loads). ddsim and k4run are Python
-scripts (``#!/usr/bin/env python3``): the same script with another ``PYTHONPATH`` runs other
-code, and the libraries behind it are identified only as far as ``KEY4HEP_STACK`` names an
-immutable release.
+its links lead, with its size and SHA-256). ddsim and k4run are Python scripts
+(``#!/usr/bin/env python3``): the same script with another ``PYTHONPATH`` runs other code, so what
+they load is identified with the build and the variables they run with
+(:class:`k4opt.software.Software`).
 """
 
 from __future__ import annotations
@@ -40,11 +39,6 @@ from k4opt.jsonio import write_json
 
 LOG_TAIL = 15
 """Lines of standard error quoted in the message of a program that failed."""
-
-SEARCH_VARIABLES = ("PATH", "PYTHONPATH", "LD_LIBRARY_PATH", "ROOT_INCLUDE_PATH")
-"""The environment variables that decide which interpreter, libraries and modules a program of
-the stack loads (:func:`search_environment`). Of ``PATH``, only the interpreter it finds for a
-program decides what that program runs (:func:`identify`)."""
 
 LOG_ROLES = ("stdout", "stderr", "command")
 """The files :func:`run` keeps, by role: the program's standard output and error and the record of
@@ -165,20 +159,6 @@ def _interpreter(script: Path) -> Path | None:
     if found is None:
         raise OSError(f"PATH finds no {name}, which the #! line of {script} names")
     return Path(found)
-
-
-def search_environment() -> dict[str, str | None]:
-    """The SHA-256 of each variable of :data:`SEARCH_VARIABLES` as this process has it,
-    ``None`` for one that is not set: what tells apart two shells that would run other code
-    through the same executables (a local build layered over a release)."""
-    return {
-        name: None if (value := os.environ.get(name)) is None else _text_digest(value)
-        for name in SEARCH_VARIABLES
-    }
-
-
-def _text_digest(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def tail(path: Path) -> str:

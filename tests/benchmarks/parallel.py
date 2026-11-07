@@ -87,7 +87,7 @@ def _fake(directory: Path, events: int, burn: float) -> tuple[Path, list[Any], s
 
     os.environ["PATH"] = f"{stack.FAKE_STACK / 'bin'}{os.pathsep}{os.environ['PATH']}"
     sys.path.insert(0, str(stack.FAKE_STACK / "python"))  # the workers get this path too
-    os.environ["FAKE_DDSIM"] = json.dumps({"*": {"burn": burn}})
+    os.environ["PYTEST_FAKE_DDSIM"] = json.dumps({"*": {"burn": burn}})
     from tests.support.geometry import MINI_GEO
 
     os.environ["K4GEO"] = str(MINI_GEO)

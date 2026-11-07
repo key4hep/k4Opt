@@ -207,8 +207,8 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      `new_value`), the parameters that set it (`varies`), the path and SHA-256 of each file its external
      references read (`externals`) and of each file only this candidate's values name
      (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), the time of the
-     whole evaluation, `run_dir`, where the run was made, and the environment (`declared`: the
-     problem's pin; `observed`: the k4opt version, `k4opt_source` with the SHA-256 of k4opt's
+     whole evaluation, `run_dir`, where the run was made, and the environment (`observed`: the
+     k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git
      checkout (`null` when it is installed rather than checked out), `KEY4HEP_STACK` and `K4GEO`
      (those the session opened with, checked before each candidate), `programs` (the `ddsim`
@@ -217,8 +217,8 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      `interpreter` its `#!` line names as `PATH` found it, `null` for a program that is no
      script; a program `null` was not found, and its stages fail; one found whose file or
      interpreter cannot be read keeps the session from opening) and
-     `search` (the SHA-256 of `PATH`, `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`,
-     which decide what those programs load); the pin and the stack are not compared).
+     `software` (the build of the stack, the system and the SHA-256 of every variable not known
+     to be irrelevant, with their `id`: [software](software.md)).
 
 The command prints the candidate's values, its status, each evaluation's status and metrics with their
 uncertainty (a binding named with `as` beside its evaluator, and the sample it measures:
@@ -329,8 +329,9 @@ before creating anything, and `CandidateRejected` for a candidate an evaluator r
 problem or supplied) that changes during a session (other bytes under the same path, or removed)
 stops the next candidate with a `RunError` before anything is created; `verify_inputs()` checks
 it on its own. So does a change of what the geometry's external references read, of
-`KEY4HEP_STACK` or `K4GEO`, of a program the stages run (the executable the session found), or
-of k4opt's files: the candidates of a session run in the
+`KEY4HEP_STACK` or `K4GEO`, of the [software](software.md) (a slot republished as much as any
+variable not known to be irrelevant), of a program the stages run (the executable the session
+found), or of k4opt's files: the candidates of a session run in the
 environment it opened in, which every summary of the session records. A change while a candidate
 runs raises the `RunError` after its stages and evaluators ran, and its directory keeps their
 files but no `summary.json`: the record could not say which files or code it was made with. A
@@ -343,7 +344,7 @@ the session evaluates with: the problem's path and definition, the identities of
 stages read, the `implementations` (the version, stage, source and declared metrics of each
 evaluator the problem binds, by name, once however often it is bound), the compact file,
 source root and fingerprint of the unmodified geometry and what its external references read,
-`KEY4HEP_STACK` and `K4GEO`, the `programs` and `search` variables, and k4opt's version, code
+`KEY4HEP_STACK` and `K4GEO`, the `programs` and `software`, and k4opt's version, code
 SHA-256 and checkout. Each program a stage runs is found on `PATH` once, when the session opens,
 and every candidate runs that executable, whatever `PATH` says later. The environment, the
 programs and k4opt's identity are taken when the session opens, before anything runs, and every summary
@@ -414,8 +415,8 @@ with EvaluationSession.open(problem, [CaloPhoton], workers=4) as session:  # sto
   code that ran (`executed: true`, [details](evaluation.md#loading-an-evaluator)), since a worker
   that loads it from its source must run what the session did; one that was not is refused when
   the session opens (`RunError`), never evaluated inline instead. A
-  worker refuses to start unless the evaluators, k4opt's code, `KEY4HEP_STACK` and `K4GEO` are
-  the session's. The session itself then only checks, assesses and writes the records, and it
+  worker refuses to start unless the evaluators, k4opt's code, `KEY4HEP_STACK`, `K4GEO` and the
+  [software](software.md) are the session's, and names what differs. The session itself then only checks, assesses and writes the records, and it
   alone writes them. Even one worker isolates the session from its evaluators: a worker that
   dies fails only its task, until the same task has killed N + 1 workers in a row (below); with
   the one worker of `k4opt optimize`, a second death in a row stops the study.

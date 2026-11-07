@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from k4opt.evaluation import EvaluationContractError, edm4hep
-from k4opt.execution import EvaluationSession, ProvenanceError, Rejected
+from k4opt.execution import EvaluationSession, ProvenanceError, Rejected, RunError
 from k4opt.k4run import properties
 from k4opt.record import SUMMARY_NAME
 from tests.support import simulation, stack
@@ -211,7 +211,7 @@ def test_a_reconstruction_runs_in_a_worker_and_loses_events_there_too(
     assert stage["message"].startswith("incomplete reconstruction: 2 of the 3 simulated events")
 
 
-def test_the_job_s_directory_is_where_its_variable_pointed_when_the_session_opened(
+def test_the_variable_that_names_a_job_s_directory_stops_a_session_when_it_changes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     reco_file: Path,
@@ -226,10 +226,13 @@ def test_the_job_s_directory_is_where_its_variable_pointed_when_the_session_open
     doc["samples"]["gamma"]["reconstruction"]["directory"] = "$K4OPT_TEST_CONFIG/CLDConfig"
     reco_file.write_text(yaml.safe_dump(doc))
     with EvaluationSession.open(reco_file, implementations(reco_cells())) as session:
-        # the variable points elsewhere now: the session still runs the job it identified
-        monkeypatch.setenv("K4OPT_TEST_CONFIG", str(other.parent))
         outcome = session.evaluate({RADIUS: 450.0}, tmp_path / "run")
-    assert outcome.candidate.status == "valid"
+        assert outcome.candidate.status == "valid"
+        # the variable points elsewhere now: no candidate runs in another environment
+        monkeypatch.setenv("K4OPT_TEST_CONFIG", str(other.parent))
+        with pytest.raises(RunError, match="differs in K4OPT_TEST_CONFIG"):
+            session.evaluate({RADIUS: 500.0}, tmp_path / "other")
+    assert not (tmp_path / "other").exists()
     summary = json.loads((tmp_path / "run" / SUMMARY_NAME).read_text())
     files = summary["samples"]["gamma"]["stages"]["reconstruction"]["files"]
     assert files["directory/CLDReconstruction.py"]["path"] == str(job / "CLDReconstruction.py")

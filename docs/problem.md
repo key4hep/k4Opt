@@ -19,7 +19,7 @@ records**. It does not replace the Key4hep tools that do the work (`ddsim`, `k4r
 The physicist decides which parameters, ranges, objectives and constraints are
 scientifically meaningful; k4opt records them precisely and reproducibly.
 
-**How to read this page.** Everything you write is in `environment`, `geometry`, `parameters`,
+**How to read this page.** Everything you write is in `geometry`, `parameters`,
 `samples`, `evaluators`, `objectives` and `constraints` ([Key reference](#key-reference)). Evaluation
 records, provenance and identities ([Concepts](#concepts-and-boundaries-future),
 [Identity](#identity-and-provenance)) describe what k4Opt will record and are not part of the file.
@@ -33,11 +33,6 @@ is a readout channel. What a scan of it finds is in [evaluators](evaluators.md#t
 ```yaml
 schema_version: k4opt.problem/v1alpha1
 name: cld-ecal-granularity
-
-environment:
-  key4hep:
-    channel: nightly
-    version: "2026-10-20"
 
 geometry: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 
@@ -105,7 +100,7 @@ comparable.
 | Samples | `samples`: each sample's stages, with their executors, `events`, `seed`, the gun or a `file`, written in the sample or completed from the shared `stages` | the physicist, checked by k4opt; shared by every evaluator that measures the sample | `gamma_10gev`: 1000 photons of 10 GeV, seed 42 |
 | Evaluator inputs | `evaluators[*].collections`, `.settings` | each evaluator's contract, filled by the physicist | the hits in `ECalBarrelCollection`, a threshold of 70 keV |
 | Executor options | the other keys of a stage, such as `physics.list` | the physicist, validated by the tool | `physics.list: FTFP_BERT` |
-| Execution environment | `environment`, `geometry` | the physicist pins, k4opt resolves | nightly `2026-10-20`, CLD_o2_v09 |
+| Execution environment | `geometry`, the active shell | the physicist chooses, k4opt [identifies](software.md) | CLD_o2_v09 on the LCG nightly built Sat Nov 7 2026 |
 | Measured results | evaluation records | the evaluator | `angular_residual = 0.90 ± 0.03 mrad` |
 | Provenance | evaluation records | k4opt records | resolved versions, geometry fingerprint, argv |
 
@@ -120,7 +115,6 @@ stay separate (see [Identity](#identity-and-provenance)).
 | --- | --- | --- |
 | `schema_version` | yes | `k4opt.problem/v1alpha1`. Draft; incompatible changes are expected until a `v1`. |
 | `name` | no | Human-readable label of the problem. It carries no semantics and is not an identity; if omitted, the file name is used. |
-| `environment` | yes | The software stack the problem is meant to be evaluated with. |
 | `timeout` | no | Seconds every stage that runs and every evaluation may take, unless it sets its own `timeout` ([Time limits](#time-limits)). |
 | `geometry` | yes | The starting detector description. |
 | `parameters` | yes | The quantities that vary between candidates. |
@@ -130,20 +124,6 @@ stay separate (see [Identity](#identity-and-provenance)).
 | `objectives` | yes | What to minimize or maximize; one or more. |
 | `constraints` | no | Hard limits on measured quantities. |
 | `optimization` | no | The levels of a nested optimization: which parameters each searches, and how an inner level picks its best trial ([`optimization`](#optimization)). |
-
-### `environment`
-
-`environment.key4hep` pins the Key4hep software:
-
-- `channel`: `release` or `nightly`. Both are written as a date (`2026-04-08`, `2026-10-20`), so the
-  channel cannot be inferred from `version` and is stated explicitly.
-- `version`: the release or nightly identifier (`"2026-10-20"`), always quoted.
-
-The pin identifies an environment; it does not archive its binaries. A nightly may
-disappear, so a record must also hold the *resolved* versions (see
-[Provenance](#identity-and-provenance)). `environment.key4hep` and `geometry` are not
-substitutes: the former selects the software and the installed k4geo, the latter a
-compact file inside that k4geo.
 
 ### `geometry`
 
@@ -919,7 +899,7 @@ Three identities are kept separate, even though the draft YAML shows them in one
 1. **Problem identity**: parameters (domains and targets), objectives, constraints; not the
    problem's `name` or any [title](#titles), which only name things for a reader.
 2. **Evaluation context identity**: everything that can change what a measurement means
-   for the same candidate: the pinned and resolved Key4hep stack, geometry, the
+   for the same candidate: the [software](software.md) it ran on, geometry, the
    evaluators' names, versions, `collections` and `settings`, and each sample's stages: their
    executors, `events`, `seed`, the gun or file, and the exact executor options. Changing the nightly or a ddsim
    option does not change the problem, but it **does** change the context.
@@ -931,7 +911,7 @@ are recorded in provenance:
 | Version | What it identifies |
 | --- | --- |
 | `schema_version` | how the problem YAML is interpreted |
-| `environment.key4hep` | the software stack: DD4hep, Geant4, EDM4hep, k4geo, ... |
+| the software's `id` | the build of the stack (DD4hep, Geant4, EDM4hep, k4geo, ...), the system and the variables ([software](software.md)) |
 | `evaluators[*].version` | the definition and implementation of an evaluation procedure and its metrics |
 | geometry fingerprint | the exact materialized detector input |
 
@@ -988,10 +968,9 @@ data = problem.to_dict()  # plain JSON-compatible data, a fresh copy each call
 assert parse_problem(data) == problem  # parse already-decoded data, no file needed
 ```
 
-`$K4GEO` must point at the intended installed geometry tree. `environment.key4hep` names the
-intended release or nightly, but k4Opt does not select or verify it: the geometry comes from
-the active environment, so a resolved target is neither proof that the geometry matches the
-pinned stack nor that it is physically valid. The
+`$K4GEO` must point at the intended installed geometry tree: the geometry comes from the active
+environment, whose build every record names ([software](software.md)), and a resolved target is no
+proof that it is physically valid. The
 [CLD example](../examples/problem/cld-ecal-granularity.yaml) loads only where a suitable CLD
 geometry is installed.
 
@@ -1066,7 +1045,6 @@ geometry.
   `Quantity`; energies and lengths are supported, other dimensions are open.
 - **Constraint units.** `unit` on a constraint states the unit of `min`/`max`; whether
   the evaluator may convert or must match exactly is undecided.
-- **Release `channel` vocabulary** beyond `nightly` and `release`.
 - **Constraints and uncertainty.** A constraint such as `angular_residual <= 1 mrad` is judged
   on a measurement with an uncertainty. k4opt compares the central value and records the
   uncertainty next to it, the same for every optimizer. Whether satisfaction should instead be

@@ -50,7 +50,9 @@ def test_the_json_form_names_no_location_and_keeps_the_identity(
     assert any(str(tmp_path) in s for s in strings(document))  # study.json itself has them
     assert data["study"] == portable(document)
     assert digest(data["study"]) == document["identity"]  # locations are no part of it
-    assert set(data["study"]) == set(PORTABLE)
+    # all but what only a snapshot published before k4opt recorded the software holds
+    assert set(data["study"]) == set(PORTABLE) - {"search"}
+    assert set(data["study"]["software"]) == {"id", "build", "system"}  # variables can be private
     assert "storage" not in data["study"]["optimizer"]
     assert all("path" not in entry["source"] for entry in data["study"]["implementations"].values())
     assert all(set(trial["record"] or {}) <= {"id", "sha256"} for trial in data["trials"])

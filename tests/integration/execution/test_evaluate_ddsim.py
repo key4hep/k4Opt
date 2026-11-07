@@ -28,6 +28,7 @@ from k4opt.evaluation import load_evaluator
 from k4opt.execution import EvaluationSession, Rejected
 from k4opt.problem import parse_problem
 from k4opt.record import Assessment
+from k4opt.software import Software
 from tests.support.common import scientific
 from tests.support.evaluators import CALO_PHOTON, CELL_COUNT
 from tests.support.geometry import CLD_COMPACT
@@ -171,7 +172,9 @@ def test_metrics_come_from_the_observed_events(runs: dict[str, dict[str, Any]]) 
         events = stage_file(run, SAMPLE, "events")
         output = run["samples"][SAMPLE]["stages"]["simulation"]["outputs"]["events"]
         assert output["sha256"] == hashlib.sha256(events.read_bytes()).hexdigest()
-        assert run["environment"]["declared"]["version"] == "2026-10-20"
+        software = run["environment"]["observed"]["software"]
+        assert software["build"]["kind"] in ("lcg", "spack")  # the stack says which build it is
+        assert software["id"] == Software.now().id
         assert run["samples"]["gamma_10gev"]["stages"]["simulation"]["returncode"] == 0
 
 

@@ -2,8 +2,8 @@
 which no monkeypatch reaches. Reads the simulation stage (none of its collections) and measures
 ``analysis/checked``: 1.
 
-What else it does is said by the environment variable ``WORKER_PROBE``, a JSON object keyed by
-the binding, by ``<sample>/<binding>`` for one sample alone, and by ``<run>.<binding>`` for one
+What else it does is said by the environment variable ``PYTEST_WORKER_PROBE``, a JSON object keyed
+by the binding, by ``<sample>/<binding>`` for one sample alone, and by ``<run>.<binding>`` for one
 run directory alone (a worker keeps the environment it started with): ``mark`` writes a file
 first, ``await`` waits until each file of a list exists, ``allocate`` holds that many MiB for a
 moment, ``print`` prints that text to stdout and stderr, ``raise`` raises a
@@ -30,7 +30,7 @@ from k4opt.geometry import GeometrySource
 
 def _materialize_as_told(make):
     def materialize(self, *args, **kwargs):
-        told = json.loads(os.environ.get("WORKER_PROBE", "{}")).get("materialize", {})
+        told = json.loads(os.environ.get("PYTEST_WORKER_PROBE", "{}")).get("materialize", {})
         time.sleep(told.get("sleep", 0))
         return make(self, *args, **kwargs)
 
@@ -49,7 +49,7 @@ class WorkerProbe(Evaluator):
     metrics = {("analysis", "checked"): "1"}
 
     def __init__(self):
-        told = json.loads(os.environ.get("WORKER_PROBE", "{}")).get("init", {})
+        told = json.loads(os.environ.get("PYTEST_WORKER_PROBE", "{}")).get("init", {})
         if "print" in told:
             print(told["print"], flush=True)
         if "allocate" in told:
@@ -62,7 +62,7 @@ class WorkerProbe(Evaluator):
         binding = request.settings["binding"]
         # <run>/samples/<sample>/evaluators/<binding>
         run, sample = request.workdir.parents[3].name, request.workdir.parents[1].name
-        given = json.loads(os.environ.get("WORKER_PROBE", "{}"))
+        given = json.loads(os.environ.get("PYTEST_WORKER_PROBE", "{}"))
         told = {
             **given.get(binding, {}),
             **given.get(f"{sample}/{binding}", {}),

@@ -27,7 +27,6 @@ SCHEMA_VERSION = "k4opt.problem/v1alpha1"
 
 type Number = int | float
 
-Channel = Literal["release", "nightly"]
 ParameterKind = Literal["continuous", "integer", "categorical"]
 Direction = Literal["minimize", "maximize"]
 
@@ -39,30 +38,6 @@ def freeze(value: object, path: str) -> Json:
     names ``path``.
     """
     return _freeze_json(value, path, ProblemConfigError)
-
-
-@dataclass(frozen=True, slots=True)
-class Key4hepStack:
-    """The pinned Key4hep software environment (``environment.key4hep``).
-
-    The pin identifies an environment; it does not guarantee that it is installed.
-    """
-
-    channel: Channel
-    version: str
-
-    def to_dict(self) -> dict[str, object]:
-        return {"channel": self.channel, "version": self.version}
-
-
-@dataclass(frozen=True, slots=True)
-class Environment:
-    """Where the problem is meant to be evaluated."""
-
-    key4hep: Key4hepStack
-
-    def to_dict(self) -> dict[str, object]:
-        return {"key4hep": self.key4hep.to_dict()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -567,7 +542,6 @@ class ProblemSpec:
     sense.
     """
 
-    environment: Environment
     # the starting detector description: a compact file, relative to the k4geo tree
     geometry: str
     parameters: tuple[Parameter, ...]
@@ -670,7 +644,6 @@ class ProblemSpec:
         data: dict[str, object] = {"schema_version": SCHEMA_VERSION}
         if self.name is not None:
             data["name"] = self.name
-        data["environment"] = self.environment.to_dict()
         if self.timeout is not None:
             data["timeout"] = self.timeout
         data["geometry"] = self.geometry

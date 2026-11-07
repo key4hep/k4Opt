@@ -11,8 +11,8 @@ argument ``--compactFile`` (default ``/default/CLD_o2_v07.xml``) and ``IOSvc.Inp
 resolved options, then copies the input to ``IOSvc.Output``: the fake podio reads it as the same
 events. With ``--dry-run`` it only parses.
 
-What else it does is said by the environment variable ``FAKE_K4RUN``, a JSON object: ``refuse``,
-a text, refuses the arguments as argparse does (``k4run: error: <text>``, status 2), and
+What else it does is said by the environment variable ``PYTEST_FAKE_K4RUN``, a JSON object:
+``refuse``, a text, refuses the arguments as argparse does (``k4run: error: <text>``, status 2), and
 ``refuse_args`` maps an argument (``--cms=250``) to such a text, refused when it is given;
 ``exit``
 is its exit status after the run; ``stderr`` a text it writes there; ``sleep`` how many seconds
@@ -32,7 +32,7 @@ import sys
 import time
 from pathlib import Path
 
-control = json.loads(os.environ.get("FAKE_K4RUN", "{}"))
+control = json.loads(os.environ.get("PYTEST_FAKE_K4RUN", "{}"))
 args = sys.argv[1:]
 files = []
 while args and not args[0].startswith("--"):

@@ -111,7 +111,9 @@ PORTABLE: Mapping[str, _Kept] = {
     "programs": {
         "*": {"bytes": True, "sha256": True, "interpreter": {"bytes": True, "sha256": True}}
     },
-    "search": True,
+    # the build and the system, not the variables, whose names can be private: its id is enough
+    "software": {"id": True, "build": True, "system": True},
+    "search": True,  # of a snapshot published before k4opt recorded the software
     "k4opt": {"version": True, "sha256": True, "git": True},
     # what the study searches and fixes, and the level and replicate of its trials
     "scope": {"level": True, "searched": True, "fixed": True, "replicate": True, "parent": True},
@@ -287,8 +289,8 @@ def check_record(
                 f"{where}: evaluator {name!r} declared other roles than in the study"
             )
     observed = _get(summary, "environment", "observed")
-    if _get(observed, "KEY4HEP_STACK") != study["environment"]["KEY4HEP_STACK"]:
-        raise OptimizationError(f"{where} ran in another KEY4HEP_STACK than the study")
+    if _get(observed, "software", "id") != study["software"]["id"]:
+        raise OptimizationError(f"{where} ran on other software than the study")
     if _get(observed, "k4opt_source", "sha256") != study["k4opt"]["sha256"]:
         raise OptimizationError(f"{where} was made by other k4opt code than the study")
     ran = program_differences(study, {"programs": _get(observed, "programs")})

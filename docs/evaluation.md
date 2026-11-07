@@ -509,7 +509,7 @@ saying what the stage was made from and the SHA-256 of that document written as 
 | `reads` | what it read, by name: `geometry` as its fingerprint and the content of what its external references read (no paths); a stage that ran as its signature's SHA-256; a stage given as a file as that file's size and SHA-256 |
 | `files` | each file the problem names for it (`physics.pdgfile`, a reconstruction's job and data files), by key, as its size and SHA-256 |
 | `program` | the executable it ran (`ddsim`, `k4run`): its size and SHA-256, not its path (the record's `environment.observed.programs` has that), and the `interpreter` its `#!` line names as `PATH` found it (path, size and SHA-256; `null` for a program that is no script); `null` for a stage that runs none |
-| `environment` | `KEY4HEP_STACK` and the SHA-256 of the search variables `PYTHONPATH`, `LD_LIBRARY_PATH` and `ROOT_INCLUDE_PATH`; not `PATH`, which differs between shells that run the same programs (an editor's terminal, a batch job): of it, only the interpreter matters, signed with the program |
+| `software` | the `id` of the [software](software.md) it ran on: the build of the stack, the system and every variable not known to be irrelevant |
 | `k4opt` | the SHA-256 of k4opt's code |
 
 What does not change what a stage makes is left out: the sample it belongs to, the candidate, its
@@ -671,10 +671,9 @@ record of the stages, are **framework-observed** (the executed `ddsim` command a
 the hashes of given files, the events found). `k4opt evaluate` also records the k4opt version
 with the SHA-256 of k4opt's own Python files and its git checkout, the active stack
 (`KEY4HEP_STACK`, `K4GEO`, the `ddsim` and `k4run` that ran, with their SHA-256, and the
-variables that decide what they load) and each evaluator's source identity as
+[software](software.md) it ran on) and each evaluator's source identity as
 described above. That identifies the evaluator's own code, not the modules it imports;
-`name` and `version` remain labels. The problem's `environment.key4hep` is a declared pin and is
-not compared with the stack that ran.
+`name` and `version` remain labels.
 
 `candidate_key` is a tuple with one `(reference, kind, tag, value)` entry per parameter, in the
 problem's parameter order. It is problem-aware: `True`, `1` and `1.0` are not interchangeable

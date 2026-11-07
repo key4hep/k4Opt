@@ -112,7 +112,6 @@ def test_directly_constructed_models_copy_their_input(doc: dict[str, Any]) -> No
     samples = {"gamma": Sample("gamma", stages)}
     problem = parse_problem(doc)
     spec = ProblemSpec(
-        problem.environment,
         problem.geometry,
         problem.parameters,
         evaluators,  # type: ignore[arg-type]

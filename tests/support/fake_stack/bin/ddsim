@@ -4,9 +4,10 @@
 It writes ``--outputFile`` as JSON (``{"events": [[cell, ...], ...]}``, one hit in cell 1 per
 requested event unless told otherwise), which the fake ``podio`` next to it reads. It runs in
 ``<run>/samples/<sample>/simulation``; what else it does is said by the environment variable
-``FAKE_DDSIM``, a JSON object. ``dir`` is a directory in which it writes ``<run>.<sample>.started``
-(its pid) when it starts and ``<run>.<sample>.ended`` when it ends. What it does for a run and
-sample comes from the keys ``"*"``, ``"<sample>"`` and ``"<run>.<sample>"`` (the later ones win):
+``PYTEST_FAKE_DDSIM``, a JSON object. ``dir`` is a directory in which it writes
+``<run>.<sample>.started`` (its pid) when it starts and ``<run>.<sample>.ended`` when it ends.
+What it does for a run and sample comes from the keys ``"*"``, ``"<sample>"`` and
+``"<run>.<sample>"`` (the later ones win):
 ``await`` waits until that many simulations started, or until each file of a list exists (a path
 relative to ``dir``, or absolute); ``write`` then writes the text of each file it maps;
 ``kill`` sends SIGKILL to ``"self"`` or to its ``"parent"`` (the worker that started it);
@@ -23,7 +24,7 @@ import time
 from pathlib import Path
 
 options = dict(arg[2:].split("=", 1) for arg in sys.argv[1:] if arg.startswith("--") and "=" in arg)
-control = json.loads(os.environ.get("FAKE_DDSIM", "{}"))
+control = json.loads(os.environ.get("PYTEST_FAKE_DDSIM", "{}"))
 here = Path.cwd()
 sample, run = here.parent.name, here.parents[2].name
 told = {**control.get("*", {}), **control.get(sample, {}), **control.get(f"{run}.{sample}", {})}

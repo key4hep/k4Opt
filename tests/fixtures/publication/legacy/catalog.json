@@ -1,0 +1,63 @@
+{
+  "format": "k4opt.catalog/1",
+  "studies": [
+    {
+      "id": "21c5c3fd-85d1-4e8e-a639-5ec3cd457c09",
+      "name": "trade-21c5c3fd",
+      "problem": "trade",
+      "geometry": "compact/det_v1/det_v1.xml",
+      "key4hep": "nightly 2026-10-20",
+      "created": "2026-11-07T16:24:08+00:00",
+      "published": "2026-11-07T16:24:08+00:00",
+      "trials": 4,
+      "outcomes": {
+        "feasible": 2,
+        "infeasible": 0,
+        "invalid": 2,
+        "failed": 0,
+        "rejected": 0,
+        "unscored": 0,
+        "interrupted": 0,
+        "error": 0,
+        "running": 0
+      },
+      "parameters": 1,
+      "objectives": 2,
+      "constraints": 1,
+      "snapshot": {
+        "path": "studies/21c5c3fd-85d1-4e8e-a639-5ec3cd457c09/snapshots/cd82fba3ea89a31c.json",
+        "sha256": "cd82fba3ea89a31c24cc5b507d252d90f9479b6c051bf8d6cdfdc87a3e3bbec4",
+        "bytes": 10645
+      }
+    },
+    {
+      "id": "91f3f906-2bdd-4e12-af31-083b1c2facaa",
+      "name": "trade-91f3f906",
+      "problem": "trade",
+      "geometry": "compact/det_v1/det_v1.xml",
+      "key4hep": "nightly 2026-10-20",
+      "created": "2026-11-07T16:24:08+00:00",
+      "published": "2026-11-07T16:24:09+00:00",
+      "trials": 2,
+      "outcomes": {
+        "feasible": 2,
+        "infeasible": 0,
+        "invalid": 0,
+        "failed": 0,
+        "rejected": 0,
+        "unscored": 0,
+        "interrupted": 0,
+        "error": 0,
+        "running": 0
+      },
+      "parameters": 2,
+      "objectives": 1,
+      "constraints": 0,
+      "snapshot": {
+        "path": "studies/91f3f906-2bdd-4e12-af31-083b1c2facaa/snapshots/85ef05aa499bcadf.json",
+        "sha256": "85ef05aa499bcadfb4dba3f4b70ccd9fae5cd0ec9f6f640cac3f0c397085b1f1",
+        "bytes": 34326
+      }
+    }
+  ]
+}

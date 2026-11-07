@@ -53,7 +53,6 @@ def problem_document(
     document: dict[str, Any] = {
         "schema_version": "k4opt.problem/v1alpha1",
         "name": "trade",
-        "environment": {"key4hep": {"channel": "nightly", "version": "2026-10-20"}},
         "geometry": MINI_COMPACT,
         "parameters": {RADIUS: parameter},
         "evaluators": evaluators,

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
@@ -141,7 +142,7 @@ def problem(tmp_path: Path, doc: dict[str, Any]) -> Path:
 
 def probe(monkeypatch: pytest.MonkeyPatch, **told: dict[str, Any]) -> None:
     """Tell ``test.worker_probe`` what to do, by binding or ``<run>.<binding>``."""
-    monkeypatch.setenv("WORKER_PROBE", json.dumps(told))
+    monkeypatch.setenv("PYTEST_WORKER_PROBE", json.dumps(told))
 
 
 @pytest.fixture
@@ -835,7 +836,10 @@ def test_a_worker_rebuilds_the_session_from_plain_data(
         environment = session.identity()["environment"]
         assert isinstance(environment, dict)
         described = _worker.session_spec(
-            session._context, session._binding.evaluations, environment
+            session._context,
+            session._binding.evaluations,
+            environment,
+            session._baseline.software,
         )
     told: list[int] = []
     rebuilt = _worker.Session.of(pickle.loads(pickle.dumps(described)), started=told.append)
@@ -982,7 +986,7 @@ def test_an_evaluator_given_as_it_is_evaluates_inline(
 
 
 @pytest.mark.parametrize(
-    "differs", ["evaluator file", "evaluator helper", "k4opt code", "KEY4HEP_STACK"]
+    "differs", ["evaluator file", "evaluator helper", "k4opt code", "KEY4HEP_STACK", "a variable"]
 )
 def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
     tmp_path: Path,
@@ -1008,12 +1012,25 @@ def test_a_worker_that_would_not_run_what_the_session_runs_refuses_to_start(
     elif differs == "k4opt code":
         monkeypatch.setattr(_worker, "code_fingerprint", lambda: "another checkout")
         message = "a worker process runs other k4opt code than the session"
+    elif differs == "a variable":  # a worker launched otherwise than the session, as it were
+        described = _session.session_spec
+        monkeypatch.setattr(
+            _session,
+            "session_spec",
+            lambda *args: described(
+                *args[:3],
+                replace(args[3], variables={**args[3].variables, "MY_SCALE": "0" * 64}),
+            ),
+        )
+        message = "a worker process does not run on the session's software: .* differs in MY_SCALE"
     else:
         described = _session.session_spec
         monkeypatch.setattr(
             _session,
             "session_spec",
-            lambda *args: described(*args[:2], {**args[2], "KEY4HEP_STACK": "/other/stack"}),
+            lambda *args: described(
+                *args[:2], {**args[2], "KEY4HEP_STACK": "/other/stack"}, args[3]
+            ),
         )
         message = "KEY4HEP_STACK is .* in a worker process, not '/other/stack' as in the session"
     with pytest.raises(RunError, match=message):

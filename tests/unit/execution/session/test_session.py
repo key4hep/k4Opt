@@ -38,6 +38,7 @@ from k4opt.problem import CandidateError, ProblemConfigError, load_problem, pars
 from k4opt.problem.candidate import configure, parse_candidate
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from k4opt.revision import code_fingerprint, code_identity
+from k4opt.software import Software
 from tests.support import simulation
 from tests.support.common import tree_digest
 from tests.support.evaluators import (
@@ -48,6 +49,7 @@ from tests.support.evaluators import (
 )
 from tests.support.geometry import MINI_COMPACT, MINI_GEO
 from tests.support.simulation import COLLECTION
+from tests.support.software import lcg_view, republish
 from tests.unit.execution.session.conftest import (
     RADIUS,
     UNEXPECTED,
@@ -212,18 +214,12 @@ def test_summary_is_written_and_truthful(
     assert (
         on_disk["samples"]["gamma"]["stages"]["generation"]["particle_gun"]["particle"] == "gamma"
     )
-    assert on_disk["environment"]["declared"] == {"channel": "nightly", "version": "2026-10-20"}
     # the program the fake ddsim stands for, by content and the interpreter its #! line names
     ddsim = on_disk["environment"]["observed"]["programs"]["ddsim"]
     assert ddsim["path"] == simulation.DDSIM and ddsim["interpreter"]["path"] == shutil.which(
         "python3"
     )
-    assert set(on_disk["environment"]["observed"]["search"]) == {
-        "PATH",
-        "PYTHONPATH",
-        "LD_LIBRARY_PATH",
-        "ROOT_INCLUDE_PATH",
-    }
+    assert on_disk["environment"]["observed"]["software"] == Software.now().to_dict()
     assert on_disk["environment"]["observed"]["k4opt"] == __version__
     # what the version only labels: the content of the code that ran
     assert on_disk["environment"]["observed"]["k4opt_source"] == code_identity()
@@ -1036,19 +1032,49 @@ def test_a_session_runs_its_candidates_in_the_environment_it_opened_in(
     assert not (tmp_path / "b").exists() and len(fake.calls) == 1
 
 
-@pytest.mark.parametrize("name", ["PYTHONPATH", "LD_LIBRARY_PATH", "ROOT_INCLUDE_PATH"])
-def test_a_session_runs_its_programs_with_the_search_variables_it_opened_with(
+@pytest.mark.parametrize("name", ["PYTHONPATH", "LD_LIBRARY_PATH", "MARLIN_DLL", "MY_SCALE"])
+def test_a_session_runs_its_programs_with_the_variables_it_opened_with(
     tmp_path: Path,
     problem_file: Path,
     fake: simulation.FakeDdsim,
     monkeypatch: pytest.MonkeyPatch,
     name: str,
 ) -> None:
-    # what the records and the stages' signatures say the programs loaded with
+    # every program inherits them, and the records and signatures say what they were
     session = EvaluationSession.open(problem_file, [cell_count()])
     session.evaluate({RADIUS: 450.0}, tmp_path / "a")
     monkeypatch.setenv(name, "/somewhere/else")
-    with pytest.raises(RunError, match=rf"{name} changed after the session opened"):
+    with pytest.raises(RunError, match=rf"software changed .* differs in {name}"):
+        session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert not (tmp_path / "b").exists() and len(fake.calls) == 1
+
+
+def test_a_session_goes_on_when_a_variable_known_to_be_irrelevant_changes(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    monkeypatch.setenv("OLDPWD", "/somewhere/else")
+    monkeypatch.setenv("CPPYY_NO_ROOT_FILTER", "1")  # what importing ROOT in this process sets
+    session.evaluate({RADIUS: 500.0}, tmp_path / "b")
+    assert len(fake.calls) == 2
+
+
+def test_a_slot_republished_while_a_session_runs_stops_it(
+    tmp_path: Path,
+    problem_file: Path,
+    fake: simulation.FakeDdsim,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    view = lcg_view(tmp_path / "cvmfs")
+    monkeypatch.setenv("KEY4HEP_STACK", str(view))
+    session = EvaluationSession.open(problem_file, [cell_count()])
+    session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    republish(view)  # the same path, the next week's build
+    with pytest.raises(RunError, match=r"the Key4hep build is LCG devkey-head, built Sat Nov 14"):
         session.evaluate({RADIUS: 500.0}, tmp_path / "b")
     assert not (tmp_path / "b").exists() and len(fake.calls) == 1
 

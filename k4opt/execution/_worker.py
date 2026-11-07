@@ -49,6 +49,7 @@ from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json
 from k4opt.problem.plan import Kind, TaskId
 from k4opt.revision import code_fingerprint
+from k4opt.software import Software
 
 LOG_NAME = "evaluator.log"
 """The file in an evaluation's own directory that holds what its evaluator printed."""
@@ -72,15 +73,17 @@ class SessionSpec:
     """What every task of a session needs, sent once to each worker.
 
     ``path`` is the coordinator's ``sys.path``, which a module reference is imported from;
-    ``code`` the fingerprint of k4opt's code (:func:`~k4opt.revision.code_fingerprint`) and
-    ``environment`` ``KEY4HEP_STACK`` and ``K4GEO``, as the session took them; ``implementations``
-    are loaded first, then ``payload`` is read: the :class:`~k4opt.execution._work.SessionContext`
-    and what each evaluation is bound to, whose classes it names by their module and name.
+    ``code`` the fingerprint of k4opt's code (:func:`~k4opt.revision.code_fingerprint`),
+    ``environment`` ``KEY4HEP_STACK`` and ``K4GEO`` and ``software`` what it runs on, as the
+    session took them; ``implementations`` are loaded first, then ``payload`` is read: the
+    :class:`~k4opt.execution._work.SessionContext` and what each evaluation is bound to, whose
+    classes it names by their module and name.
     """
 
     path: tuple[str, ...]
     code: str
     environment: Mapping[str, Json]
+    software: Software
     implementations: tuple[Implementation, ...]
     payload: bytes
 
@@ -89,6 +92,7 @@ def session_spec(
     context: SessionContext,
     evaluations: Sequence[tuple[TaskId, _Bound]],
     environment: Mapping[str, Json],
+    software: Software,
 ) -> SessionSpec:
     """The :class:`SessionSpec` of a session with ``context`` whose evaluations are bound as
     ``evaluations``. Raises :class:`~k4opt.execution.RunError` for an implementation a worker could
@@ -135,6 +139,7 @@ def session_spec(
         tuple(sys.path),
         code_fingerprint(),
         FrozenMap(environment),
+        software,
         tuple(implementations.values()),
         payload,
     )
@@ -216,6 +221,11 @@ class Session:
                 raise ProvenanceError(
                     f"{name} is {now!r} in a worker process, not {value!r} as in the session"
                 )
+        changed = spec.software.differences(Software.now())
+        if changed:
+            raise ProvenanceError(
+                f"a worker process does not run on the session's software: {'; '.join(changed)}"
+            )
         sys.path[:] = list(dict.fromkeys([*spec.path, *sys.path]))
         for implementation in spec.implementations:
             loaded = evaluator_source(load_evaluator(implementation.reference))

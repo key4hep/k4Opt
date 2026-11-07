@@ -19,6 +19,7 @@ API, command group, documentation and tests.
 | Component | Purpose | Status |
 | --- | --- | --- |
 | [`k4opt.geometry`](docs/geometry.md) | Discover addressable parameters of a DD4hep XML geometry, override them, materialize modified geometries | available |
+| [`k4opt.software`](docs/software.md) | Say what candidates run on, by what is there rather than where: the build of the stack (an LCG view's manifests and build time, a Spack spec), the system and every environment variable not known to be irrelevant, as one id that a stage's signature and a study hold (`k4opt software show`) | first version |
 | [`k4opt.problem`](docs/problem.md) | Declare which parameters vary and within which bounds, what each candidate is measured on (named `samples`, each with its stages, each stage run by an executor or given as a file) and who measures it (`evaluators`). A draft specification can be loaded, validated and its geometry targets resolved (`k4opt.problem.load_problem`, against the active `$K4GEO`); a general evaluator registry and further metrics are **proposed, not yet implemented** | in progress |
 | [`k4opt.evaluation`](docs/evaluation.md) | The contract an evaluator implements (request, result, measurements, what it declares); evaluators read a pipeline stage or combine per-sample measurements and artifacts through declared roles. `load_evaluator` loads an evaluator from a file | in progress |
 | [`k4opt.execution`](docs/execution.md) | Evaluate candidates end to end: `EvaluationSession` (and `k4opt evaluate` for one candidate) materializes each candidate's geometry, runs each sample's stages once and calls every evaluator, inline or in worker processes, and publishes the candidate's record | in progress |
@@ -158,7 +159,8 @@ K4OPT_DASHBOARD_DATA=published/ streamlit run dashboard/app.py   # pip install -
 ```
 
 The guides: [geometry](docs/geometry.md) (target references, include handling, override
-semantics, manifest, Python API, limitations), [problem](docs/problem.md),
+semantics, manifest, Python API, limitations), [software](docs/software.md),
+[problem](docs/problem.md),
 [evaluation](docs/evaluation.md), [execution](docs/execution.md), [record](docs/record.md),
 [example evaluators](docs/evaluators.md), [optimization](docs/optimization.md),
 [publication](docs/publication.md), [visualization](docs/visualization.md) and

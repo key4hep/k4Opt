@@ -14,7 +14,9 @@ import pytest
 import yaml
 
 from k4opt.execution import EvaluationSession
+from k4opt.problem import load_problem
 from k4opt.record import Assessment, RecordError
+from k4opt.record.read import check_summary
 from k4opt.record.signature import digest
 from tests.support import simulation
 from tests.support.evaluators import cell_count
@@ -68,6 +70,7 @@ def test_a_stage_made_from_the_same_things_has_the_same_signature(
         }
     )
     assert document["k4opt"] == first["environment"]["observed"]["k4opt_source"]["sha256"]
+    assert document["software"] == first["environment"]["observed"]["software"]["id"]
 
 
 def test_another_seed_makes_another_signature(
@@ -132,3 +135,13 @@ def test_a_record_whose_signature_is_not_what_it_says_is_refused(
         tamper(data)
         with pytest.raises(RecordError, match=re.escape(message)):
             Assessment.from_summary(session.spec, data)
+
+
+def test_a_record_whose_software_is_not_what_its_id_says_is_refused(
+    tmp_path: Path, problem_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        record = evaluate(session, 450.0, tmp_path / "a")
+    record["environment"]["observed"]["software"]["variables"]["MY_SCALE"] = "0" * 64
+    with pytest.raises(RecordError, match="is not that of its parts"):
+        check_summary(load_problem(problem_file), record)

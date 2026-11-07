@@ -39,7 +39,7 @@ BLOCKING = """
         metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
 
         def evaluate(self, request):
-            if os.environ.get("K4OPT_TEST_BLOCK"):  # the process that is to be stopped
+            if os.environ.get("PYTEST_K4OPT_BLOCK"):  # the process that is to be stopped
                 (request.workdir / "started").write_text("")
                 deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:
@@ -233,7 +233,7 @@ def blocked(tmp_path: Path, write_problem: Callable[..., Path]) -> Callable[[], 
         process = subprocess.Popen(
             command,
             cwd=REPOSITORY,
-            env=os.environ | {"K4OPT_TEST_BLOCK": "1"},
+            env=os.environ | {"PYTEST_K4OPT_BLOCK": "1"},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

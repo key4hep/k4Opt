@@ -229,8 +229,6 @@ def assemble(
         | {"varies": list(plan[GEOMETRY].varies), "elapsed_seconds": geometry.elapsed_seconds}
         | _memory(geometry),
         "environment": {
-            # declared by the problem: a pin, not a check of what ran
-            "declared": spec.environment.to_dict()["key4hep"],
             # observed in this process; the programs are the executables every stage ran
             "observed": {
                 "k4opt": __version__,
@@ -239,7 +237,7 @@ def assemble(
                 # the session's, which the process still had when this candidate started
                 **environment,
                 "programs": thaw(process["programs"]),
-                "search": thaw(process["search"]),
+                "software": thaw(process["software"]),
                 # where and how the tasks ran: provenance, never part of what was evaluated
                 "execution": thaw(execution),
             },
