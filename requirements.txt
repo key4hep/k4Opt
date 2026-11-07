@@ -19,7 +19,7 @@ optuna==5.0.0
 # A --storage database (and the tests that make and read one): SQLAlchemy, and alembic, with
 # which Optuna sets the database up, with alembic's Mako; typing_extensions and MarkupSafe come
 # from the Key4hep stack. k4opt itself needs none of them without --storage.
-SQLAlchemy==2.1.6
+SQLAlchemy==2.1.8
 alembic==1.20.1
 Mako==1.4.3
 # The tests run on every available core: python -m pytest -p xdist -n auto (plugins are named,
