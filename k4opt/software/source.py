@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from k4opt.hashing import sha256_of, stat_of
-from k4opt.software.overlays import ROLES, SITE, Local
+from k4opt.software.overlays import _LISTED, ROLES, SITE, Local, _file
 from k4opt.software.stack import Package, Release
 
 type Kind = Literal["build", "directory", "environment"]
@@ -57,7 +57,7 @@ MAX_PATCH = 100 << 20
 
 _SUFFIXES = ("lib/gaudi-plugins", "lib64/gaudi-plugins", "lib", "lib64", "include", "python")
 _SITE = re.compile(r"/lib(?:64)?/python\d+\.\d+/(?:site|dist)-packages$")
-_LIBRARY = re.compile(r"\.so(\.[\w.]*)?$")
+_LIBRARY = re.compile(r"\.so(\.[\w.]*)?$|\.pcm$")
 _CACHE = "CMakeCache.txt"
 _SKIPPED = frozenset(("CMakeFiles", ".git", "__pycache__"))
 _WALKED = 50_000
@@ -85,7 +85,8 @@ class GitState:
     none, ``none``, when no remote has any of its history, so the diff holds every file), how many
     commits ``HEAD`` is ``ahead`` of it, the ``uncommitted`` changes (``files``, ``insertions``,
     ``deletions`` against ``HEAD``), how many ``untracked`` files it holds and which are too
-    ``large`` to keep, the git ``tree`` of the whole state, the files that differ from the base
+    ``large`` to keep (``ignored``: those git ignores, left out of the state), the git ``tree`` of
+    the whole state, the files that differ from the base
     (``changed``), and the ``patch`` that makes the state from the base (``git apply``; ``None``
     if too large). ``fetch`` says that the nightly's revision is not in the checkout, so the diff
     against it needs a fetch; ``remote`` is where a remote that holds the base is (``origin`` if it
@@ -104,6 +105,7 @@ class GitState:
     tree: str
     changed: tuple[str, ...]
     patch: bytes | None = field(default=None, repr=False)
+    ignored: frozenset[str] = field(default=frozenset(), repr=False)
 
     @property
     def clean(self) -> bool:
@@ -145,7 +147,8 @@ class Origin:
     ``name==version`` of each distribution an environment holds; for a directory of no build,
     ``binaries`` are those it holds, identified only (their source is not known). For a build,
     ``files`` are what else it installed that can be loaded (Python modules, headers, registries),
-    by their path relative to its prefix: what ran, whatever its source would install now.
+    by their path relative to its prefix: what ran, whatever its source would install now. For a
+    directory in a checkout, ``files`` and ``binaries`` are what can be loaded that git ignores.
     ``problem`` says what could not be read; ``configuration`` is the CMake cache a build was
     configured with (its options, compiler and flags), which a rebuild needs as much as its
     source."""
@@ -260,7 +263,10 @@ def _build(prefix: str, entries: list[Local], release: Release | None) -> Origin
     link: Link = "adjacent"
     if build is not None:
         compared = _compared(build, prefix, binaries)
-        link = "verified" if compared and all(compared.values()) else "likely"
+        absent = {os.path.basename(b.file) for b in binaries if b.build_id} - compared.keys()
+        link = "verified" if compared and all(compared.values()) and not absent else "likely"
+        if absent:
+            evidence.append(f"{', '.join(sorted(absent))} not found in the build tree")
         if compared and not all(compared.values()):
             differ = sorted(name for name, same in compared.items() if not same)
             evidence.append(
@@ -310,13 +316,16 @@ def _directory(entry: Local, entries: list[Local], release: Release | None) -> O
     if checkout is not None and not _ignored(checkout, path):
         package = release.package(os.path.basename(checkout)) if release else None
         git, problem = _state(checkout, package.revision if package else None, [])
+        kept, compiled = _left_out(git, entries)
         return Origin(
             "directory",
             path,
             paths,
             package.name if package else None,
             package.revision if package else None,
+            binaries=compiled,
             git=git,
+            files=kept,
             problem=problem,
         )
     files: dict[str, tuple[str, str]] = {}
@@ -326,6 +335,26 @@ def _directory(entry: Local, entries: list[Local], release: Release | None) -> O
         binaries |= {binary.file: binary for binary in _loose(each)}
     ordered = tuple(sorted(binaries.values(), key=lambda b: b.file))
     return Origin("directory", path, paths, binaries=ordered, files=files)
+
+
+def _left_out(
+    git: GitState | None, entries: Iterable[Local]
+) -> tuple[dict[str, tuple[str, str]], tuple[Binary, ...]]:
+    """What can be loaded through ``entries`` that the state ``git`` of their checkout leaves out,
+    being ignored: the files, and the binaries, which are identified only."""
+    if git is None or not git.ignored:
+        return {}, ()
+
+    def ignored(path: str) -> bool:
+        return os.path.relpath(os.path.realpath(path), git.checkout) in git.ignored
+
+    files: dict[str, tuple[str, str]] = {}
+    binaries: dict[str, Binary] = {}
+    for each in entries:
+        files |= {name: file for name, file in _files(each).items() if ignored(file[0])}
+        base = each.path if os.path.isdir(each.path) else os.path.dirname(each.path)
+        binaries |= {b.file: b for b in _loose(each) if ignored(os.path.join(base, b.file))}
+    return files, tuple(sorted(binaries.values(), key=lambda b: b.file))
 
 
 def checkout(path: str, release: Release | None) -> Origin | None:
@@ -421,6 +450,9 @@ def _binaries(prefix: str, entries: Iterable[Local]) -> tuple[tuple[Binary, ...]
                 for name in _names(entry.path)
                 if _LIBRARY.search(name)
             )
+        elif role == "python" and os.path.isdir(entry.path):  # a compiled extension module
+            listed = _LISTED["python"](entry.path, "", frozenset(), [])
+            files = sorted(path for _, path, status in listed if status and _binary(path))
         else:
             continue
         for path in files:
@@ -533,11 +565,14 @@ def _elf(path: str) -> bool:
         return False
 
 
+def _binary(path: str) -> bool:
+    """Whether ``path`` is compiled: fingerprinted, never kept (an ELF file, a ROOT module)."""
+    return path.endswith(".pcm") or _elf(path)
+
+
 def _files(entry: Local) -> dict[str, tuple[str, str]]:
     """What can be loaded through ``entry`` (as the software lists it) but binaries, by its path
     relative to it: each file's path and SHA-256."""
-    from k4opt.software.overlays import _LISTED, _file  # the same listing
-
     role = _role(entry) or "files"
     if os.path.isfile(entry.path):
         listed = _file(entry.path)
@@ -547,7 +582,7 @@ def _files(entry: Local) -> dict[str, tuple[str, str]]:
     for relative, path, status in listed:
         if status is None:
             continue
-        if _elf(path):  # identified among the binaries, never kept
+        if _binary(path):  # identified among the binaries, never kept
             continue
         try:
             found[relative or os.path.basename(path)] = (path, sha256_of(path, status))
@@ -559,8 +594,6 @@ def _files(entry: Local) -> dict[str, tuple[str, str]]:
 def _loose(entry: Local) -> list[Binary]:
     """The binaries that can be loaded through ``entry``, a local entry of no build: each by its
     SHA-256 and build-id, as a build's are."""
-    from k4opt.software.overlays import _LISTED, _file
-
     role = _role(entry) or "files"
     listed = (
         _file(entry.path)
@@ -569,7 +602,7 @@ def _loose(entry: Local) -> list[Binary]:
     )
     found = []
     for relative, path, status in listed:
-        if status is None or not _elf(path):
+        if status is None or not _binary(path):
             continue
         try:
             found.append(
@@ -744,6 +777,9 @@ def _snapshot(checkout: str, revision: str | None, excluded: Sequence[str]) -> G
             for name in untracked
             if not any(name == s or name.startswith(f"{s}/") for s in skipped)
         ]
+        left = _git(real, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", env=env)
+        if left is None:
+            raise _GitError("its ignored files cannot be listed")
         large = [n for n in untracked if (stat_of(os.path.join(real, n)) or (0,))[0] > LARGE]
         kept = [n for n in untracked if n not in large]
         if kept:
@@ -788,6 +824,7 @@ def _snapshot(checkout: str, revision: str | None, excluded: Sequence[str]) -> G
         tree,
         tuple(n.decode(errors="surrogateescape") for n in changed.split(b"\0") if n),
         patch if len(patch) <= MAX_PATCH else None,
+        frozenset(n.decode(errors="surrogateescape") for n in left.split(b"\0") if n),
     )
 
 

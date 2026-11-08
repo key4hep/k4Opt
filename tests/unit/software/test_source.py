@@ -186,6 +186,46 @@ def test_a_build_keeps_what_it_installed_beside_its_binaries(tmp_path: Path) -> 
     assert not any(name.startswith("lib/libDDMarlinPandora") for name in found.files)
 
 
+def test_a_compiled_python_extension_is_a_binary_of_its_build(tmp_path: Path) -> None:
+    prefix = build(make_checkout(tmp_path))
+    package = prefix / "python" / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "_core.so").write_bytes(elf("abcd1234"))
+    values = {**variables(prefix), "PYTHONPATH": str(prefix / "python")}
+    (found,) = origins(software(**values).local, None)
+    (extension,) = (b for b in found.binaries if b.file.endswith("_core.so"))
+    assert extension.build_id == "abcd1234" and "python/pkg/_core.so" not in found.files
+
+
+def test_an_installed_binary_the_build_tree_lacks_is_no_verified_link(tmp_path: Path) -> None:
+    prefix = build(make_checkout(tmp_path))
+    (prefix / "lib" / "libOld.so").write_bytes(elf("deadbeef"))
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert found.link == "likely" and any("libOld.so" in line for line in found.evidence)
+
+
+def test_a_root_module_is_fingerprinted_and_not_kept(tmp_path: Path) -> None:
+    prefix = build(make_checkout(tmp_path))
+    (prefix / "lib" / "libXDict_rdict.pcm").write_bytes(b"CPCH")
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert "lib/libXDict_rdict.pcm" not in found.files
+    assert any(b.file == "lib/libXDict_rdict.pcm" for b in found.binaries)
+    assert found.link == "verified"  # it has no build-id to compare
+
+
+def test_what_git_ignores_and_can_be_loaded_is_left_out_no_more(tmp_path: Path) -> None:
+    repo = make_checkout(tmp_path)
+    (repo / ".gitignore").write_text("generated/\n")
+    (repo / "generated").mkdir()
+    (repo / "generated" / "__init__.py").write_text("")
+    (repo / "generated" / "calibration.py").write_text("constant = 1\n")
+    (repo / "generated" / "_fast.so").write_bytes(elf("abcd"))
+    (found,) = origins(software(PYTHONPATH=str(repo)).local, None)
+    assert found.files["generated/calibration.py"][0] == str(repo / "generated/calibration.py")
+    assert [b.file for b in found.binaries] == ["generated/_fast.so"]
+
+
 def test_binaries_the_build_tree_no_longer_has_make_the_link_likely(tmp_path: Path) -> None:
     repo = make_checkout(tmp_path)
     prefix = build(repo, build_id="aaaa", installed="bbbb")  # rebuilt since it was installed

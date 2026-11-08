@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from k4opt.software.keep import Store, commitment, keep_inputs, keep_used, take
 from k4opt.software.stack import Release
 from tests.support.checkouts import build, checkout, variables
 from tests.support.software import lcg_view
+
+GEOMETRY = Path(__file__).parents[2] / "fixtures" / "geometry" / "mini_geo"
 
 
 def one(inputs: list[dict[str, Any]], path: str) -> dict[str, Any]:
@@ -360,3 +363,50 @@ def test_a_damaged_index_of_inputs_is_refused(tmp_path: Path, text: str) -> None
     (tmp_path / keep.INPUTS).write_text(text)
     with pytest.raises(SoftwareError):
         keep.kept_inputs(tmp_path)
+
+
+def geometry_identity(root: Path) -> dict[str, Any]:
+    compact = "compact/det_v1/det_v1.xml"
+    return {
+        "inputs": {},
+        "implementations": {},
+        "geometry": {"compact": compact, "source_root": str(root), "externals": {}},
+    }
+
+
+def test_a_local_geometry_is_kept_file_by_file(tmp_path: Path) -> None:
+    root = tmp_path / "mine"
+    shutil.copytree(GEOMETRY, root)
+    taken = take(tmp_path / "kept", Software.now({}, site=[]), geometry_identity(root), {})
+    kept = json.loads(taken.path.read_text())["geometry"]
+    compact = kept["files"]["compact/det_v1/det_v1.xml"]
+    assert (
+        Store(tmp_path / "kept").get(compact["kept"])
+        == (root / "compact/det_v1/det_v1.xml").read_bytes()
+    )
+    assert len(kept["files"]) > 1 and taken.problems == ()
+
+
+def test_the_stacks_geometry_is_not_kept(tmp_path: Path) -> None:
+    identity = geometry_identity(Path("/cvmfs/sw.hsf.org/k4geo"))
+    taken = take(tmp_path / "kept", Software.now({}, site=[]), identity, {})
+    assert json.loads(taken.path.read_text())["geometry"]["files"] == {}
+
+
+def test_a_steering_file_made_executable_has_changed(tmp_path: Path) -> None:
+    release = Release.of(str(lcg_view(tmp_path / "stack")))
+    assert release is not None
+    package = next(iter(release.packages.values()))
+    original = tmp_path / "package"
+    (original / "share" / "CLDConfig").mkdir(parents=True)
+    (original / "share" / "CLDConfig" / "run.sh").write_text("x")
+    package = replace(package, prefix=str(original))
+    release = replace(release, packages={package.name: package})
+    job = tmp_path / "CLDConfig"
+    job.mkdir()
+    (job / "run.sh").write_text("x")
+    (job / "run.sh").chmod(0o755)
+    entry = {"path": str(job / "run.sh"), "sha256": hashlib.sha256(b"x").hexdigest()}
+    identity = {"inputs": {"samples.pi0.reconstruction.directory/run.sh": entry}}
+    (steering,) = keep._steering(Store(tmp_path / "kept"), [], identity, release)
+    assert steering["unchanged"] == 0 and steering["changed"]["run.sh"]["executable"] is True

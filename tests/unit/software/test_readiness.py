@@ -8,6 +8,7 @@ import gzip
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 
 from k4opt.software import Software, keep, source
 from k4opt.software.keep import DIRECTORY, INPUTS, USED, Store, keep_inputs, keep_used, take
+from k4opt.software.observe import identity
 from k4opt.software.readiness import (
     ALL_AVAILABLE,
     BLOCKED,
@@ -579,3 +581,125 @@ def test_local_code_whose_base_no_known_remote_gives_is_not_established(
     study_on(study, stack, {"PYTHONPATH": str(code)})
     readiness = requirements(study, IDENTITY, [summary(local=[str(code)])])
     assert readiness.status == UNVERIFIED
+
+
+def test_an_input_the_records_name_and_the_index_lacks_leaves_a_gap(
+    tmp_path: Path, stack: Path
+) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    file = tmp_path / "scale.json"
+    file.write_text("1")
+    then = f"sha256:{hashlib.sha256(b'1').hexdigest()}"
+    keep_inputs(study / DIRECTORY, [(str(file), then, ["pi0/reconstruction"], "observed")])
+    (study / DIRECTORY / INPUTS).unlink()
+    readiness = requirements(study, IDENTITY, [summary_with(undeclared={str(file): then})])
+    assert readiness.status == INCOMPLETE and str(file) in readiness.gaps[0]
+
+
+def test_a_declared_input_the_index_lacks_leaves_a_gap(tmp_path: Path, stack: Path) -> None:
+    file = tmp_path / "scale.json"
+    file.write_text("1")
+    entry = {"path": str(file), "sha256": hashlib.sha256(b"1").hexdigest()}
+    identity = {**IDENTITY, "inputs": {"samples.pi0.simulation.steering": entry}}
+    study = tmp_path / "study"
+    software = Software.now({"KEY4HEP_STACK": str(stack)}, site=[])
+    take(study / DIRECTORY, software, identity)
+    assert not requirements(study, identity, [summary()]).gaps
+    (study / DIRECTORY / INPUTS).unlink()
+    assert str(file) in requirements(study, identity, [summary()]).gaps[0]
+
+
+def summary_with(**observed: object) -> dict[str, Any]:
+    record = summary()
+    record["samples"]["pi0"]["stages"]["reconstruction"]["observed"].update(observed)
+    return record
+
+
+def test_an_output_reused_from_another_study_says_whose_build_made_it(
+    tmp_path: Path, stack: Path
+) -> None:
+    theirs, ours = (build(checkout(tmp_path / name)) for name in "ab")
+    other = tmp_path / "other"
+    study_on(other, stack, variables(theirs))
+    in_trial(other, "trial-000000", summary(local=[str(theirs / "lib")]))
+    study = tmp_path / "study"
+    study_on(study, stack, variables(ours))
+    run = str(other / "trial-000000")
+    stage = {"reused": {"run_dir": run, "task": "pi0/reconstruction"}}
+    record = {"samples": {"pi0": {"stages": {"reconstruction": stage}}}}
+    readiness = requirements(study, IDENTITY, [record])
+    assert readiness.status == INCOMPLETE
+    assert str(theirs / "lib") in readiness.gaps[0] and run in readiness.gaps[0]
+    assert not next(r for r in readiness.requirements if r.kind == "package").unused
+
+
+def test_a_listed_directory_is_said_only_once_it_changed(tmp_path: Path, stack: Path) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    listed = tmp_path / "calibrations"
+    listed.mkdir()
+    record = summary_with(undeclared={str(listed): identity(str(listed))})
+    assert not any(
+        r.id.startswith("listing:") for r in requirements(study, IDENTITY, [record]).requirements
+    )
+    (listed / "new.json").write_text("{}")
+    readiness = requirements(study, IDENTITY, [record])
+    assert readiness.status == UNVERIFIED  # not gone: any Python program lists its own path
+    assert readiness.requirements[-2].id == f"listing:{listed}"
+
+
+def test_a_footprint_record_of_another_shape_is_said(tmp_path: Path, stack: Path) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    document = {
+        "schema": "k4opt.used/1",
+        "trials": {},
+        "footprints": {"abc": {"stage": "pi0/reconstruction", "files": ["/x"]}},
+    }
+    (study / DIRECTORY / USED).write_text(json.dumps(document))
+    readiness = requirements(study, IDENTITY, [summary()])
+    assert readiness.status == BLOCKED and readiness.altered == (USED,)
+
+
+def test_a_local_geometry_is_required_as_it_was_kept(tmp_path: Path, stack: Path) -> None:
+    root = tmp_path / "mine"
+    shutil.copytree(Path(__file__).parents[2] / "fixtures" / "geometry" / "mini_geo", root)
+    compact = "compact/det_v1/det_v1.xml"
+    geometry = {"compact": compact, "source_root": str(root), "externals": {}}
+    identity_ = {**IDENTITY, "geometry": geometry}
+    study = tmp_path / "study"
+    software = Software.now({"KEY4HEP_STACK": str(stack)}, site=[])
+    taken = take(study / DIRECTORY, software, identity_)
+    shutil.rmtree(root)  # what is kept is all a rerun needs of it
+    readiness = requirements(study, identity_, [summary()])
+    assert readiness.status == f"{ALL_AVAILABLE} on {readiness.at[:10]}"
+    assert next(r for r in readiness.requirements if r.kind == "geometry").label == compact
+    kept = json.loads(taken.path.read_text())["geometry"]["files"][compact]["kept"]
+    Store(study / DIRECTORY).path(kept).unlink()
+    assert requirements(study, identity_, [summary()]).status == BLOCKED
+
+
+def test_an_ignored_module_that_ran_is_required(tmp_path: Path, stack: Path) -> None:
+    repo = checkout(tmp_path)
+    (repo / ".gitignore").write_text("generated/\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "ignore")
+    git(repo, "push", "-q", "origin", "HEAD")
+    (repo / "generated").mkdir()
+    (repo / "generated" / "__init__.py").write_text("")
+    (repo / "generated" / "calibration.py").write_text("constant = 1\n")
+    study = tmp_path / "study"
+    taken = take(
+        study / DIRECTORY,
+        Software.now({"PYTHONPATH": str(repo), "KEY4HEP_STACK": str(stack)}, site=[]),
+        IDENTITY,
+    )
+    (origin,) = (
+        o for o in json.loads(taken.path.read_text())["origins"] if o["prefix"] == str(repo)
+    )
+    kept = origin["files"]["generated/calibration.py"]["kept"]
+    assert Store(study / DIRECTORY).get(kept) == b"constant = 1\n"
+    Store(study / DIRECTORY).path(kept).unlink()
+    readiness = requirements(study, IDENTITY, [summary(local=[str(repo)])])
+    assert readiness.status == BLOCKED

@@ -6,9 +6,9 @@ A study's ``software/`` directory (:data:`DIRECTORY`) holds, for no one but its 
   software it runs on, the stack's release (:mod:`.stack`: its manifests, kept apart, and the
   commit of each package built from a repository's head), where each
   local build comes from and the state of its source (:mod:`.source`), each reconstruction's job
-  directory against the package of the stack it is a copy of (its *steering*), and the files of
-  the evaluators. One file per state, named by its content: a session that opens on the same state
-  adds nothing.
+  directory against the package of the stack it is a copy of (its *steering*), the files of the
+  geometry, unless the stack holds it, and the files of the evaluators. One file per state,
+  named by its content: a session that opens on the same state adds nothing.
 - ``inputs.json`` (:data:`INPUTS`): each file the stages read that neither the stack nor the
   software identifies, from the problem or from the stages' footprints, with its identity, a
   random ``salt`` and the ``commitment`` ``sha256(salt ‖ sha256(file))``, which a publication can
@@ -42,10 +42,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 import k4opt
+from k4opt.geometry import GeometryError, GeometrySource
 from k4opt.jsonio import PRIVATE, publish, replace
 from k4opt.software.errors import SoftwareError
 from k4opt.software.identity import Software, compared_variables
-from k4opt.software.observe import STACK, load
+from k4opt.software.observe import STACK, SYSTEM, load
 from k4opt.software.overlays import listed_files
 from k4opt.software.source import Origin, checkout, origins
 from k4opt.software.stack import MANIFESTS, Package, Release
@@ -208,6 +209,7 @@ def take(
         "release": None,
         "origins": [],
         "steering": [],
+        "geometry": None,
         "evaluators": {},
         "k4opt": None,
     }
@@ -226,8 +228,9 @@ def take(
     for origin in found:
         document["origins"].append(_origin(store, problems, origin))
     document["steering"] = _steering(store, problems, identity, release)
+    document["geometry"] = _geometry(store, problems, identity)
     document["evaluators"] = _evaluators(store, problems, identity)
-    _declared(directory, store, identity, problems)
+    _declared(directory, identity, problems)
     document["problems"] = problems
     text = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
     name = f"software-{hashlib.sha256(text.encode()).hexdigest()[:16]}.json"
@@ -327,7 +330,12 @@ def _steering(
                 result["unchanged"] += 1
                 continue
             original = theirs.pop(name, None)
-            if original is not None and original == sha256:
+            if (
+                original is not None
+                and original == sha256
+                and _nature(str(file["path"]))["executable"]
+                == _nature(os.path.join(str(same_as), name))["executable"]
+            ):
                 result["unchanged"] += 1
                 continue
             kept = None
@@ -376,6 +384,56 @@ def _listing(root: str) -> dict[str, str]:
         except OSError:
             continue
     return found
+
+
+def _shared(path: str) -> bool:
+    return any(path == root or path.startswith(f"{root}/") for root in (*STACK, *SYSTEM))
+
+
+def _geometry(
+    store: Store, problems: list[str], identity: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """The geometry the session starts from: every file reachable from its compact file and what
+    its external references read, each with its SHA-256 and what it is kept as, unless the stack
+    holds it (``files`` empty) or it cannot be read (``files`` ``None``)."""
+    geometry = identity.get("geometry")
+    if not isinstance(geometry, Mapping) or not isinstance(geometry.get("source_root"), str):
+        return None
+    root, compact = geometry["source_root"], geometry.get("compact")
+    found: dict[str, Any] = {"root": root, "compact": compact, "files": {}}
+    if _shared(root):
+        return found
+    try:
+        catalog = GeometrySource(str(compact), root).discover()
+    except (GeometryError, OSError) as exc:
+        problems.append(f"the geometry {compact} not kept: {exc}")
+        return {**found, "files": None}
+    wanted = {
+        name: (os.path.join(root, name), sha256)
+        for name, sha256 in {**catalog.file_hashes, **catalog.resource_hashes}.items()
+    }
+    for entry in (geometry.get("externals") or {}).values():
+        path = entry.get("path")
+        if not isinstance(path, str) or _shared(path):
+            continue
+        wanted[path] = (path, entry.get("sha256"))
+        for name, sha256 in (entry.get("files") or {}).items():
+            reached = os.path.normpath(os.path.join(os.path.dirname(path), name))
+            wanted[reached] = (reached, sha256)
+    for name, (path, sha256) in wanted.items():
+        kept = None
+        if isinstance(sha256, str):
+            kept = _kept_file(store, problems, path, sha256)
+        found["files"][name] = {"sha256": sha256, "kept": kept}
+    return found
+
+
+def _kept_file(store: Store, problems: list[str], path: str, sha256: str) -> str | None:
+    try:
+        return store.put_file(path, sha256)
+    except (SoftwareError, OSError) as exc:
+        problems.append(f"{path} not kept: {exc}")
+        return None
 
 
 def _evaluators(store: Store, problems: list[str], identity: Mapping[str, Any]) -> dict[str, Any]:
@@ -526,12 +584,11 @@ def keep_inputs(
     return problems
 
 
-def _declared(
-    directory: Path, store: Store, identity: Mapping[str, Any], problems: list[str]
-) -> None:
-    """Keep the files the problem names that the stack does not hold, but a reconstruction's job
-    directory (its steering, kept against its package)."""
-    found: dict[tuple[str, str], list[str]] = {}  # one file as read: the stages that declare it
+def declared_inputs(identity: Mapping[str, Any]) -> dict[tuple[str, str], list[str]]:
+    """The files the problem names that the stack does not hold, but a reconstruction's job
+    directory (its steering, kept against its package): by path and identity, the stages that
+    declare it."""
+    found: dict[tuple[str, str], list[str]] = {}
     for label, entry in (identity.get("inputs") or {}).items():
         if ".directory/" in label or not isinstance(entry, Mapping):
             continue
@@ -543,8 +600,14 @@ def _declared(
         parts = label.split(".")
         stage = "/".join(parts[1:3]) if len(parts) > 2 and parts[0] == "samples" else label
         found.setdefault((path, f"{_SHA256}{sha256}"), []).append(stage)
-    inputs = [(path, then, stages, "declared") for (path, then), stages in found.items()]
-    problems += keep_inputs(directory, inputs)
+    return found
+
+
+def _declared(directory: Path, identity: Mapping[str, Any], problems: list[str]) -> None:
+    """Keep the files the problem names (:func:`declared_inputs`)."""
+    inputs = declared_inputs(identity)
+    found = [(path, then, stages, "declared") for (path, then), stages in inputs.items()]
+    problems += keep_inputs(directory, found)
 
 
 # --- what local builds ran -------------------------------------------------------------------
@@ -606,6 +669,7 @@ __all__ = [
     "Store",
     "Taken",
     "commitment",
+    "declared_inputs",
     "keep_inputs",
     "keep_used",
     "kept_inputs",

@@ -3,7 +3,8 @@
 :func:`requirements` reads what the study kept (:mod:`.keep`) and what its records say its stages
 used, and lists each thing a rerun needs (:class:`Requirement`): the build of the stack (``base``),
 each local build and directory of local code (``package``, ``code``), each environment of installed
-distributions (``environment``), each reconstruction's job directory (``steering``), each input
+distributions (``environment``), each reconstruction's job directory (``steering``), the geometry
+(``geometry``), each input
 the stack does not hold (``input``), k4opt's code (``k4opt``) and each evaluator (``evaluator``).
 Each says what identifies it, which stages used it and how its availability was checked, with the
 date (:class:`Check`): a check is true when it was made, never a promise for later.
@@ -42,12 +43,13 @@ from k4opt.software.keep import (
     USED_SCHEMA,
     Store,
     commitment,
+    declared_inputs,
     kept_inputs,
 )
-from k4opt.software.observe import identity
+from k4opt.software.observe import _LISTED, identity
 
 type Kind = Literal[
-    "base", "package", "code", "environment", "steering", "input", "k4opt", "evaluator"
+    "base", "package", "code", "environment", "steering", "geometry", "input", "k4opt", "evaluator"
 ]
 type CheckState = Literal["available", "gone", "altered", "not-checked"]
 
@@ -235,6 +237,10 @@ def _used(directory: Path) -> dict[str, Any] | None:
         not isinstance(document, dict)
         or document.get("schema") != USED_SCHEMA
         or not all(isinstance(document.get(key), dict) for key in ("footprints", "trials"))
+        or not all(
+            isinstance(entry, dict) and isinstance(entry.get("files"), dict)
+            for entry in document["footprints"].values()
+        )
     ):
         raise SoftwareError(f"{path} is not of {USED_SCHEMA}")
     return document
@@ -362,6 +368,9 @@ def requirements(
     network: dict[str, set[str]] = {}  # stage: what it reached
     unidentified: dict[str, set[str]] = {}  # stage: what it read that could not be identified
     lost: set[str] = set()  # stages whose footprint the study should have noted, and did not
+    expected: set[tuple[str, str]] = set()  # the inputs the records name, as they were read
+    listed: dict[str, str] = {}  # each directory a stage listed: its names then
+    reused_from: dict[str, str] = {}  # stage: the run directory it reused an output of
     for trial, summary in found_records:
         trials_seen.add(trial)
         for label, stage in _stages(summary):
@@ -381,6 +390,13 @@ def requirements(
             for path, then in (read if isinstance(read, Mapping) else {}).items():
                 if not isinstance(then, str):
                     unidentified.setdefault(label, set()).add(str(path))
+                elif then.startswith(_LISTED):
+                    listed.setdefault(str(path), then)
+                else:
+                    expected.add((str(path), then))
+            reused = stage.get("reused")
+            if isinstance(reused, Mapping):
+                reused_from[label] = str(reused.get("run_dir"))
     if not found_records:
         gaps.append("no trial has a record yet: what its stages use is not known")
     if summaries is None and found_records and USED not in altered:
@@ -418,6 +434,16 @@ def requirements(
             latest[str(origin.get("prefix"))] = origin
             trees.setdefault(str(origin.get("prefix")), set()).add(git.get("tree"))
     moved = {prefix for prefix, seen in trees.items() if len(seen) > 1}
+    # what no state describes was read through an output reused from another study, whose own
+    # record of it stays there: said, and no build here can be taken as not having run
+    described = {str(entry) for origin in latest.values() for entry in origin.get("entries") or ()}
+    for path in sorted(set(used_local) - described):
+        where = sorted({reused_from[s] for _, s in used_local[path] if s in reused_from})
+        known = False
+        gaps.append(
+            f"{path} was read, and this study did not keep what it is"
+            + (f": see the study of {', '.join(where)}, whose output it reused" if where else "")
+        )
     ran = _ran(footprints)
     ours = {each.get("k4opt") for each in documents}
     found: list[Requirement] = []
@@ -428,6 +454,8 @@ def requirements(
         name = _name(origin) if names[_name(origin)] == 1 else f"{_name(origin)} at {prefix}"
         found.append(_origin(origin, name, index, store, at, used_local, ran, ours, known, moved))
     found += [_steering(entry, store, at, base) for entry in document.get("steering") or []]
+    if isinstance(document.get("geometry"), Mapping):
+        found.append(_geometry(document["geometry"], store, at, base))
     try:
         inputs = sorted(
             kept_inputs(directory), key=lambda e: (str(e.get("path")), str(e.get("identity")))
@@ -444,6 +472,14 @@ def requirements(
         if count > 1
     ]
     found += [_input(index, entry, store, at) for index, entry in enumerate(inputs, start=1)]
+    found += _listings(listed, at)
+    if INPUTS not in altered:
+        have = {(str(entry.get("path")), str(entry.get("identity"))) for entry in inputs}
+        unlisted = sorted(
+            {path for path, _ in (expected | declared_inputs(identity).keys()) - have}
+        )
+        if unlisted:
+            gaps.append(f"{INPUTS} does not list what the study read: {', '.join(unlisted)}")
     found.append(_k4opt(identity, document, store, at))
     for name, entry in (document.get("evaluators") or {}).items():
         found.append(_evaluator(name, entry, identity, store, at))
@@ -713,6 +749,13 @@ def _origin(
         )
     if isinstance(git, Mapping):
         identified = _git_line(git)
+        ignored = origin.get("files") or {}
+        checks += _kept_files(ignored, store, at)
+        if ignored:
+            identified += f" + {len(ignored)} ignored files, kept"
+        if origin.get("binaries"):
+            names = ", ".join(str(b.get("file")) for b in origin["binaries"])
+            checks.append(Check(at, "not-checked", f"ignored binaries, never kept: {names}"))
         if git.get("checkout") in ours:
             notes.append("k4opt's own checkout")
     else:
@@ -778,6 +821,37 @@ def _steering(entry: Mapping[str, Any], store: Store, at: str, base: Requirement
         source={"package": package, "revision": revision, "removed": tuple(removed)},
         checks=tuple(checks),
     )
+
+
+def _geometry(entry: Mapping[str, Any], store: Store, at: str, base: Requirement) -> Requirement:
+    files = entry.get("files")
+    if files is None:
+        checks = [Check(at, "gone", "its files could not be read when the session opened")]
+    elif files:
+        checks = _kept_files(files, store, at)
+    else:  # the stack's: as available as the build
+        state = base.checks[0].state if base.checks else "not-checked"
+        checks = [Check(at, state, "the files of the stack, with the build")]
+    identified = f"{len(files)} files, kept" if files else "the stack's"
+    return Requirement(
+        "geometry", "geometry", str(entry.get("compact")), identified, checks=tuple(checks)
+    )
+
+
+def _listings(listed: Mapping[str, str], at: str) -> list[Requirement]:
+    """Each directory a stage listed whose names changed since; only those, and never as gone: a
+    listing is what any Python program makes of its own search path."""
+    return [
+        Requirement(
+            f"listing:{path}",
+            "input",
+            os.path.basename(path),
+            "a directory a stage listed",
+            checks=(Check(at, "not-checked", f"the names in {path} changed since"),),
+        )
+        for path, then in sorted(listed.items())
+        if identity(path) != then
+    ]
 
 
 def _input(index: int, entry: Mapping[str, Any], store: Store, at: str) -> Requirement:
