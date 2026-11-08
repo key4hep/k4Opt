@@ -225,14 +225,23 @@ def test_a_restored_candidate_measures_what_it_measured(
     entry = publish(results, tmp_path / "pub", release=release)
     sheet = open_publication(tmp_path / "pub").software(entry)
     assert sheet is not None and entry.software is not None
-    published = {artifact.name for artifact in sheet.artifacts}
-    assert {"ecal_tweak.py", "ParticleFlow/Pandora.py", "ecal_scale.json"} <= published
+    publication = open_publication(tmp_path / "pub")
+    files = {artifact.name: artifact for artifact in sheet.artifacts}
+    assert {"ecal_tweak.py", "ParticleFlow/Pandora.py", "ecal_scale.json"} <= files.keys()
     assert str(originals) not in (tmp_path / "pub" / entry.software.path).read_text()
 
     monkeypatch.undo()  # the rerun's environment names nothing of the originals
     restored = restore(output, tmp_path / "restored")
     shutil.rmtree(originals)  # the rerun can only read what was kept
     helper = restored.code[str(helpers)]
+    # what a reader of the publication has, in place of what the study kept privately
+    job = restored.steering["pi0/reconstruction"]
+    for name, target in (
+        ("ecal_tweak.py", helper / "ecal_tweak.py"),
+        ("ParticleFlow/Pandora.py", job / "ParticleFlow" / "Pandora.py"),
+        ("ecal_scale.json", restored.inputs[str(private)]),
+    ):
+        target.write_bytes(publication.artifact(files[name]))
     environment = clean(
         tmp_path / "home",
         PYTHONPATH=str(helper),

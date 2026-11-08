@@ -87,6 +87,15 @@ def publish(
     sha256 = hashlib.sha256(data).hexdigest()
     snapshot = Snapshot(snapshot_path(results.id, sha256), sha256, len(data))
     approved = release if release is not None else Release(offer(results))
+    if approved.offer.study != results.id:
+        raise PublicationError(
+            f"this release was made for another study ({approved.offer.study}), not {results.id}"
+        )
+    if approved.offer.snapshot != sha256:
+        raise PublicationError(
+            f"study {results.name} is in another state than when this release was made: review "
+            "what it offers again"
+        )
     _write_once(directory / snapshot.path, data)
     artifacts = bundled(results.id, approved.pieces)
     for artifact, content in artifacts:

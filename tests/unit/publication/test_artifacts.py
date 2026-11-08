@@ -87,6 +87,7 @@ def test_what_is_used_is_offered_and_what_lies_beside_it_is_held(
     found = offer(made[1])
     assert names(found.code) == [
         "ddmarlinpandora/New.h",  # untracked: installed by the build
+        "ddmarlinpandora/cmake-options.txt",  # how it was configured, without its paths
         "ddmarlinpandora/src/DDCaloHitCreator.cc",  # a tracked file edited
         "helpers/ecal_tweak.py",  # a stage read it
     ]
@@ -328,11 +329,14 @@ def artifacts_of(pub: Path) -> list[str]:
     return sorted(a.name for a in sheet.artifacts if a.owner in OURS or a.group == "inputs")
 
 
+CODE = ["ddmarlinpandora.patch"]
+
+
 @pytest.mark.parametrize(
     ("answers", "expected"),
     [
-        ("y\ny\n", ["ddmarlinpandora.patch", "ecal_scale.json", "ecal_tweak.py"]),
-        ("y\nn\n", ["ddmarlinpandora.patch", "ecal_tweak.py"]),
+        ("y\ny\n", ["cmake-options.txt", *CODE, "ecal_scale.json", "ecal_tweak.py"]),
+        ("y\nn\n", ["cmake-options.txt", *CODE, "ecal_tweak.py"]),
         ("n\ny\n", ["ecal_scale.json"]),
         ("\n\n", []),  # the default is no
         ("", []),  # no answer at all: no
@@ -380,7 +384,8 @@ def test_yes_answers_only_for_the_code_and_a_script_names_its_inputs(
 ) -> None:
     root, _ = made
     code, _, _ = run(root / "study", tmp_path / "a", None, "--yes", monkeypatch=monkeypatch)
-    assert code == 0 and artifacts_of(tmp_path / "a") == ["ddmarlinpandora.patch", "ecal_tweak.py"]
+    assert code == 0
+    assert artifacts_of(tmp_path / "a") == ["cmake-options.txt", *CODE, "ecal_tweak.py"]
     code, _, _ = run(
         root / "study",
         tmp_path / "b",
@@ -449,6 +454,45 @@ def test_a_binary_a_stage_read_is_held_and_named_as_needed(
     assert {r.label: r.access for r in sheet.requirements}["ddmarlinpandora"] == "on request"
 
 
+@pytest.mark.parametrize("cached", ["unrelated.cpython-314.pyc", "unrelated.cpython-314.opt-1.pyc"])
+def test_a_module_python_read_from_its_cache_was_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cached: str
+) -> None:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    study = local_study(tmp_path, monkeypatch)
+    cache = tmp_path / "helpers" / "__pycache__"
+    cache.mkdir()
+    (cache / cached).write_bytes(b"compiled")  # with a valid cache, Python never opens the .py
+    read_by_stage(study, cache / cached)
+    found = offer(load_study(study))
+    assert "helpers/unrelated.py" in names(found.code)
+    assert not any(piece.name.endswith(".pyc") for piece in found.code)
+
+
+def test_what_no_stage_was_seen_to_read_is_only_unused_if_every_stage_was_seen(
+    made: tuple[Path, StudyResults], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from k4opt.publication import artifacts
+
+    _, results = made
+    assert {h.label: h.needed for h in offer(results).held}["helpers/unrelated.py"] is False
+    real = artifacts.requirements
+
+    def unobserved(*args: Any, **kwargs: Any) -> Any:
+        gap = ("pi0/reconstruction was not observed completely",)
+        return replace(real(*args, **kwargs), gaps=gap, public_gaps=gap)
+
+    monkeypatch.setattr(artifacts, "requirements", unobserved)
+    held = {h.label: h for h in offer(results).held}
+    assert held["helpers/unrelated.py"].why == "not known to be used"
+    assert held["helpers/unrelated.py"].needed  # so its requirement is on request, not "not needed"
+    assert "helpers/unrelated.py" not in names(offer(results).code)  # and it is still not offered
+
+
 def test_a_local_geometry_and_the_evaluators_are_code_never_inputs(
     made: tuple[Path, StudyResults],
 ) -> None:
@@ -467,3 +511,197 @@ def test_read_helper_counts_only_when_a_stage_read_it(
     study = local_study(tmp_path, monkeypatch)
     read_by_stage(study, tmp_path / "helpers" / "unrelated.py")
     assert "helpers/unrelated.py" in names(offer(load_study(study)).code)
+
+
+# --- what the first review of the publication found ----------------------------------------------
+
+
+def two_of_a_name(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[StudyResults, Path, Path]:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    study = local_study(root, monkeypatch)
+    public, private = root / "public" / "config.json", root / "private" / "config.json"
+    for path, text in ((public, "public\n"), (private, "private\n")):
+        path.parent.mkdir()
+        path.write_text(text)
+        add_input(study, path)
+    return load_study(study), public, private
+
+
+def test_a_name_two_inputs_share_is_refused_and_each_can_be_named_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results, public, private = two_of_a_name(tmp_path, monkeypatch)
+    found = offer(results)
+    with pytest.raises(PublicationError, match=r"config\.json names 2 files") as refused:
+        found.release(inputs=["config.json"])
+    assert str(public) in str(refused.value) and str(private) in str(refused.value)
+    (one,) = found.release(inputs=[str(public)]).pieces
+    assert one.data == b"public\n"
+    (other,) = [p for p in found.inputs if p.place == str(private)]
+    (by_id,) = found.release(inputs=[other.requirements[0]]).pieces
+    assert by_id.data == b"private\n"
+
+
+def test_the_command_refuses_a_shared_name_and_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results, _, _ = two_of_a_name(tmp_path, monkeypatch)
+    assert results.directory is not None
+    code, _, err = run(
+        results.directory,
+        tmp_path / "pub",
+        None,
+        "--yes",
+        "--include-inputs",
+        "config.json",
+        monkeypatch=monkeypatch,
+    )
+    assert code == 1 and "names 2 files" in err and not (tmp_path / "pub").exists()
+
+
+def test_an_input_held_back_that_a_stage_read_is_on_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    study = local_study(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    (home / ".config").mkdir(parents=True)
+    (home / ".config" / "calibration.json").write_text("{}\n")
+    (home / ".rootrc").write_text("Unix.*.Root.UseTTFonts: false\n")
+    for path in (home / ".config" / "calibration.json", home / ".rootrc"):
+        add_input(study, path)
+    monkeypatch.setenv("HOME", str(home))
+    results = load_study(study)
+    found = offer(results)
+    held = {h.name: h for h in found.held if h.group == "inputs"}
+    assert held["calibration.json"].needed and not held[".rootrc"].needed
+    entry = publish(results, tmp_path / "pub", release=found.release(code=True, inputs=True))
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None
+    by = {r.label: r for r in sheet.requirements}
+    assert by["calibration.json"].access == "on request" and "needs access" in sheet.status
+    assert by[".rootrc"].unused  # every ROOT job reads it: no rerun needs it from the author
+
+
+def steering(tmp_path: Path, **changes: Any) -> tuple[Any, Any]:
+    """The pieces of a job directory with a changed file, a removed one and ``changes``."""
+    from dataclasses import replace
+
+    from k4opt.publication import artifacts
+    from k4opt.software.keep import Store
+    from k4opt.software.readiness import Requirement
+
+    store = Store(tmp_path)
+    kept = store.put(b"a = 1\n")
+    file = {"kept": kept, "sha256": kept, "executable": True, "link": None}
+    entry = {
+        "package": "cldconfig",
+        "revision": "8879e4e",
+        "original": None,
+        "changed": {"a.py": file},
+        "added": {"b.py": {**file, "executable": False, "link": "a.py"}},
+        "removed": ["old/gone.py"],
+    } | changes
+    requirement = Requirement(
+        "steering:pi0/reco", "steering", "pi0/reco", "a copy", ("pi0/reco",), entry=entry
+    )
+    pieces: list[Piece] = []
+    artifacts._from_steering(replace(requirement), store, pieces, [])
+    return pieces, entry
+
+
+def test_what_a_copy_of_job_files_removed_links_and_marks_executable_is_published(
+    tmp_path: Path,
+) -> None:
+    pieces, _ = steering(tmp_path)
+    manifest = json.loads(next(p for p in pieces if p.name == "job-files.json").data)
+    assert manifest["removed"] == ["old/gone.py"]
+    assert manifest["executable"] == ["a.py"]
+    assert manifest["links"] == {"b.py": "a.py"}
+
+
+def test_a_link_out_to_a_local_path_is_not_published(tmp_path: Path) -> None:
+    file = {"kept": None, "sha256": None, "executable": False, "link": "/home/me/secret.py"}
+    pieces, _ = steering(tmp_path, added={"c.py": file})
+    manifest = json.loads(next(p for p in pieces if p.name == "job-files.json").data)
+    assert "c.py" not in manifest["links"] and b"/home/me" not in manifest.__repr__().encode()
+
+
+def test_equal_bytes_elsewhere_do_not_make_a_file_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    study = local_study(tmp_path, monkeypatch)
+    twin = tmp_path / "elsewhere.py"
+    twin.write_bytes((tmp_path / "helpers" / "unrelated.py").read_bytes())
+    read_by_stage(study, twin)  # the same bytes as unrelated.py, read from another place
+    assert "helpers/unrelated.py" not in names(offer(load_study(study)).code)
+
+
+def test_a_builds_options_are_published_without_its_paths(
+    made: tuple[Path, StudyResults], tmp_path: Path
+) -> None:
+    root, results = made
+    found = offer(results)
+    options = next(p for p in found.code if p.label == "ddmarlinpandora/cmake-options.txt")
+    assert b"CMAKE_BUILD_TYPE=RelWithDebInfo" in options.data
+    assert str(root).encode() not in options.data
+    entry = publish(results, tmp_path / "a", release=found.release(code=True))
+    sheet = open_publication(tmp_path / "a").software(entry)
+    assert sheet is not None
+    by = {r.label: r for r in sheet.requirements}
+    assert by["ddmarlinpandora"].facts["configuration"] == "published"
+    entry = publish(results, tmp_path / "b")
+    sheet = open_publication(tmp_path / "b").software(entry)
+    assert sheet is not None
+    by = {r.label: r for r in sheet.requirements}
+    assert by["ddmarlinpandora"].facts["configuration"] == "on request"
+
+
+def test_a_release_of_another_study_or_state_is_refused_before_anything_is_written(
+    made: tuple[Path, StudyResults], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from tests.support.studies import mini_environment, mixed_study
+
+    _, results = made
+    mini_environment(monkeypatch)
+    other = load_study(mixed_study(tmp_path / "other", 1))
+    with pytest.raises(PublicationError, match="made for another study"):
+        publish(other, tmp_path / "pub", release=offer(results).release(code=True))
+    assert not (tmp_path / "pub").exists()
+    moved = replace(results, pareto=())  # the same study, in another state than was reviewed
+    with pytest.raises(PublicationError, match="another state"):
+        publish(moved, tmp_path / "pub", release=offer(results).release(code=True))
+    assert not (tmp_path / "pub").exists()
+
+
+def test_external_geometry_files_of_one_name_stay_apart(tmp_path: Path) -> None:
+    from k4opt.publication import artifacts
+    from k4opt.software.keep import Store
+    from k4opt.software.readiness import Requirement
+
+    store = Store(tmp_path)
+    first, second = store.put(b"one\n"), store.put(b"two\n")
+    files = {
+        "/a/constants.xml": {"sha256": first, "kept": first},
+        "/b/constants.xml": {"sha256": second, "kept": second},
+        "compact/det.xml": {"sha256": first, "kept": first},
+    }
+    pieces: list[Piece] = []
+    requirement = Requirement("geometry", "geometry", "c", "3 files, kept")
+    artifacts._from_files(requirement, store, "geometry", files, pieces)
+    assert sorted(p.name for p in pieces) == sorted(
+        [
+            "compact/det.xml",
+            f"externals/{first[:8]}/constants.xml",
+            f"externals/{second[:8]}/constants.xml",
+        ]
+    )

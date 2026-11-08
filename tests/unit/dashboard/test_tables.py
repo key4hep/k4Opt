@@ -374,3 +374,46 @@ def test_only_a_served_publication_links_to_its_files() -> None:
         tables.artifact_link("https://k4opt.web.cern.ch/", artifact)
         == "https://k4opt.web.cern.ch/studies/x/artifacts/aaaa"
     )
+
+
+def test_a_rerun_says_how_to_get_the_geometry_the_evaluators_and_k4opt() -> None:
+    import tables
+
+    geometry = _requirement(
+        id="geometry", kind="geometry", label="C/d.xml", identified="4 files, kept", facts={}
+    )
+    evaluator = _requirement(
+        id="evaluator:mine", kind="evaluator", label="mine v1", access="on request", facts={}
+    )
+    k4opt = _requirement(id="k4opt", kind="k4opt", label="k4opt 0.1", facts={"commit": "a" * 40})
+    steps = "\n".join(tables.rerun_steps(_sheet(_base(), geometry, evaluator, k4opt)))
+    assert "Restore the geometry C/d.xml (published here) and set K4GEO to it" in steps
+    assert "Get the evaluator mine v1 (ask the author)" in steps
+    assert f"Use k4opt at commit {'a' * 12}" in steps
+
+
+def test_a_rerun_says_when_what_is_published_does_not_suffice() -> None:
+    import tables
+
+    private = _requirement(
+        id="input:1", kind="input", label="e.json", access="on request", facts={}, ran=None
+    )
+    assert tables.rerun_missing(_sheet(_base(), _requirement())) == []
+    assert tables.rerun_missing(_sheet(_base(), private)) == ["e.json"]
+
+
+def test_a_build_says_whether_its_options_can_be_had_beside_its_source() -> None:
+    import tables
+
+    published = _requirement(
+        facts={"link": "verified", "rebuildable": True, "configuration": "published"}
+    )
+    (row,) = tables.local_changes(_sheet(published))
+    assert (row["Rebuild"], row["Build options"]) == ("Rebuildable from source", "Published")
+    asked = _requirement(
+        facts={"link": "verified", "rebuildable": True, "configuration": "on request"}
+    )
+    (row,) = tables.local_changes(_sheet(asked))
+    assert row["Build options"] == "On request"
+    step = next(s for s in tables.rerun_steps(_sheet(asked)) if s.startswith("Clone"))
+    assert "its CMake options (ask the author)" in step

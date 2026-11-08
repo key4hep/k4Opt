@@ -452,3 +452,16 @@ def test_a_study_published_from_its_json_form_says_it_has_no_sheet(
     publish(StudyResults.from_dict(results.to_dict()), tmp_path / "pub")
     at = study_page(monkeypatch, tmp_path, results, view="Software")
     assert not at.exception and "says nothing of the software" in texts(at)
+
+
+def test_a_published_input_can_be_downloaded_from_the_software_tab(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.publication import offer, publish
+
+    results = load_study(local_study(tmp_path, monkeypatch))
+    publish(results, tmp_path / "pub", release=offer(results).release(inputs=["ecal_scale.json"]))
+    at = study_page(monkeypatch, tmp_path, results, view="Software")
+    assert not at.exception
+    labels = [button.proto.label for button in at.get("download_button")]
+    assert "ecal_scale.json" in labels

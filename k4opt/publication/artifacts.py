@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import os
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -58,6 +59,10 @@ _K4OPT = os.path.dirname(os.path.abspath(k4opt_package.__file__))
 BUDGET = 10_000_000
 """How many bytes of code, and of inputs, are published unless ``--include-large`` says more."""
 NEEDS_ACCESS = "Not rerun · needs access"
+_UNKNOWN = "not known to be used"
+_TOOLS = (".rootrc", ".rootmap", "pyvenv.cfg")
+"""Configuration every job of the stack reads by itself: listed, and no rerun needs it from the
+author."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +141,8 @@ class Piece:
     base: str | None = None
     added: int | None = None
     removed: int | None = None
+    place: str | None = None
+    """Where an input was read: how its author can name it. Never published."""
 
     @property
     def label(self) -> str:
@@ -150,8 +157,26 @@ class Piece:
         return self.base is not None
 
     def matches(self, name: str) -> bool:
-        """Whether ``name`` names it: its owner, its path, its label or its own file name."""
-        return name in (self.owner, self.name, self.label, os.path.basename(self.name))
+        """Whether ``name`` names it: its owner, its path, its label, its own file name, where it
+        was read, or the id of what it answers (``input:2``)."""
+        return name in (
+            self.owner,
+            self.name,
+            self.label,
+            os.path.basename(self.name),
+            self.place,
+            *self.requirements,
+        )
+
+
+def _named(pieces: Iterable[Piece], name: str) -> list[Piece]:
+    """The ``pieces`` ``name`` names: one file, or all of one package by its name. A name that
+    fits several files is refused, with how to name each: approving one must never approve two."""
+    found = [piece for piece in pieces if piece.matches(name)]
+    if len(found) > 1 and not all(name in (p.owner, *p.requirements) for p in found):
+        each = "; ".join(f"{p.requirements[0]}: {p.place or p.label}" for p in found)
+        raise PublicationError(f"{name} names {len(found)} files; name one of them: {each}")
+    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +279,10 @@ class Offer:
     excluded: tuple[Piece, ...] = ()
     findings: tuple[Finding, ...] = ()
     include_large: bool = False
+    study: str = ""
+    """The id of the study it was made from."""
+    snapshot: str = ""
+    """The SHA-256 of that study's snapshot when it was reviewed."""
 
     def release(self, *, code: bool = False, inputs: bool | Collection[str] = False) -> Release:
         """What the author approved: all of ``code`` or none, and of ``inputs`` all (``True``), none
@@ -270,13 +299,14 @@ class Offer:
         if isinstance(inputs, bool):
             chosen = all_inputs if inputs else []
         else:
-            chosen = [p for p in all_inputs if any(p.matches(name) for name in inputs)]
-            unknown = [n for n in inputs if not any(p.matches(n) for p in all_inputs)]
+            named = {name: _named(all_inputs, name) for name in inputs}
+            unknown = [name for name, found in named.items() if not found]
             if unknown:
                 raise PublicationError(
                     f"no input offered is named {', '.join(unknown)}; a large one takes "
                     "--include-large as well"
                 )
+            chosen = [p for p in all_inputs if any(p in found for found in named.values())]
         pieces = [*chosen]
         if code:
             pieces = [*self.code, *(p for p in large if p.group == "code"), *pieces]
@@ -302,11 +332,13 @@ def offer(
     held back, ``exclude`` what to leave out, ``include_large`` publishes past the budget. Raises
     :class:`PublicationError` for a name that names nothing: a slip must not publish a file its
     author meant to leave out."""
+    snapshot = hashlib.sha256(results.to_json().encode()).hexdigest()
     if results.directory is None:
-        return Offer(None)
+        return Offer(None, study=results.id, snapshot=snapshot)
     readiness = requirements(results.directory, results.document)
     pieces, held = _gathered(readiness)
-    named = [h for h in held if any(h.piece.matches(name) for name in include)]
+    wanted = [piece for name in include for piece in _named((h.piece for h in held), name)]
+    named = [h for h in held if h.piece in wanted]
     pieces = _merged([*pieces, *(h.piece for h in named)])
     held = [h for h in held if h not in named]
     excluded = [p for p in pieces if any(p.matches(name) for name in exclude)]
@@ -327,6 +359,8 @@ def offer(
         tuple(excluded),
         tuple(scan([*code, *inputs, *(large if include_large else ())])),
         include_large,
+        results.id,
+        snapshot,
     )
 
 
@@ -377,9 +411,13 @@ def _gathered(readiness: Readiness) -> tuple[list[Piece], list[Held]]:
     held: list[Held] = []
     assert readiness.store is not None
     store = readiness.store
-    reads = _Reads(readiness.ran)
+    reads = _Reads(readiness.ran, not readiness.gaps)
     k4opt = next(
         (str((r.entry or {}).get("checkout")) for r in readiness.requirements if r.kind == "k4opt"),
+        None,
+    )
+    geometry_root = next(
+        (str((r.entry or {}).get("root")) for r in readiness.requirements if r.kind == "geometry"),
         None,
     )
     for requirement in readiness.requirements:
@@ -397,26 +435,36 @@ def _gathered(readiness: Readiness) -> tuple[list[Piece], list[Held]]:
                 owner = requirement.label.partition(" ")[0]
                 _from_files(requirement, store, owner, requirement.entry.get("files"), pieces)
         elif requirement.kind == "input":
-            _from_input(requirement, store, pieces, held)
+            _from_input(requirement, store, geometry_root, pieces, held)
     return pieces, held
 
 
+_CACHED = re.compile(r"^(.*)/__pycache__/([^/.]+)\.[^/.]+(?:\.opt-\d+)?\.pyc$")
+
+
 class _Reads:
-    """Which stages read a file, by where they read it or what it held."""
+    """Which stages read a file, by where they read it: equal bytes elsewhere say nothing of this
+    copy, its digest only that what was read there is this file. A module Python read from its
+    cache was used as much as if it had read its source, which it then never opens. ``complete``
+    says that every stage was observed: only then is a file no stage read known not to be used."""
 
-    def __init__(self, ran: Mapping[tuple[str, str], set[str]]) -> None:
-        self.paths: dict[str, set[str]] = {}
-        self.identities: dict[str, set[str]] = {}
+    def __init__(self, ran: Mapping[tuple[str, str], set[str]], complete: bool) -> None:
+        self.complete = complete
+        self.paths: dict[str, list[tuple[str | None, set[str]]]] = {}
         for (path, identity), stages in ran.items():
-            self.paths.setdefault(path, set()).update(stages)
-            self.identities.setdefault(identity, set()).update(stages)
+            self.paths.setdefault(path, []).append((identity, stages))
+            cached = _CACHED.match(path)
+            if cached is not None:  # a valid cache vouches for its source, by its own digest
+                self.paths.setdefault(f"{cached[1]}/{cached[2]}.py", []).append((None, stages))
 
-    def stages(self, paths: Iterable[str] = (), sha256: object = None) -> tuple[str, ...]:
+    def stages(self, paths: Iterable[str], sha256: object = None) -> tuple[str, ...]:
+        """The stages that read one of ``paths``, as the file of this ``sha256`` if it is known."""
+        wanted = f"sha256:{sha256}" if isinstance(sha256, str) and sha256 else None
         found: set[str] = set()
         for path in paths:
-            found |= self.paths.get(path, set())
-        if isinstance(sha256, str) and sha256:
-            found |= self.identities.get(f"sha256:{sha256}", set())
+            for identity, stages in self.paths.get(path, ()):
+                if wanted is None or identity is None or identity == wanted:
+                    found |= stages
         return tuple(sorted(found))
 
 
@@ -435,7 +483,7 @@ def _places(checkout: str, name: str, entries: Iterable[str]) -> list[str]:
     """Where a stage could have read the file ``name`` of ``checkout``: there, or through a local
     entry, which may name the directory by another path."""
     path = os.path.join(checkout, name)
-    found = [path]
+    found = [path, os.path.realpath(path)]
     for entry in entries:
         real = os.path.realpath(entry)
         if path.startswith(f"{real}/"):
@@ -473,6 +521,13 @@ def _from_origin(
             _from_section(
                 requirement, git, owner, section, is_build or ours, reads, entries, pieces, held
             )
+    if is_build:
+        options = _kept(store, origin.get("configuration"))
+        if options is not None:
+            text = _options(options)
+            pieces.append(
+                Piece("code", owner, OPTIONS, text, (requirement.id,), requirement.used_by)
+            )
     if is_build and isinstance(git, Mapping):
         return  # what it installed is what its source installs
     for name, file in (origin.get("files") or {}).items():
@@ -481,16 +536,38 @@ def _from_origin(
         data = _kept(store, file.get("kept"))
         if data is None:
             continue
-        stages = reads.stages(sha256=file.get("sha256"))
+        roots = [str(origin.get("prefix")), *entries]
+        roots += [os.path.realpath(root) for root in roots]
+        places = [os.path.join(root, str(name)) for root in roots]
+        stages = reads.stages(places, file.get("sha256"))
         piece = Piece("code", owner, str(name), data, (requirement.id,), stages)
         if stages:
             pieces.append(piece)
         else:
+            why = "not read by any stage" if reads.complete else _UNKNOWN
             held.append(
-                Held(
-                    "code", owner, str(name), "not read by any stage", requirement.id, False, piece
-                )
+                Held("code", owner, str(name), why, requirement.id, not reads.complete, piece)
             )
+
+
+OPTIONS = "cmake-options.txt"
+_OPTION = re.compile(r"^([A-Za-z_][\w.+-]*):(BOOL|STRING)=(.*)$")
+
+
+def _options(cache: bytes) -> bytes:
+    """The options of a CMake cache that hold no path: what a rebuild needs of it, without where
+    the build was made (its paths, the compiler's among them, are the author's to give)."""
+    kept, left = [], 0
+    for line in cache.decode(errors="replace").splitlines():
+        option = _OPTION.match(line)
+        if option is None:
+            continue
+        if "/" in option[3] or option[1].endswith("-ADVANCED"):
+            left += 1
+        elif option[3]:
+            kept.append(f"{option[1]}={option[3]}")
+    note = [f"# {left} more options hold local paths: ask the author"] if left else []
+    return "\n".join([*note, *sorted(kept)]).encode() + b"\n"
 
 
 def _from_section(
@@ -535,6 +612,8 @@ def _from_section(
         why = "no public commit, not used"
     elif not compiled and not stages:
         why = "not read by any stage"
+    if why not in (None, "binary") and not reads.complete:
+        why, needed = _UNKNOWN, True  # a failure to look is no evidence that it was not used
     if why is None:
         pieces.append(piece)
     else:
@@ -548,7 +627,13 @@ def _from_steering(
     assert entry is not None
     owner = str(entry.get("package") or requirement.label)
     original = entry.get("original")
-    for name, file in {**(entry.get("changed") or {}), **(entry.get("added") or {})}.items():
+    files = {**(entry.get("changed") or {}), **(entry.get("added") or {})}
+    manifest = _manifest(entry, files)
+    if manifest is not None:
+        pieces.append(
+            Piece("code", owner, "job-files.json", manifest, (requirement.id,), requirement.used_by)
+        )
+    for name, file in files.items():
         if not isinstance(file, Mapping):
             continue
         data = _kept(store, file.get("kept"))
@@ -573,6 +658,30 @@ def _from_steering(
         )
 
 
+def _manifest(entry: Mapping[str, Any], files: Mapping[str, Any]) -> bytes | None:
+    """What the files of a job directory do not say of it: which files of the stack's package it
+    removed, which of its files are executable and which are links within it; ``None`` if nothing.
+    A link that leads out of it names a place of the author's, and is left out."""
+    described = {name: file for name, file in files.items() if isinstance(file, Mapping)}
+    links = {
+        name: file["link"]
+        for name, file in described.items()
+        if isinstance(file.get("link"), str)
+        and not os.path.isabs(file["link"])
+        and not os.path.normpath(os.path.join(os.path.dirname(name), file["link"])).startswith("..")
+    }
+    document = {
+        "package": entry.get("package"),
+        "revision": entry.get("revision"),
+        "removed": sorted(str(name) for name in entry.get("removed") or ()),
+        "executable": sorted(n for n, file in described.items() if file.get("executable") is True),
+        "links": dict(sorted(links.items())),
+    }
+    if not (document["removed"] or document["executable"] or document["links"]):
+        return None
+    return (json.dumps(document, indent=2) + "\n").encode()
+
+
 def _counted(original: object, name: str, data: bytes) -> tuple[int | None, int | None]:
     """The lines a changed job file adds and removes against the stack's, where that can be read."""
     try:
@@ -594,12 +703,20 @@ def _from_files(
             continue
         data = _kept(store, file.get("kept"))
         if data is not None:
-            shown = os.path.basename(str(name)) if os.path.isabs(str(name)) else str(name)
+            shown = str(name)
+            if os.path.isabs(shown):  # found by its content, as the snapshot names it
+                shown = (
+                    f"externals/{hashlib.sha256(data).hexdigest()[:8]}/{os.path.basename(shown)}"
+                )
             pieces.append(Piece("code", owner, shown, data, (requirement.id,), requirement.used_by))
 
 
 def _from_input(
-    requirement: Requirement, store: Store, pieces: list[Piece], held: list[Held]
+    requirement: Requirement,
+    store: Store,
+    geometry_root: str | None,
+    pieces: list[Piece],
+    held: list[Held],
 ) -> None:
     entry = requirement.entry
     assert entry is not None
@@ -609,22 +726,21 @@ def _from_input(
     path = str(entry.get("path"))
     name = os.path.basename(path)
     if entry.get("origin") == "geometry":  # a file a candidate's reference reached: code that ran
-        pieces.append(Piece("code", "geometry", name, data, (requirement.id,), requirement.used_by))
-        return
-    piece = Piece("inputs", "", name, data, (requirement.id,), requirement.used_by)
-    home = os.path.expanduser("~")
-    if path.startswith(f"{home}/.") or name == "pyvenv.cfg":
-        held.append(
-            Held(
-                "inputs",
-                "",
-                name,
-                "home or environment configuration",
-                requirement.id,
-                False,
-                piece,
-            )
+        if geometry_root is not None and path.startswith(f"{geometry_root}/"):
+            shown = os.path.relpath(path, geometry_root)
+        else:
+            shown = f"externals/{hashlib.sha256(data).hexdigest()[:8]}/{name}"
+        pieces.append(
+            Piece("code", "geometry", shown, data, (requirement.id,), requirement.used_by)
         )
+        return
+    piece = Piece("inputs", "", name, data, (requirement.id,), requirement.used_by, place=path)
+    if name in _TOOLS:
+        held.append(
+            Held("inputs", "", name, "a tool's configuration", requirement.id, False, piece)
+        )
+    elif path.startswith(f"{os.path.expanduser('~')}/."):
+        held.append(Held("inputs", "", name, "home configuration", requirement.id, True, piece))
     else:
         pieces.append(piece)
 
@@ -658,7 +774,8 @@ def public_form(
     readiness = release.offer.readiness
     assert readiness is not None
     access = _access(readiness, release)
-    public = tuple(_requirement(r, access[r.id]) for r in readiness.requirements)
+    approved = {piece.label for piece in release.pieces}
+    public = tuple(_requirement(r, access[r.id], approved) for r in readiness.requirements)
     status = _status(readiness, access)
     return SoftwareSheet(
         study=results.id,
@@ -806,7 +923,22 @@ def _ran(requirement: Requirement) -> Mapping[str, Json] | None:
     )
 
 
-def _requirement(requirement: Requirement, access: Access) -> PublishedRequirement:
+def _configuration(requirement: Requirement, approved: Collection[str]) -> str:
+    """Whether a reader can have what a build was configured with: its source alone rebuilds it
+    with other options."""
+    entry = requirement.entry or {}
+    if f"{_public_name(entry)}/{OPTIONS}" in approved:
+        return "published"
+    return "on request" if entry.get("configuration") else "none"
+
+
+def _requirement(
+    requirement: Requirement, access: Access, approved: Collection[str]
+) -> PublishedRequirement:
+    facts = _facts(requirement)
+    if requirement.kind == "package":
+        facts["configuration"] = _configuration(requirement, approved)
+    tool = requirement.kind == "input" and requirement.label in _TOOLS
     return PublishedRequirement(
         id=requirement.id if not requirement.id.startswith("listing:") else "listing",
         kind=requirement.kind,
@@ -816,9 +948,9 @@ def _requirement(requirement: Requirement, access: Access) -> PublishedRequireme
         state=_worst(requirement),
         access=access,
         notes=_public_notes(requirement),
-        facts=FrozenMap(_facts(requirement)),
+        facts=FrozenMap(facts),
         ran=_ran(requirement),
-        unused=requirement.unused,
+        unused=requirement.unused or tool,
     )
 
 

@@ -33,7 +33,7 @@ def render(where: str, entry: CatalogEntry) -> None:
     _status(sheet)
     _changes(sheet)
     _published(where, sheet)
-    _inputs(sheet)
+    _inputs(where, sheet)
     _rerun(sheet)
     _known(sheet)
 
@@ -86,17 +86,36 @@ def _artifact(where: str, artifact: PublishedArtifact) -> None:
             st.caption(f"{labels.size(artifact.bytes)} of binary data.")
         else:
             st.code(text, language="diff" if artifact.kind == "patch" else None)
+    _download(where, artifact)
+
+
+def _download(where: str, artifact: PublishedArtifact) -> None:
+    """A way to get a published file: its bytes, checked against its SHA-256, or, too large to
+    hold in the page, its link or its place in the publication."""
+    if artifact.bytes <= SHOWN_BYTES:
+        try:
+            content = data.artifact(where, artifact)
+        except K4OptError as exc:
+            st.error(f"This file does not hold up: {labels.plain(exc)}")
+            return
+        name = artifact.name.rpartition("/")[2]
+        st.download_button(artifact.name, content, file_name=name, key=f"get-{artifact.sha256}")
+        return
     link = tables.artifact_link(where, artifact)
     if link is not None:
-        st.markdown(f"[Download]({link})")
+        st.markdown(f"[Download {labels.plain(artifact.name)}]({link})")
+    else:
+        st.caption(labels.plain(f"{artifact.name}: {artifact.path} in the publication."))
 
 
-def _inputs(sheet: SoftwareSheet) -> None:
+def _inputs(where: str, sheet: SoftwareSheet) -> None:
     rows = tables.inputs(sheet)
     if not rows:
         return
     st.subheader("Inputs")
     widgets.table(rows)
+    for artifact in (a for a in sheet.artifacts if a.group == "inputs"):
+        _download(where, artifact)
     st.caption(
         "A commitment binds this publication to a file without showing anything of it: someone "
         "given the file and its salt can check it is the one that was read."
@@ -107,6 +126,13 @@ def _rerun(sheet: SoftwareSheet) -> None:
     steps = tables.rerun_steps(sheet)
     st.subheader("To rerun")
     st.markdown("\n".join(f"{n}. {labels.plain(step)}" for n, step in enumerate(steps, start=1)))
+    missing = tables.rerun_missing(sheet)
+    if missing:
+        st.warning(
+            "What is published is not enough to do this alone; not published: "
+            f"{labels.plain(', '.join(missing))}.",
+            icon=":material/lock:",
+        )
 
 
 def _known(sheet: SoftwareSheet) -> None:

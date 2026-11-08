@@ -265,11 +265,13 @@ def _input_lines(found: Offer, out: TextIO, style: Style) -> None:
             if index == len(found.inputs) - 1
             else ""
         )
+        shared = sum(other.name == piece.name for other in found.inputs) > 1
+        where = f" ({piece.requirements[0]}: {piece.place})" if shared else ""
         _line(
             out,
             style,
             label,
-            f"{style.bold(printable(piece.name)).ljust(_OWNER)}{_size(piece.size)}   "
+            f"{style.bold(printable(piece.name + where)).ljust(_OWNER)}{_size(piece.size)}   "
             f"{printable(_used(piece))}{total}",
         )
         label = ""

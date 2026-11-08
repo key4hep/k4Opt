@@ -149,17 +149,28 @@ What of it leaves the machine is decided here. Recording is automatic; **publish
 | the study's **software sheet**: the status, each requirement with its state and who can get it | always, made field by field: no path, size, variable name, host, or digest of an unpublished file |
 | **code that ran**: a build's edits against the revision the nightly built, changed job files, local code a stage read, a local geometry's and the evaluators' own files | after the first question |
 | an untracked file of a checkout | only if a stage read it or the build installed it; the rest are listed, and can be named with `--include` |
+| a file no stage was seen to read, when not every stage was observed | held back as *not known to be used*, and counted as on request: a failure to look is no evidence it was not needed |
 | **input files** the stages read | after a second, separate question that names where they go; up to 10 MB in all |
 | what passes the 10 MB of its group | a warning, not published; `--include-large` publishes it |
 | a file you leave out | `--exclude NAME`: the dashboard shows its name, *on request* |
 | a binary a checkout holds | held back unless named with `--include` |
-| `~/.*` configuration, a venv's `pyvenv.cfg` | never offered; `--include-inputs NAME` names one |
+| a file under `~/.` a stage read | held back, and on request: `--include-inputs NAME` publishes it |
+| `.rootrc`, `.rootmap`, a venv's `pyvenv.cfg` | listed only: every job reads them, and no rerun needs them from the author |
 | a build no stage read | not offered |
 
-Never published: a library or program (only its SHA-256 and build-id), the CMake cache (it holds
-local paths), or an environment's list of distributions (only how many). A name for `--exclude`,
-`--include` or `--include-inputs` is a file's path, its own name, or a package: one that names
-nothing is refused, since a slip must not publish what was meant to stay.
+A Python module counts as read when a stage read it from its `__pycache__`: with a valid cache,
+Python never opens the source. A file counts as read only where it was read: the same bytes elsewhere say nothing of this copy.
+With a changed job directory comes a `job-files.json`, listing the stack's files it removed, its
+executable files and its links within it. With a build comes its `cmake-options.txt`: the options of
+its CMake cache that hold no path, the others counted in the file. Never published: a library or
+program (only its SHA-256 and build-id), the CMake cache itself, or an environment's list of
+distributions (only how many).
+
+A name for `--exclude`, `--include` or `--include-inputs` is a file's path, its own name, its
+requirement's id (`input:2`, shown beside inputs that share a name) or a package. One that names
+nothing is refused, and so is one that fits several files when approving (`--include`,
+`--include-inputs`), with how to name each: approving one file must never approve two. A release is
+bound to the study and the state it was reviewed in.
 
 ```text
 code        ddmarlinpandora   patch against 821384f   src/DDCaloHitCreator.cc  +1 −1

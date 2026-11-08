@@ -488,6 +488,10 @@ def _rebuild(r: PublishedRequirement) -> str | None:
     return "Rebuildable from source" if r.facts.get("rebuildable") else "Source unavailable"
 
 
+_OPTIONS = {"published": "Published", "on request": "On request", "none": "Not kept"}
+_HOW_OPTIONS = {"published": "published here", "on request": "ask the author", "none": "not kept"}
+
+
 def _what_ran(r: PublishedRequirement) -> str | None:
     if r.unused:
         return "not read by any stage"
@@ -510,6 +514,7 @@ def local_changes(sheet: SoftwareSheet) -> list[Row]:
             "Change": _change(r),
             "Source": _source(r),
             "Rebuild": _rebuild(r),
+            "Build options": _OPTIONS.get(str(r.facts.get("configuration"))),
             "What ran": _what_ran(r),
             "Used by": ", ".join(r.used_by) or None,
             "Check": labels.STATE[r.state],
@@ -630,20 +635,43 @@ def _how_to_get(r: PublishedRequirement) -> str:
     ]
 
 
+def _has_own_files(sheet: SoftwareSheet, r: PublishedRequirement) -> bool:
+    """Whether an evaluator is its author's: published, or held back. Otherwise it is k4opt's."""
+    return r.access != "public" or any(r.id in a.requirements for a in sheet.artifacts)
+
+
+def rerun_missing(sheet: SoftwareSheet) -> list[str]:
+    """What a rerun needs that is not published: an empty list says the steps can be followed from
+    this publication alone."""
+    return [
+        r.label
+        for r in sheet.requirements
+        if not r.unused and r.access != "public" and r.kind != "environment" and r.id != "listing"
+    ]
+
+
 def rerun_steps(sheet: SoftwareSheet) -> list[str]:
     """What a rerun takes, in order, from what the sheet says; never more than it knows."""
     base = requirement(sheet, "base")
     steps = [f"Source the nightly: {base.label}." if base is not None else "Source the stack."]
+    k4opt = requirement(sheet, "k4opt")
+    if k4opt is not None and k4opt.facts.get("commit"):
+        steps.append(f"Use k4opt at commit {str(k4opt.facts['commit'])[:12]}.")
     for r in sheet.requirements:
         if r.unused:
             continue
         if r.kind == "package":
             start = f"at {r.facts['base']}" if r.facts.get("base") else "from its kept state"
+            options = _HOW_OPTIONS.get(str(r.facts.get("configuration")), "not known")
             steps.append(
-                f"Clone {r.label} {start}, apply its changes ({_how_to_get(r)}), build it, put it "
-                "in front of the stack with k4_local_repo, and check that MARLIN_DLL names the "
-                "local library if it is a Marlin processor."
+                f"Clone {r.label} {start}, apply its changes ({_how_to_get(r)}), build it with its "
+                f"CMake options ({options}), put it in front of the stack with k4_local_repo, and "
+                "check that MARLIN_DLL names the local library if it is a Marlin processor."
             )
+        elif r.kind == "geometry" and "kept" in r.identified:
+            steps.append(f"Restore the geometry {r.label} ({_how_to_get(r)}) and set K4GEO to it.")
+        elif r.kind == "evaluator" and _has_own_files(sheet, r):
+            steps.append(f"Get the evaluator {r.label} ({_how_to_get(r)}).")
         elif r.kind == "code" and r.used_by:
             steps.append(f"Put {r.label} on PYTHONPATH ({_how_to_get(r)}).")
         elif r.kind == "steering" and not r.identified.startswith("the stack's own"):
