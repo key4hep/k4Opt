@@ -46,6 +46,7 @@ from k4opt.software.keep import (
     commitment,
     declared_inputs,
     kept_inputs,
+    known_salt,
 )
 from k4opt.software.observe import _LISTED, identity
 
@@ -487,11 +488,20 @@ def requirements(
     found.append(base)
     names = Counter(_name(origin) for origin in latest.values())
     seen: Counter[str] = Counter()
+    salted = known_salt(directory)
     for index, (prefix, origin) in enumerate(latest.items(), start=1):
-        name, key = _name(origin), _name(origin)
+        name = _name(origin)
+        seen[name] += 1
+        # its id holds whatever else is installed and says nothing of where it is: the study's
+        # salt with its place; without a salt, its rank among those of its name
+        token = (
+            hashlib.sha256(f"{salted}\0{prefix}".encode()).hexdigest()[:8]
+            if salted
+            else str(seen[name])
+        )
+        key = f"{name}:{token}"
         if names[name] > 1:  # the author is told where each is; its id, which is public, is not
-            seen[name] += 1
-            name, key = f"{name} at {prefix}", f"{name}:{seen[name]}"
+            name = f"{name} at {prefix}"
         found.append(
             _origin(origin, name, key, index, store, at, used_local, ran, ours, known, moved)
         )
@@ -778,16 +788,25 @@ def _origin(
         )
     if kind == "environment":
         distributions = origin.get("distributions") or []
+        unlisted = origin.get("unlisted") or []
         check = Check(at, "not-checked", "installed distributions, not checked against an index")
+        said = f"{len(distributions)} distributions"
+        notes_: tuple[str, ...] = ()
+        if unlisted:
+            said += f", {len(unlisted)} not from an index"
+            notes_ = (
+                f"distributions not installed from an index: {len(unlisted)}, from the author",
+            )
         return Requirement(
             f"environment:{key}",
             "environment",
             str(origin.get("prefix")),
-            f"{len(distributions)} distributions",
+            said,
             tuple(used),
             trials,
-            source={"distributions": tuple(distributions)},
+            source={"distributions": tuple(distributions), "unlisted": tuple(unlisted)},
             checks=(check,),
+            notes=notes_,
         )
     loose = origin.get("binaries") or []
     if loose and not isinstance(git, Mapping):  # binaries of no build and no checkout

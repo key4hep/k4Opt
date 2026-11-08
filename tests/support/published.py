@@ -57,7 +57,9 @@ def local_study(
     repo = checkout(root / "src")
     clean = checkout(root / "k4opt", "k4Opt")  # k4opt's own, whatever the tests run from
     monkeypatch.setattr(
-        keep, "checkout", lambda path, release: source.checkout(str(clean), release)
+        keep,
+        "checkout",
+        lambda path, release, excluded=(): source.checkout(str(clean), release, excluded),
     )
     (repo / "src" / "DDCaloHitCreator.cc").write_text("energy = 1.05 * eCalToEMGeV * hit;\n")
     (repo / "New.h").write_text("class New;\n")

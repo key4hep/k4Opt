@@ -37,7 +37,7 @@ type State = Literal["available", "gone", "altered", "not-checked"]
 _GROUPS: tuple[Group, ...] = ("code", "inputs")
 _ACCESS: tuple[Access, ...] = ("public", "on request", "none")
 _STATES: tuple[State, ...] = ("available", "gone", "altered", "not-checked")
-_KINDS = ("patch", "file")
+_KINDS = ("patch", "file", "generated", "external")
 
 
 def artifact_path(study: str, sha256: str) -> str:
@@ -70,7 +70,7 @@ class PublishedArtifact:
     group: Group
     owner: str
     name: str
-    kind: Literal["patch", "file"]
+    kind: Literal["patch", "file", "generated", "external"]
     sha256: str
     bytes: int
     path: str
@@ -203,9 +203,12 @@ class SoftwareSheet:
                 _requirement(entry, f"{where}: requirements[{index}]")
                 for index, entry in enumerate(_list(data["requirements"], f"{where}: requirements"))
             ),
-            artifacts=tuple(
-                _artifact(entry, study, f"{where}: artifacts[{index}]")
-                for index, entry in enumerate(_list(data["artifacts"], f"{where}: artifacts"))
+            artifacts=_distinct(
+                tuple(
+                    _artifact(entry, study, f"{where}: artifacts[{index}]")
+                    for index, entry in enumerate(_list(data["artifacts"], f"{where}: artifacts"))
+                ),
+                where,
             ),
         )
 
@@ -253,6 +256,16 @@ _ARTIFACT = (
 )
 
 
+def _distinct(
+    artifacts: tuple[PublishedArtifact, ...], where: str
+) -> tuple[PublishedArtifact, ...]:
+    """``artifacts``, refused if two are one file of one unit: what each is must be clear."""
+    seen = [(a.requirements[:1], a.kind, a.name) for a in artifacts]
+    if len(set(seen)) != len(seen):
+        _refuse(f"{where}: artifacts", "name one file of one unit twice")
+    return artifacts
+
+
 def _requirement(value: object, where: str) -> PublishedRequirement:
     data = _object(value, where, _REQUIREMENT)
     if not isinstance(data["unused"], bool):
@@ -290,7 +303,10 @@ def _artifact(value: object, study: str, where: str) -> PublishedArtifact:
         group=cast(Group, _one_of(data["group"], _GROUPS, f"{where}.group")),
         owner=_text(data["owner"], f"{where}.owner"),
         name=_text(data["name"], f"{where}.name"),
-        kind=cast(Literal["patch", "file"], _one_of(data["kind"], _KINDS, f"{where}.kind")),
+        kind=cast(
+            Literal["patch", "file", "generated", "external"],
+            _one_of(data["kind"], _KINDS, f"{where}.kind"),
+        ),
         sha256=sha256,
         bytes=size,
         path=data["path"],

@@ -31,6 +31,7 @@ the libraries it installs that a ``HEAD`` package of the release also installs.
 
 from __future__ import annotations
 
+import email.parser
 import hashlib
 import os
 import re
@@ -171,6 +172,7 @@ class Origin:
     git: GitState | None = None
     files: Mapping[str, tuple[str, str]] = field(default_factory=dict)
     distributions: tuple[str, ...] = ()
+    unlisted: tuple[str, ...] = ()
     problem: str | None = None
     configuration: str | None = None
 
@@ -194,10 +196,13 @@ class Origin:
         )
 
 
-def origins(local: Sequence[Local], release: Release | None) -> list[Origin]:
+def origins(
+    local: Sequence[Local], release: Release | None, excluded: Sequence[str] = ()
+) -> list[Origin]:
     """Where the ``local`` entries of the software come from, each entry in one origin, in the
     order of their first entry; ``release`` is the stack's, to say which package a build stands
-    in for (``None`` for an unrecognized stack)."""
+    in for (``None`` for an unrecognized stack). The ``excluded`` directories (the study's own) are
+    no part of any checkout's state."""
     groups: dict[str, list[Local]] = {}
     alone: list[Local] = []
     for entry in local:
@@ -208,7 +213,7 @@ def origins(local: Sequence[Local], release: Release | None) -> list[Origin]:
             groups.setdefault(prefix, []).append(entry)
     found: list[Origin] = []
     for prefix, entries in groups.items():
-        built = _build(prefix, entries, release)
+        built = _build(prefix, entries, release, excluded)
         if built is None:
             alone += entries
         else:
@@ -217,7 +222,8 @@ def origins(local: Sequence[Local], release: Release | None) -> list[Origin]:
     for entry in alone:
         if entry.path not in seen:
             seen.add(entry.path)
-            found.append(_directory(entry, [e for e in alone if e.path == entry.path], release))
+            same = [e for e in alone if e.path == entry.path]
+            found.append(_directory(entry, same, release, excluded))
     order = {entry.path: index for index, entry in enumerate(local)}
     return sorted(found, key=lambda origin: min(order[path] for path in origin.entries))
 
@@ -240,7 +246,9 @@ def _prefix(entry: Local) -> str | None:
     return None
 
 
-def _build(prefix: str, entries: list[Local], release: Release | None) -> Origin | None:
+def _build(
+    prefix: str, entries: list[Local], release: Release | None, outside: Sequence[str] = ()
+) -> Origin | None:
     """The build installed in ``prefix``: one that a CMake cache installs there, or that lies in
     the root of a git checkout (``k4_local_repo``'s layout); ``None`` for anything else."""
     paths = tuple(dict.fromkeys(entry.path for entry in entries))
@@ -284,7 +292,12 @@ def _build(prefix: str, entries: list[Local], release: Release | None) -> Origin
         else:
             evidence.append("no binary with a build-id to compare with the build tree")
     package = _package(checkout, binaries, release)
-    excluded = [prefix, *([build] if build else []), *(_caches(checkout) if checkout else [])]
+    excluded = [
+        prefix,
+        *([build] if build else []),
+        *(_caches(checkout) if checkout else []),
+        *outside,
+    ]
     git, problem = _state(checkout, package.revision if package else None, excluded)
     stale = None
     if git is not None and built is not None:
@@ -307,7 +320,9 @@ def _build(prefix: str, entries: list[Local], release: Release | None) -> Origin
     )
 
 
-def _directory(entry: Local, entries: list[Local], release: Release | None) -> Origin:
+def _directory(
+    entry: Local, entries: list[Local], release: Release | None, outside: Sequence[str] = ()
+) -> Origin:
     """Local code no build made: in a git checkout (its state), or not (its files); or a
     ``site-packages`` directory (its distributions)."""
     path = entry.path
@@ -316,11 +331,12 @@ def _directory(entry: Local, entries: list[Local], release: Release | None) -> O
         "site-packages",
         "dist-packages",
     ):
-        return Origin("environment", path, paths, distributions=_distributions(path))
+        listed, unlisted = _distributions(path)
+        return Origin("environment", path, paths, distributions=listed, unlisted=unlisted)
     checkout = _toplevel(path if os.path.isdir(path) else os.path.dirname(path))
     if checkout is not None and not _ignored(checkout, path):
         package = release.package(os.path.basename(checkout)) if release else None
-        git, problem = _state(checkout, package.revision if package else None, [])
+        git, problem = _state(checkout, package.revision if package else None, list(outside))
         kept, compiled = _left_out(git, entries)
         return Origin(
             "directory",
@@ -362,14 +378,15 @@ def _left_out(
     return files, tuple(sorted(binaries.values(), key=lambda b: b.file))
 
 
-def checkout(path: str, release: Release | None) -> Origin | None:
+def checkout(path: str, release: Release | None, excluded: Sequence[str] = ()) -> Origin | None:
     """The origin of the code in ``path`` (k4opt's own package) as a ``directory`` in the git
-    checkout it lies in, ``None`` if it lies in none."""
+    checkout it lies in, ``None`` if it lies in none; the ``excluded`` directories are no part of
+    its state."""
     top = _toplevel(path if os.path.isdir(path) else os.path.dirname(path))
     if top is None or _ignored(top, path):
         return None
     package = release.package(os.path.basename(top)) if release else None
-    git, problem = _state(top, package.revision if package else None, [])
+    git, problem = _state(top, package.revision if package else None, list(excluded))
     return Origin(
         "directory",
         top,
@@ -549,17 +566,36 @@ def _names(directory: str) -> list[str]:
         return []
 
 
-def _distributions(directory: str) -> tuple[str, ...]:
-    """The ``name==version`` of each distribution installed in ``directory``, by its metadata
-    directory's name (``numpy-2.5.4.dist-info``)."""
-    found = []
+def _distributions(directory: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The ``name==version`` of each distribution installed in ``directory`` from an index, read
+    from its metadata (``METADATA``, ``PKG-INFO``), and the metadata of each that cannot be named
+    so: unreadable, installed from a local path, an archive or a repository (``direct_url.json``),
+    or linked (``*.egg-link``)."""
+    listed: list[str] = []
+    unlisted: list[str] = []
     for name in _names(directory):
-        for suffix in (".dist-info", ".egg-info"):
-            if name.endswith(suffix):
-                base, _, version = name[: -len(suffix)].rpartition("-")
-                if base:
-                    found.append(f"{base}=={version}")
-    return tuple(sorted(found, key=str.lower))
+        path = os.path.join(directory, name)
+        if name.endswith(".egg-link"):
+            unlisted.append(name)
+            continue
+        if name.endswith(".dist-info"):
+            metadata = os.path.join(path, "METADATA")
+        elif name.endswith(".egg-info"):
+            metadata = os.path.join(path, "PKG-INFO") if os.path.isdir(path) else path
+        else:
+            continue
+        try:
+            with open(metadata, encoding="utf-8", errors="replace") as handle:
+                headers = email.parser.HeaderParser().parse(handle)
+        except OSError:
+            unlisted.append(name)
+            continue
+        title, version = headers.get("Name"), headers.get("Version")
+        if not title or not version or os.path.lexists(os.path.join(path, "direct_url.json")):
+            unlisted.append(name)
+            continue
+        listed.append(f"{title.strip()}=={version.strip()}")
+    return tuple(sorted(set(listed), key=str.lower)), tuple(sorted(unlisted))
 
 
 def _elf(path: str) -> bool:

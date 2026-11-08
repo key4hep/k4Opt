@@ -91,7 +91,8 @@ def _artifact(where: str, artifact: PublishedArtifact) -> None:
 
 def _key(artifact: PublishedArtifact) -> str:
     """A widget's key for ``artifact``: two can hold equal bytes, none answers the same things."""
-    parts = ("get", artifact.sha256[:16], artifact.owner, artifact.name, *artifact.requirements)
+    unit = artifact.requirements[:1]  # with its kind and name, one file of the sheet
+    parts = ("get", *unit, artifact.kind, artifact.name, artifact.sha256[:16])
     return "-".join(parts)
 
 

@@ -259,7 +259,7 @@ def test_what_was_approved_is_published_exactly_and_reads_back(
     assert sheet is not None
     by = {artifact.name: artifact for artifact in sheet.artifacts}
     patch = by["ddmarlinpandora.patch"]
-    assert patch.kind == "patch" and patch.requirements == ("package:ddmarlinpandora",)
+    assert patch.kind == "patch" and patch.requirements[0].startswith("package:ddmarlinpandora:")
     assert {file.name for file in patch.files} == {
         "New.h",
         "notes.txt",
@@ -629,7 +629,7 @@ def test_what_a_copy_of_job_files_removed_links_and_marks_executable_is_publishe
     pieces, _ = steering(tmp_path)
     manifest = json.loads(next(p for p in pieces if p.name == "job-files.json").data)
     assert manifest["removed"] == ["old/gone.py"]
-    assert manifest["executable"] == ["a.py"]
+    assert manifest["executable"] == {"a.py": True, "b.py": False}
     assert manifest["links"] == {"b.py": "a.py"}
 
 
@@ -704,12 +704,12 @@ def test_external_geometry_files_of_one_name_stay_apart(tmp_path: Path) -> None:
     }
     pieces: list[Piece] = []
     requirement = Requirement("geometry", "geometry", "c", "3 files, kept")
-    artifacts._from_files(requirement, store, "geometry", files, pieces, [])
+    artifacts._from_files(requirement, store, "geometry", files, "/geo", pieces, [])
     assert sorted(p.name for p in pieces) == sorted(
         [
             "compact/det.xml",
-            f"externals/{first[:8]}/constants.xml",
-            f"externals/{second[:8]}/constants.xml",
+            f"externals/{first[:16]}/constants.xml",
+            f"externals/{second[:16]}/constants.xml",
         ]
     )
 
@@ -765,7 +765,23 @@ def job_directory(
     pieces: list[Piece] = []
     held: list[Any] = []
     artifacts._from_steering(requirement, store, pieces, held)
+    _AGAIN[str(tmp_path)] = (requirement, store)
     return pieces, held, private
+
+
+_AGAIN: dict[str, Any] = {}
+
+
+def job_directory_again(tmp_path: Path) -> tuple[list[Piece], list[Any], None]:
+    """The pieces of the job directory :func:`job_directory` made, gathered again from what is
+    kept now."""
+    from k4opt.publication import artifacts
+
+    requirement, store = _AGAIN[str(tmp_path)]
+    pieces: list[Piece] = []
+    lost: list[Any] = []
+    artifacts._from_steering(requirement, store, pieces, lost)
+    return pieces, lost, None
 
 
 def test_a_link_out_of_a_job_directory_is_data_and_not_code(tmp_path: Path) -> None:
@@ -861,7 +877,9 @@ def test_a_directory_of_code_in_a_checkout_is_held_with_its_whole_state(
     mini_environment(monkeypatch)
     clean = checkout(tmp_path / "k4opt", "k4Opt")
     monkeypatch.setattr(
-        keep, "checkout", lambda path, release: source.checkout(str(clean), release)
+        keep,
+        "checkout",
+        lambda path, release, excluded=(): source.checkout(str(clean), release, excluded),
     )
     repo = checkout(tmp_path / "src", "shadows")
     (repo / "README.md").unlink()  # a deletion: part of its state like an edit
@@ -936,7 +954,7 @@ def test_two_installations_of_one_package_leave_no_path_in_the_sheet(
         sheet = open_publication(root).software(entry)
         assert sheet is not None
         ids = sorted(r.id for r in sheet.requirements if r.label == "ddmarlinpandora")
-        assert ids == ["package:ddmarlinpandora:1", "package:ddmarlinpandora:2"]
+        assert len(set(ids)) == 2 and all(i.startswith("package:ddmarlinpandora:") for i in ids)
 
 
 # --- what the third review of the publication found ----------------------------------------------
@@ -992,7 +1010,7 @@ def test_broken_links_and_cycles_publish_nothing_and_stop_nothing(tmp_path: Path
     links = [("broken", "nowhere"), ("loop-a", "loop-b"), ("loop-b", "loop-a")]
     pieces, lost, _ = job_directory(tmp_path, links)
     assert not {p.name for p in pieces} & {"broken", "loop-a", "loop-b"}
-    assert {name for _, name in lost} >= {"broken", "loop-a", "loop-b"}  # said, never shown
+    assert {gone.key[2] for gone in lost} >= {"broken", "loop-a", "loop-b"}  # said, never shown
 
 
 def test_what_was_published_before_stays_public_in_a_later_sheet(
@@ -1537,7 +1555,9 @@ def test_a_build_is_public_only_with_its_source_and_all_of_its_options(tmp_path:
             "package:p", "package", "p", "x", ("s",), source={"rebuildable": rebuildable}, entry={}
         )
         readiness = Readiness((package,), (), "2026-11-08T00:00:00+00:00")
-        piece = Piece("code", "p", artifacts.OPTIONS, options, ("package:p",), ("s",))
+        piece = Piece(
+            "code", "p", artifacts.OPTIONS, options, ("package:p",), ("s",), role="generated"
+        )
         release = artifacts.Release(artifacts.Offer(readiness, code=(piece,)), (piece,))
         published = {piece.key: piece.data}
         found = artifacts._access(readiness, release, published)
@@ -1603,3 +1623,178 @@ def test_home_configuration_is_an_input_and_credentials_stay_behind(
     assert ".rootrc" in [p.name for p in found.inputs]
     held = {h.name: h for h in found.held}
     assert (held["config"].why, held["config"].needed) == ("credentials of the account", True)
+
+
+# --- the last review: what each file is, wherever it appears -------------------------------------
+
+
+def test_external_geometry_files_of_equal_bytes_are_one_file(tmp_path: Path) -> None:
+    from k4opt.publication import artifacts
+    from k4opt.software.keep import Store
+    from k4opt.software.readiness import Readiness, Requirement
+
+    store = Store(tmp_path)
+    kept = store.put(b"<constants/>\n")
+    files = {
+        "/a/constants.xml": {"sha256": kept, "kept": kept},
+        "/b/constants.xml": {"sha256": kept, "kept": kept},
+    }
+    entry = {"root": "/geo", "files": files, "aliases": {}}
+    geometry = Requirement("geometry", "geometry", "c.xml", "2 files, kept", entry=entry)
+    readiness = Readiness((geometry,), (), "2026-11-08T00:00:00+00:00", store=store)
+    pieces, _, _ = artifacts._gathered(readiness)
+    assert [(p.name, p.role) for p in pieces] == [
+        (f"externals/{kept[:16]}/constants.xml", "external")
+    ]
+    study = "12345678-1234-4234-8234-123456789012"
+    keys = [(a.requirements[0], a.name) for a, _ in artifacts.bundled(study, pieces)]
+    assert len(keys) == len(set(keys))
+
+
+def test_a_job_file_made_not_executable_says_so(tmp_path: Path) -> None:
+    file = {"executable": False, "link": None}
+    pieces, _ = steering(tmp_path, changed={"a.py": file}, added={}, removed=[])
+    manifest = json.loads(next(p for p in pieces if p.name == "job-files.json").data)
+    assert manifest["executable"] == {"a.py": False}  # a permission change alone is a change
+
+
+def test_an_earlier_file_its_unit_no_longer_holds_is_not_carried(tmp_path: Path) -> None:
+    from k4opt.publication import artifacts
+    from k4opt.publication.artifacts import bundled
+
+    study = "12345678-1234-4234-8234-123456789012"
+    patch = Piece("code", "p", "p.patch", b"diff\n", ("package:p:1",), (), base="abc")
+    options = Piece(
+        "code", "p", artifacts.OPTIONS, b"A=1\n", ("package:p:1",), (), role="generated"
+    )
+    published = bundled(study, (patch, options))
+    clean = artifacts.Offer(None, code=(options,))  # its checkout is clean now: no patch
+    _, earlier = artifacts.still_public(clean.release(), published)
+    assert set(earlier) == {options.key}
+    gone = artifacts.Lost(patch.key, patch.requirements, base="abc")
+    lost = artifacts.Offer(None, code=(options,), lost=(gone,))
+    _, earlier = artifacts.still_public(lost.release(), published)
+    assert set(earlier) == {options.key, patch.key}  # still needed, its kept copy gone
+
+
+def test_an_input_in_a_checkout_is_published_only_as_an_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = fresh(tmp_path, monkeypatch, untracked=("calibration.json",))
+    repo = tmp_path / "src" / "DDMarlinPandora"
+    (repo / "calibration.json").write_text('{"secret_scale": 1.05}\n')
+    add_input(study, repo / "calibration.json")
+    results = load_study(study)
+    found = offer(results)
+    (patch,) = [p for p in found.code if p.is_patch]
+    assert "calibration.json" not in {name for name, _, _ in patch.files}
+    assert b"secret_scale" not in patch.data
+    (data,) = [p for p in found.inputs if p.name == "calibration.json"]
+    assert patch.unit in data.requirements  # the build answers for it too
+    entry = publish(results, tmp_path / "pub", release=found.release(code=True))
+    for name in published_files(tmp_path / "pub"):
+        assert b"secret_scale" not in (tmp_path / "pub" / name).read_bytes()
+    assert access_in(entry, tmp_path / "pub")[patch.unit] == "on request"
+
+
+def test_leaving_out_a_file_leaves_out_every_unit_that_holds_it() -> None:
+    from k4opt.publication.artifacts import _left_out
+
+    evaluator = Piece(
+        "code", "mine", "mine.py", b"x", ("evaluator:mine",), (), paths=("/k/mine.py",)
+    )
+    checkout = Piece(
+        "code",
+        "k4Opt",
+        "k4Opt.patch",
+        b"y",
+        ("code:k4Opt:1",),
+        (),
+        base="abc",
+        files=(("mine.py", 1, 0),),
+        paths=("/k/mine.py", "/k/other.py"),
+    )
+    alone = Piece("code", "h", "h.py", b"z", ("code:h:1",), (), paths=("/h/h.py",))
+    assert _left_out((evaluator, checkout, alone), ["evaluator:mine"]) == {
+        "evaluator:mine",
+        "code:k4Opt:1",
+    }
+
+
+def test_a_published_job_link_whose_kept_copy_is_gone_stays_published(tmp_path: Path) -> None:
+    from k4opt.publication import artifacts
+    from k4opt.publication.artifacts import bundled
+    from k4opt.software.keep import Store
+
+    pieces, _, _ = job_directory(tmp_path)
+    (link,) = [p for p in pieces if p.group == "inputs"]
+    study = "12345678-1234-4234-8234-123456789012"
+    published = bundled(study, [link])
+    for blob in (tmp_path / "kept").rglob("*.gz"):
+        if Store(tmp_path / "kept").get(blob.parent.name + blob.name[:-3]) == link.data:
+            blob.unlink()
+    again, lost, _ = job_directory_again(tmp_path)
+    assert not [p for p in again if p.group == "inputs"]
+    assert [gone.key for gone in lost] == [link.key]  # recorded under the identity it had
+    offer_ = artifacts.Offer(None, code=tuple(again), lost=tuple(lost))
+    _, earlier = artifacts.still_public(offer_.release(), published)
+    assert set(earlier) == {link.key}
+
+
+def test_a_real_file_called_as_a_generated_one_is_another_file(tmp_path: Path) -> None:
+    from k4opt.publication.artifacts import bundled
+
+    _, entry = steering(tmp_path)  # a kept file, to call as the generated manifest is
+    real = entry["changed"]["a.py"]
+    pieces, _ = steering(tmp_path, changed={"job-files.json": real}, added={}, removed=["x.py"])
+    assert [p.name for p in pieces].count("job-files.json") == 2  # the real one and the manifest
+    study = "12345678-1234-4234-8234-123456789012"
+    assert len({p.key for p in pieces}) == len(pieces)
+    keys = [(a.requirements[0], a.kind, a.name) for a, _ in bundled(study, pieces)]
+    assert len(keys) == len(set(keys))
+
+
+def test_two_pieces_of_one_identity_and_other_bytes_are_refused(tmp_path: Path) -> None:
+    from k4opt.publication.artifacts import _unique
+
+    one = Piece("code", "o", "a.py", b"1", ("code:o:1",), ())
+    assert _unique([one, replace(one, stages=("s",))]) == [replace(one, stages=("s",))]
+    with pytest.raises(PublicationError, match=r"a\.py"):
+        _unique([one, replace(one, data=b"2")])
+
+
+def test_a_patch_on_another_base_is_another_patch() -> None:
+    from k4opt.publication import artifacts
+    from k4opt.publication.artifacts import Lost, bundled
+
+    study = "12345678-1234-4234-8234-123456789012"
+    old = Piece("code", "p", "p.patch", b"diff\n", ("package:p:1",), (), base="aaaaaaa")
+    published = bundled(study, [old])
+    now = artifacts.Offer(None, code=(replace(old, base="bbbbbbb"),))
+    assert not artifacts.still_public(now.release(), published)[1]
+    gone = Lost(old.key, old.requirements, base="bbbbbbb")
+    assert not artifacts.still_public(artifacts.Offer(None, lost=(gone,)).release(), published)[1]
+
+
+def test_an_environment_with_distributions_not_from_an_index_is_on_request(
+    tmp_path: Path,
+) -> None:
+    from k4opt.publication import artifacts
+    from k4opt.software.keep import Store
+    from k4opt.software.readiness import Readiness, Requirement
+
+    used = Requirement(
+        "environment:site-packages:1",
+        "environment",
+        "/v/lib/python3.14/site-packages",
+        "1 distributions, 1 not from an index",
+        ("pi0/simulation",),
+        source={"distributions": ("lxml==6.1.3",), "unlisted": ("mytool",)},
+    )
+    readiness = Readiness((used,), (), "2026-11-08T00:00:00+00:00", store=Store(tmp_path))
+    pieces, _, _ = artifacts._gathered(readiness)
+    found = artifacts.Offer(readiness, code=tuple(pieces))
+    published = {p.key: p.data for p in pieces}
+    assert artifacts._access(readiness, found.release(code=True), published)[used.id] == (
+        "on request"
+    )

@@ -211,7 +211,7 @@ def test_k4opt_publish_says_what_it_published_and_reads_the_study_as_k4opt_study
     from k4opt.software import keep
 
     # k4opt's own checkout may hold edits at any moment: they are not this test's to publish
-    monkeypatch.setattr(keep, "checkout", lambda path, release: None)
+    monkeypatch.setattr(keep, "checkout", lambda path, release, excluded=(): None)
     output = mixed_study(tmp_path / "s")
     out, err = io.StringIO(), io.StringIO()
     command = ["publish", str(output), "--output", str(tmp_path / "pub"), "--yes"]

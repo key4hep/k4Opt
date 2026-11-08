@@ -44,7 +44,11 @@ def public_k4opt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     has, whatever the checkout the tests run from is."""
     repo = checkout(tmp_path / "k4opt", "k4Opt")
     IDENTITY["k4opt"]["git"] = {"commit": git(repo, "rev-parse", "HEAD"), "dirty": False}
-    monkeypatch.setattr(keep, "checkout", lambda path, release: source.checkout(str(repo), release))
+    monkeypatch.setattr(
+        keep,
+        "checkout",
+        lambda path, release, excluded=(): source.checkout(str(repo), release, excluded),
+    )
 
 
 def summary(*, local: list[str] | None = None, level: str = "files") -> dict[str, Any]:
@@ -749,3 +753,44 @@ def test_a_checkout_whose_state_could_not_be_taken_is_not_an_empty_directory(
     assert readiness.status == BLOCKED
     (kept,) = (r for r in readiness.requirements if r.label == str(code))
     assert kept.missing and "git timed out" in kept.checks[0].how
+
+
+def test_an_installations_id_holds_when_another_of_its_name_comes(
+    tmp_path: Path, stack: Path
+) -> None:
+    first, second = (build(checkout(tmp_path / name)) for name in "ab")
+    study = tmp_path / "study"
+
+    def ids(*prefixes: Path) -> dict[str, str]:
+        values = {"KEY4HEP_STACK": str(stack)}
+        values["LD_LIBRARY_PATH"] = ":".join(str(p / "lib") for p in prefixes)
+        taken = take(study / DIRECTORY, Software.now(values, site=[]), IDENTITY)
+        keep_used(study / DIRECTORY, study, {}, [], "record 0", taken.path.name)
+        found = requirements(study, IDENTITY, [summary()])
+        return {
+            r.label.partition(" at ")[2] or str(first): r.id
+            for r in found.requirements
+            if r.kind == "package"
+        }
+
+    alone = ids(first)
+    both = ids(first, second)
+    assert both[str(first)] == alone[str(first)]  # its id is its own, whatever else is there
+    assert both[str(second)] != both[str(first)]
+    assert str(tmp_path) not in "".join(both.values())  # and says nothing of where it is
+
+
+def test_the_studys_own_directory_is_no_part_of_a_checkouts_state(
+    tmp_path: Path, stack: Path
+) -> None:
+    repo = checkout(tmp_path)
+    (repo / "src" / "DDCaloHitCreator.cc").write_text("energy = 1.05 * hit;\n")
+    prefix = build(repo)
+    study = repo / "mystudy"  # --output inside the checkout, which git does not ignore
+    (study / "trial-000000").mkdir(parents=True)
+    (study / "trial-000000" / "summary.json").write_text("{}")
+    study_on(study, stack, variables(prefix))
+    (document,) = (json.loads(p.read_text()) for p in (study / DIRECTORY).glob("software-*.json"))
+    git_state = next(o for o in document["origins"] if o["kind"] == "build")["git"]
+    patch = gzip.decompress(Store(study / DIRECTORY).path(git_state["patch"]).read_bytes())
+    assert b"mystudy" not in patch and "mystudy/" not in "".join(git_state["changed"])

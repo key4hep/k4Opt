@@ -264,11 +264,14 @@ def test_a_virtual_environment_is_its_distributions(tmp_path: Path) -> None:
     venv = tmp_path / "venv"
     packages = venv / "lib" / "python3.14" / "site-packages"
     (packages / "numpy-2.5.4.dist-info").mkdir(parents=True)
+    metadata = "Metadata-Version: 2.1\nName: numpy\nVersion: 2.5.4\n"
+    (packages / "numpy-2.5.4.dist-info" / "METADATA").write_text(metadata)
     (packages / "numpy").mkdir()
     (packages / "numpy" / "__init__.py").write_text("")
     (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
     (found,) = origins(software(PYTHONPATH=str(packages)).local, None)
     assert found.kind == "environment" and found.distributions == ("numpy==2.5.4",)
+    assert found.unlisted == ()
 
 
 def test_a_checkout_with_no_remote_is_kept_whole(tmp_path: Path) -> None:
@@ -349,3 +352,33 @@ def test_a_build_keeps_the_cmake_cache_it_was_configured_with(tmp_path: Path) ->
 )
 def test_a_remote_is_recorded_without_secrets_but_with_its_ssh_user(url: str, public: str) -> None:
     assert source.public_url(url) == public
+
+
+def test_an_environments_distributions_are_read_from_their_metadata(tmp_path: Path) -> None:
+    import json
+
+    from k4opt.software.source import _distributions
+
+    site = tmp_path / "site-packages"
+
+    def dist(name: str, metadata: str | None, url: dict[str, object] | None = None) -> None:
+        directory = site / name
+        directory.mkdir(parents=True)
+        if metadata is not None:
+            file = "PKG-INFO" if name.endswith(".egg-info") else "METADATA"
+            (directory / file).write_text(metadata)
+        if url is not None:
+            (directory / "direct_url.json").write_text(json.dumps(url))
+
+    dist("numpy-2.5.4.dist-info", "Metadata-Version: 2.1\nName: numpy\nVersion: 2.5.4\n")
+    dist("legacy-1.0-py3.9.egg-info", "Metadata-Version: 1.1\nName: legacy\nVersion: 1.0\n")
+    dist("mypackage.egg-info", "Metadata-Version: 1.1\nName: mypackage\nVersion: 0.3\n")
+    dist("broken-1.0.dist-info", None)
+    dist(
+        "mine-0.1.dist-info",
+        "Metadata-Version: 2.1\nName: mine\nVersion: 0.1\n",
+        {"url": "file:///home/me/mine", "dir_info": {"editable": True}},
+    )
+    listed, unlisted = _distributions(str(site))
+    assert listed == ("legacy==1.0", "mypackage==0.3", "numpy==2.5.4")
+    assert sorted(unlisted) == ["broken-1.0.dist-info", "mine-0.1.dist-info"]

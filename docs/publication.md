@@ -155,7 +155,7 @@ needs is never guessed, since what is compiled in is never read at run time.
 | a directory of local code | its every kept file, or its checkout's whole state; offered if a stage read from it, or if that is not known; held back (`--include` offers it) if every stage was observed and none read from it |
 | k4opt's own checkout, an evaluator, the geometry | their kept files (the geometry with an `aliases.json` of its files' other names) |
 | a Python environment a stage used | its distributions, `name==version`, as a `requirements.txt` to `pip install -r`; whether an index still has them is not checked, so the status keeps saying *availability not established* |
-| a changed job directory | its changed and added files and a `job-files.json`: the stack's files it removed, its executable files, its links within it |
+| a changed job directory | its changed and added files and a `job-files.json`: the stack's files it removed, whether each file is executable (`false` too), its links within it |
 | an input | one file; a job file that leads out of its directory, through any chain of links, is an input of its own (`link:<stage>/<file>`), not code |
 
 | What | Published |
@@ -178,17 +178,35 @@ in its first line, and the build's options then read *partially published*: the 
 Where it installed is no setting. Never published: a library or program (only its SHA-256 and
 build-id), the CMake cache itself, or an environment's list of distributions (only how many).
 
+A file that is an input is published only as that input, under the input question, never inside a
+unit of code that holds it too (a data file in a checkout, a job file's link target): it is left out
+of that unit's patch or files, and the input answers for that unit as well. `--exclude` leaves out a
+file wherever it is: every unit that holds it, and every one that answers for a unit left out.
+
+Every file is known by its unit, its kind and its name: a file of the unit as it is, a patch, one
+k4opt generates (`cmake-options.txt`, `job-files.json`, `aliases.json`, `requirements.txt`), or a file
+the geometry reached out of its tree (`externals/<sha256[:16]>/<name>`, as the snapshot's geometry
+names each reference's file by its SHA-256, so two references to equal bytes are one file). So a
+real file called like a generated one is another file, and two pieces of one identity and other
+bytes are refused. A Python environment's `requirements.txt` lists the distributions installed from
+an index, read from their metadata; one installed from a local path, an archive or a repository, or
+whose metadata cannot be read, is left to the author, and the environment is then on request.
+
 `--include` names code and `--include-inputs` inputs, each only of its own kind, so that naming an
 input never opts in code. A name is a file's path or its own name, a unit's name, or its id
-(`package:ddmarlinpandora:2`, `input:7c1e09a2b4f3`, shown beside inputs that share a name). One that
+(`package:ddmarlinpandora:3f2a9c1e`, `input:7c1e09a2b4f3`, shown beside inputs that share a name). One that
 names nothing is refused, an empty one always (a script's unset variable selects nothing), and so is
 one that fits several units when approving, with how to name each: approving one must never approve
 two. A release is bound to the study and the state it was reviewed in.
 
-**Publishing again.** Every unit keeps its id between publications, so a later sheet knows what an
-earlier one published by that id and the file's name, never by its bytes: what was published stays
-listed and *public*, since a publication is never taken back (`k4opt publish` says which), unless
-its unit holds other bytes now; a published copy stands in for a kept file that is gone.
+**Publishing again.** Every unit keeps its id between publications: an input's comes from its
+commitment, a local build's or directory's from the study's private salt with where it is (so it
+holds whatever else is installed, and says nothing of where), a job link's from its place in the
+job. A later sheet knows what an earlier one published by that identity, never by bytes alone. What
+was published stays listed and *public*, since a publication is never taken back (`k4opt publish`
+says which), if its unit still holds it with the same bytes (a patch against the same commit), or
+if the study still needs it and its kept copy is gone, which the checked published copy then stands
+in for. A file its unit no longer holds belongs to another state of the study, and is not listed.
 
 ```text
 code        ddmarlinpandora   1.2 kB

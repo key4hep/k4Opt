@@ -209,7 +209,7 @@ def _sheet(
         if (content := _verified(directory / artifact.path, artifact)) is not None
     ]
     kept, earlier = still_public(release, published)
-    for unit, name in sorted(earlier):
+    for unit, _, name in sorted(earlier):
         warn(
             f"{name} ({unit}) was published before and stays readable: a publication is never "
             "taken back"
