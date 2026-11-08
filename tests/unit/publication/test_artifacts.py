@@ -984,7 +984,7 @@ def test_broken_links_and_cycles_publish_nothing_and_stop_nothing(tmp_path: Path
 def test_what_was_published_before_stays_public_in_a_later_sheet(
     made: tuple[Path, StudyResults], tmp_path: Path
 ) -> None:
-    root, results = made
+    _, results = made
     found = offer(results)
     first = publish(results, tmp_path / "pub", release=found.release(code=True, inputs=True))
     said: list[str] = []
