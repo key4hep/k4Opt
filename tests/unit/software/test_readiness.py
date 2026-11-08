@@ -731,3 +731,21 @@ def test_a_candidates_geometry_file_the_index_lacks_leaves_a_gap(
     }
     readiness = requirements(study, IDENTITY, [record])
     assert readiness.status == INCOMPLETE and str(root / "alternative.xml") in readiness.gaps[0]
+
+
+def test_a_checkout_whose_state_could_not_be_taken_is_not_an_empty_directory(
+    tmp_path: Path, stack: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = checkout(tmp_path)
+    code = repo / "src"
+
+    def fails(*_: object) -> None:
+        raise source._GitError("git timed out")
+
+    monkeypatch.setattr(source, "_snapshot", fails)
+    study = tmp_path / "study"
+    study_on(study, stack, {"PYTHONPATH": str(code)})
+    readiness = requirements(study, IDENTITY, [summary(local=[str(code)])])
+    assert readiness.status == BLOCKED
+    (kept,) = (r for r in readiness.requirements if r.label == str(code))
+    assert kept.missing and "git timed out" in kept.checks[0].how

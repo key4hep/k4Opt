@@ -24,7 +24,8 @@ files of local code in no checkout, what a build installed that can be loaded bu
 changed files of a job directory (with whether each is executable and where a link led), the
 evaluators' files and
 each input up to :data:`MAX_INPUT`, all up to :data:`MAX_KEPT` per study. Never kept: a file of the
-stack, a binary (identified by its SHA-256 and build-id only). Keeping never stops a study: what
+stack, a binary (identified by its SHA-256 and build-id only), unless a checkout holds it: then it
+is part of the checkout's state, and of its patch. Keeping never stops a study: what
 cannot be kept is recorded with why (``problems``).
 """
 
@@ -290,6 +291,7 @@ def _origin(store: Store, problems: list[str], origin: Origin) -> dict[str, Any]
         "git": git,
         "files": files,
         "distributions": list(origin.distributions),
+        "problem": origin.problem,
     }
 
 

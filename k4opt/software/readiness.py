@@ -642,6 +642,9 @@ def _origin(
     git = origin.get("git")
     notes: list[str] = []
     checks: list[Check] = []
+    problem = origin.get("problem") if entries else None  # code that could be loaded, not kept
+    if problem:
+        checks.append(Check(at, "gone", f"its state was not kept: {problem}"))
     source: dict[str, Json] = {}
     if isinstance(git, Mapping):
         checks.append(_patch_check(git, store, at))
@@ -764,7 +767,7 @@ def _origin(
         files = origin.get("files") or {}
         checks += _kept_files(files, store, at)
         identified = f"{len(files)} files in no checkout, kept"
-        if not files:
+        if not files and not problem:
             checks.append(Check(at, "available", "nothing in it can be loaded: nothing to keep"))
     return Requirement(
         f"code:{index}",
