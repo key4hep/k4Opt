@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -110,6 +111,79 @@ def test_a_source_edited_after_the_build_is_stale(tmp_path: Path) -> None:
     assert found.stale is True
     # what is kept is not what the binary was built from: never rebuildable
     assert found.link == "verified" and not found.rebuildable
+
+
+def test_a_source_file_removed_after_the_build_is_stale(tmp_path: Path) -> None:
+    repo = make_checkout(tmp_path)
+    prefix = build(repo)
+    os.utime(prefix / "lib" / "libDDMarlinPandora.so.0.14.0", ns=(2_000_000_000, 2_000_000_000))
+    shutil.rmtree(repo / "src")  # its directory went too: the checkout's own time says when
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert found.git is not None and "src/DDCaloHitCreator.cc" in found.git.changed
+    assert found.stale is True and not found.rebuildable
+
+
+def test_a_source_file_removed_before_the_build_is_not_stale(tmp_path: Path) -> None:
+    repo = make_checkout(tmp_path)
+    prefix = build(repo)
+    os.utime(prefix / "lib" / "libDDMarlinPandora.so.0.14.0", ns=(2_000_000_000, 2_000_000_000))
+    (repo / "README.md").unlink()
+    os.utime(repo, ns=(1_000_000_000, 1_000_000_000))
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert found.git is not None and found.git.changed == ("README.md",)
+    assert found.stale is False and found.rebuildable
+
+
+@pytest.mark.parametrize("failing", ["--name-only", "--binary"])
+def test_a_diff_that_fails_is_no_clean_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    repo = make_checkout(tmp_path)
+    prefix = build(repo)
+    (repo / "src" / "DDCaloHitCreator.cc").write_text("energy = 2 * hit;\n")
+    real = source._git
+
+    def git_failing(cwd: str, *args: str, **options: Any) -> bytes | None:
+        return None if "diff" in args and failing in args else real(cwd, *args, **options)
+
+    monkeypatch.setattr(source, "_git", git_failing)
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert found.git is None and not found.rebuildable
+    assert found.problem is not None and "cannot be diffed" in found.problem
+
+
+def test_the_remote_recorded_is_one_that_holds_the_base(tmp_path: Path) -> None:
+    repo = make_checkout(tmp_path)
+    prefix = build(repo)
+    url = git(repo, "remote", "get-url", "origin")
+    git(repo, "remote", "rename", "origin", "upstream")
+    git(repo, "remote", "add", "origin", "/nowhere/else.git")  # has no ref of it
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert found.git is not None and found.git.base_is == "public"
+    assert found.git.remote == url and found.rebuildable
+
+
+def test_a_base_no_known_remote_can_give_is_not_rebuildable(tmp_path: Path) -> None:
+    repo = make_checkout(tmp_path)
+    prefix = build(repo)
+    git(repo, "remote", "remove", "origin")
+    git(repo, "update-ref", "refs/remotes/gone/master", "HEAD")  # a ref left of a remote now gone
+    (found,) = origins(software(**variables(prefix)).local, None)
+    assert found.git is not None and found.git.base_is == "public" and found.git.remote is None
+    assert not found.rebuildable
+
+
+def test_a_build_keeps_what_it_installed_beside_its_binaries(tmp_path: Path) -> None:
+    repo = make_checkout(tmp_path)
+    prefix = build(repo)
+    (prefix / "python").mkdir()
+    (prefix / "python" / "steer.py").write_text("edited = True\n")
+    values = {**variables(prefix), "PYTHONPATH": str(prefix / "python")}
+    (found,) = origins(software(**values).local, None)
+    path, sha256 = found.files["python/steer.py"]
+    assert path == str(prefix / "python" / "steer.py")
+    assert sha256 == hashlib.sha256(b"edited = True\n").hexdigest()
+    assert not any(name.startswith("lib/libDDMarlinPandora") for name in found.files)
 
 
 def test_binaries_the_build_tree_no_longer_has_make_the_link_likely(tmp_path: Path) -> None:

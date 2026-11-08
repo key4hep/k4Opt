@@ -406,4 +406,12 @@ def _nothing(directory: str, prefix: str, ancestors: frozenset[str], read: _Read
     return iter(())
 
 
+def listed_files(root: str) -> Iterator[tuple[str, str]]:
+    """Every file below ``root``, by its path relative to it and its path: the walk of an include
+    directory, which follows links but never back up the tree."""
+    for relative, path, status in _headers(root, "", frozenset(), []):
+        if status is not None:
+            yield relative, path
+
+
 _LISTED = {"libraries": _libraries, "headers": _headers, "python": _python, "files": _nothing}

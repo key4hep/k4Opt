@@ -88,7 +88,8 @@ class GitState:
     ``large`` to keep, the git ``tree`` of the whole state, the files that differ from the base
     (``changed``), and the ``patch`` that makes the state from the base (``git apply``; ``None``
     if too large). ``fetch`` says that the nightly's revision is not in the checkout, so the diff
-    against it needs a fetch; ``remote`` is where ``origin`` is, without credentials."""
+    against it needs a fetch; ``remote`` is where a remote that holds the base is (``origin`` if it
+    does; ``origin`` too if none is seen to), without credentials, ``None`` if none is known."""
 
     checkout: str
     remote: str | None
@@ -142,9 +143,12 @@ class Origin:
     checkout, if it is in one; ``files`` the files of a directory in none, by their path relative
     to it (their path and SHA-256), which is all a rerun would have of it; ``distributions`` the
     ``name==version`` of each distribution an environment holds; for a directory of no build,
-    ``binaries`` are those it holds, identified only (their source is not known). ``problem``
-    says what could not be read; ``configuration`` is the CMake cache a build was configured with
-    (its options, compiler and flags), which a rebuild needs as much as its source."""
+    ``binaries`` are those it holds, identified only (their source is not known). For a build,
+    ``files`` are what else it installed that can be loaded (Python modules, headers, registries),
+    by their path relative to its prefix: what ran, whatever its source would install now.
+    ``problem`` says what could not be read; ``configuration`` is the CMake cache a build was
+    configured with (its options, compiler and flags), which a rebuild needs as much as its
+    source."""
 
     kind: Kind
     prefix: str
@@ -165,8 +169,8 @@ class Origin:
     @property
     def rebuildable(self) -> bool:
         """Whether its source is known well enough to build it again: a build whose state is kept
-        (its patch, or nothing to patch) against a known base, or whole if no remote has any of
-        its history, linked ``verified`` or ``likely``,
+        (its patch, or nothing to patch) against a base that a known remote can give, or whole if
+        no remote has any of its history, linked ``verified`` or ``likely``,
         and not changed after its binaries were built (``stale``): then the state kept is not
         what they were built from, and a rebuild from it could do something else; nor with an
         untracked file too large to keep, which the build may need."""
@@ -176,7 +180,7 @@ class Origin:
             and self.stale is not True
             and self.link in ("verified", "likely")
             and git is not None
-            and (git.base is not None or git.base_is == "none")  # none: the whole tree is kept
+            and (git.base_is == "none" or (git.base is not None and git.remote is not None))
             and not git.large  # a file of it not kept: what is kept is not all of it
             and (git.clean or git.patch is not None)
         )
@@ -248,6 +252,11 @@ def _build(prefix: str, entries: list[Local], release: Release | None) -> Origin
         build, checkout = None, parent
         evidence = [f"{prefix} lies in the git checkout {parent}, and no build tree installs there"]
     binaries, built = _binaries(prefix, entries)
+    files = {
+        os.path.relpath(path, prefix): (path, sha256)
+        for entry in entries
+        for path, sha256 in _files(entry).values()
+    }
     link: Link = "adjacent"
     if build is not None:
         compared = _compared(build, prefix, binaries)
@@ -281,6 +290,7 @@ def _build(prefix: str, entries: list[Local], release: Release | None) -> Origin
         binaries,
         stale,
         git,
+        files=files,
         problem=problem,
         configuration=os.path.join(build, _CACHE) if build else None,
     )
@@ -478,9 +488,15 @@ def _package(
 
 
 def _changed_after(git: GitState, built: int) -> bool:
-    """Whether a file of the checkout that differs from the base was changed after ``built``."""
+    """Whether a file of the checkout that differs from the base was changed after ``built``. A
+    file no longer there is judged by the directory it was in, whose time its removal set (or the
+    nearest one left): when it went is not known otherwise, so a later change there counts."""
     for name in git.changed:
-        status = stat_of(os.path.join(git.checkout, name))
+        path = os.path.join(git.checkout, name)
+        status = stat_of(path)
+        while status is None and path != git.checkout:
+            path = os.path.dirname(path)
+            status = stat_of(path)
         if status is not None and status[1] > built:
             return True
     return False
@@ -636,8 +652,17 @@ def _public(checkout: str, head: str) -> str | None:
     return boundary[0] if boundary else None
 
 
-def _remote(checkout: str) -> str | None:
-    url = _text(_git(checkout, "remote", "get-url", "origin"))
+def _remote(checkout: str, base: str | None) -> str | None:
+    """Where a remote holding the commit ``base`` is, without credentials: ``origin`` if it holds
+    it or none is seen to, else the first that does; ``None`` if that gives no remote."""
+    names = (_text(_git(checkout, "remote")) or "").split()
+    listed = base and _git(
+        checkout, "for-each-ref", "--contains", base, "--format=%(refname)", "refs/remotes"
+    )
+    refs = listed.decode(errors="replace").split() if listed else []
+    holding = [n for n in names if any(r.startswith(f"refs/remotes/{n}/") for r in refs)]
+    chosen = "origin" if "origin" in holding or not holding else sorted(holding)[0]
+    url = _text(_git(checkout, "remote", "get-url", chosen))
     return None if url is None else public_url(url)
 
 
@@ -656,7 +681,9 @@ def public_url(url: str) -> str:
 
 
 def _numstat(checkout: str, env: Mapping[str, str], old: str, new: str) -> dict[str, int]:
-    out = _git(checkout, "diff", "--numstat", "-z", "--no-renames", old, new, env=env) or b""
+    out = _git(checkout, "diff", "--numstat", "-z", "--no-renames", old, new, env=env)
+    if out is None:
+        raise _GitError("its changes cannot be counted")
     files = insertions = deletions = 0
     for record in out.split(b"\0"):
         parts = record.split(b"\t")
@@ -738,14 +765,18 @@ def _snapshot(checkout: str, revision: str | None, excluded: Sequence[str]) -> G
         changed = _git(real, "diff", "--name-only", "-z", "--no-renames", start_from, tree, env=env)
         options = ("--binary", "--full-index", "--no-renames", "--no-color", "--no-ext-diff")
         patch = _git(real, "diff", *options, "--no-textconv", start_from, tree, env=env)
+        if changed is None or patch is None:  # a failure to look is no evidence of nothing changed
+            raise _GitError("its changes cannot be diffed against its base")
         ahead = 0
         if head and base and base != head:
             counted = _text(_git(real, "rev-list", "--count", f"{base}..{head}"))
-            ahead = int(counted) if counted and counted.isdigit() else 0
+            if counted is None or not counted.isdigit():
+                raise _GitError("its commits cannot be counted")
+            ahead = int(counted)
         uncommitted = _numstat(real, env, head or empty, tree)
     return GitState(
         real,
-        _remote(real),
+        _remote(real, base),
         head,
         base,
         base_is,
@@ -755,8 +786,8 @@ def _snapshot(checkout: str, revision: str | None, excluded: Sequence[str]) -> G
         len(untracked),
         tuple(large),
         tree,
-        tuple(n.decode(errors="surrogateescape") for n in (changed or b"").split(b"\0") if n),
-        patch if patch is not None and len(patch) <= MAX_PATCH else None,
+        tuple(n.decode(errors="surrogateescape") for n in changed.split(b"\0") if n),
+        patch if len(patch) <= MAX_PATCH else None,
     )
 
 

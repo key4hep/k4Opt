@@ -5,6 +5,7 @@ restored: its original binary is a fingerprint only."""
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any
 import pytest
 
 from k4opt.software import Software, keep, source
-from k4opt.software.keep import DIRECTORY, Store, keep_used, take
+from k4opt.software.keep import DIRECTORY, INPUTS, USED, Store, keep_inputs, keep_used, take
 from k4opt.software.readiness import (
     ALL_AVAILABLE,
     BLOCKED,
@@ -107,8 +108,6 @@ def test_a_local_build_that_ran_needs_a_rebuild_and_its_binary_is_a_fingerprint(
     footprint = Footprint("files", {str(library): f"sha256:{sha256_of(library)}"}, ran=("k4run",))
     data = gzip.compress(json.dumps(footprint.to_dict()).encode())
     (run / "footprint.json.gz").write_bytes(data)
-    import hashlib
-
     found = {"pi0/reconstruction": ("footprint.json.gz", hashlib.sha256(data).hexdigest())}
     keep_used(study / DIRECTORY, run, found, [entry.path for entry in software.local])
     readiness = requirements(study, IDENTITY, [summary(local=[str(prefix / "lib")])])
@@ -251,6 +250,9 @@ def test_the_records_of_every_level_of_a_nested_study_count(tmp_path: Path, stac
     (inner / "trial-000001" / "summary.json").write_text(json.dumps(used))
     (top / "trial-000000").mkdir()
     (top / "trial-000000" / "summary.json").write_text(json.dumps(summary()))
+    (snapshot,) = (top / DIRECTORY).glob("software-*.json")
+    for trial in ("trial-000000", "inner/trial-000000/trial-000001"):
+        keep_used(top / DIRECTORY, top, {}, [], trial, snapshot.name)
     assert [trial for trial, _ in records(top)] == [
         "trial-000000",
         "inner/trial-000000/trial-000001",
@@ -304,8 +306,6 @@ def test_a_used_build_with_untracked_files_not_kept_is_incomplete(
 def test_an_evaluator_module_not_kept_blocks_a_rerun(tmp_path: Path, stack: Path) -> None:
     evaluator = tmp_path / "ev.py"
     evaluator.write_text("from helper import f\n")
-    import hashlib
-
     sha256 = hashlib.sha256(evaluator.read_bytes()).hexdigest()
     implementation = {"version": "1", "source": {"path": str(evaluator), "sha256": sha256}}
     implementation["source"]["helpers"] = {"helper.py": "0" * 64}  # type: ignore[index]
@@ -327,16 +327,12 @@ def test_a_kept_record_altered_on_disk_blocks_a_rerun(tmp_path: Path, stack: Pat
 
 
 def test_an_input_whose_record_names_other_bytes_is_altered(tmp_path: Path, stack: Path) -> None:
-    import hashlib
-
-    from k4opt.software.keep import INPUTS, keep_inputs
-
     study_on(tmp_path / "study", stack)
     file = tmp_path / "scale.json"
     file.write_text("1.05")
     digest = hashlib.sha256(b"1.05").hexdigest()
     directory = tmp_path / "study" / DIRECTORY
-    keep_inputs(directory, {str(file): (f"sha256:{digest}", ["pi0/reconstruction"], "observed")})
+    keep_inputs(directory, [(str(file), f"sha256:{digest}", ["pi0/reconstruction"], "observed")])
     other = Store(directory).put(b"2.0")
     document = json.loads((directory / INPUTS).read_text())
     document["inputs"][0]["kept"] = other  # a valid blob, of other bytes
@@ -385,3 +381,201 @@ def test_a_library_counts_as_run_where_it_was_read_not_by_its_bytes(
     readiness = requirements(study, IDENTITY, [summary(local=[str(first / "lib")])])
     used = {r.label: r.used_by for r in readiness.requirements if r.kind == "package"}
     assert list(used.values()).count(()) == 1  # the other installation did not run
+
+
+def in_trial(study: Path, name: str, record: dict[str, Any]) -> None:
+    (study / name).mkdir(parents=True)
+    (study / name / "summary.json").write_text(json.dumps(record))
+
+
+def test_every_installation_trials_ran_from_is_required(tmp_path: Path, stack: Path) -> None:
+    first, second = (build(checkout(tmp_path / name)) for name in "ab")
+    study = tmp_path / "study"
+    records = []
+    for number, prefix in enumerate((first, second)):
+        software = Software.now({**variables(prefix), "KEY4HEP_STACK": str(stack)}, site=[])
+        taken = take(study / DIRECTORY, software, IDENTITY)
+        keep_used(study / DIRECTORY, study, {}, [], f"record {number}", taken.path.name)
+        records.append(summary(local=[str(prefix / "lib")]))
+    readiness = requirements(study, IDENTITY, records)
+    packages = [r for r in readiness.requirements if r.kind == "package"]
+    assert len({r.id for r in packages}) == 2
+    assert sorted(r.trials for r in packages) == [("record 0",), ("record 1",)]
+    assert {str(first), str(second)} == {r.label.partition(" at ")[2] for r in packages}
+
+
+def test_a_state_a_trial_ran_with_gone_blocks_a_rerun(tmp_path: Path, stack: Path) -> None:
+    repo = checkout(tmp_path)
+    prefix = build(repo)
+    study = tmp_path / "study"
+    software = Software.now({**variables(prefix), "KEY4HEP_STACK": str(stack)}, site=[])
+    first = take(study / DIRECTORY, software, IDENTITY)
+    keep_used(study / DIRECTORY, study, {}, [], "record 0", first.path.name)
+    (repo / "NOTES.txt").write_text("another state\n")
+    second = take(study / DIRECTORY, software, IDENTITY)
+    keep_used(study / DIRECTORY, study, {}, [], "record 1", second.path.name)
+    first.path.unlink()
+    record = summary(local=[str(prefix / "lib")])
+    readiness = requirements(study, IDENTITY, [record, record])
+    assert readiness.status == BLOCKED and readiness.altered == (first.path.name,)
+
+
+def test_evidence_gone_is_not_evidence_of_nothing(tmp_path: Path, stack: Path) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    in_trial(study, "trial-000000", summary())
+    (snapshot,) = (study / DIRECTORY).glob("software-*.json")
+    readiness = requirements(study, IDENTITY)  # no used.json at all
+    assert readiness.status == INCOMPLETE and any(USED in gap for gap in readiness.gaps)
+    keep_used(study / DIRECTORY, study, {}, [], "trial-000000", snapshot.name)
+    assert requirements(study, IDENTITY).gaps == ()  # noted, and empty: nothing is missing
+    in_trial(study, "trial-000001", summary())  # its record was never noted
+    readiness = requirements(study, IDENTITY)
+    assert readiness.status == INCOMPLETE and any("trial-000001" in g for g in readiness.gaps)
+
+
+def test_a_footprint_the_study_did_not_note_leaves_a_gap(tmp_path: Path, stack: Path) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    (snapshot,) = (study / DIRECTORY).glob("software-*.json")
+    keep_used(study / DIRECTORY, study, {}, [], "trial-000000", snapshot.name)
+    record = summary()
+    stage = record["samples"]["pi0"]["stages"]["reconstruction"]
+    stage["logs"] = {"footprint": "footprint.json.gz"}
+    stage["observed"]["footprint"] = {"sha256": "a" * 64}
+    in_trial(study, "trial-000000", record)
+    readiness = requirements(study, IDENTITY)
+    assert readiness.status == INCOMPLETE
+    assert readiness.gaps == ("what pi0/reconstruction read of local builds was not noted",)
+
+
+@pytest.mark.parametrize("name", [USED, INPUTS])
+@pytest.mark.parametrize("text", ["{", '{"schema": "other"}'])
+def test_a_damaged_index_is_said_and_the_rest_is_shown(
+    tmp_path: Path, stack: Path, name: str, text: str
+) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    (study / DIRECTORY / name).write_text(text)
+    readiness = requirements(study, IDENTITY, [summary()])
+    assert readiness.status == BLOCKED and readiness.altered == (name,)
+    assert readiness.requirements[0].kind == "base"
+
+
+@pytest.mark.parametrize("field", ["salt", "identity"])
+def test_a_commitment_that_is_no_hex_is_an_altered_input(
+    tmp_path: Path, stack: Path, field: str
+) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    file = tmp_path / "scale.json"
+    file.write_text("1.05")
+    digest = hashlib.sha256(b"1.05").hexdigest()
+    directory = study / DIRECTORY
+    keep_inputs(directory, [(str(file), f"sha256:{digest}", ["pi0/reconstruction"], "observed")])
+    document = json.loads((directory / INPUTS).read_text())
+    document["inputs"][0][field] = "sha256:zz" if field == "identity" else "zz"
+    (directory / INPUTS).write_text(json.dumps(document))
+    readiness = requirements(study, IDENTITY, [summary()])
+    assert readiness.status == BLOCKED
+    (kept,) = (r for r in readiness.requirements if r.kind == "input")
+    assert kept.checks[0].state == "altered"
+
+
+def test_a_pipe_still_there_vouches_for_nothing(tmp_path: Path, stack: Path) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    pipe = tmp_path / "calibration"
+    os.mkfifo(pipe)
+    keep_inputs(study / DIRECTORY, [(str(pipe), "special", ["pi0/reconstruction"], "observed")])
+    readiness = requirements(study, IDENTITY, [summary()])
+    assert readiness.status == UNVERIFIED
+    (kept,) = (r for r in readiness.requirements if r.kind == "input")
+    assert kept.checks[0].state == "not-checked"
+
+
+def test_a_stage_that_used_the_network_leaves_a_gap(tmp_path: Path, stack: Path) -> None:
+    prefix = build(checkout(tmp_path))
+    study = tmp_path / "study"
+    study_on(study, stack, variables(prefix))
+    record = summary()
+    record["samples"]["pi0"]["stages"]["reconstruction"]["observed"]["network"] = ["1.2.3.4:443"]
+    readiness = requirements(study, IDENTITY, [record])
+    assert readiness.status == INCOMPLETE
+    assert "pi0/reconstruction reached the network (1.2.3.4:443)" in readiness.gaps[0]
+    # what it read from files is still known: a local build it did not read did not run
+    assert next(r for r in readiness.requirements if r.kind == "package").unused
+
+
+def test_a_file_read_that_could_not_be_identified_leaves_a_gap(tmp_path: Path, stack: Path) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    record = summary()
+    record["samples"]["pi0"]["stages"]["reconstruction"]["observed"]["undeclared"] = {"/x/y": None}
+    readiness = requirements(study, IDENTITY, [record])
+    assert readiness.status == INCOMPLETE and "/x/y" in readiness.gaps[0]
+
+
+def lost_patch(tmp_path: Path, stack: Path) -> tuple[Path, Path]:
+    """A study on a local build whose kept patch is gone; its prefix."""
+    repo = checkout(tmp_path)
+    prefix = build(repo)
+    notes = repo / "NOTES.txt"
+    notes.write_text("a local change\n")
+    os.utime(notes, ns=(1_000_000_000, 1_000_000_000))
+    study = tmp_path / "study"
+    study_on(study, stack, variables(prefix))
+    (snapshot,) = (study / DIRECTORY).glob("software-*.json")
+    document = json.loads(snapshot.read_text())
+    (origin,) = (o for o in document["origins"] if o["kind"] == "build")
+    Store(study / DIRECTORY).path(origin["git"]["patch"]).unlink()
+    return study, prefix
+
+
+def test_a_build_that_did_not_run_blocks_nothing(tmp_path: Path, stack: Path) -> None:
+    study, _ = lost_patch(tmp_path, stack)
+    readiness = requirements(study, IDENTITY, [summary()])
+    assert readiness.status == f"{ALL_AVAILABLE} on {readiness.at[:10]}"
+    package = next(r for r in readiness.requirements if r.kind == "package")
+    assert package.unused and package.missing
+
+
+def test_a_build_that_ran_is_blocked_by_its_lost_patch(tmp_path: Path, stack: Path) -> None:
+    study, prefix = lost_patch(tmp_path, stack)
+    readiness = requirements(study, IDENTITY, [summary(local=[str(prefix / "lib")])])
+    assert readiness.status == BLOCKED
+
+
+def test_a_build_not_known_to_be_unused_still_blocks(tmp_path: Path, stack: Path) -> None:
+    study, _ = lost_patch(tmp_path, stack)
+    readiness = requirements(study, IDENTITY, [summary(level="none")])
+    assert readiness.status == BLOCKED
+
+
+def test_an_installed_module_edited_by_hand_is_kept_as_it_ran(tmp_path: Path, stack: Path) -> None:
+    prefix = build(checkout(tmp_path))
+    (prefix / "python").mkdir()
+    (prefix / "python" / "steer.py").write_text("edited = True\n")
+    study = tmp_path / "study"
+    values = {**variables(prefix), "PYTHONPATH": str(prefix / "python")}
+    study_on(study, stack, values)
+    (snapshot,) = (study / DIRECTORY).glob("software-*.json")
+    (origin,) = (o for o in json.loads(snapshot.read_text())["origins"] if o["kind"] == "build")
+    kept = origin["files"]["python/steer.py"]["kept"]
+    assert Store(study / DIRECTORY).get(kept) == b"edited = True\n"
+    Store(study / DIRECTORY).path(kept).unlink()
+    readiness = requirements(study, IDENTITY, [summary(local=[str(prefix / "python")])])
+    assert readiness.status == BLOCKED
+
+
+def test_local_code_whose_base_no_known_remote_gives_is_not_established(
+    tmp_path: Path, stack: Path
+) -> None:
+    repo = checkout(tmp_path)
+    git(repo, "remote", "remove", "origin")
+    git(repo, "update-ref", "refs/remotes/gone/master", "HEAD")
+    code = repo / "src"
+    study = tmp_path / "study"
+    study_on(study, stack, {"PYTHONPATH": str(code)})
+    readiness = requirements(study, IDENTITY, [summary(local=[str(code)])])
+    assert readiness.status == UNVERIFIED

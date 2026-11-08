@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -159,7 +160,7 @@ def test_an_input_is_kept_with_a_salted_commitment_and_the_variable_that_names_i
     directory = tmp_path / "kept"
     problems = keep_inputs(
         directory,
-        {str(scale): (f"sha256:{sha256}", ["pi0/reconstruction"], "observed")},
+        [(str(scale), f"sha256:{sha256}", ["pi0/reconstruction"], "observed")],
         {"MY_ECAL_SCALE_FILE": str(scale), "HOME": str(tmp_path / "home")},
     )
     assert problems == []
@@ -168,7 +169,7 @@ def test_an_input_is_kept_with_a_salted_commitment_and_the_variable_that_names_i
     assert entry["commitment"] == commitment(entry["salt"], sha256) != sha256
     assert Store(directory).get(entry["kept"]) == scale.read_bytes()
     # read again by another stage: one entry, both stages, the same salt
-    keep_inputs(directory, {str(scale): (f"sha256:{sha256}", ["pi0/analysis"], "observed")})
+    keep_inputs(directory, [(str(scale), f"sha256:{sha256}", ["pi0/analysis"], "observed")])
     again = one(keep.kept_inputs(directory), str(scale))
     assert again["stages"] == ["pi0/analysis", "pi0/reconstruction"]
     assert again["salt"] == entry["salt"]
@@ -179,7 +180,7 @@ def test_an_input_changed_since_its_stage_read_it_is_not_kept(tmp_path: Path) ->
     file.write_text("v2")
     then = hashlib.sha256(b"v1").hexdigest()
     (problem,) = keep_inputs(
-        tmp_path / "kept", {str(file): (f"sha256:{then}", ["s/r"], "observed")}
+        tmp_path / "kept", [(str(file), f"sha256:{then}", ["s/r"], "observed")]
     )
     assert "no longer the file" in problem
     entry = one(keep.kept_inputs(tmp_path / "kept"), str(file))
@@ -188,7 +189,7 @@ def test_an_input_changed_since_its_stage_read_it_is_not_kept(tmp_path: Path) ->
 
 def test_an_input_on_cvmfs_is_identified_not_copied(tmp_path: Path) -> None:
     path = "/cvmfs/other.cern.ch/data/map.root"
-    assert keep_inputs(tmp_path, {path: ("cvmfs:abcd", ["s/r"], "observed")}) == []
+    assert keep_inputs(tmp_path, [(path, "cvmfs:abcd", ["s/r"], "observed")]) == []
     entry = one(keep.kept_inputs(tmp_path), path)
     assert entry["kept"] is None and entry["commitment"] is None
 
@@ -227,10 +228,10 @@ def test_a_listed_directory_is_no_input_and_home_names_no_file(tmp_path: Path) -
     rootrc = tmp_path / ".rootrc"
     rootrc.write_text("Unix.*.Root.MacroPath: .\n")
     sha256 = hashlib.sha256(rootrc.read_bytes()).hexdigest()
-    found = {
-        str(tmp_path): ("names:" + "0" * 64, ["s/r"], "observed"),
-        str(rootrc): (f"sha256:{sha256}", ["s/r"], "observed"),
-    }
+    found = [
+        (str(tmp_path), "names:" + "0" * 64, ["s/r"], "observed"),
+        (str(rootrc), f"sha256:{sha256}", ["s/r"], "observed"),
+    ]
     keep_inputs(tmp_path / "kept", found, {"HOME": str(tmp_path), "PYTHONPATH": "/x"})
     (entry,) = keep.kept_inputs(tmp_path / "kept")
     assert entry["path"] == str(rootrc) and entry["variable"] is None
@@ -251,7 +252,7 @@ def test_what_a_study_keeps_only_its_owner_can_read(
         scale.write_text("1.05")
         digest = hashlib.sha256(b"1.05").hexdigest()
         take(directory, Software.now({}, site=[]), {"inputs": {}, "implementations": {}})
-        keep_inputs(directory, {str(scale): (f"sha256:{digest}", ["s/r"], "observed")})
+        keep_inputs(directory, [(str(scale), f"sha256:{digest}", ["s/r"], "observed")])
     finally:
         os.umask(old)
     for path in [directory, *directory.rglob("*")]:
@@ -265,7 +266,7 @@ def test_a_path_read_as_another_file_is_another_input(tmp_path: Path) -> None:
     for version, trial in ((b"A", "trial-000000"), (b"B", "trial-000001")):
         file.write_bytes(version)
         digest = hashlib.sha256(version).hexdigest()
-        found = {str(file): (f"sha256:{digest}", ["pi0/reconstruction"], "observed")}
+        found = [(str(file), f"sha256:{digest}", ["pi0/reconstruction"], "observed")]
         keep_inputs(kept, found, trial=trial)
     entries = keep.kept_inputs(kept)
     assert [(e["trials"], Store(kept).get(e["kept"])) for e in entries] == [
@@ -294,3 +295,68 @@ def test_an_evaluator_module_that_cannot_be_kept_is_listed_as_not_kept(tmp_path:
     files = json.loads(taken.path.read_text())["evaluators"]["e"]["files"]
     assert files["ev.py"]["kept"] == sha256 and files["helper.py"]["kept"] is None
     assert any("helper.py not found" in problem for problem in taken.problems)
+
+
+def test_a_file_two_stages_declare_is_kept_for_both(tmp_path: Path) -> None:
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text("1.0")
+    entry = {"path": str(calibration), "sha256": hashlib.sha256(b"1.0").hexdigest()}
+    identity = {
+        "inputs": {
+            "samples.pi0.simulation.steering": entry,
+            "samples.pi0.reconstruction.calibration": entry,
+        },
+        "implementations": {},
+    }
+    take(tmp_path / "kept", Software.now({}, site=[]), identity, {})
+    (kept,) = keep.kept_inputs(tmp_path / "kept")
+    assert kept["stages"] == ["pi0/reconstruction", "pi0/simulation"]
+
+
+def test_steering_keeps_what_its_bytes_do_not_say(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    script = job / "run.sh"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+    shared = job / "shared.py"
+    shared.write_text("x = 1\n")
+    (job / "linked.py").symlink_to("shared.py")
+    inputs = {
+        f"samples.pi0.reconstruction.directory/{path.name}": {
+            "path": str(path),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in job.iterdir()
+    }
+    taken = take(tmp_path / "kept", Software.now({}, site=[]), {"inputs": inputs}, {})
+    (steering,) = json.loads(taken.path.read_text())["steering"]
+    added = steering["added"]
+    assert added["run.sh"]["executable"] is True and added["run.sh"]["link"] is None
+    assert added["shared.py"]["executable"] is False
+    assert added["linked.py"]["link"] == "shared.py"
+
+
+def test_listing_steering_ends_on_links_back_up_the_tree(tmp_path: Path) -> None:
+    root = tmp_path / "steering"
+    (root / "a").mkdir(parents=True)
+    (root / "b").mkdir()
+    (root / "a" / "one.py").write_text("1")
+    (root / "b" / "two.py").write_text("2")
+    os.symlink("..", root / "a" / "up")
+    os.symlink(".", root / "a" / "self")
+    os.symlink("../b", root / "a" / "to_b")  # and b back to a: a cycle no prefix test sees
+    os.symlink("../a", root / "b" / "to_a")
+    found = keep._listing(str(root))
+    assert {"a/one.py", "b/two.py", "a/to_b/two.py", "b/to_a/one.py"} <= found.keys()
+    assert len(found) < 12
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["{", '{"schema": "other", "inputs": []}', '{"schema": "k4opt.inputs/1", "inputs": [1]}'],
+)
+def test_a_damaged_index_of_inputs_is_refused(tmp_path: Path, text: str) -> None:
+    (tmp_path / keep.INPUTS).write_text(text)
+    with pytest.raises(SoftwareError):
+        keep.kept_inputs(tmp_path)

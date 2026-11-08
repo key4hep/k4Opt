@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -31,8 +32,18 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from k4opt.frozen import Json, thaw
+from k4opt.software.errors import SoftwareError
 from k4opt.software.identity import Build
-from k4opt.software.keep import DIRECTORY, SCHEMA, USED, Store, commitment, kept_inputs
+from k4opt.software.keep import (
+    DIRECTORY,
+    INPUTS,
+    SCHEMA,
+    USED,
+    USED_SCHEMA,
+    Store,
+    commitment,
+    kept_inputs,
+)
 from k4opt.software.observe import identity
 
 type Kind = Literal[
@@ -72,7 +83,8 @@ class Requirement:
     again, ``rebuildable``) and ``ran`` what of it executed (``original``: ``on-cvmfs`` for the
     stack's, ``fingerprint-only`` for a local build's, whose binaries are not kept). ``checks`` are
     how its availability was checked; ``notes`` what else a reader must know (a local build that
-    did not run, a source changed after its build)."""
+    did not run, a source changed after its build). ``unused`` says that it is a local build every
+    stage of every record was observed not to read: listed, and needed by no rerun of them."""
 
     id: str
     kind: Kind
@@ -84,6 +96,7 @@ class Requirement:
     ran: Mapping[str, Json] | None = None
     checks: tuple[Check, ...] = ()
     notes: tuple[str, ...] = ()
+    unused: bool = False
 
     @property
     def available(self) -> bool:
@@ -116,50 +129,54 @@ class Requirement:
             "ran": None if self.ran is None else thaw(self.ran),
             "checks": [check.to_dict() for check in self.checks],
             "notes": list(self.notes),
+            "unused": self.unused,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class Readiness:
     """What a rerun of a study needs (``requirements``), what its records leave out
-    (``gaps``: stages not observed completely, a study that kept nothing), and when that was
-    checked (``at``)."""
+    (``gaps``: stages not observed completely or that used the network, a study that kept nothing,
+    trials whose evidence was not kept), and when that was checked (``at``)."""
 
     requirements: tuple[Requirement, ...]
     gaps: tuple[str, ...]
     at: str
     problems: tuple[str, ...] = field(default=())
     altered: tuple[str, ...] = field(default=())
-    """The records of what the study kept that are not what was written (a ``software-*.json``
-    whose content is not that of its name): nothing they say is used."""
+    """The records of what the study kept that are gone or not what was written (a
+    ``software-*.json`` a trial ran with, or whose content is not that of its name; an unreadable
+    ``inputs.json`` or ``used.json``): nothing they say is used."""
 
     @property
     def status(self) -> str:
         """The headline (see the module), the first that holds: *blocked* if something is gone or
         altered, or a local build that ran cannot be built again; *record incomplete* if what it
-        needs is not fully known (``gaps``: a stage not observed, a local build that ran whose kept
-        source is not known to be what it was built from); *availability not established* if
+        needs is not fully known (``gaps``: a stage not observed, or that used the network, a local
+        build that ran whose kept source is not known to be what it was built from); *availability
+        not established* if
         something could not be checked (an environment's distributions, an unrecognized stack, a
         k4opt commit no remote was seen to have); *rebuild needed* if a local build ran, whose
         original binary is not kept, both said if both hold; *all available* otherwise, with the
-        date of the checks. Never *reproduced*."""
+        date of the checks. Never *reproduced*. What no rerun needs (``unused``) changes none."""
         date = self.at[:10]
+        needed = [r for r in self.requirements if not r.unused]
         if (
             self.altered
-            or any(r.missing for r in self.requirements)
+            or any(r.missing for r in needed)
             or any(
                 r.kind == "package"
                 and r.used_by
                 and not (r.source or {}).get("rebuildable")
                 and not r.unproven
-                for r in self.requirements
+                for r in needed
             )
         ):
             return BLOCKED
         if self.gaps:
             return INCOMPLETE
-        rebuild = any(r.kind == "package" and r.used_by for r in self.requirements)
-        unverified = not all(r.available for r in self.requirements)
+        rebuild = any(r.kind == "package" and r.used_by for r in needed)
+        unverified = not all(r.available for r in needed)
         if rebuild and unverified:
             return f"{REBUILD} · {UNVERIFIED.removeprefix('Not rerun · ')}"
         if unverified:
@@ -204,13 +221,23 @@ def _documents(directory: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
     return found, altered
 
 
-def _read(path: Path, key: str) -> dict[str, Any]:
+def _used(directory: Path) -> dict[str, Any] | None:
+    """The study's :data:`~.keep.USED`, ``None`` if it has none; raises :class:`SoftwareError` if
+    it is not one."""
+    path = directory / USED
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    value = document.get(key) if isinstance(document, dict) else None
-    return value if isinstance(value, dict) else {}
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise SoftwareError(f"{path} cannot be read: {exc}") from exc
+    if (
+        not isinstance(document, dict)
+        or document.get("schema") != USED_SCHEMA
+        or not all(isinstance(document.get(key), dict) for key in ("footprints", "trials"))
+    ):
+        raise SoftwareError(f"{path} is not of {USED_SCHEMA}")
+    return document
 
 
 def _stages(summary: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[str, Any]]]:
@@ -220,6 +247,21 @@ def _stages(summary: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[str, Any]
         for name, stage in (stages if isinstance(stages, Mapping) else {}).items():
             if isinstance(stage, Mapping):
                 yield f"{sample}/{name}", stage
+
+
+def _footprint(stage: Mapping[str, Any]) -> object:
+    """The SHA-256 of the footprint ``stage`` depends on, as its record holds it: its own, or that
+    of the stage whose output it reused; ``None`` if it has none (it was not observed)."""
+
+    def within(*keys: str) -> Mapping[str, Any]:
+        found: object = stage
+        for key in keys:
+            found = found.get(key) if isinstance(found, Mapping) else None
+        return found if isinstance(found, Mapping) else {}
+
+    if within("logs").get("footprint") is not None:
+        return within("observed", "footprint").get("sha256")
+    return within("reused", "footprint").get("sha256")
 
 
 def _load(path: Path) -> Mapping[str, Any] | None:
@@ -295,9 +337,17 @@ def requirements(
     directory = kept_directory(study)
     store = Store(directory)
     kept, altered = _documents(directory)
-    used = _read(directory / USED, "trials")  # trial: the state its session kept
+    try:
+        evidence = _used(directory)
+    except SoftwareError:
+        evidence = None
+        altered.append(USED)
+    used = evidence["trials"] if evidence else {}  # trial: the state its session kept
+    footprints = evidence["footprints"] if evidence else {}  # digest: the files a stage read
+    named = {str(name) for name in used.values()}
+    altered += sorted(named - kept.keys() - set(altered))  # a state a trial ran with, gone
     # the states the trials ran with; all of them, where that is not recorded
-    documents = [document for name, document in kept.items() if name in used.values()] or list(
+    documents = [document for name, document in kept.items() if name in named] or list(
         kept.values()
     )
     if summaries is None:
@@ -309,44 +359,82 @@ def requirements(
     stages_seen: set[str] = set()
     trials_seen: set[str] = set()
     cache: dict[str, Mapping[str, Any] | None] = {}
+    network: dict[str, set[str]] = {}  # stage: what it reached
+    unidentified: dict[str, set[str]] = {}  # stage: what it read that could not be identified
+    lost: set[str] = set()  # stages whose footprint the study should have noted, and did not
     for trial, summary in found_records:
         trials_seen.add(trial)
         for label, stage in _stages(summary):
             observed, gap = _evidence(label, stage, cache)
             if gap is not None and gap not in gaps:
                 gaps.append(gap)
+            if isinstance(_footprint(stage), str) and _footprint(stage) not in footprints:
+                lost.add(label)
             if observed is None:
                 continue
             stages_seen.add(label)
             for path in cast(Sequence[str], observed.get("local") or ()):
                 used_local.setdefault(path, set()).add((trial, label))
+            if observed.get("network"):
+                network.setdefault(label, set()).update(map(str, observed["network"]))
+            read = observed.get("undeclared")
+            for path, then in (read if isinstance(read, Mapping) else {}).items():
+                if not isinstance(then, str):
+                    unidentified.setdefault(label, set()).add(str(path))
     if not found_records:
         gaps.append("no trial has a record yet: what its stages use is not known")
+    if summaries is None and found_records and USED not in altered:
+        if evidence is None:
+            gaps.append(f"{USED} is gone: what the trials ran with and read is not known")
+        else:
+            untold = sorted(trials_seen - used.keys())
+            if untold:
+                gaps.append(f"nothing says what {', '.join(untold)} ran with")
+    if evidence is not None:
+        gaps += [f"what {label} read of local builds was not noted" for label in sorted(lost)]
+    # a local build no stage read from did not run, if every stage of every record says so
+    known = bool(found_records) and not gaps and USED not in altered
+    gaps += [
+        f"{label} reached the network ({', '.join(sorted(reached))}): what it received is not kept"
+        for label, reached in sorted(network.items())
+    ]
+    gaps += [
+        f"{label} read {', '.join(sorted(paths))}, which could not be identified"
+        for label, paths in sorted(unidentified.items())
+    ]
     if not documents:
         gaps.append("the study kept nothing of what it ran with")
         return Readiness((), tuple(gaps), at, altered=tuple(altered))
-    # a local build no stage read from did not run, if every stage of every record says so
-    known = bool(found_records) and not gaps
-    # one study, one software: the states its trials ran with differ only in the sources of its
-    # local builds, which changed between sessions; the last is shown, a source that changed is
-    # stale
+    # one study, one software: its build and system are the last state's. Each place a local build
+    # or code was in is its own origin, as the last state that has it says: a build may have been
+    # copied elsewhere between sessions, and its first trials read the first copy. A source that
+    # changed between the states of one place is stale
     document = documents[-1]
+    latest: dict[str, Mapping[str, Any]] = {}
     trees: dict[str, set[object]] = {}
     for each in documents:
         for origin in each.get("origins") or []:
             git = origin.get("git") or {}
+            latest[str(origin.get("prefix"))] = origin
             trees.setdefault(str(origin.get("prefix")), set()).add(git.get("tree"))
     moved = {prefix for prefix, seen in trees.items() if len(seen) > 1}
-    ran = _ran(directory)
+    ran = _ran(footprints)
+    ours = {each.get("k4opt") for each in documents}
     found: list[Requirement] = []
     base = _base(document, at, sorted(stages_seen), sorted(trials_seen))
     found.append(base)
-    for index, origin in enumerate(document.get("origins") or [], start=1):
-        found.append(_origin(origin, index, store, at, used_local, ran, document, known, moved))
+    names = Counter(_name(origin) for origin in latest.values())
+    for index, (prefix, origin) in enumerate(latest.items(), start=1):
+        name = _name(origin) if names[_name(origin)] == 1 else f"{_name(origin)} at {prefix}"
+        found.append(_origin(origin, name, index, store, at, used_local, ran, ours, known, moved))
     found += [_steering(entry, store, at, base) for entry in document.get("steering") or []]
-    inputs = sorted(
-        kept_inputs(directory), key=lambda e: (str(e.get("path")), str(e.get("identity")))
-    )
+    try:
+        inputs = sorted(
+            kept_inputs(directory), key=lambda e: (str(e.get("path")), str(e.get("identity")))
+        )
+    except SoftwareError:
+        inputs = []
+        altered.append(INPUTS)
     versions: dict[str, int] = {}
     for entry in inputs:
         versions[str(entry.get("path"))] = versions.get(str(entry.get("path")), 0) + 1
@@ -364,7 +452,9 @@ def requirements(
         for r in found
         if r.kind in ("package", "code") and r.used_by and r.unproven
     ]
-    problems = tuple(str(p) for p in document.get("problems") or ())
+    problems = tuple(
+        dict.fromkeys(str(p) for each in documents for p in each.get("problems") or ())
+    )
     return Readiness(tuple(found), tuple(gaps), at, problems, tuple(altered))
 
 
@@ -381,12 +471,12 @@ def _unproven(requirement: Requirement) -> str:
     )
 
 
-def _ran(directory: Path) -> dict[tuple[str, str], set[str]]:
-    """Each file of a local entry that an observed stage read, by where it was read and its
-    identity: the stages. The place counts as much as the bytes: two installations may hold the
-    same library, of which one ran."""
+def _ran(footprints: Mapping[str, Any]) -> dict[tuple[str, str], set[str]]:
+    """Each file of a local entry that an observed stage read (``footprints``, of
+    :data:`~.keep.USED`), by where it was read and its identity: the stages. The place counts as
+    much as the bytes: two installations may hold the same library, of which one ran."""
     found: dict[tuple[str, str], set[str]] = {}
-    for entry in _read(directory / USED, "footprints").values():
+    for entry in footprints.values():
         if not isinstance(entry, Mapping):
             continue
         for path, then in (entry.get("files") or {}).items():
@@ -480,14 +570,29 @@ def _patch_check(git: Mapping[str, Any], store: Store, at: str) -> Check:
     return Check(at, state, f"its changes, kept as {patch[:12]}")
 
 
+def _name(origin: Mapping[str, Any]) -> str:
+    return str(origin.get("package") or os.path.basename(str(origin.get("prefix")).rstrip("/")))
+
+
+def _kept_files(files: Mapping[str, Any], store: Store, at: str) -> list[Check]:
+    """Whether each of ``files`` (of a record: its path, its SHA-256, what it is kept as) is kept
+    as it was."""
+    checks = []
+    for relative, entry in files.items():
+        entry = entry if isinstance(entry, Mapping) else {}
+        checks.append(_kept_check(store, at, str(relative), entry.get("kept"), entry.get("sha256")))
+    return checks
+
+
 def _origin(
     origin: Mapping[str, Any],
+    name: str,
     index: int,
     store: Store,
     at: str,
     used_local: Mapping[str, set[tuple[str, str]]],
     ran: Mapping[tuple[str, str], set[str]],
-    document: Mapping[str, Any],
+    ours: Collection[object],
     known: bool,
     moved: Collection[str] = (),
 ) -> Requirement:
@@ -496,13 +601,14 @@ def _origin(
     reads = {read for entry in entries for read in used_local.get(entry, ())}
     used = sorted({label for _, label in reads})
     trials = tuple(sorted({trial for trial, _ in reads}))
-    name = origin.get("package") or os.path.basename(str(origin.get("prefix")).rstrip("/"))
     git = origin.get("git")
     notes: list[str] = []
     checks: list[Check] = []
     source: dict[str, Json] = {}
     if isinstance(git, Mapping):
         checks.append(_patch_check(git, store, at))
+        if git.get("base") and not git.get("remote"):
+            checks.append(Check(at, "not-checked", "no remote is known to fetch its base commit"))
         source = {
             "base": git.get("base"),
             "base_is": git.get("base_is"),
@@ -529,7 +635,8 @@ def _origin(
         by = {str(b.get("file")): _executed(prefix, b, ran) for b in binaries}
         executed = [b for b in binaries if by[str(b.get("file"))]]
         used = sorted({*used, *(s for stages in by.values() for s in stages)})
-        if entries and not used and known:
+        unused = bool(entries) and not used and known
+        if unused:
             notes.append("changed locally — not used: no observed stage read from it")
         stale = bool(origin.get("stale")) or origin.get("prefix") in moved
         if origin.get("stale"):
@@ -537,6 +644,8 @@ def _origin(
         elif stale:
             notes.append("its source changed between sessions of the study: not what they ran")
         rebuildable = bool(origin.get("rebuildable")) and not stale and not git_large(git)
+        installed = origin.get("files") or {}
+        checks += _kept_files(installed, store, at)
         configuration = origin.get("configuration")
         if isinstance(configuration, str):
             checks.append(_kept_check(store, at, "its CMake configuration", configuration, None))
@@ -548,6 +657,7 @@ def _origin(
             "rebuildable": rebuildable,
             "stale": stale,
             "configuration": configuration,
+            "installed": len(installed),
         }
         identified = (
             f"{_git_line(git) if isinstance(git, Mapping) else 'source unknown'} "
@@ -556,7 +666,7 @@ def _origin(
         return Requirement(
             f"package:{name}",
             "package",
-            str(name),
+            name,
             identified,
             tuple(used),
             trials,
@@ -569,6 +679,7 @@ def _origin(
             },
             checks=tuple(checks),
             notes=tuple(notes),
+            unused=unused,
         )
     if kind == "environment":
         distributions = origin.get("distributions") or []
@@ -586,30 +697,27 @@ def _origin(
     loose = origin.get("binaries") or []
     if loose and not isinstance(git, Mapping):  # binaries of no build and no checkout
         prefix = str(origin.get("prefix"))
-        stages = {s for b in loose for s in _executed(prefix, b, ran)}
+        stages = sorted({*used, *(s for b in loose for s in _executed(prefix, b, ran))})
         return Requirement(
-            f"package:{os.path.basename(prefix.rstrip('/'))}",
+            f"package:{name}",
             "package",
             prefix,
             f"{len(loose)} binaries of no known build",
-            tuple(sorted({*used, *stages})),
+            tuple(stages),
             trials,
             source={"rebuildable": False, "link": "none"},
             ran={"original": "fingerprint-only", "files": tuple(thaw(loose))},  # type: ignore[arg-type]
             checks=(Check(at, "available", "identified by SHA-256 and build-id, not kept"),),
             notes=("binary only — source unknown: its binaries are identified, never kept",),
+            unused=bool(entries) and not stages and known,
         )
     if isinstance(git, Mapping):
         identified = _git_line(git)
-        if document.get("k4opt") == git.get("checkout"):
+        if git.get("checkout") in ours:
             notes.append("k4opt's own checkout")
     else:
         files = origin.get("files") or {}
-        for relative, entry in files.items():
-            entry = entry if isinstance(entry, Mapping) else {}
-            checks.append(
-                _kept_check(store, at, str(relative), entry.get("kept"), entry.get("sha256"))
-            )
+        checks += _kept_files(files, store, at)
         identified = f"{len(files)} files in no checkout, kept"
         if not files:
             checks.append(Check(at, "available", "nothing in it can be loaded: nothing to keep"))
@@ -678,11 +786,14 @@ def _input(index: int, entry: Mapping[str, Any], store: Store, at: str) -> Requi
     then = str(entry.get("identity"))
     sha256 = then.removeprefix("sha256:") if then.startswith("sha256:") else None
     salt, promised = entry.get("salt"), entry.get("commitment")
-    consistent = sha256 is None or (isinstance(salt, str) and promised == commitment(salt, sha256))
-    if not consistent:
+    if sha256 is not None and not _commits(salt, promised, sha256):
         check = Check(at, "altered", "its record's commitment is not that of the file it names")
     elif isinstance(kept, str):
         check = _kept_check(store, at, "the file", kept, sha256)
+    elif sha256 is None and not then.startswith("cvmfs:"):  # a pipe still there vouches for nothing
+        check = Check(
+            at, "not-checked", f"not kept ({entry.get('why')}); what it gave is not known"
+        )
     elif identity(path) == then:
         check = Check(at, "available", f"not kept ({entry.get('why')}); {path} is unchanged")
     else:
@@ -699,6 +810,15 @@ def _input(index: int, entry: Mapping[str, Any], store: Store, at: str) -> Requi
         source={"path": path, "commitment": entry.get("commitment")},
         checks=(check,),
     )
+
+
+def _commits(salt: object, promised: object, sha256: str) -> bool:
+    """Whether ``promised`` is the commitment of the file ``sha256`` under ``salt``; not if they
+    are no such thing."""
+    try:
+        return isinstance(salt, str) and promised == commitment(salt, sha256)
+    except ValueError:
+        return False
 
 
 def _k4opt(
@@ -729,7 +849,7 @@ def _k4opt(
                 at, "not-checked", "its checkout was not kept: no remote was seen to have it"
             )
         )
-    elif git_kept.get("base_is") == "public":
+    elif git_kept.get("base_is") == "public" and git_kept.get("remote"):
         check = _patch_check(git_kept, store, at)  # a public commit, and its changes as kept
         if check.state == "available":
             public = str(git_kept["base"])[:7]

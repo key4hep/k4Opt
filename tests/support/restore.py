@@ -67,7 +67,14 @@ def restore(
             (job / name).unlink()
         for name, file in {**entry["changed"], **entry["added"]}.items():
             (job / name).parent.mkdir(parents=True, exist_ok=True)
-            (job / name).write_bytes(store.get(file["kept"]))
+            target = job / name
+            target.unlink(missing_ok=True)
+            if file["link"] is not None and not os.path.isabs(file["link"]):
+                target.symlink_to(file["link"])
+                continue
+            target.write_bytes(store.get(file["kept"]))
+            if file["executable"]:
+                target.chmod(0o755)
         restored.steering[entry["stage"]] = job
         sample, stage = entry["stage"].split("/")
         definition["samples"][sample][stage]["directory"] = str(job)
@@ -77,7 +84,7 @@ def restore(
         if git is not None and not k4opt and git["checkout"] == document.get("k4opt"):
             continue
         if git is not None:
-            remote = (remotes or {}).get(origin["prefix"]) or git["remote"] or git["checkout"]
+            remote = (remotes or {}).get(origin["prefix"]) or git["remote"]
             clone = into / "src" / Path(git["checkout"]).name
             if clone.exists():
                 continue

@@ -218,6 +218,8 @@ def _rerun(results: StudyResults, out: TextIO, style: Style) -> None:
     needs = [line for requirement in readiness.requirements for line in _need(requirement, style)]
     if needs:
         _print(out, style, "needs", needs)
+    if readiness.altered:
+        _print(out, style, "altered", [printable(name) for name in readiness.altered])
     if readiness.gaps:
         _print(out, style, "unknown", [printable(gap) for gap in readiness.gaps])
     if readiness.problems:

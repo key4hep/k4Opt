@@ -291,19 +291,23 @@ def observed_stages(summary: Mapping[str, object]) -> dict[str, Mapping[str, obj
     }
 
 
-def recorded_inputs(summary: Mapping[str, object]) -> dict[str, tuple[str, str]]:
+def recorded_inputs(summary: Mapping[str, object]) -> dict[str, tuple[str, tuple[str, ...]]]:
     """The undeclared inputs the stages of a ``summary.json`` read, by path: the identity each was
-    read as and the first stage that read it (by label), as each stage that ran says
+    read as and the stages that read it as that (by label), as each stage that ran says
     (``observed``) or the stage whose output it reused (``reused``); none that could not be
     identified. Two stages that read one as different files keep the first."""
-    found: dict[str, tuple[str, str]] = {}
+    found: dict[str, tuple[str, tuple[str, ...]]] = {}
     for sample in _within(summary, "samples"):
         for name in _within(summary, "samples", sample, "stages"):
             for key in ("observed", "reused"):
                 undeclared = _within(summary, "samples", sample, "stages", name, key, "undeclared")
                 for path, then in undeclared.items():
-                    if isinstance(then, str):
-                        found.setdefault(path, (then, f"{sample}/{name}"))
+                    if not isinstance(then, str):
+                        continue
+                    label = f"{sample}/{name}"
+                    first, stages = found.get(path, (then, ()))
+                    if first == then and label not in stages:
+                        found[path] = (then, (*stages, label))
     return found
 
 

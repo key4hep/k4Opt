@@ -20,7 +20,9 @@ A study's ``software/`` directory (:data:`DIRECTORY`) holds, for no one but its 
 
 Kept: the manifests of the stack's release, the patch of each local checkout against the revision
 the nightly built (its untracked files included, those over :data:`~.source.LARGE` listed), the
-files of local code in no checkout, the changed files of a job directory, the evaluators' files and
+files of local code in no checkout, what a build installed that can be loaded but is no binary, the
+changed files of a job directory (with whether each is executable and where a link led), the
+evaluators' files and
 each input up to :data:`MAX_INPUT`, all up to :data:`MAX_KEPT` per study. Never kept: a file of the
 stack, a binary (identified by its SHA-256 and build-id only). Keeping never stops a study: what
 cannot be kept is recorded with why (``problems``).
@@ -44,6 +46,7 @@ from k4opt.jsonio import PRIVATE, publish, replace
 from k4opt.software.errors import SoftwareError
 from k4opt.software.identity import Software, compared_variables
 from k4opt.software.observe import STACK, load
+from k4opt.software.overlays import listed_files
 from k4opt.software.source import Origin, checkout, origins
 from k4opt.software.stack import MANIFESTS, Package, Release
 
@@ -334,10 +337,20 @@ def _steering(
                 except (SoftwareError, OSError) as exc:
                     problems.append(f"{file['path']} not kept: {exc}")
             group = "changed" if original is not None else "added"
-            result[group][name] = {"sha256": sha256, "kept": kept}
+            result[group][name] = {"sha256": sha256, "kept": kept, **_nature(str(file["path"]))}
         result["removed"] = sorted(theirs)
         found.append(result)
     return found
+
+
+def _nature(path: str) -> dict[str, object]:
+    """What the bytes of the file ``path`` do not say: whether it is ``executable``, and the
+    ``link`` it is, if it is one."""
+    try:
+        executable: bool | None = bool(os.stat(path).st_mode & 0o111)
+    except OSError:
+        executable = None
+    return {"executable": executable, "link": os.readlink(path) if os.path.islink(path) else None}
 
 
 def _copied(release: Release, root: str) -> tuple[Package | None, str | None]:
@@ -353,18 +366,15 @@ def _copied(release: Release, root: str) -> tuple[Package | None, str | None]:
 
 
 def _listing(root: str) -> dict[str, str]:
-    """The SHA-256 of each file below ``root``, by its path relative to it."""
+    """The SHA-256 of each file below ``root``, by its path relative to it, links followed but
+    for one back up the tree."""
     found = {}
-    for directory, _, names in os.walk(root, followlinks=True):
-        for name in names:
-            path = os.path.join(directory, name)
-            try:
-                with open(path, "rb") as handle:
-                    found[os.path.relpath(path, root)] = hashlib.file_digest(
-                        handle, "sha256"
-                    ).hexdigest()
-            except OSError:
-                continue
+    for relative, path in listed_files(root):
+        try:
+            with open(path, "rb") as handle:
+                found[relative] = hashlib.file_digest(handle, "sha256").hexdigest()
+        except OSError:
+            continue
     return found
 
 
@@ -424,10 +434,15 @@ def kept_inputs(directory: Path) -> list[dict[str, Any]]:
         return []
     except (OSError, ValueError) as exc:
         raise SoftwareError(f"{directory / INPUTS} cannot be read: {exc}") from exc
-    if not isinstance(document, dict) or document.get("schema") != INPUTS_SCHEMA:
+    inputs = document.get("inputs") if isinstance(document, dict) else None
+    if (
+        not isinstance(document, dict)
+        or document.get("schema") != INPUTS_SCHEMA
+        or not isinstance(inputs, list)
+        or not all(isinstance(entry, dict) for entry in inputs)
+    ):
         raise SoftwareError(f"{directory / INPUTS} is not of {INPUTS_SCHEMA}")
-    inputs = document.get("inputs")
-    return [dict(e) for e in inputs if isinstance(e, dict)] if isinstance(inputs, list) else []
+    return [dict(entry) for entry in inputs]
 
 
 def _variable(path: str, variables: Mapping[str, str]) -> str | None:
@@ -448,11 +463,11 @@ def _variable(path: str, variables: Mapping[str, str]) -> str | None:
 
 def keep_inputs(
     directory: Path,
-    inputs: Mapping[str, tuple[str, Iterable[str], str]],
+    inputs: Iterable[tuple[str, str, Iterable[str], str]],
     environment: Mapping[str, str] | None = None,
     trial: str | None = None,
 ) -> list[str]:
-    """Keep each of ``inputs`` (path: its identity as read, the stages that read it, its origin:
+    """Keep each of ``inputs`` (its path, its identity as read, the stages that read it, its origin:
     ``declared`` or ``observed``) not kept before as that file, in ``directory``'s :data:`INPUTS`
     and blobs, noting the ``trial`` that read it (its run directory relative to the study); what
     could not be kept, said for a person. A path read as another file than before is another
@@ -465,7 +480,7 @@ def keep_inputs(
     variables = compared_variables(environment)
     problems: list[str] = []
     changed = False
-    for path, (identity, stages, origin) in sorted(inputs.items()):
+    for path, identity, stages, origin in sorted(inputs, key=lambda each: each[:2]):
         if identity.startswith(_LISTED):  # a directory listed: nothing to keep but its names
             continue
         entry = by.get((path, identity))
@@ -516,7 +531,7 @@ def _declared(
 ) -> None:
     """Keep the files the problem names that the stack does not hold, but a reconstruction's job
     directory (its steering, kept against its package)."""
-    found: dict[str, tuple[str, Iterable[str], str]] = {}
+    found: dict[tuple[str, str], list[str]] = {}  # one file as read: the stages that declare it
     for label, entry in (identity.get("inputs") or {}).items():
         if ".directory/" in label or not isinstance(entry, Mapping):
             continue
@@ -527,8 +542,9 @@ def _declared(
             continue
         parts = label.split(".")
         stage = "/".join(parts[1:3]) if len(parts) > 2 and parts[0] == "samples" else label
-        found[path] = (f"{_SHA256}{sha256}", [stage], "declared")
-    problems += keep_inputs(directory, found)
+        found.setdefault((path, f"{_SHA256}{sha256}"), []).append(stage)
+    inputs = [(path, then, stages, "declared") for (path, then), stages in found.items()]
+    problems += keep_inputs(directory, inputs)
 
 
 # --- what local builds ran -------------------------------------------------------------------

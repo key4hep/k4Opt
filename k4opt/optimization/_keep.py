@@ -56,10 +56,10 @@ class Keeper:
             return
         if not isinstance(summary, Mapping):
             return
-        inputs = {
-            path: (then, [stage], "observed")
-            for path, (then, stage) in recorded_inputs(summary).items()
-        }
+        inputs = [
+            (path, then, stages, "observed")
+            for path, (then, stages) in recorded_inputs(summary).items()
+        ]
         try:
             where = run.relative_to(self.directory.parent).as_posix()
         except ValueError:
