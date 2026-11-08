@@ -64,7 +64,7 @@ jobs:
             set -e
 
             echo '::group::Install strace, which observes the stages'
-            dnf install -y strace
+            dnf install -y --disablerepo=cern strace
             echo '::endgroup::'
 
             echo '::group::Set-up key4hep'
