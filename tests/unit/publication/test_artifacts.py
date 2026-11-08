@@ -1306,3 +1306,176 @@ def test_inputs_of_equal_bytes_both_declined_later_are_one_entry_each_time(
     assert sheet is not None
     same = [a for a in sheet.artifacts if a.name == "config.json"]
     assert len(same) == 1 and len(same[0].requirements) == 2
+
+
+# --- what the sixth review of the publication found ----------------------------------------------
+
+
+def test_a_publication_that_fails_on_its_sheet_leaves_no_file_behind(
+    made: tuple[Path, StudyResults], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.publication import write
+
+    _, results = made
+    release = offer(results).release(code=True, inputs=True)
+    monkeypatch.setattr(write, "MAX_SHEET_BYTES", 10)
+    with pytest.raises(PublicationError, match="software sheet"):
+        publish(results, tmp_path / "pub", release=release)
+    assert not [p for p in (tmp_path / "pub").rglob("*") if p.is_file()]
+
+
+def test_a_publication_that_fails_on_a_file_removes_what_it_wrote(
+    made: tuple[Path, StudyResults], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt import jsonio
+
+    _, results = made
+    publish(results, tmp_path / "pub")  # what was there before stays
+    before = published_files(tmp_path / "pub")
+    release = offer(results).release(code=True, inputs=True)
+    real, calls = jsonio.publish, []
+
+    def failing(path: Path, text: str | bytes, private: bool = False) -> None:
+        calls.append(path)
+        if len(calls) == 3:
+            raise OSError("disk full")
+        real(path, text, private)
+
+    monkeypatch.setattr(jsonio, "publish", failing)
+    with pytest.raises(PublicationError, match="disk full"):
+        publish(results, tmp_path / "pub", release=release)
+    assert published_files(tmp_path / "pub") == before
+
+
+@pytest.mark.parametrize(
+    ("line", "partial"),
+    [
+        ("CMAKE_TOOLCHAIN_FILE:FILEPATH=/opt/custom/toolchain.cmake", True),
+        ("CMAKE_PREFIX_PATH:PATH=/home/user/custom-stack", True),
+        ("Gaudi_DIR:PATH=/home/user/gaudi/lib/cmake/Gaudi", True),
+        ("CMAKE_INSTALL_PREFIX:PATH=/home/user/pkg/install", False),
+        ("CMAKE_MAKE_PROGRAM:FILEPATH=/usr/bin/gmake", False),
+        ("CMAKE_CXX_COMPILER:FILEPATH=/cvmfs/sft.cern.ch/gcc/bin/g++", False),
+    ],
+)
+def test_a_users_path_setting_left_out_makes_the_options_partial(line: str, partial: bool) -> None:
+    from k4opt.publication.artifacts import _options
+
+    text = _options(f"CMAKE_BUILD_TYPE:STRING=Release\n{line}\n".encode())
+    assert text.startswith(b"#") is partial
+    assert b"/home/" not in text and b"/opt/" not in text
+
+
+def test_a_setting_on_the_stack_is_published_as_it_is() -> None:
+    from k4opt.publication.artifacts import _options
+
+    text = _options(b"CMAKE_CXX_COMPILER:FILEPATH=/cvmfs/sft.cern.ch/gcc/bin/g++\n")
+    assert b"CMAKE_CXX_COMPILER=/cvmfs/sft.cern.ch/gcc/bin/g++" in text
+
+
+def test_an_earlier_approval_of_one_of_two_equal_inputs_covers_only_that_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = fresh(tmp_path, monkeypatch)
+    first, second = tmp_path / "one" / "config.json", tmp_path / "two" / "config.json"
+    for path in (first, second):
+        path.parent.mkdir()
+        path.write_text('{"scale": 1}\n')
+        add_input(study, path)
+    results = load_study(study)
+    found = offer(results)
+    ids = {p.place: p.requirements[0] for p in found.inputs if p.name == "config.json"}
+    publish(results, tmp_path / "pub", release=found.release(inputs=[str(first)]))
+    entry = publish(results, tmp_path / "pub")
+    access = access_in(entry, tmp_path / "pub")
+    assert access[ids[str(first)]] == "public" and access[ids[str(second)]] == "on request"
+
+
+def test_a_build_published_with_options_in_part_is_not_all_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "dashboard"))
+    import tables
+
+    results = load_study(fresh(tmp_path, monkeypatch))
+    release = offer(results).release(code=True)
+    pieces = tuple(
+        replace(p, data=b"# 1 more option holds a local path\nA=1\n")
+        if p.name == "cmake-options.txt"
+        else p
+        for p in release.pieces
+    )
+    entry = publish(results, tmp_path / "pub", release=replace(release, pieces=pieces))
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None
+    assert "ddmarlinpandora build options" in tables.rerun_missing(sheet)
+
+
+def test_an_untracked_link_a_stage_read_through_is_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    repo_parent = tmp_path / "src" / "DDMarlinPandora"
+    study = local_study(tmp_path, monkeypatch, links={"alias.h": "New.h"})
+    read_by_stage(study, repo_parent / "alias.h")
+    found = offer(load_study(study))
+    assert "ddmarlinpandora/alias.h" in names(found.code)
+
+
+def test_republishing_a_studys_json_form_keeps_its_sheet(
+    made: tuple[Path, StudyResults], tmp_path: Path
+) -> None:
+    _, results = made
+    first = publish(results, tmp_path / "pub")
+    again = publish(StudyResults.from_dict(results.to_dict()), tmp_path / "pub")
+    assert again.software == first.software is not None
+
+
+def test_naming_a_package_of_two_installations_is_refused(tmp_path: Path) -> None:
+    from k4opt.publication.artifacts import _named
+
+    pieces = [Piece("code", "pkg", "a.h", b"1", (f"package:pkg:{n}",), ()) for n in (1, 2)]
+    with pytest.raises(PublicationError, match="names 2 files"):
+        _named(pieces, "pkg")
+    assert len(_named(pieces, "package:pkg:2")) == 1
+    one = [Piece("code", "pkg", n, b"1", ("package:pkg",), ()) for n in ("a.h", "b.h")]
+    assert len(_named(one, "pkg")) == 2
+
+
+def test_every_untracked_file_of_a_build_no_remote_has_is_needed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = load_study(fresh(tmp_path, monkeypatch, private=True, untracked=("config.h.in",)))
+    held = {h.name: h for h in offer(results).held if h.owner == "ddmarlinpandora"}
+    assert held["config.h.in"].needed and held["notes.txt"].needed
+
+
+@pytest.mark.parametrize("name", ["config.h.in", "gen.f90", "kernel.cu", "Dict.xml"])
+def test_untracked_build_inputs_of_more_kinds_may_be_needed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    results = load_study(fresh(tmp_path, monkeypatch, untracked=(name,)))
+    held = {h.name: h for h in offer(results).held if h.owner == "ddmarlinpandora"}
+    assert held[name].needed
+
+
+def test_an_incomplete_record_still_says_it_needs_access(
+    made: tuple[Path, StudyResults], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.publication import artifacts
+
+    _, results = made
+    real = artifacts.requirements
+
+    def unobserved(*args: Any, **kwargs: Any) -> Any:
+        gap = ("pi0/reconstruction was not observed completely",)
+        return replace(real(*args, **kwargs), gaps=gap, public_gaps=gap)
+
+    monkeypatch.setattr(artifacts, "requirements", unobserved)
+    entry = publish(results, tmp_path / "pub")
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None and sheet.status == "Not rerun · record incomplete · needs access"

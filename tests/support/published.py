@@ -47,11 +47,13 @@ def local_study(
     *,
     private: bool = False,
     untracked: tuple[str, ...] = (),
+    links: dict[str, str] | None = None,
 ) -> Path:
     """A study in ``root/study`` run on a build of DDMarlinPandora with one edited file, one
     untracked header it installed, one untracked note and one untracked binary, a directory of
     helpers of which a stage read one, and a calibration file that stage read. ``private``: no
-    remote has its checkout, so that its patch holds every file; ``untracked``: more files of it."""
+    remote has its checkout, so that its patch holds every file; ``untracked``: more files of it;
+    ``links``: untracked links in it, by name, to what they lead to."""
     repo = checkout(root / "src")
     clean = checkout(root / "k4opt", "k4Opt")  # k4opt's own, whatever the tests run from
     monkeypatch.setattr(
@@ -65,6 +67,8 @@ def local_study(
         git(repo, "remote", "remove", "origin")
     for name in untracked:
         (repo / name).write_text("// compiled in\n")
+    for name, target in (links or {}).items():
+        (repo / name).symlink_to(target)
     past = time.time() - 60  # all of it before the build: not stale
     extra = [repo / name for name in untracked]
     for path in (

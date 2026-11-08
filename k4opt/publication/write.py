@@ -116,11 +116,8 @@ def publish(
                 f"{current.published}), not {entry.trials} and {entry.finished}; read the study "
                 "again and publish what it holds now"
             )
-        _write_once(directory / snapshot.path, data)
         artifacts = bundled(results.id, approved.pieces)
-        for artifact, content in artifacts:
-            _write_once(directory / artifact.path, content)
-        software = _sheet(
+        sheet = _sheet(  # made and checked before any file is written
             directory,
             results,
             approved,
@@ -129,14 +126,29 @@ def publish(
             [a for a, _ in artifacts],
             warn or (lambda message: None),
         )
-        if current is not None and current.snapshot == snapshot:
-            if current.software == software:
-                return current
-            entry = replace(current, software=software)
+        same = current is not None and current.snapshot == snapshot
+        if sheet is not None:
+            software: Snapshot | None = sheet[0]
+        else:  # its JSON form says nothing of its software: what was published of it stays
+            software = current.software if same and current is not None else None
+        written: list[Path] = []
+        try:  # all of it or nothing: a file of a failed publication is never left to be read
+            _write_once(directory / snapshot.path, data, written)
+            for artifact, content in artifacts:
+                _write_once(directory / artifact.path, content, written)
+            if sheet is not None:
+                _write_once(directory / sheet[0].path, sheet[1], written)
+            if same and current is not None:
+                if current.software == software:
+                    return current
+                entry = replace(current, software=software)
+            else:
+                entry = replace(entry, software=software)
             _replace_catalog(directory, catalog.with_entry(entry))
-            return entry
-        entry = replace(entry, software=software)
-        _replace_catalog(directory, catalog.with_entry(entry))
+        except BaseException:
+            for made_now in written:
+                made_now.unlink(missing_ok=True)
+            raise
     return entry
 
 
@@ -180,11 +192,11 @@ def _sheet(
     current: CatalogEntry | None,
     artifacts: list[PublishedArtifact],
     warn: Callable[[str], None],
-) -> Snapshot | None:
-    """Write the software sheet of ``results``, of the snapshot ``snapshot`` and what ``release``
+) -> tuple[Snapshot, bytes] | None:
+    """The software sheet of ``results``, of the snapshot ``snapshot`` and what ``release``
     approved, keeping from the intact sheet ``current`` names when this snapshot was first published
-    and what was found then, and what it published that stays readable; where it is. ``None`` for a
-    study with no directory."""
+    and what was found then, and what it published that stays readable: where it goes, and its
+    bytes, checked and not yet written. ``None`` for a study with no directory."""
     if release.offer.readiness is None:
         return None
     previous = _previous(directory, results.id, current)
@@ -196,7 +208,10 @@ def _sheet(
         for artifact in (previous.artifacts if previous is not None else ())
         if (content := _verified(directory / artifact.path, artifact)) is not None
     ]
-    kept, earlier = still_public(release, published)
+    commitments = {
+        r.id: r.facts.get("commitment") for r in (previous.requirements if previous else ())
+    }
+    kept, earlier = still_public(release, published, commitments)
     for label in sorted({piece.label for piece in earlier}):
         warn(f"{label} was published before and stays readable: a publication is never taken back")
     text = public_form(results, release, snapshot, first, [*artifacts, *kept], earlier).to_json()
@@ -207,9 +222,7 @@ def _sheet(
             f"the {MAX_SHEET_BYTES} a publication holds"
         )
     digest = hashlib.sha256(data).hexdigest()
-    written = Snapshot(sheet_path(results.id, digest), digest, len(data))
-    _write_once(directory / written.path, data)
-    return written
+    return Snapshot(sheet_path(results.id, digest), digest, len(data)), data
 
 
 def local_paths(results: StudyResults) -> list[tuple[str, str]]:
@@ -241,8 +254,9 @@ def local_paths(results: StudyResults) -> list[tuple[str, str]]:
     return found
 
 
-def _write_once(path: Path, data: bytes) -> None:
-    """``data`` at ``path``, written whole; a file there already must hold exactly ``data``."""
+def _write_once(path: Path, data: bytes, written: list[Path] | None = None) -> None:
+    """``data`` at ``path``, written whole, and noted in ``written`` if it is new; a file there
+    already must hold exactly ``data``."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         jsonio.publish(path, data)
@@ -251,6 +265,8 @@ def _write_once(path: Path, data: bytes) -> None:
     except OSError as exc:
         raise PublicationError(f"cannot write {path}: {exc}") from exc
     else:
+        if written is not None:
+            written.append(path)
         return
     try:
         held = path.read_bytes()

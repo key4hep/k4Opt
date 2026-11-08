@@ -127,7 +127,10 @@ Publishing the same state of a study again adds no snapshot and does not change 
 published: what a rerun needs is **checked again**, and the study's software sheet says when
 (a nightly may have been overwritten since). A sheet lists what this publication approved, and what
 an earlier one published that is still of the study, since a publication is never taken back:
-`k4opt publish` says which, and it stays *public* whatever is answered this time. A
+`k4opt publish` says which, and it stays *public* whatever is answered this time. An input counts
+as published only as the input it was approved as, never because another holds equal bytes. A
+publication that fails removes every file it wrote, and writes nothing until its software sheet is
+made and checked. Publishing a study's JSON form again keeps its sheet. A
 **later state** (more trials, or more of them ended) replaces the study's entry; its earlier
 snapshot stays, unnamed, so a reader that was reading it still reads it whole. An **earlier
 state** is refused: a publisher that read the study before another published it never takes the
@@ -159,16 +162,17 @@ What of it leaves the machine is decided here. Recording is automatic; **publish
 | a venv's `pyvenv.cfg` | listed only: it says where an interpreter is, and the environment is a requirement of its own |
 | a job file that leads out of its directory, through any chain of links | data, not code: held back, and on request: `--include-inputs NAME` publishes it |
 | a build no stage read | not offered |
-| a source file of a build that may be needed to compile it (no remote has its checkout, or an untracked source or header) | held back and on request, since no stage opens what is compiled in; `--include` names it, or the package |
+| a source file of a build that may be needed to compile it (any file of a checkout no remote has; an untracked source, header, template, Fortran or CUDA file, ROOT dictionary selection) | held back and on request, since no stage opens what is compiled in; `--include` names it, or the package (by its id, `package:name:2`, when two installations share a name) |
 | what a build installed that a stage read | offered as `installed/...`, since it can differ from what its source installs |
 
 A Python module counts as read when a stage read it from its `__pycache__`: with a valid cache,
 Python never opens the source. A file counts as read only where it was read: the same bytes elsewhere say nothing of this copy.
 A file deleted from a local directory is offered although nothing can read it, since its absence can
 change what an import finds. The options of a build's CMake cache whose names say a credential are
-left out with those that hold a path, among them `PATH` and `FILEPATH` settings other than what CMake
-found by itself (compilers, the stack's packages), and such a build's options then read *partially
-published*. An empty setting is kept, since it differs from none. A local geometry's other names for
+left out with those that name a local path, `CMAKE_TOOLCHAIN_FILE` and `CMAKE_PREFIX_PATH` among
+them, and such a build's options then read *partially published*, which the Software tab counts
+among what a rerun lacks. A path on the stack or the system is published as it is; where the build
+installed is no setting. An empty setting is kept, since it differs from none. A local geometry's other names for
 its files come as an `aliases.json`.
 With a changed job directory comes a `job-files.json`, listing the stack's files it removed, its
 executable files and its links within it. With a build comes its `cmake-options.txt`: the options of

@@ -447,3 +447,45 @@ def test_a_python_environment_a_stage_used_is_said_to_be_missing_from_a_rerun() 
     assert any("60 distributions" in step for step in tables.rerun_steps(_sheet(_base(), used)))
     idle = replace(used, used_by=())
     assert tables.rerun_missing(_sheet(_base(), idle)) == []
+
+
+def test_a_local_geometry_keeps_any_stage_from_reading_as_nightly_only() -> None:
+    import tables
+
+    geometry = _requirement(
+        id="geometry",
+        kind="geometry",
+        label="C/d.xml",
+        identified="4 files, kept",
+        facts={},
+        used_by=(),
+    )
+    line = tables.stages_used(_sheet(_base(), geometry))
+    assert line is not None and "nightly only" not in line and "local geometry" in line
+
+
+def test_k4opts_own_changes_are_a_step_of_a_rerun() -> None:
+    import tables
+
+    k4opt = _requirement(
+        id="k4opt",
+        kind="k4opt",
+        label="k4opt 0.1",
+        identified="abc1234 with uncommitted changes",
+        facts={"commit": "a" * 40},
+        ran=None,
+    )
+    checkout = _requirement(
+        id="code:3",
+        kind="code",
+        label="k4Opt",
+        identified="abc1234 + 2 uncommitted files",
+        notes=("k4opt's own checkout",),
+        used_by=(),
+        access="on request",
+        facts={},
+        ran=None,
+    )
+    steps = "\n".join(tables.rerun_steps(_sheet(_base(), k4opt, checkout)))
+    assert "Use k4opt at commit aaaaaaaaaaaa with its local changes (ask the author)" in steps
+    assert "k4Opt" in tables.rerun_missing(_sheet(_base(), k4opt, checkout))

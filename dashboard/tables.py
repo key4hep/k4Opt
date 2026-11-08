@@ -619,13 +619,19 @@ def stages_used(sheet: SoftwareSheet) -> str | None:
     base = requirement(sheet, "base")
     if base is None or sheet.gaps:
         return None
-    local = {stage for r in _local(sheet) if not r.unused for stage in r.used_by}
+    changes = [r for r in _local(sheet) if not r.unused]
+    # a geometry is copied into each trial, so no footprint tells which stage read it
+    geometry = any(r.kind == "geometry" for r in changes)
+    local = {stage for r in changes if r.kind != "geometry" for stage in r.used_by}
     nightly = [stage for stage in base.used_by if stage not in local]
     parts = []
     if nightly:
-        parts.append(f"{', '.join(nightly)} used the nightly only")
+        said = "the nightly's software only" if geometry else "the nightly only"
+        parts.append(f"{', '.join(nightly)} used {said}")
     if local:
         parts.append(f"{', '.join(sorted(local))} used the changes above")
+    if geometry:
+        parts.append("the local geometry is the detector of every stage that reads one")
     return "; ".join(parts) + "." if parts else None
 
 
@@ -653,13 +659,20 @@ def _has_own_files(sheet: SoftwareSheet, r: PublishedRequirement) -> bool:
 def rerun_missing(sheet: SoftwareSheet) -> list[str]:
     """What a rerun needs that is not published: an empty list says the steps can be followed from
     this publication alone."""
-    return [
+    missing = [
         r.label
         for r in sheet.requirements
         if not r.unused
         and r.access != "public"
         and r.id != "listing"
         and (r.kind != "environment" or r.used_by)
+    ]
+    return missing + [  # a build's source alone rebuilds it with other options
+        f"{r.label} build options"
+        for r in sheet.requirements
+        if r.kind == "package"
+        and not r.unused
+        and r.facts.get("configuration") in ("partial", "on request")
     ]
 
 
@@ -669,7 +682,12 @@ def rerun_steps(sheet: SoftwareSheet) -> list[str]:
     steps = [f"Source the nightly: {base.label}." if base is not None else "Source the stack."]
     k4opt = requirement(sheet, "k4opt")
     if k4opt is not None and k4opt.facts.get("commit"):
-        steps.append(f"Use k4opt at commit {str(k4opt.facts['commit'])[:12]}.")
+        at = f"Use k4opt at commit {str(k4opt.facts['commit'])[:12]}"
+        if "uncommitted" in k4opt.identified:
+            own = next((r for r in sheet.requirements if "k4opt's own checkout" in r.notes), None)
+            how = _how_to_get(own) if own is not None else "not kept"
+            at += f" with its local changes ({how})"
+        steps.append(f"{at}.")
     for r in sheet.requirements:
         if r.unused:
             continue

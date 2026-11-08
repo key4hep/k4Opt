@@ -48,8 +48,6 @@ from k4opt.software import SoftwareError
 from k4opt.software.keep import Store
 from k4opt.software.readiness import (
     ALL_AVAILABLE,
-    BLOCKED,
-    INCOMPLETE,
     Readiness,
     Requirement,
     requirements,
@@ -76,6 +74,7 @@ class Section:
     added: int
     removed: int
     deleted: bool = False
+    link: bool = False
 
 
 _HEADER = re.compile(rb"^diff --git ", re.MULTILINE)
@@ -98,7 +97,8 @@ def sections(patch: bytes) -> list[Section]:
                 added += line[:1] == b"+"
                 removed += line[:1] == b"-"
         head = text[: text.index(b"\n@@")] if b"\n@@" in text else text
-        found.append(Section(name, text, binary, added, removed, b"\ndeleted file mode " in head))
+        deleted, link = b"\ndeleted file mode " in head, b" mode 120000" in head
+        found.append(Section(name, text, binary, added, removed, deleted, link))
     return found
 
 
@@ -183,7 +183,10 @@ def _named(pieces: Iterable[Piece], name: str) -> list[Piece]:
     """The ``pieces`` ``name`` names: one file, or all of one package by its name. A name that
     fits several files is refused, with how to name each: approving one must never approve two."""
     found = [piece for piece in pieces if piece.matches(name)]
-    if len(found) > 1 and not all(name in (p.owner, *p.requirements) for p in found):
+    by_id = all(name in p.requirements for p in found)
+    # a package by its name, if it is one installation: two of one name are told by their ids
+    one = all(name == p.owner for p in found) and len({p.requirements[0] for p in found}) == 1
+    if len(found) > 1 and not (by_id or one):
         each = "; ".join(f"{p.requirements[0]}: {p.place or p.label}" for p in found)
         raise PublicationError(f"{name} names {len(found)} files; name one of them: {each}")
     return found
@@ -580,11 +583,14 @@ def _from_origin(
 
 OPTIONS = "cmake-options.txt"
 _OPTION = re.compile(r"^([A-Za-z_][\w.+-]*):(BOOL|STRING|PATH|FILEPATH|UNINITIALIZED)=(.*)$")
-_TOOLING = re.compile(r"^CMAKE_|_(?:DIR|LIBRARY|EXECUTABLE)$")
-"""Paths CMake finds by itself, of the compiler and of the stack's packages: not settings."""
+_PUBLIC_PATHS = ("/cvmfs/", "/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/", "/etc/")
+"""Where a path names the stack or the system, which are public: such a setting is published."""
 _COMPILE_TIME = re.compile(
-    r"(?:\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|icc|ipp|inl|cmake)|CMakeLists\.txt)$"
+    r"(?:\.(?:c|cc|cpp|cxx|c\+\+|h|hh|hpp|hxx|h\+\+|icc|ipp|inl|tcc|tpp|txx|cu|cuh|f|for|f77|f90"
+    r"|f95|f03|f08|F|F90|s|S|asm|y|yy|l|ll|proto|xml|in|cmake)|CMakeLists\.txt)$"
 )
+"""What a build may compile in or generate from, of a checkout a remote has; of one no remote has,
+any file may be."""
 _SENSITIVE = re.compile(
     r"(?i)pass(?:word|wd|phrase)?|pwd|secret|token|credential|api[_-]?key|private[_-]?key|auth"
 )
@@ -600,10 +606,11 @@ def _options(cache: bytes) -> bytes:
         option = _OPTION.match(line)
         if option is None:
             continue
-        name, kind, value = option[1], option[2], option[3]
-        if kind in ("PATH", "FILEPATH") and _TOOLING.search(name):
+        name, value = option[1], option[3]
+        if name == "CMAKE_INSTALL_PREFIX":  # where to install: a rerun chooses its own
             continue
-        if "/" in value or _SENSITIVE.search(name):
+        public = all(part.startswith(_PUBLIC_PATHS) for part in value.split(";") if part)
+        if _SENSITIVE.search(name) or ("/" in value and not public):
             left += 1
         else:
             kept.append(f"{name}={value}")
@@ -629,10 +636,16 @@ def _from_section(
     is_untracked = section.name in untracked
     whole = git.get("base_is") == "none"  # no public commit: its every file is in the patch
     base = str(git.get("base") or "")[:7] or "no public commit"
-    stages = reads.stages(_places(str(git.get("checkout")), section.name, entries), sha256)
-    installed = sha256 is not None and any(
-        isinstance(f, Mapping) and f.get("sha256") == sha256
-        for f in (requirement.entry or {}).get("files", {}).values()
+    # a link is kept as its text, a stage reads what it leads to: where it was read decides
+    places = _places(str(git.get("checkout")), section.name, entries)
+    stages = reads.stages(places, None if section.link else sha256)
+    installed = (
+        sha256 is not None
+        and not section.link
+        and any(
+            isinstance(f, Mapping) and f.get("sha256") == sha256
+            for f in (requirement.entry or {}).get("files", {}).values()
+        )
     )
     piece = Piece(
         "code",
@@ -649,7 +662,7 @@ def _from_section(
     needed = False
     if is_untracked and not stages and not installed:
         # no stage opens what is compiled in: not being read does not make it unnecessary
-        if compiled and _COMPILE_TIME.search(section.name):
+        if compiled and (whole or _COMPILE_TIME.search(section.name)):
             why, needed = "not read at run time; a build may need it", True
         else:
             why = "untracked, not used"
@@ -858,17 +871,31 @@ _NOTES = (
 
 
 def still_public(
-    release: Release, published: Iterable[tuple[PublishedArtifact, bytes]]
+    release: Release,
+    published: Iterable[tuple[PublishedArtifact, bytes]],
+    commitments: Mapping[str, object] | None = None,
 ) -> tuple[list[PublishedArtifact], frozenset[Piece]]:
     """What of ``published`` (files an earlier publication holds, with their bytes) is still of this
     study though ``release`` did not approve it: those files, answering what they answer now, and
     the pieces they hold. A publication is never taken back: what it holds stays readable, so it
-    must not be said to be private, however the author answers this time."""
+    must not be said to be private, however the author answers this time. An input is that file
+    only if it is the input it was approved as (``commitments``: of the requirements of the earlier
+    sheet, by id), not merely one of equal bytes: approving one must never approve another."""
     waiting = [piece for piece in release.offer.everything if piece not in release.pieces]
+    readiness = release.offer.readiness
+    ours = {
+        r.id: (r.source or {}).get("commitment")
+        for r in (readiness.requirements if readiness is not None else ())
+    }
+    theirs = commitments or {}
     kept: dict[tuple[str, str, str], PublishedArtifact] = {}  # equal bytes: one file, many needs
     pieces: set[Piece] = set()
     for artifact, data in published:
-        same = [piece for piece in waiting if _holds(artifact, data, piece)]
+        same = [
+            piece
+            for piece in waiting
+            if _holds(artifact, data, piece) and _same_input(artifact, piece, ours, theirs)
+        ]
         if same:
             pieces.update(same)
             key = (artifact.path, artifact.owner, artifact.name)
@@ -876,6 +903,22 @@ def still_public(
             needs = (*earlier, *(r for piece in same for r in piece.requirements))
             kept[key] = replace(artifact, requirements=tuple(dict.fromkeys(needs)))
     return list(kept.values()), frozenset(pieces)
+
+
+def _same_input(
+    artifact: PublishedArtifact,
+    piece: Piece,
+    ours: Mapping[str, object],
+    theirs: Mapping[str, object],
+) -> bool:
+    """Whether ``piece``, if an input, is one ``artifact`` was approved as: by its commitment, which
+    is that file's alone, or by its requirement where it has none."""
+    if piece.group != "inputs":
+        return True
+    mine = ours.get(piece.requirements[0])
+    if isinstance(mine, str):
+        return mine in {theirs.get(r) for r in artifact.requirements}
+    return piece.requirements[0] in artifact.requirements
 
 
 def _holds(artifact: PublishedArtifact, data: bytes, piece: Piece) -> bool:
@@ -935,8 +978,8 @@ def _status(readiness: Readiness, access: Mapping[str, Access]) -> str:
     give: what a reader may do is what is published, not what the study kept."""
     status = readiness.status
     private = any(access[r.id] == "on request" for r in readiness.requirements if not r.unused)
-    if not private or status.startswith((BLOCKED, INCOMPLETE)):
-        return status
+    if not private:
+        return status  # what blocks or is unknown is said first; what is private, beside it
     return NEEDS_ACCESS if status.startswith(ALL_AVAILABLE) else f"{status} · needs access"
 
 
