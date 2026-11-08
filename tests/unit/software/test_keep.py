@@ -393,7 +393,8 @@ def test_the_stacks_geometry_is_not_kept(tmp_path: Path) -> None:
     assert json.loads(taken.path.read_text())["geometry"]["files"] == {}
 
 
-def test_a_steering_file_made_executable_has_changed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("made", ["executable", "link"])
+def test_a_steering_file_of_the_same_bytes_can_have_changed(tmp_path: Path, made: str) -> None:
     release = Release.of(str(lcg_view(tmp_path / "stack")))
     assert release is not None
     package = next(iter(release.packages.values()))
@@ -404,12 +405,18 @@ def test_a_steering_file_made_executable_has_changed(tmp_path: Path) -> None:
     release = replace(release, packages={package.name: package})
     job = tmp_path / "CLDConfig"
     job.mkdir()
-    (job / "run.sh").write_text("x")
-    (job / "run.sh").chmod(0o755)
+    if made == "link":
+        (tmp_path / "elsewhere.sh").write_text("x")
+        (job / "run.sh").symlink_to(tmp_path / "elsewhere.sh")
+    else:
+        (job / "run.sh").write_text("x")
+        (job / "run.sh").chmod(0o755)
     entry = {"path": str(job / "run.sh"), "sha256": hashlib.sha256(b"x").hexdigest()}
     identity = {"inputs": {"samples.pi0.reconstruction.directory/run.sh": entry}}
     (steering,) = keep._steering(Store(tmp_path / "kept"), [], identity, release)
-    assert steering["unchanged"] == 0 and steering["changed"]["run.sh"]["executable"] is True
+    changed = steering["changed"]["run.sh"]
+    assert steering["unchanged"] == 0
+    assert changed["executable"] is True if made == "executable" else changed["link"] is not None
 
 
 def test_a_local_file_of_a_geometry_on_the_stack_is_kept(tmp_path: Path) -> None:

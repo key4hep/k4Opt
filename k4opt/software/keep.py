@@ -335,8 +335,7 @@ def _steering(
             if (
                 original is not None
                 and original == sha256
-                and _nature(str(file["path"]))["executable"]
-                == _nature(os.path.join(str(same_as), name))["executable"]
+                and _nature(str(file["path"])) == _nature(os.path.join(str(same_as), name))
             ):
                 result["unchanged"] += 1
                 continue
