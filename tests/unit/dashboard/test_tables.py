@@ -417,3 +417,15 @@ def test_a_build_says_whether_its_options_can_be_had_beside_its_source() -> None
     assert row["Build options"] == "On request"
     step = next(s for s in tables.rerun_steps(_sheet(asked)) if s.startswith("Clone"))
     assert "its CMake options (ask the author)" in step
+
+
+def test_a_build_published_in_part_says_there_is_more_to_ask_for() -> None:
+    import tables
+
+    partial = _requirement(
+        facts={"link": "verified", "rebuildable": True, "configuration": "partial"}
+    )
+    (row,) = tables.local_changes(_sheet(partial))
+    assert row["Build options"] == "Partially published: ask the author for the rest"
+    step = next(s for s in tables.rerun_steps(_sheet(partial)) if s.startswith("Clone"))
+    assert "its CMake options (in part here; ask the author for the rest)" in step

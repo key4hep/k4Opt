@@ -488,8 +488,18 @@ def _rebuild(r: PublishedRequirement) -> str | None:
     return "Rebuildable from source" if r.facts.get("rebuildable") else "Source unavailable"
 
 
-_OPTIONS = {"published": "Published", "on request": "On request", "none": "Not kept"}
-_HOW_OPTIONS = {"published": "published here", "on request": "ask the author", "none": "not kept"}
+_OPTIONS = {
+    "published": "Published",
+    "partial": "Partially published: ask the author for the rest",
+    "on request": "On request",
+    "none": "Not kept",
+}
+_HOW_OPTIONS = {
+    "published": "published here",
+    "partial": "in part here; ask the author for the rest",
+    "on request": "ask the author",
+    "none": "not kept",
+}
 
 
 def _what_ran(r: PublishedRequirement) -> str | None:

@@ -346,10 +346,24 @@ def _steering(
                 except (SoftwareError, OSError) as exc:
                     problems.append(f"{file['path']} not kept: {exc}")
             group = "changed" if original is not None else "added"
-            result[group][name] = {"sha256": sha256, "kept": kept, **_nature(str(file["path"]))}
+            result[group][name] = {
+                "sha256": sha256,
+                "kept": kept,
+                **_nature(str(file["path"])),
+                "outside": _outside(root, str(file["path"])),
+            }
         result["removed"] = sorted(theirs)
         found.append(result)
     return found
+
+
+def _outside(root: str, path: str) -> str | None:
+    """Where the file ``path`` of the job directory ``root`` really is, every link followed, if
+    that is out of the directory and not on the stack, which is public; ``None`` otherwise."""
+    real = os.path.realpath(path)
+    if real.startswith("/cvmfs/") or real.startswith(f"{os.path.realpath(root)}/"):
+        return None
+    return real
 
 
 def _nature(path: str) -> dict[str, object]:

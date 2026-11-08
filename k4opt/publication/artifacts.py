@@ -161,6 +161,8 @@ class Piece:
     def matches(self, name: str) -> bool:
         """Whether ``name`` names it: its owner, its path, its label, its own file name, where it
         was read, or the id of what it answers (``input:2``)."""
+        if not name.strip():  # an input has no owner: no name is no selection of every input
+            return False
         return name in (
             self.owner,
             self.name,
@@ -169,6 +171,12 @@ class Piece:
             self.place,
             *self.requirements,
         )
+
+
+def _refuse_empty(names: Iterable[str]) -> None:
+    """A script whose variable is unset passes an empty name: that must select nothing."""
+    if any(not name.strip() for name in names):
+        raise PublicationError("an empty name names no file: check what was passed")
 
 
 def _named(pieces: Iterable[Piece], name: str) -> list[Piece]:
@@ -288,6 +296,12 @@ class Offer:
     snapshot: str = ""
     """The SHA-256 of that study's snapshot when it was reviewed."""
 
+    @property
+    def everything(self) -> tuple[Piece, ...]:
+        """All it knows of what could be published, whatever became of each."""
+        held = (h.piece for h in self.held)
+        return (*self.code, *self.inputs, *self.large, *self.excluded, *held)
+
     def release(self, *, code: bool = False, inputs: bool | Collection[str] = False) -> Release:
         """What the author approved: all of ``code`` or none, and of ``inputs`` all (``True``), none
         or the ones named. Raises :class:`PublicationError` if a scan found a secret, or a name
@@ -300,6 +314,8 @@ class Offer:
         large = [p for p in self.large if self.include_large]
         all_inputs = [*self.inputs, *(p for p in large if p.group == "inputs")]
         chosen: list[Piece]
+        if not isinstance(inputs, bool):
+            _refuse_empty(inputs)
         if isinstance(inputs, bool):
             chosen = all_inputs if inputs else []
         else:
@@ -338,6 +354,7 @@ def offer(
     never opts in code; ``exclude`` what to leave out, ``include_large`` publishes past the budget.
     Raises :class:`PublicationError` for a name that names nothing: a slip must not publish a file
     its author meant to leave out."""
+    _refuse_empty((*include, *include_inputs, *exclude))
     snapshot = hashlib.sha256(results.to_json().encode()).hexdigest()
     if results.directory is None:
         return Offer(None, study=results.id, snapshot=snapshot)
@@ -653,7 +670,7 @@ def _from_steering(
         data = _kept(store, file.get("kept"))
         if data is None or str(name).endswith(".pyc") or "__pycache__/" in str(name):
             continue  # made again by whoever runs it
-        if _leaves(str(name), file.get("link")):  # another file's bytes, not this directory's
+        if _leaves(str(name), file):  # another file's bytes, not this directory's
             shown = os.path.basename(str(name))
             piece = Piece(
                 "inputs",
@@ -662,7 +679,7 @@ def _from_steering(
                 data,
                 (requirement.id,),
                 requirement.used_by,
-                place=str(file["link"]),
+                place=str(file.get("outside") or file.get("link")),
             )
             why = "a link out of its job directory"
             held.append(Held("inputs", "", shown, why, requirement.id, True, piece))
@@ -686,9 +703,12 @@ def _from_steering(
         )
 
 
-def _leaves(name: str, link: object) -> bool:
-    """Whether the link ``link`` at ``name`` of a job directory leads out of it, other than to the
-    stack, which is public."""
+def _leaves(name: str, file: Mapping[str, Any]) -> bool:
+    """Whether the file ``name`` of a job directory is really out of it, other than on the stack,
+    which is public: by what the study saw every link lead to, and in any case by its own link."""
+    if file.get("outside"):
+        return True
+    link = file.get("link")
     if not isinstance(link, str) or link.startswith("/cvmfs/"):
         return False
     return os.path.isabs(link) or os.path.normpath(
@@ -706,7 +726,7 @@ def _manifest(entry: Mapping[str, Any], files: Mapping[str, Any]) -> bytes | Non
         for name, file in described.items()
         if isinstance(file.get("link"), str)
         and not os.path.isabs(file["link"])
-        and not _leaves(name, file["link"])
+        and not _leaves(name, file)
     }
     document = {
         "package": entry.get("package"),
@@ -799,20 +819,49 @@ _NOTES = (
 """The notes of a requirement that hold no local path; any other is not published."""
 
 
+def still_public(
+    release: Release, published: Iterable[tuple[PublishedArtifact, bytes]]
+) -> tuple[list[PublishedArtifact], frozenset[Piece]]:
+    """What of ``published`` (files an earlier publication holds, with their bytes) is still of this
+    study though ``release`` did not approve it: those files, answering what they answer now, and
+    the pieces they hold. A publication is never taken back: what it holds stays readable, so it
+    must not be said to be private, however the author answers this time."""
+    waiting = [piece for piece in release.offer.everything if piece not in release.pieces]
+    kept: list[PublishedArtifact] = []
+    pieces: set[Piece] = set()
+    for artifact, data in published:
+        same = [piece for piece in waiting if _holds(artifact, data, piece)]
+        if same:
+            pieces.update(same)
+            needs = tuple(dict.fromkeys(r for piece in same for r in piece.requirements))
+            kept.append(replace(artifact, requirements=needs))
+    return kept, frozenset(pieces)
+
+
+def _holds(artifact: PublishedArtifact, data: bytes, piece: Piece) -> bool:
+    if artifact.owner != piece.owner or artifact.kind != ("patch" if piece.is_patch else "file"):
+        return False
+    if piece.is_patch:
+        return piece.data in data
+    return (artifact.name, data) == (piece.name, piece.data)
+
+
 def public_form(
     results: StudyResults,
     release: Release,
     snapshot: str,
     first: tuple[str, str] | None,
     artifacts: Sequence[PublishedArtifact],
+    earlier: Collection[Piece] = (),
 ) -> SoftwareSheet:
     """The sheet of ``results`` in the state of ``snapshot`` (a SHA-256): the public form of its
     requirements as checked just now, with what ``release`` approved. ``first`` is the time and
-    status of the first publication of this snapshot, if it was published before."""
+    status of the first publication of this snapshot, if it was published before; ``earlier`` the
+    pieces an earlier publication already made public (:func:`still_public`)."""
     readiness = release.offer.readiness
     assert readiness is not None
-    access = _access(readiness, release)
-    approved = {piece.label for piece in release.pieces}
+    access = _access(readiness, release, earlier)
+    approved = {piece.label: piece for piece in (*release.pieces, *earlier)}
     public = tuple(_requirement(r, access[r.id], approved) for r in readiness.requirements)
     status = _status(readiness, access)
     return SoftwareSheet(
@@ -825,7 +874,9 @@ def public_form(
         gaps=readiness.public_gaps,
         altered=readiness.altered,
         not_kept=len(readiness.problems),
-        on_request=tuple(sorted({piece.label for piece in release.offer.excluded})),
+        on_request=tuple(
+            sorted({piece.label for piece in release.offer.excluded if piece not in earlier})
+        ),
         requirements=public,
         artifacts=tuple(artifacts),
     )
@@ -841,16 +892,18 @@ def _status(readiness: Readiness, access: Mapping[str, Access]) -> str:
     return NEEDS_ACCESS if status.startswith(ALL_AVAILABLE) else f"{status} · needs access"
 
 
-def _access(readiness: Readiness, release: Release) -> dict[str, Access]:
+def _access(
+    readiness: Readiness, release: Release, earlier: Collection[Piece]
+) -> dict[str, Access]:
     offer_ = release.offer
-    published = {r for piece in release.pieces for r in piece.requirements}
+    published = {r for piece in (*release.pieces, *earlier) for r in piece.requirements}
     withheld = {
         r
         for piece in [*offer_.code, *offer_.inputs, *offer_.large, *offer_.excluded]
-        if piece not in release.pieces
+        if piece not in release.pieces and piece not in earlier
         for r in piece.requirements
     }
-    withheld |= {h.requirement for h in offer_.held if h.needed}
+    withheld |= {h.requirement for h in offer_.held if h.needed and h.piece not in earlier}
     found: dict[str, Access] = {}
     for r in readiness.requirements:
         if r.id in withheld:
@@ -961,17 +1014,19 @@ def _ran(requirement: Requirement) -> Mapping[str, Json] | None:
     )
 
 
-def _configuration(requirement: Requirement, approved: Collection[str]) -> str:
-    """Whether a reader can have what a build was configured with: its source alone rebuilds it
-    with other options."""
+def _configuration(requirement: Requirement, approved: Mapping[str, Piece]) -> str:
+    """Whether a reader can have what a build was configured with, all of it or a part (its options
+    that hold a path or a credential are left out, and counted in its first line): its source alone
+    rebuilds it with other options."""
     entry = requirement.entry or {}
-    if f"{_public_name(entry)}/{OPTIONS}" in approved:
-        return "published"
+    options = approved.get(f"{_public_name(entry)}/{OPTIONS}")
+    if options is not None:
+        return "partial" if options.data.startswith(b"#") else "published"
     return "on request" if entry.get("configuration") else "none"
 
 
 def _requirement(
-    requirement: Requirement, access: Access, approved: Collection[str]
+    requirement: Requirement, access: Access, approved: Mapping[str, Piece]
 ) -> PublishedRequirement:
     facts = _facts(requirement)
     if requirement.kind == "package":

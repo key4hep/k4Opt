@@ -125,8 +125,9 @@ its measurements), then:
 
 Publishing the same state of a study again adds no snapshot and does not change when it was
 published: what a rerun needs is **checked again**, and the study's software sheet says when
-(a nightly may have been overwritten since). A later publication's sheet lists what *that*
-publication approved. A
+(a nightly may have been overwritten since). A sheet lists what this publication approved, and what
+an earlier one published that is still of the study, since a publication is never taken back:
+`k4opt publish` says which, and it stays *public* whatever is answered this time. A
 **later state** (more trials, or more of them ended) replaces the study's entry; its earlier
 snapshot stays, unnamed, so a reader that was reading it still reads it whole. An **earlier
 state** is refused: a publisher that read the study before another published it never takes the
@@ -156,14 +157,14 @@ What of it leaves the machine is decided here. Recording is automatic; **publish
 | a binary a checkout holds | held back unless named with `--include` |
 | a file under `~/.` a stage read, `.rootrc` among them | held back, and on request: `--include-inputs NAME` publishes it |
 | a venv's `pyvenv.cfg` | listed only: it says where an interpreter is, and the environment is a requirement of its own |
-| a job file that is a link out of its directory | data, not code: held back, and on request: `--include-inputs NAME` publishes it |
+| a job file that leads out of its directory, through any chain of links | data, not code: held back, and on request: `--include-inputs NAME` publishes it |
 | a build no stage read | not offered |
 
 A Python module counts as read when a stage read it from its `__pycache__`: with a valid cache,
 Python never opens the source. A file counts as read only where it was read: the same bytes elsewhere say nothing of this copy.
 A file deleted from a local directory is offered although nothing can read it, since its absence can
 change what an import finds. The options of a build's CMake cache whose names say a credential are
-left out with those that hold a path.
+left out with those that hold a path, and such a build's options then read *partially published*.
 With a changed job directory comes a `job-files.json`, listing the stack's files it removed, its
 executable files and its links within it. With a build comes its `cmake-options.txt`: the options of
 its CMake cache that hold no path, the others counted in the file. Never published: a library or
@@ -173,7 +174,7 @@ distributions (only how many).
 `--include` names code and `--include-inputs` inputs, each only of its own kind, so that naming an
 input never opts in a file of the code. A name for `--exclude`, `--include` or `--include-inputs` is a file's path, its own name, its
 requirement's id (`input:2`, shown beside inputs that share a name) or a package. One that names
-nothing is refused, and so is one that fits several files when approving (`--include`,
+nothing is refused, an empty one always (a script's unset variable selects nothing), and so is one that fits several files when approving (`--include`,
 `--include-inputs`), with how to name each: approving one file must never approve two. A release is
 bound to the study and the state it was reviewed in.
 

@@ -6,6 +6,8 @@ from __future__ import annotations
 import io
 import json
 import sys
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -722,7 +724,9 @@ def test_two_builds_of_one_name_are_two_patches() -> None:
 # --- what the second review of the publication found ---------------------------------------------
 
 
-def job_directory(tmp_path: Path) -> tuple[list[Piece], list[Any], Path]:
+def job_directory(
+    tmp_path: Path, links: Sequence[tuple[str, str]] = ()
+) -> tuple[list[Piece], list[Any], Path]:
     """The pieces of a real job directory, as a session keeps it: a changed file, a link within it
     and a link to a private file outside it."""
     import hashlib
@@ -738,11 +742,17 @@ def job_directory(tmp_path: Path) -> tuple[list[Piece], list[Any], Path]:
     (job / "Pandora.py").write_text("x = 1\n")
     (job / "inner.py").symlink_to("Pandora.py")
     (job / "calibration.json").symlink_to(private)
+    for name, target in links:
+        (job / name).symlink_to(target)
+
+    def digest(path: Path) -> str:
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:  # a broken link or a cycle
+            return "0" * 64
+
     inputs = {
-        f"samples.pi0.reco.directory/{path.name}": {
-            "path": str(path),
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        }
+        f"samples.pi0.reco.directory/{path.name}": {"path": str(path), "sha256": digest(path)}
         for path in job.iterdir()
     }
     store = Store(tmp_path / "kept")
@@ -916,3 +926,134 @@ def test_two_installations_of_one_package_leave_no_path_in_the_sheet(
         assert sheet is not None
         ids = sorted(r.id for r in sheet.requirements if r.label == "ddmarlinpandora")
         assert ids == ["package:ddmarlinpandora:1", "package:ddmarlinpandora:2"]
+
+
+# --- what the third review of the publication found ----------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["", "   "])
+def test_an_empty_name_selects_nothing_and_is_refused(
+    made: tuple[Path, StudyResults], name: str
+) -> None:
+    for chosen in ({"include": [name]}, {"include_inputs": [name]}, {"exclude": [name]}):
+        with pytest.raises(PublicationError, match="empty name"):
+            offer(made[1], **chosen)  # type: ignore[arg-type]
+    with pytest.raises(PublicationError, match="empty name"):
+        offer(made[1]).release(inputs=[name])
+    assert not Piece("inputs", "", "a.json", b"x", ("input:1",), ()).matches(name)
+
+
+def test_a_script_with_an_unset_variable_publishes_no_input(
+    made: tuple[Path, StudyResults], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = made
+    arguments = ("--yes", "--include-inputs", "")
+    code, _, err = run(root / "study", tmp_path / "pub", None, *arguments, monkeypatch=monkeypatch)
+    assert code == 1 and "empty name" in err and not (tmp_path / "pub").exists()
+
+
+def test_a_chain_of_links_out_of_a_job_directory_is_data(tmp_path: Path) -> None:
+    pieces, held, private = job_directory(tmp_path, [("chain.json", "calibration.json")])
+    assert not any(b"1.10" in p.data for p in pieces)
+    out = {h.piece.place for h in held if h.name in ("chain.json", "calibration.json")}
+    assert out == {str(private)}
+    manifest = next(p for p in pieces if p.name == "job-files.json")
+    assert b"chain.json" not in manifest.data and b"calibration.json" not in manifest.data
+
+
+def test_a_link_to_a_directory_outside_leaves_it_too(tmp_path: Path) -> None:
+    from k4opt.software.keep import _outside
+
+    (tmp_path / "job").mkdir()
+    (tmp_path / "away").mkdir()
+    (tmp_path / "away" / "x.py").write_text("x\n")
+    (tmp_path / "job" / "sub").symlink_to(tmp_path / "away")
+    root = str(tmp_path / "job")
+    assert _outside(root, f"{root}/sub/x.py") == str(tmp_path / "away" / "x.py")
+    (tmp_path / "job" / "own.py").write_text("x\n")
+    assert _outside(root, f"{root}/own.py") is None
+
+
+def test_broken_links_and_cycles_publish_nothing_and_stop_nothing(tmp_path: Path) -> None:
+    links = [("broken", "nowhere"), ("loop-a", "loop-b"), ("loop-b", "loop-a")]
+    pieces, held, _ = job_directory(tmp_path, links)
+    named = {p.name for p in pieces} | {h.name for h in held}
+    assert not named & {"broken", "loop-a", "loop-b"}
+
+
+def test_what_was_published_before_stays_public_in_a_later_sheet(
+    made: tuple[Path, StudyResults], tmp_path: Path
+) -> None:
+    root, results = made
+    found = offer(results)
+    first = publish(results, tmp_path / "pub", release=found.release(code=True, inputs=True))
+    said: list[str] = []
+    later = publish(results, tmp_path / "pub", warn=said.append)  # approving nothing this time
+    assert later.snapshot == first.snapshot
+    publication = open_publication(tmp_path / "pub")
+    sheet, earlier = publication.software(later), publication.software(first)
+    assert sheet is not None and earlier is not None
+    assert {a.path for a in sheet.artifacts} == {a.path for a in earlier.artifacts}
+    by = {r.label: r.access for r in sheet.requirements}
+    assert by["ddmarlinpandora"] == "public" and by["ecal_scale.json"] == "public"
+    assert "needs access" not in sheet.status
+    assert any("ecal_scale.json" in line and "stays" in line for line in said)
+    package = next(r for r in sheet.requirements if r.label == "ddmarlinpandora")
+    assert package.facts["configuration"] in ("published", "partial")
+
+
+def test_an_excluded_file_that_was_published_before_is_not_said_to_be_private(
+    made: tuple[Path, StudyResults], tmp_path: Path
+) -> None:
+    _, results = made
+    publish(results, tmp_path / "pub", release=offer(results).release(inputs=True))
+    found = offer(results, exclude=["ecal_scale.json"])
+    entry = publish(results, tmp_path / "pub", release=found.release())
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None and sheet.on_request == ()
+    assert {r.label: r.access for r in sheet.requirements}["ecal_scale.json"] == "public"
+
+
+def test_a_later_publication_trusts_only_an_earlier_sheet_that_is_intact(
+    made: tuple[Path, StudyResults], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.software import readiness
+
+    _, results = made
+    monkeypatch.setattr(readiness, "_now", lambda: "2026-11-01T10:00:00+00:00")
+    first = publish(results, tmp_path / "pub")
+    assert first.software is not None
+    path = tmp_path / "pub" / first.software.path
+    path.write_text(path.read_text().replace("2026-11-01T10", "2020-01-01T10"))  # well formed
+    monkeypatch.setattr(readiness, "_now", lambda: "2026-11-20T10:00:00+00:00")
+    later = publish(results, tmp_path / "pub")
+    sheet = open_publication(tmp_path / "pub").software(later)
+    assert sheet is not None and sheet.first_checked.startswith("2026-11-20")
+
+
+def test_options_left_out_make_a_builds_configuration_partial() -> None:
+    from k4opt.publication.artifacts import _options
+
+    whole = _options(b"CMAKE_BUILD_TYPE:STRING=Release\n")
+    assert not whole.startswith(b"#")
+    part = _options(b"CMAKE_BUILD_TYPE:STRING=Release\nDATA:STRING=/opt/private/geometry\n")
+    assert part.startswith(b"# 1 more option")
+
+
+def test_a_build_with_options_left_out_says_so_in_its_sheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    study = local_study(tmp_path, monkeypatch)
+    results = load_study(study)
+    release = offer(results).release(code=True)
+    configured = [p for p in release.pieces if p.name == "cmake-options.txt"]
+    partial = replace(configured[0], data=b"# 1 more options hold local paths\nA=1\n")
+    pieces = tuple(partial if p is configured[0] else p for p in release.pieces)
+    entry = publish(results, tmp_path / "pub", release=replace(release, pieces=pieces))
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None
+    package = next(r for r in sheet.requirements if r.label == "ddmarlinpandora")
+    assert package.facts["configuration"] == "partial"

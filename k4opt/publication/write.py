@@ -22,7 +22,7 @@ from pathlib import Path
 
 from k4opt import jsonio
 from k4opt.optimization import StudyResults
-from k4opt.publication.artifacts import Release, bundled, offer, public_form
+from k4opt.publication.artifacts import Release, bundled, offer, public_form, still_public
 from k4opt.publication.catalog import (
     CATALOG_NAME,
     MAX_SHEET_BYTES,
@@ -103,7 +103,15 @@ def publish(
     with _locked(directory):
         catalog = _read_catalog(directory)
         current = catalog.study(results.id)
-        software = _sheet(directory, results, approved, sha256, current, [a for a, _ in artifacts])
+        software = _sheet(
+            directory,
+            results,
+            approved,
+            sha256,
+            current,
+            [a for a, _ in artifacts],
+            warn or (lambda message: None),
+        )
         if current is not None and current.snapshot == snapshot:
             if current.software == software:
                 return current
@@ -133,6 +141,31 @@ def _replace_catalog(directory: Path, catalog: Catalog) -> None:
         raise PublicationError(f"cannot write {directory / CATALOG_NAME}: {exc}") from exc
 
 
+def _verified(path: Path, held: Snapshot | PublishedArtifact) -> bytes | None:
+    """The bytes at ``path``, if they are the size and SHA-256 that name them."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if (len(data), hashlib.sha256(data).hexdigest()) != (held.bytes, held.sha256):
+        return None
+    return data
+
+
+def _previous(directory: Path, study: str, current: CatalogEntry | None) -> SoftwareSheet | None:
+    """The sheet the catalog names for ``study``, ``None`` if it has none or it is not intact."""
+    if current is None or current.software is None:
+        return None
+    path = directory / current.software.path
+    data = _verified(path, current.software)
+    if data is None:
+        return None
+    try:
+        return SoftwareSheet.from_json(data, study, current.snapshot.sha256, str(path))
+    except PublicationError:
+        return None
+
+
 def _sheet(
     directory: Path,
     results: StudyResults,
@@ -140,16 +173,29 @@ def _sheet(
     snapshot: str,
     current: CatalogEntry | None,
     artifacts: list[PublishedArtifact],
+    warn: Callable[[str], None],
 ) -> Snapshot | None:
     """Write the software sheet of ``results``, of the snapshot ``snapshot`` and what ``release``
-    approved, keeping from the sheet ``current`` names of the same snapshot when it was first
-    published and what it was found then; where it is. ``None`` for a study with no directory."""
+    approved, keeping from the intact sheet ``current`` names when this snapshot was first published
+    and what was found then, and what it published that stays readable; where it is. ``None`` for a
+    study with no directory."""
     if release.offer.readiness is None:
         return None
+    previous = _previous(directory, results.id, current)
     first = None
-    if current is not None and current.software and current.snapshot.sha256 == snapshot:
-        first = _first(directory, results.id, snapshot, current)
-    text = public_form(results, release, snapshot, first, artifacts).to_json()
+    if previous is not None and previous.snapshot == snapshot:
+        first = previous.first_checked, previous.first_status
+    held = {artifact.path for artifact in artifacts}
+    published = [
+        (artifact, content)
+        for artifact in (previous.artifacts if previous is not None else ())
+        if artifact.path not in held
+        and (content := _verified(directory / artifact.path, artifact)) is not None
+    ]
+    kept, earlier = still_public(release, published)
+    for label in sorted({piece.label for piece in earlier}):
+        warn(f"{label} was published before and stays readable: a publication is never taken back")
+    text = public_form(results, release, snapshot, first, [*artifacts, *kept], earlier).to_json()
     data = text.encode()
     if len(data) > MAX_SHEET_BYTES:  # a reader refuses it: none is written
         raise PublicationError(
@@ -157,26 +203,9 @@ def _sheet(
             f"the {MAX_SHEET_BYTES} a publication holds"
         )
     digest = hashlib.sha256(data).hexdigest()
-    sheet = Snapshot(sheet_path(results.id, digest), digest, len(data))
-    _write_once(directory / sheet.path, data)
-    return sheet
-
-
-def _first(
-    directory: Path, study: str, snapshot: str, current: CatalogEntry
-) -> tuple[str, str] | None:
-    """When the sheet ``current`` names says this snapshot was first published, and its status."""
-    assert current.software is not None
-    try:
-        previous = SoftwareSheet.from_json(
-            (directory / current.software.path).read_bytes(),
-            study,
-            snapshot,
-            str(directory / current.software.path),
-        )
-    except (OSError, PublicationError):
-        return None  # a missing or broken earlier sheet: the check made now is the first known
-    return previous.first_checked, previous.first_status
+    written = Snapshot(sheet_path(results.id, digest), digest, len(data))
+    _write_once(directory / written.path, data)
+    return written
 
 
 def local_paths(results: StudyResults) -> list[tuple[str, str]]:
