@@ -39,15 +39,16 @@ class Terminal(io.StringIO):
 
 @pytest.fixture(scope="module")
 def made(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, StudyResults]:
-    """One study with local work, for the tests that only read it."""
-    monkeypatch = pytest.MonkeyPatch()
+    """One study with local work, for the tests that only read it; what it was run with is undone
+    at once, so that no later test starts in front of this study's local build."""
     from tests.support.studies import mini_environment
 
+    monkeypatch = pytest.MonkeyPatch()
     mini_environment(monkeypatch)
     root = tmp_path_factory.mktemp("local")
     try:
         study = local_study(root, monkeypatch)
-        yield root, load_study(study)  # type: ignore[misc]
+        return root, load_study(study)
     finally:
         monkeypatch.undo()
 
@@ -705,3 +706,14 @@ def test_external_geometry_files_of_one_name_stay_apart(tmp_path: Path) -> None:
             f"externals/{second[:8]}/constants.xml",
         ]
     )
+
+
+def test_two_builds_of_one_name_are_two_patches() -> None:
+    from k4opt.publication.artifacts import bundled
+
+    pieces = [
+        Piece("code", "pkg", "a.cc", f"diff {n}\n".encode(), (f"package:{n}",), (), base="abc")
+        for n in (1, 2)
+    ]
+    study = "12345678-1234-4234-8234-123456789012"
+    assert sorted(data for _, data in bundled(study, pieces)) == [b"diff 1\n", b"diff 2\n"]

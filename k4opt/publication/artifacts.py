@@ -957,12 +957,12 @@ def _requirement(
 def bundled(study: str, pieces: Iterable[Piece]) -> list[tuple[PublishedArtifact, bytes]]:
     """``pieces`` as the files published: a patch per owner and base, of the files approved, and
     each other file on its own."""
-    patches: dict[tuple[str, str], list[Piece]] = {}
+    patches: dict[tuple[str, str, str], list[Piece]] = {}  # two builds may share a name and base
     found: list[tuple[PublishedArtifact, bytes]] = []
     for piece in pieces:
         if piece.is_patch:
             assert piece.base is not None
-            patches.setdefault((piece.owner, piece.base), []).append(piece)
+            patches.setdefault((piece.owner, piece.base, piece.requirements[0]), []).append(piece)
         else:
             one: tuple[PublishedFile, ...] = (
                 PublishedFile(piece.name, piece.added, piece.removed),
@@ -981,7 +981,7 @@ def bundled(study: str, pieces: Iterable[Piece]) -> list[tuple[PublishedArtifact
                     one,
                 )
             )
-    for (owner, base), part in patches.items():
+    for (owner, base, _), part in patches.items():
         data = b"".join(p.data for p in part)
         files = tuple(PublishedFile(p.name, p.added, p.removed) for p in part)
         stages = tuple(sorted({s for p in part for s in p.stages}))
