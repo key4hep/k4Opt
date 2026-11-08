@@ -485,9 +485,15 @@ def requirements(
     base = _base(document, at, sorted(stages_seen), sorted(trials_seen))
     found.append(base)
     names = Counter(_name(origin) for origin in latest.values())
+    seen: Counter[str] = Counter()
     for index, (prefix, origin) in enumerate(latest.items(), start=1):
-        name = _name(origin) if names[_name(origin)] == 1 else f"{_name(origin)} at {prefix}"
-        found.append(_origin(origin, name, index, store, at, used_local, ran, ours, known, moved))
+        name, key = _name(origin), _name(origin)
+        if names[name] > 1:  # the author is told where each is; its id, which is public, is not
+            seen[name] += 1
+            name, key = f"{name} at {prefix}", f"{name}:{seen[name]}"
+        found.append(
+            _origin(origin, name, key, index, store, at, used_local, ran, ours, known, moved)
+        )
     found += [_steering(entry, store, at, base) for entry in document.get("steering") or []]
     if isinstance(document.get("geometry"), Mapping):
         found.append(_geometry(document["geometry"], store, at, base))
@@ -670,6 +676,7 @@ def _kept_files(files: Mapping[str, Any], store: Store, at: str) -> list[Check]:
 def _origin(
     origin: Mapping[str, Any],
     name: str,
+    key: str,
     index: int,
     store: Store,
     at: str,
@@ -750,7 +757,7 @@ def _origin(
             f"({origin.get('link')} link)"
         )
         return Requirement(
-            f"package:{name}",
+            f"package:{key}",
             "package",
             name,
             identified,
@@ -786,7 +793,7 @@ def _origin(
         prefix = str(origin.get("prefix"))
         stages = sorted({*used, *(s for b in loose for s in _executed(prefix, b, ran))})
         return Requirement(
-            f"package:{name}",
+            f"package:{key}",
             "package",
             prefix,
             f"{len(loose)} binaries of no known build",

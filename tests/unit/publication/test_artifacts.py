@@ -886,3 +886,33 @@ def test_a_time_that_is_no_time_refuses_the_sheet(
     sheet[field] = "yesterday"
     with pytest.raises(PublicationError, match="no time"):
         SoftwareSheet.from_json(json.dumps(sheet), entry.id, entry.snapshot.sha256, "here")
+
+
+def test_two_installations_of_one_package_leave_no_path_in_the_sheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from tests.support.checkouts import build, checkout
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    other = build(checkout(tmp_path / "other"), build_id="aabbccdd")
+    monkeypatch.setenv(
+        "LD_LIBRARY_PATH", f"{other / 'lib'}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+    )
+    study = local_study(tmp_path, monkeypatch)
+    read_by_stage(study, other / "lib" / "libDDMarlinPandora.so.0.14.0")
+    results = load_study(study)
+    for root, release in (
+        (tmp_path / "public", None),
+        (tmp_path / "approved", offer(results).release(code=True, inputs=True)),
+    ):
+        entry = publish(results, root, release=release)
+        assert entry.software is not None
+        text = (root / entry.software.path).read_text()
+        assert str(tmp_path) not in text
+        sheet = open_publication(root).software(entry)
+        assert sheet is not None
+        ids = sorted(r.id for r in sheet.requirements if r.label == "ddmarlinpandora")
+        assert ids == ["package:ddmarlinpandora:1", "package:ddmarlinpandora:2"]
