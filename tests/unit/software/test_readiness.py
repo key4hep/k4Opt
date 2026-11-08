@@ -715,3 +715,19 @@ def test_a_compiled_input_gone_blocks_a_rerun(tmp_path: Path, stack: Path) -> No
     assert requirements(study, IDENTITY, [summary()]).status.startswith(ALL_AVAILABLE)
     helper.unlink()
     assert requirements(study, IDENTITY, [summary()]).status == BLOCKED
+
+
+def test_a_candidates_geometry_file_the_index_lacks_leaves_a_gap(
+    tmp_path: Path, stack: Path
+) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    root = tmp_path / "mine"
+    record = summary()
+    record["geometry"] = {
+        "status": "done",
+        "source_root": str(root),
+        "candidate_files": {"alternative.xml": "a" * 64},
+    }
+    readiness = requirements(study, IDENTITY, [record])
+    assert readiness.status == INCOMPLETE and str(root / "alternative.xml") in readiness.gaps[0]

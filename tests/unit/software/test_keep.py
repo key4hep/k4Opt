@@ -441,30 +441,82 @@ def test_the_other_names_of_a_geometrys_files_are_kept(tmp_path: Path) -> None:
     }
 
 
-def test_what_a_candidates_geometry_reaches_beyond_the_kept_is_an_input(tmp_path: Path) -> None:
+def candidate(root: Path, *files: Path, **digests: str) -> dict[str, Any]:
+    """The record of a candidate whose geometry reached ``files`` below ``root`` beyond the rest,
+    each with the SHA-256 it had then (``digests``, by name; what it holds now otherwise)."""
+    added = {
+        file.name: digests.get(file.stem, hashlib.sha256(file.read_bytes()).hexdigest())
+        for file in files
+    }
+    return {"geometry": {"status": "done", "source_root": str(root), "candidate_files": added}}
+
+
+def test_what_a_candidates_geometry_reached_is_an_input(tmp_path: Path) -> None:
     root = tmp_path / "mine"
     root.mkdir()
-    (root / "main.xml").write_text("<lccdd/>")
-    (root / "alternative.xml").write_text("<lccdd/>")
-    run = tmp_path / "run"
-    (run / "geometry").mkdir(parents=True)
-    manifest = {"reachable_files": ["main.xml", "alternative.xml"], "resources": []}
-    (run / "geometry" / "manifest.json").write_text(json.dumps(manifest))
+    file = root / "alternative.xml"
+    file.write_text("<lccdd/>")
     other = tmp_path / "other.stl"
-    summary = {
-        "geometry": {
-            "status": "done",
-            "source_root": str(root),
-            "manifest": "geometry/manifest.json",
-            "candidate_externals": {"${CAD}/o.stl": {"path": str(other), "sha256": "a" * 64}},
-        }
+    summary = candidate(root, file)
+    summary["geometry"]["candidate_externals"] = {
+        "${CAD}/o.stl": {"path": str(other), "sha256": "a" * 64}
     }
-    known = {"main.xml"}
-    found = keep.candidate_geometry(run, summary, known)
     digest = hashlib.sha256(b"<lccdd/>").hexdigest()
-    assert (str(root / "alternative.xml"), f"sha256:{digest}", ["geometry"], "geometry") in found
+    found = keep.candidate_geometry(summary)
+    assert (str(file), f"sha256:{digest}", ["geometry"], "geometry") in found
     assert (str(other), "sha256:" + "a" * 64, ["geometry"], "geometry") in found
-    assert keep.candidate_geometry(run, summary, known) == []  # once
+
+
+def test_each_version_of_a_candidates_file_is_its_own_input(tmp_path: Path) -> None:
+    root = tmp_path / "mine"
+    root.mkdir()
+    file = root / "alternative.xml"
+    for number, text in enumerate(("<lccdd/>", "<lccdd> </lccdd>")):
+        file.write_text(text)  # edited while the study runs
+        found = keep.candidate_geometry(candidate(root, file))
+        keep_inputs(tmp_path / "kept", found, trial=f"trial-{number}")
+    entries = keep.kept_inputs(tmp_path / "kept")
+    assert sorted(e["trials"] for e in entries) == [["trial-0"], ["trial-1"]]
+
+
+def test_a_candidates_file_edited_after_it_was_copied_is_said(tmp_path: Path) -> None:
+    root = tmp_path / "mine"
+    root.mkdir()
+    file = root / "alternative.xml"
+    file.write_text("edited after the candidate's geometry was made")
+    then = hashlib.sha256(b"what the candidate used").hexdigest()
+    found = keep.candidate_geometry(candidate(root, file, alternative=then))
+    (problem,) = keep_inputs(tmp_path / "kept", found)
+    assert "no longer the file" in problem
+    (entry,) = keep.kept_inputs(tmp_path / "kept")
+    assert entry["identity"] == f"sha256:{then}" and entry["kept"] is None
+
+
+def test_a_copy_that_failed_for_now_is_tried_again(tmp_path: Path) -> None:
+    file = tmp_path / "calibration.json"
+    digest = hashlib.sha256(b"1").hexdigest()
+    found = [(str(file), f"sha256:{digest}", ["s/r"], "observed")]
+    assert len(keep_inputs(tmp_path / "kept", found)) == 1  # not there, for now
+    file.write_text("1")
+    assert keep_inputs(tmp_path / "kept", found) == []
+    (entry,) = keep.kept_inputs(tmp_path / "kept")
+    assert Store(tmp_path / "kept").get(entry["kept"]) == b"1"
+    assert entry["why"] is None and entry["retry"] is False
+
+
+def test_a_copy_that_cannot_succeed_is_not_tried_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file = tmp_path / "calibration.json"
+    file.write_text("other bytes")
+    found = [(str(file), "sha256:" + "a" * 64, ["s/r"], "observed")]
+    keep_inputs(tmp_path / "kept", found)
+
+    def unexpected(*_: object) -> str:
+        raise AssertionError("read again")
+
+    monkeypatch.setattr(Store, "put_file", unexpected)
+    keep_inputs(tmp_path / "kept", found)
 
 
 def test_a_compiled_input_is_identified_and_not_kept(tmp_path: Path) -> None:

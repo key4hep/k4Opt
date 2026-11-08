@@ -210,7 +210,9 @@ goes on ([why only a warning](evaluation.md#collections)). Then, in order:
      the candidate set: its `parameter`, `target`, `file`, `locator`, `attribute`, `old_value` and
      `new_value`), the parameters that set it (`varies`), the path and SHA-256 of each file its external
      references read (`externals`) and of each file only this candidate's values name
-     (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), the time of the
+     (`candidate_externals`: a `ref` parameter choosing `${CAD}/other.stl`), the SHA-256 of each file
+     below the geometry's root that only those values reach, as it was copied (`candidate_files`),
+     the time of the
      whole evaluation, `run_dir`, where the run was made, and the environment (`observed`: the
      k4opt version, `k4opt_source` with the SHA-256 of k4opt's
      own Python files, taken before anything runs, and the commit and dirty flag of its git

@@ -587,6 +587,7 @@ _MADE = (
     "changes",
     "externals",
     "candidate_externals",
+    "candidate_files",
 )
 """What the record of a geometry that was made holds, of what it made and reads."""
 

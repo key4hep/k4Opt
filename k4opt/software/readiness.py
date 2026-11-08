@@ -42,6 +42,7 @@ from k4opt.software.keep import (
     USED,
     USED_SCHEMA,
     Store,
+    candidate_geometry,
     commitment,
     declared_inputs,
     kept_inputs,
@@ -373,6 +374,7 @@ def requirements(
     reused_from: dict[str, str] = {}  # stage: the run directory it reused an output of
     for trial, summary in found_records:
         trials_seen.add(trial)
+        expected.update((path, then) for path, then, _, _ in candidate_geometry(summary))
         for label, stage in _stages(summary):
             observed, gap = _evidence(label, stage, cache)
             if gap is not None and gap not in gaps:

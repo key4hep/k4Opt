@@ -30,7 +30,6 @@ class Keeper:
         self._warn = warn
         self._roots: list[str] = []
         self._snapshot: str | None = None  # the state of the software this session kept
-        self._geometry: set[str] = set()  # the files of the geometry kept so far
 
     def open(self, identity: Mapping[str, Any]) -> None:
         """Keep what a session with ``identity`` runs on (:func:`~k4opt.software.keep.take`)."""
@@ -42,7 +41,6 @@ class Keeper:
             self._warn(f"the study keeps nothing of what it runs with: {exc}")
             return
         self._snapshot = taken.path.name
-        self._geometry = set(taken.geometry)
         if os.path.realpath(self.directory).startswith("/afs/"):
             self._warn(
                 f"{self.directory} keeps private copies of local code and inputs; on AFS its "
@@ -67,12 +65,12 @@ class Keeper:
         except ValueError:
             where = str(run)
         try:
-            inputs += candidate_geometry(run, summary, self._geometry)
+            inputs += candidate_geometry(summary)
             problems = keep_inputs(self.directory, inputs, trial=where)
             footprints = recorded_footprints(summary)
             keep_used(self.directory, run, footprints, self._roots, where, self._snapshot)
-        except (SoftwareError, OSError, ValueError, KeyError) as exc:
-            problems = [f"{where}: {exc}"]
+        except (SoftwareError, OSError) as exc:
+            problems = [str(exc)]
         self._say(problems)
 
     def _say(self, problems: list[str]) -> None:

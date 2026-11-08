@@ -43,7 +43,6 @@ from typing import Any, Literal
 
 import k4opt
 from k4opt.geometry import GeometryError, GeometrySource
-from k4opt.hashing import sha256_of
 from k4opt.jsonio import PRIVATE, publish, replace
 from k4opt.software.errors import SoftwareError
 from k4opt.software.identity import Software, compared_variables
@@ -179,12 +178,11 @@ class Store:
 
 @dataclass(frozen=True, slots=True)
 class Taken:
-    """What :func:`take` kept: the file it wrote (or found, for a state kept before), what could
-    not be kept, and the files of the geometry it holds."""
+    """What :func:`take` kept: the file it wrote (or found, for a state kept before), and what
+    could not be kept."""
 
     path: Path
     problems: tuple[str, ...]
-    geometry: tuple[str, ...] = ()
 
 
 def take(
@@ -239,8 +237,7 @@ def take(
     path = directory / name
     with contextlib.suppress(FileExistsError):  # the same state, kept before
         publish(path, text, private=True)
-    files = (document["geometry"] or {}).get("files") or {}
-    return Taken(path, tuple(problems), tuple(files))
+    return Taken(path, tuple(problems))
 
 
 def _kept(store: Store, problems: list[str], what: str, data: bytes) -> str | None:
@@ -442,35 +439,19 @@ def _geometry(
     return found
 
 
-def candidate_geometry(
-    run: Path, summary: Mapping[str, Any], known: set[str]
-) -> list[tuple[str, str, Iterable[str], str]]:
-    """What the geometry of the candidate of the record ``summary`` (in ``run``) read beyond the
-    files of the geometry ``known`` (:attr:`Taken.geometry`, updated): a ``ref`` parameter can
-    reach other files. As inputs for :func:`keep_inputs`. Raises :class:`OSError` or
-    :class:`ValueError` if the candidate's manifest cannot be read."""
+def candidate_geometry(summary: Mapping[str, Any]) -> list[tuple[str, str, Iterable[str], str]]:
+    """What only the candidate of the record ``summary`` made its geometry read, as its record
+    says it was read: a ``ref`` parameter can reach other files. As inputs for
+    :func:`keep_inputs`."""
     geometry = summary.get("geometry")
     if not isinstance(geometry, Mapping) or geometry.get("status") != "done":
         return []
-    found: dict[str, object] = {
-        path: sha256
-        for path, sha256 in _externals(geometry.get("candidate_externals")).items()
-        if path not in known
-    }
-    root = geometry.get("source_root")
-    if isinstance(root, str) and _undeclared(root):
-        manifest = json.loads((run / str(geometry.get("manifest"))).read_text(encoding="utf-8"))
-        for name in (*manifest["reachable_files"], *manifest["resources"]):
-            if name not in known:
-                found[name] = sha256_of(os.path.join(root, name))
-    known.update(found)
+    found = _externals(geometry.get("candidate_externals"))
+    root, added = geometry.get("source_root"), geometry.get("candidate_files")
+    if isinstance(root, str) and _undeclared(root) and isinstance(added, Mapping):
+        found |= {os.path.join(root, str(name)): sha256 for name, sha256 in added.items()}
     return [
-        (
-            path if os.path.isabs(path) else os.path.join(str(root), path),
-            f"{_SHA256}{sha256}",
-            ["geometry"],
-            "geometry",
-        )
+        (path, f"{_SHA256}{sha256}", ["geometry"], "geometry")
         for path, sha256 in found.items()
         if isinstance(sha256, str)
     ]
@@ -551,6 +532,25 @@ def kept_inputs(directory: Path) -> list[dict[str, Any]]:
     return [dict(entry) for entry in inputs]
 
 
+def _copy(store: Store, path: str, sha256: str, entry: dict[str, Any]) -> str | None:
+    """Keep the input ``path`` of ``entry``, a compiled one by its identity alone; what could not
+    be kept. A later trial tries again (``retry``) after what can pass, a failure to read or
+    write, and not after what will not: too large, or no longer the file that was read."""
+    entry["retry"] = False
+    try:
+        entry["bytes"] = os.stat(path).st_size
+        if compiled(path):
+            entry["why"] = "compiled: identified, never kept"
+            return None
+        entry["kept"], entry["why"] = store.put_file(path, sha256), None
+        return None
+    except SoftwareError as exc:
+        entry["why"] = str(exc)
+    except OSError as exc:
+        entry["why"], entry["retry"] = str(exc), True
+    return f"{path} not kept: {entry['why']}"
+
+
 def _variable(path: str, variables: Mapping[str, str]) -> str | None:
     """A compared variable that names the file ``path``: as its value, or as an entry of a search
     path (``…PATH``) it lies in. Not ``HOME``, which every file of the home directory lies in."""
@@ -595,6 +595,9 @@ def keep_inputs(
             trials = sorted({*entry.get("trials", []), *([trial] if trial else [])})
             if (more, trials) != (entry.get("stages"), entry.get("trials")):
                 entry["stages"], entry["trials"], changed = more, trials, True
+            if entry.get("retry"):
+                _copy(store, path, identity.removeprefix(_SHA256), entry)
+                changed = changed or isinstance(entry["kept"], str)
             continue
         salt = secrets.token_hex(16)
         entry = {
@@ -609,19 +612,14 @@ def keep_inputs(
             "bytes": None,
             "kept": None,
             "why": None,
+            "retry": False,
         }
         if identity.startswith(_SHA256):
             sha256 = identity.removeprefix(_SHA256)
             entry["commitment"] = commitment(salt, sha256)
-            try:
-                entry["bytes"] = os.stat(path).st_size
-                if compiled(path):
-                    entry["why"] = "compiled: identified, never kept"
-                else:
-                    entry["kept"] = store.put_file(path, sha256)
-            except (SoftwareError, OSError) as exc:
-                entry["why"] = str(exc)
-                problems.append(f"{path} not kept: {exc}")
+            problem = _copy(store, path, sha256, entry)
+            if problem is not None:
+                problems.append(problem)
         elif identity.startswith("cvmfs:"):
             entry["why"] = "on CVMFS: identified by its content key, not copied"
         else:
