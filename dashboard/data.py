@@ -178,16 +178,20 @@ def study(where: str, entry: CatalogEntry) -> StudyResults:
 
 
 @st.cache_resource(max_entries=64, show_spinner=False)
-def _software(where: str, path: str, sha256: str, _entry: CatalogEntry) -> SoftwareSheet | None:
+def _software(
+    where: str, path: str, sha256: str, snapshot: str, _entry: CatalogEntry
+) -> SoftwareSheet | None:
     return open_publication(where).software(_entry)
 
 
 def software(where: str, entry: CatalogEntry) -> SoftwareSheet | None:
     """The software sheet of ``entry``, kept by its path and SHA-256 (its name is its content), or
-    ``None`` if it has none; raises what reading it raises, and nothing of a failed read is kept."""
+    ``None`` if it has none; raises what reading it raises, and nothing of a failed read is kept.
+    It is kept for the snapshot it was read for too: a sheet is checked to be of its snapshot."""
     if entry.software is None:
         return None
-    return _software(where, entry.software.path, entry.software.sha256, entry)
+    software, snapshot = entry.software, entry.snapshot.sha256
+    return _software(where, software.path, software.sha256, snapshot, entry)
 
 
 @st.cache_resource(max_entries=32, show_spinner=False)

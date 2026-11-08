@@ -1,18 +1,22 @@
 """What of a study may be published beside its snapshot, and its public form.
 
 The study keeps privately what a rerun needs (:mod:`k4opt.software.keep`). :func:`offer` says what
-of it is offered for publication: only what is known to have been built or used, never what merely
-lies beside it, in two groups the author answers for separately:
+of it is offered for publication, in two groups the author answers for separately:
 
-- **code** that ran: the edits of a build's checkout against the revision the nightly built, a local
-  directory's files a stage read, changed job files, the geometry's and the evaluators' own files;
-- **inputs** the stages read, up to :data:`BUDGET` in all.
+- **code** that ran, each a *unit* approved whole: a build (its checkout's whole kept state against
+  the revision the nightly built, untracked files included, its CMake options, what it installed
+  that a stage read), a directory of local code a stage read (its every kept file, or its
+  checkout's state), k4opt's own checkout, a changed job directory, the geometry, an evaluator;
+- **inputs** the stages read, each a unit of its own, up to :data:`BUDGET` in all.
 
-A checkout's patch is offered file by file (:func:`sections`). An untracked file is offered if a
-stage read it or the build installed it; a directory's edits if a stage read them. A binary
-(``GIT binary patch``) is held back unless named. Anything over the budget, or that a person left
-out by name (``exclude``), is not published, and said; :func:`scan` looks through what would be
-published for secrets, whose findings block publishing (:meth:`Offer.release`).
+Which files of a unit a rerun needs is not guessed: what is compiled is never read at run time, so a
+build's whole state is offered, and a unit is published whole or not at all. Leaving out one of its
+files (``exclude``) leaves out the unit, which is then on request. :func:`scan` looks through what
+would be published for secrets, whose findings block publishing (:meth:`Offer.release`).
+
+Every unit has an id that holds between publications (:class:`~k4opt.software.readiness.Requirement`
+ids; ``link:<stage>/<file>`` for a job file that leads out of its directory), so a later
+publication knows what an earlier one published by that id and the file's name, never by its bytes.
 
 An :class:`Offer` is what the author reviews; a :class:`Release`, made from it, is what was
 approved: :func:`~k4opt.publication.publish` publishes exactly that list.
@@ -30,7 +34,6 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
-import k4opt as k4opt_package
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.optimization import StudyResults
 from k4opt.publication.errors import PublicationError
@@ -53,11 +56,9 @@ from k4opt.software.readiness import (
     requirements,
 )
 
-_K4OPT = os.path.dirname(os.path.abspath(k4opt_package.__file__))
 BUDGET = 10_000_000
 """How many bytes of code, and of inputs, are published unless ``--include-large`` says more."""
 NEEDS_ACCESS = "Not rerun · needs access"
-_UNKNOWN = "not known to be used"
 _TOOLS = ("pyvenv.cfg",)
 """What says only where an environment's interpreter is: listed, and no rerun needs it from the
 author; the environment is a requirement of its own."""
@@ -130,9 +131,11 @@ def _unquote(text: bytes) -> bytes:
 
 @dataclass(frozen=True, slots=True)
 class Piece:
-    """What could be published: a file, or (``base`` not ``None``) one file's part of a patch, of
-    ``owner``, in a ``group``; which ``requirements`` it answers, the ``stages`` that used it, and
-    the lines a change adds and removes, if counted."""
+    """A file that could be published, of the unit its first requirement names (``unit``), in a
+    ``group``: ``owner`` is what the unit is called in public, ``requirements`` what it answers,
+    ``stages`` the stages that used it. A patch (``base`` not ``None``) is a checkout's whole kept
+    state against ``base``, its ``files`` each with the lines it adds and removes (``None`` for a
+    binary one); ``added`` and ``removed`` count the lines of a change, if counted."""
 
     group: Group
     owner: str
@@ -145,6 +148,16 @@ class Piece:
     removed: int | None = None
     place: str | None = None
     """Where an input was read: how its author can name it. Never published."""
+    files: tuple[tuple[str, int | None, int | None], ...] = ()
+
+    @property
+    def unit(self) -> str:
+        return self.requirements[0]
+
+    @property
+    def key(self) -> tuple[str, str]:
+        """What it is, between publications: its unit and its name."""
+        return self.unit, self.name
 
     @property
     def label(self) -> str:
@@ -159,10 +172,11 @@ class Piece:
         return self.base is not None
 
     def matches(self, name: str) -> bool:
-        """Whether ``name`` names it: its owner, its path, its label, its own file name, where it
-        was read, or the id of what it answers (``input:2``)."""
+        """Whether ``name`` names it: its owner, its name or label, its own file name, a file of
+        its patch, where it was read, or the id of what it answers (``input:7c1e09a2b4f3``)."""
         if not name.strip():  # an input has no owner: no name is no selection of every input
             return False
+        inside = [file for file, _, _ in self.files]
         return name in (
             self.owner,
             self.name,
@@ -170,6 +184,9 @@ class Piece:
             os.path.basename(self.name),
             self.place,
             *self.requirements,
+            *inside,
+            *(f"{self.owner}/{file}" for file in inside),
+            *(os.path.basename(file) for file in inside),
         )
 
 
@@ -179,23 +196,30 @@ def _refuse_empty(names: Iterable[str]) -> None:
         raise PublicationError("an empty name names no file: check what was passed")
 
 
-def _named(pieces: Iterable[Piece], name: str) -> list[Piece]:
-    """The ``pieces`` ``name`` names: one file, or all of one package by its name. A name that
-    fits several files is refused, with how to name each: approving one must never approve two."""
-    found = [piece for piece in pieces if piece.matches(name)]
-    by_id = all(name in p.requirements for p in found)
-    # a package by its name, if it is one installation: two of one name are told by their ids
-    one = all(name == p.owner for p in found) and len({p.requirements[0] for p in found}) == 1
-    if len(found) > 1 and not (by_id or one):
-        each = "; ".join(f"{p.requirements[0]}: {p.place or p.label}" for p in found)
-        raise PublicationError(f"{name} names {len(found)} files; name one of them: {each}")
+def _units(pieces: Iterable[Piece]) -> dict[str, list[Piece]]:
+    """``pieces`` by their unit, in their order."""
+    found: dict[str, list[Piece]] = {}
+    for piece in pieces:
+        found.setdefault(piece.unit, []).append(piece)
     return found
+
+
+def _named(pieces: Iterable[Piece], name: str) -> list[Piece]:
+    """The pieces of the unit ``name`` names. A name that fits several units is refused, with how
+    to name each: approving one must never approve two."""
+    units = {u: part for u, part in _units(pieces).items() if any(p.matches(name) for p in part)}
+    if len(units) > 1:
+        each = "; ".join(
+            f"{u}: {part[0].place or part[0].owner or part[0].name}" for u, part in units.items()
+        )
+        raise PublicationError(f"{name} names {len(units)} files; name one of them: {each}")
+    return [piece for part in units.values() for piece in part]
 
 
 @dataclass(frozen=True, slots=True)
 class Held:
-    """A part of what the study kept that is not offered unless named, and why (``why``);
-    ``needed`` if a rerun may need it. Naming it (``include``) offers it as ``piece``."""
+    """A unit of what the study kept that is not offered unless named, and why (``why``); ``needed``
+    if a rerun may need it. Naming it (``include``) offers its ``pieces``."""
 
     group: Group
     owner: str
@@ -203,11 +227,11 @@ class Held:
     why: str
     requirement: str
     needed: bool
-    piece: Piece
+    pieces: tuple[Piece, ...]
 
     @property
     def label(self) -> str:
-        return self.piece.label
+        return self.name
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,12 +275,22 @@ def scan(pieces: Iterable[Piece]) -> list[Finding]:
     """What of ``pieces`` looks like a secret, the first of each kind per file."""
     findings = []
     for piece in pieces:
-        if _SECRET_NAMES.search(piece.name):
-            findings.append(Finding(piece.label, 1, "a file of credentials, by its name"))
-        for what, pattern in _SECRETS:
-            match = pattern.search(piece.data)
-            if match is not None:
-                findings.append(Finding(piece.label, _line(piece, match.start()), what))
+        # a patch file by file, so that a finding names the file it is in
+        parts = (
+            [
+                replace(piece, name=f"{piece.owner}/{s.name}", owner="", data=s.data)
+                for s in sections(piece.data)
+            ]
+            if piece.is_patch
+            else [piece]
+        )
+        for part in parts:
+            if _SECRET_NAMES.search(part.name):
+                findings.append(Finding(part.label, 1, "a file of credentials, by its name"))
+            for what, pattern in _SECRETS:
+                match = pattern.search(part.data)
+                if match is not None:
+                    findings.append(Finding(part.label, _line(part, match.start()), what))
     return findings
 
 
@@ -281,9 +315,10 @@ def _line(piece: Piece, offset: int) -> int:
 class Offer:
     """What may be published of a study, for its author to review.
 
-    ``code`` and ``inputs`` are offered; ``large`` what passes the :data:`BUDGET` of its group
-    (published only ``include_large``); ``held`` what is listed and not offered; ``excluded`` what
-    the author left out by name; ``findings`` what :func:`scan` saw in what would be published. A
+    ``code`` and ``inputs`` are offered, unit by unit; ``large`` the units past the :data:`BUDGET`
+    of their group (published only ``include_large``); ``held`` the units listed and not offered;
+    ``excluded`` the units the author left out by name; ``findings`` what :func:`scan` saw in what
+    would be published; ``lost`` what should be kept and is not (the unit and the file's name). A
     study read from its JSON form offers nothing (``readiness`` is ``None``)."""
 
     readiness: Readiness | None
@@ -298,11 +333,12 @@ class Offer:
     """The id of the study it was made from."""
     snapshot: str = ""
     """The SHA-256 of that study's snapshot when it was reviewed."""
+    lost: tuple[tuple[str, str], ...] = ()
 
     @property
     def everything(self) -> tuple[Piece, ...]:
         """All it knows of what could be published, whatever became of each."""
-        held = (h.piece for h in self.held)
+        held = (p for h in self.held for p in h.pieces)
         return (*self.code, *self.inputs, *self.large, *self.excluded, *held)
 
     def release(self, *, code: bool = False, inputs: bool | Collection[str] = False) -> Release:
@@ -317,11 +353,10 @@ class Offer:
         large = [p for p in self.large if self.include_large]
         all_inputs = [*self.inputs, *(p for p in large if p.group == "inputs")]
         chosen: list[Piece]
-        if not isinstance(inputs, bool):
-            _refuse_empty(inputs)
         if isinstance(inputs, bool):
             chosen = all_inputs if inputs else []
         else:
+            _refuse_empty(inputs)
             named = {name: _named(all_inputs, name) for name in inputs}
             unknown = [name for name, found in named.items() if not found]
             if unknown:
@@ -329,7 +364,8 @@ class Offer:
                     f"no input offered is named {', '.join(unknown)}; a large one takes "
                     "--include-large as well"
                 )
-            chosen = [p for p in all_inputs if any(p in found for found in named.values())]
+            units = {p.unit for found in named.values() for p in found}
+            chosen = [p for p in all_inputs if p.unit in units]
         pieces = [*chosen]
         if code:
             pieces = [*self.code, *(p for p in large if p.group == "code"), *pieces]
@@ -352,26 +388,30 @@ def offer(
     exclude: Sequence[str] = (),
     include_large: bool = False,
 ) -> Offer:
-    """What of ``results`` may be published (see the module): ``include`` names the code otherwise
-    held back and ``include_inputs`` the inputs, each only of its own kind, so that naming an input
-    never opts in code; ``exclude`` what to leave out, ``include_large`` publishes past the budget.
-    Raises :class:`PublicationError` for a name that names nothing: a slip must not publish a file
-    its author meant to leave out."""
+    """What of ``results`` may be published (see the module): ``include`` names the code units
+    otherwise held back and ``include_inputs`` the inputs, each only of its own kind, so that
+    naming an input never opts in code; ``exclude`` leaves out the units it names a file of,
+    ``include_large`` publishes past the budget. Raises :class:`PublicationError` for a name that
+    names nothing: a slip must not publish a file its author meant to leave out."""
     _refuse_empty((*include, *include_inputs, *exclude))
     snapshot = hashlib.sha256(results.to_json().encode()).hexdigest()
     if results.directory is None:
         return Offer(None, study=results.id, snapshot=snapshot)
     readiness = requirements(results.directory, results.document)
-    pieces, held = _gathered(readiness)
-    of = {group: [h.piece for h in held if h.group == group] for group in ("code", "inputs")}
-    wanted = [piece for name in include for piece in _named(of["code"], name)]
-    wanted += [piece for name in include_inputs for piece in _named(of["inputs"], name)]
-    named = [h for h in held if h.piece in wanted]
-    pieces = _merged([*pieces, *(h.piece for h in named)])
+    pieces, held, lost = _gathered(readiness)
+    of = {
+        group: [p for h in held if h.group == group for p in h.pieces]
+        for group in ("code", "inputs")
+    }
+    wanted = {p.unit for name in include for p in _named(of["code"], name)}
+    wanted |= {p.unit for name in include_inputs for p in _named(of["inputs"], name)}
+    named = [h for h in held if h.requirement in wanted]
+    pieces = [*pieces, *(p for h in named for p in h.pieces)]
     held = [h for h in held if h not in named]
-    excluded = [p for p in pieces if any(p.matches(name) for name in exclude)]
-    pieces = [p for p in pieces if p not in excluded]
-    known = [*pieces, *excluded, *(h.piece for h in held), *(h.piece for h in named)]
+    left_out = {p.unit for p in pieces if any(p.matches(name) for name in exclude)}
+    excluded = [p for p in pieces if p.unit in left_out]
+    pieces = [p for p in pieces if p.unit not in left_out]
+    known = [*pieces, *excluded, *(p for h in [*held, *named] for p in h.pieces)]
     unknown = [n for n in exclude if not any(p.matches(n) for p in known)]
     unknown += [
         name
@@ -395,50 +435,35 @@ def offer(
         include_large,
         results.id,
         snapshot,
+        tuple(lost),
     )
 
 
 def _budget(pieces: Sequence[Piece]) -> tuple[tuple[Piece, ...], tuple[Piece, ...]]:
-    """``pieces`` split by :data:`BUDGET`, the smallest first: as many fit as possible."""
-    fits: list[Piece] = []
-    over: list[Piece] = []
+    """``pieces`` split by :data:`BUDGET`, unit by unit, the smallest first: as many fit as
+    possible, and a unit is never split."""
+    fits: set[str] = set()
     used = 0
-    for piece in sorted(pieces, key=lambda p: (p.size, p.label)):
-        if used + piece.size <= BUDGET:
-            fits.append(piece)
-            used += piece.size
-        else:
-            over.append(piece)
-    order = {piece.label: index for index, piece in enumerate(pieces)}
+    units = _units(pieces)
+    for unit, part in sorted(units.items(), key=lambda kv: (sum(p.size for p in kv[1]), kv[0])):
+        size = sum(p.size for p in part)
+        if used + size <= BUDGET:
+            fits.add(unit)
+            used += size
     return (
-        tuple(sorted(fits, key=lambda p: order[p.label])),
-        tuple(sorted(over, key=lambda p: order[p.label])),
+        tuple(p for p in pieces if p.unit in fits),
+        tuple(p for p in pieces if p.unit not in fits),
     )
 
 
-def _merged(pieces: Iterable[Piece]) -> list[Piece]:
-    """``pieces``, each file once: two stages can run the same job file."""
-    found: dict[tuple[str, str, bytes, str | None], Piece] = {}
-    for piece in pieces:
-        key = (piece.owner, piece.name, piece.data, piece.place)  # two inputs stay two: equal bytes
-        held = found.get(key)
-        found[key] = (
-            piece
-            if held is None
-            else replace(
-                piece,
-                requirements=tuple(dict.fromkeys((*held.requirements, *piece.requirements))),
-                stages=tuple(sorted({*held.stages, *piece.stages})),
-            )
-        )
-    return list(found.values())
-
-
-def _gathered(readiness: Readiness) -> tuple[list[Piece], list[Held]]:
+def _gathered(readiness: Readiness) -> tuple[list[Piece], list[Held], list[tuple[str, str]]]:
+    """What the study kept that could be published, by unit: offered, held back, and what should
+    be kept and is not."""
     pieces: list[Piece] = []
     held: list[Held] = []
+    lost: list[tuple[str, str]] = []
     if readiness.store is None:  # nothing kept is left to offer; its status says so
-        return pieces, held
+        return pieces, held, lost
     store = readiness.store
     reads = _Reads(readiness.ran, not readiness.gaps)
     k4opt = next(
@@ -453,22 +478,21 @@ def _gathered(readiness: Readiness) -> tuple[list[Piece], list[Held]]:
         if requirement.unused or requirement.entry is None:  # needed by no rerun of them
             continue
         if requirement.kind in ("package", "code"):
-            _from_origin(requirement, store, reads, k4opt, pieces, held)
+            _from_origin(requirement, store, reads, k4opt, pieces, held, lost)
         elif requirement.kind == "steering":
-            _from_steering(requirement, store, pieces, held)
+            _from_steering(requirement, store, pieces, lost)
         elif requirement.kind == "geometry":
-            _from_files(requirement, store, "geometry", requirement.entry.get("files"), pieces)
+            files = requirement.entry.get("files")
+            _from_files(requirement, store, "geometry", files, pieces, lost)
             aliases = _aliases(requirement)
             if aliases is not None:
                 pieces.append(aliases)
-        elif requirement.kind == "evaluator":
-            path = str(requirement.entry.get("path"))
-            if not path.startswith((f"{k4opt}/", f"{_K4OPT}/")):  # k4opt's own code otherwise
-                owner = requirement.label.partition(" ")[0]
-                _from_files(requirement, store, owner, requirement.entry.get("files"), pieces)
+        elif requirement.kind == "evaluator":  # its own unit, wherever its file is
+            owner = requirement.label.partition(" ")[0]
+            _from_files(requirement, store, owner, requirement.entry.get("files"), pieces, lost)
         elif requirement.kind == "input":
-            _from_input(requirement, store, geometry_root, pieces, held)
-    return pieces, held
+            _from_input(requirement, store, geometry_root, pieces, held, lost)
+    return pieces, held, lost
 
 
 _CACHED = re.compile(r"^(.*)/__pycache__/([^/.]+)\.[^/.]+(?:\.opt-\d+)?\.pyc$")
@@ -539,58 +563,89 @@ def _from_origin(
     k4opt: str | None,
     pieces: list[Piece],
     held: list[Held],
+    lost: list[tuple[str, str]],
 ) -> None:
+    """A build or a directory of local code, as one unit: its checkout's whole kept state, a
+    build's options and what it installed that a stage read, a directory's kept files. A build
+    is offered, since what is compiled is never read at run time; k4opt's own checkout, since it
+    ran; a directory of code if a stage read from it, or if that is not known."""
     origin = requirement.entry
     assert origin is not None
     owner = _public_name(origin)
     git = origin.get("git")
     is_build = origin.get("kind") == "build"
     entries = [str(e) for e in origin.get("entries") or ()]
-    if isinstance(git, Mapping):
+    rid = requirement.id
+    unit: list[Piece] = []
+    used = bool(requirement.used_by)
+    if isinstance(git, Mapping) and git.get("changed"):
         patch = _kept(store, git.get("patch"))
-        ours = git.get("checkout") == k4opt  # k4opt ran as k4opt, not through a program's reads
-        for section in sections(patch or b""):
-            _from_section(
-                requirement, git, owner, section, is_build or ours, reads, entries, pieces, held
+        if patch is None:
+            lost.append((rid, f"{owner}.patch"))
+        else:
+            parts = sections(patch)
+            counted = tuple(
+                (s.name, None if s.binary else s.added, None if s.binary else s.removed)
+                for s in parts
             )
+            base = str(git.get("base") or "")[:7] or "no public commit"
+            added = sum(s.added for s in parts if not s.binary)
+            removed = sum(s.removed for s in parts if not s.binary)
+            unit.append(
+                Piece(
+                    "code",
+                    owner,
+                    f"{owner}.patch",
+                    patch,
+                    (rid,),
+                    requirement.used_by,
+                    base,
+                    added,
+                    removed,
+                    files=counted,
+                )
+            )
+            checkout = str(git.get("checkout"))
+            used = used or any(reads.stages(_places(checkout, s.name, entries)) for s in parts)
     if is_build:
         options = _kept(store, origin.get("configuration"))
         if options is not None:
-            text = _options(options)
-            pieces.append(
-                Piece("code", owner, OPTIONS, text, (requirement.id,), requirement.used_by)
+            unit.append(
+                Piece("code", owner, OPTIONS, _options(options), (rid,), requirement.used_by)
             )
+        elif origin.get("configuration"):
+            lost.append((rid, OPTIONS))
     sourced = is_build and isinstance(git, Mapping)
+    roots = [str(origin.get("prefix")), *entries]
+    roots += [os.path.realpath(root) for root in roots]
     for name, file in (origin.get("files") or {}).items():
         if not isinstance(file, Mapping):
             continue
-        data = _kept(store, file.get("kept"))
-        if data is None:
-            continue
-        roots = [str(origin.get("prefix")), *entries]
-        roots += [os.path.realpath(root) for root in roots]
         places = [os.path.join(root, str(name)) for root in roots]
         stages = reads.stages(places, file.get("sha256"))
+        used = used or bool(stages)
+        if sourced and not stages:
+            continue  # what a build installed and nothing read: what its source installs
         # what a build installed may differ from what its source installs: what ran is offered
         shown = f"installed/{name}" if sourced else str(name)
-        piece = Piece("code", owner, shown, data, (requirement.id,), stages)
-        if stages:
-            pieces.append(piece)
-        elif not sourced:
-            why = "not read by any stage" if reads.complete else _UNKNOWN
-            held.append(Held("code", owner, shown, why, requirement.id, not reads.complete, piece))
+        data = _kept(store, file.get("kept"))
+        if data is None:
+            lost.append((rid, shown))
+            continue
+        unit.append(Piece("code", owner, shown, data, (rid,), stages or requirement.used_by))
+    if not unit:
+        return
+    ours = isinstance(git, Mapping) and git.get("checkout") == k4opt
+    if is_build or ours or used or not reads.complete:
+        pieces.extend(unit)
+    else:
+        held.append(Held("code", owner, owner, "not read by any stage", rid, False, tuple(unit)))
 
 
 OPTIONS = "cmake-options.txt"
 _OPTION = re.compile(r"^([A-Za-z_][\w.+-]*):(BOOL|STRING|PATH|FILEPATH|UNINITIALIZED)=(.*)$")
 _PUBLIC_PATHS = ("/cvmfs/", "/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/", "/etc/")
 """Where a path names the stack or the system, which are public: such a setting is published."""
-_COMPILE_TIME = re.compile(
-    r"(?:\.(?:c|cc|cpp|cxx|c\+\+|h|hh|hpp|hxx|h\+\+|icc|ipp|inl|tcc|tpp|txx|cu|cuh|f|for|f77|f90"
-    r"|f95|f03|f08|F|F90|s|S|asm|y|yy|l|ll|proto|xml|in|cmake)|CMakeLists\.txt)$"
-)
-"""What a build may compile in or generate from, of a checkout a remote has; of one no remote has,
-any file may be."""
 _SENSITIVE = re.compile(
     r"(?i)pass(?:word|wd|phrase)?|pwd|secret|token|credential|api[_-]?key|private[_-]?key|auth"
 )
@@ -620,77 +675,12 @@ def _options(cache: bytes) -> bytes:
     return "\n".join([*note, *sorted(kept)]).encode() + b"\n"
 
 
-def _from_section(
-    requirement: Requirement,
-    git: Mapping[str, Any],
-    owner: str,
-    section: Section,
-    compiled: bool,
-    reads: _Reads,
-    entries: Iterable[str],
-    pieces: list[Piece],
-    held: list[Held],
-) -> None:
-    untracked = git.get("untracked_files") or {}
-    sha256 = untracked.get(section.name)
-    is_untracked = section.name in untracked
-    whole = git.get("base_is") == "none"  # no public commit: its every file is in the patch
-    base = str(git.get("base") or "")[:7] or "no public commit"
-    # a link is kept as its text, a stage reads what it leads to: where it was read decides
-    places = _places(str(git.get("checkout")), section.name, entries)
-    stages = reads.stages(places, None if section.link else sha256)
-    installed = (
-        sha256 is not None
-        and not section.link
-        and any(
-            isinstance(f, Mapping) and f.get("sha256") == sha256
-            for f in (requirement.entry or {}).get("files", {}).values()
-        )
-    )
-    piece = Piece(
-        "code",
-        owner,
-        section.name,
-        section.data,
-        (requirement.id,),
-        stages or requirement.used_by,
-        base,
-        None if section.binary else section.added,
-        None if section.binary else section.removed,
-    )
-    why: str | None = None
-    needed = False
-    if is_untracked and not stages and not installed:
-        # no stage opens what is compiled in: not being read does not make it unnecessary
-        if compiled and (whole or _COMPILE_TIME.search(section.name)):
-            why, needed = "not read at run time; a build may need it", True
-        else:
-            why = "untracked, not used"
-    elif section.binary:
-        why, needed = "binary", True
-    elif whole and not stages and not installed:
-        # nothing else can give the source of a build no remote has
-        why, needed = (
-            ("no public commit: a rebuild needs it", True)
-            if compiled
-            else (
-                "no public commit, not used",
-                False,
-            )
-        )
-    elif not compiled and not stages and not section.deleted:  # what is gone was read by no one,
-        why = "not read by any stage"  # and can change what an import finds
-    if why not in (None, "binary") and not needed and not reads.complete:
-        why, needed = _UNKNOWN, True  # a failure to look is no evidence that it was not used
-    if why is None:
-        pieces.append(piece)
-    else:
-        held.append(Held("code", owner, section.name, why, requirement.id, needed, piece))
-
-
 def _from_steering(
-    requirement: Requirement, store: Store, pieces: list[Piece], held: list[Held]
+    requirement: Requirement, store: Store, pieces: list[Piece], lost: list[tuple[str, str]]
 ) -> None:
+    """A changed job directory, as one unit: its changed and added files and what they do not say
+    (``job-files.json``). A file that leads out of the directory is another file's bytes, data: an
+    input of its own (``link:<stage>/<file>``), where it lies in the job."""
     entry = requirement.entry
     assert entry is not None
     owner = str(entry.get("package") or requirement.label)
@@ -704,26 +694,24 @@ def _from_steering(
     for name, file in files.items():
         if not isinstance(file, Mapping):
             continue
-        data = _kept(store, file.get("kept"))
-        if data is None or str(name).endswith(".pyc") or "__pycache__/" in str(name):
+        if str(name).endswith(".pyc") or "__pycache__/" in str(name):
             continue  # made again by whoever runs it
-        if _leaves(str(name), file):  # another file's bytes, not this directory's
-            shown = os.path.basename(str(name))
-            piece = Piece(
-                "inputs",
-                "",
-                shown,
-                data,
-                (requirement.id,),
-                requirement.used_by,
-                place=str(file.get("outside") or file.get("link")),
-            )
-            why = "a link out of its job directory"
-            held.append(Held("inputs", "", shown, why, requirement.id, True, piece))
+        data = _kept(store, file.get("kept"))
+        if data is None:
+            lost.append((requirement.id, str(name)))
             continue
-        if _binary(data):
-            piece = Piece("code", owner, str(name), data, (requirement.id,), requirement.used_by)
-            held.append(Held("code", owner, str(name), "binary", requirement.id, True, piece))
+        if _leaves(str(name), file):  # another file's bytes, not this directory's
+            pieces.append(
+                Piece(
+                    "inputs",
+                    "",
+                    str(name),
+                    data,
+                    (f"link:{requirement.label}/{name}", requirement.id),
+                    requirement.used_by,
+                    place=str(file.get("outside") or file.get("link")),
+                )
+            )
             continue
         added, removed = _counted(original, str(name), data)
         pieces.append(
@@ -791,19 +779,26 @@ def _counted(original: object, name: str, data: bytes) -> tuple[int | None, int 
 
 
 def _from_files(
-    requirement: Requirement, store: Store, owner: str, files: object, pieces: list[Piece]
+    requirement: Requirement,
+    store: Store,
+    owner: str,
+    files: object,
+    pieces: list[Piece],
+    lost: list[tuple[str, str]],
 ) -> None:
+    """The kept files of a geometry or an evaluator, as one unit; one found outside the geometry's
+    tree by its content, as the snapshot names it."""
     for name, file in (files if isinstance(files, Mapping) else {}).items():
         if not isinstance(file, Mapping):
             continue
+        shown = str(name)
+        if os.path.isabs(shown):
+            shown = f"externals/{str(file.get('sha256'))[:8]}/{os.path.basename(shown)}"
         data = _kept(store, file.get("kept"))
-        if data is not None:
-            shown = str(name)
-            if os.path.isabs(shown):  # found by its content, as the snapshot names it
-                shown = (
-                    f"externals/{hashlib.sha256(data).hexdigest()[:8]}/{os.path.basename(shown)}"
-                )
-            pieces.append(Piece("code", owner, shown, data, (requirement.id,), requirement.used_by))
+        if data is None:
+            lost.append((requirement.id, shown))
+            continue
+        pieces.append(Piece("code", owner, shown, data, (requirement.id,), requirement.used_by))
 
 
 def _aliases(requirement: Requirement) -> Piece | None:
@@ -826,14 +821,17 @@ def _from_input(
     geometry_root: str | None,
     pieces: list[Piece],
     held: list[Held],
+    lost: list[tuple[str, str]],
 ) -> None:
     entry = requirement.entry
     assert entry is not None
-    data = _kept(store, entry.get("kept"))
-    if data is None:
-        return
     path = str(entry.get("path"))
     name = os.path.basename(path)
+    data = _kept(store, entry.get("kept"))
+    if data is None:
+        if isinstance(entry.get("kept"), str):
+            lost.append((requirement.id, name))
+        return
     if entry.get("origin") == "geometry":  # a file a candidate's reference reached: code that ran
         if geometry_root is not None and path.startswith(f"{geometry_root}/"):
             shown = os.path.relpath(path, geometry_root)
@@ -845,11 +843,10 @@ def _from_input(
         return
     piece = Piece("inputs", "", name, data, (requirement.id,), requirement.used_by, place=path)
     if name in _TOOLS:
-        held.append(
-            Held("inputs", "", name, "an environment's marker", requirement.id, False, piece)
-        )
+        why = "an environment's marker"
+        held.append(Held("inputs", "", name, why, requirement.id, False, (piece,)))
     elif path.startswith(f"{os.path.expanduser('~')}/."):
-        held.append(Held("inputs", "", name, "home configuration", requirement.id, True, piece))
+        held.append(Held("inputs", "", name, "home configuration", requirement.id, True, (piece,)))
     else:
         pieces.append(piece)
 
@@ -871,62 +868,34 @@ _NOTES = (
 
 
 def still_public(
-    release: Release,
-    published: Iterable[tuple[PublishedArtifact, bytes]],
-    commitments: Mapping[str, object] | None = None,
-) -> tuple[list[PublishedArtifact], frozenset[Piece]]:
+    release: Release, published: Iterable[tuple[PublishedArtifact, bytes]]
+) -> tuple[list[PublishedArtifact], dict[tuple[str, str], bytes]]:
     """What of ``published`` (files an earlier publication holds, with their bytes) is still of this
-    study though ``release`` did not approve it: those files, answering what they answer now, and
-    the pieces they hold. A publication is never taken back: what it holds stays readable, so it
-    must not be said to be private, however the author answers this time. An input is that file
-    only if it is the input it was approved as (``commitments``: of the requirements of the earlier
-    sheet, by id), not merely one of equal bytes: approving one must never approve another."""
-    waiting = [piece for piece in release.offer.everything if piece not in release.pieces]
-    readiness = release.offer.readiness
-    ours = {
-        r.id: (r.source or {}).get("commitment")
-        for r in (readiness.requirements if readiness is not None else ())
-    }
-    theirs = commitments or {}
-    kept: dict[tuple[str, str, str], PublishedArtifact] = {}  # equal bytes: one file, many needs
-    pieces: set[Piece] = set()
+    study though ``release`` did not approve it: those files, and their bytes by unit and name. A
+    publication is never taken back: what it holds stays readable, so it must not be said to be
+    private, however the author answers this time. A file is known by its unit's id and its name,
+    which hold between publications, never by its bytes alone: approving one input never approves
+    another of equal bytes. One that is another state of its unit now is no longer of the study;
+    one whose kept copy is gone still is, since its published copy is checked."""
+    offer_ = release.offer
+    readiness = offer_.readiness
+    now = {piece.key: piece for piece in offer_.everything}
+    approved = {piece.key for piece in release.pieces}
+    known = {piece.unit for piece in offer_.everything}
+    known |= {r.id for r in (readiness.requirements if readiness is not None else ())}
+    kept: dict[tuple[str, str], PublishedArtifact] = {}
+    earlier: dict[tuple[str, str], bytes] = {}
     for artifact, data in published:
-        same = [
-            piece
-            for piece in waiting
-            if _holds(artifact, data, piece) and _same_input(artifact, piece, ours, theirs)
-        ]
-        if same:
-            pieces.update(same)
-            key = (artifact.path, artifact.owner, artifact.name)
-            earlier = kept[key].requirements if key in kept else ()
-            needs = (*earlier, *(r for piece in same for r in piece.requirements))
-            kept[key] = replace(artifact, requirements=tuple(dict.fromkeys(needs)))
-    return list(kept.values()), frozenset(pieces)
-
-
-def _same_input(
-    artifact: PublishedArtifact,
-    piece: Piece,
-    ours: Mapping[str, object],
-    theirs: Mapping[str, object],
-) -> bool:
-    """Whether ``piece``, if an input, is one ``artifact`` was approved as: by its commitment, which
-    is that file's alone, or by its requirement where it has none."""
-    if piece.group != "inputs":
-        return True
-    mine = ours.get(piece.requirements[0])
-    if isinstance(mine, str):
-        return mine in {theirs.get(r) for r in artifact.requirements}
-    return piece.requirements[0] in artifact.requirements
-
-
-def _holds(artifact: PublishedArtifact, data: bytes, piece: Piece) -> bool:
-    if artifact.owner != piece.owner or artifact.kind != ("patch" if piece.is_patch else "file"):
-        return False
-    if piece.is_patch:
-        return piece.data in data
-    return (artifact.name, data) == (piece.name, piece.data)
+        if not artifact.requirements:
+            continue
+        key = (artifact.requirements[0], artifact.name)
+        if key in approved or key in kept or key[0] not in known:
+            continue
+        piece = now.get(key)
+        if piece is not None and piece.data != data:
+            continue
+        kept[key], earlier[key] = artifact, data
+    return list(kept.values()), earlier
 
 
 def public_form(
@@ -935,17 +904,17 @@ def public_form(
     snapshot: str,
     first: tuple[str, str] | None,
     artifacts: Sequence[PublishedArtifact],
-    earlier: Collection[Piece] = (),
+    earlier: Mapping[tuple[str, str], bytes] | None = None,
 ) -> SoftwareSheet:
     """The sheet of ``results`` in the state of ``snapshot`` (a SHA-256): the public form of its
     requirements as checked just now, with what ``release`` approved. ``first`` is the time and
     status of the first publication of this snapshot, if it was published before; ``earlier`` the
-    pieces an earlier publication already made public (:func:`still_public`)."""
+    files an earlier publication already made public, by unit and name (:func:`still_public`)."""
     readiness = release.offer.readiness
     assert readiness is not None
-    access = _access(readiness, release, earlier)
-    approved = (*release.pieces, *earlier)
-    public = tuple(_requirement(r, access[r.id], approved) for r in readiness.requirements)
+    published = {piece.key: piece.data for piece in release.pieces} | dict(earlier or {})
+    access = _access(readiness, release, published)
+    public = tuple(_requirement(r, access[r.id], published) for r in readiness.requirements)
     status = _status(readiness, access)
     return SoftwareSheet(
         study=results.id,
@@ -958,7 +927,13 @@ def public_form(
         altered=_altered(readiness.altered),
         not_kept=len(readiness.problems),
         on_request=tuple(
-            sorted({piece.label for piece in release.offer.excluded if piece not in earlier})
+            sorted(
+                {
+                    piece.owner or piece.name
+                    for piece in release.offer.excluded
+                    if piece.key not in published
+                }
+            )
         ),
         requirements=public,
         artifacts=tuple(artifacts),
@@ -984,24 +959,38 @@ def _status(readiness: Readiness, access: Mapping[str, Access]) -> str:
 
 
 def _access(
-    readiness: Readiness, release: Release, earlier: Collection[Piece]
+    readiness: Readiness, release: Release, published: Mapping[tuple[str, str], bytes]
 ) -> dict[str, Access]:
+    """Who can get each requirement: ``public`` if everything of it a rerun needs is published
+    (now or before) or public by nature, ``on request`` if some of it is the author's alone,
+    ``none`` if something of it is gone and no published copy stands in for it. A build needs its
+    source and its options as well: options published in part leave the rest to ask for."""
     offer_ = release.offer
-    published = {r for piece in (*release.pieces, *earlier) for r in piece.requirements}
-    withheld = {
-        r
-        for piece in [*offer_.code, *offer_.inputs, *offer_.large, *offer_.excluded]
-        if piece not in release.pieces and piece not in earlier
-        for r in piece.requirements
-    }
-    withheld |= {h.requirement for h in offer_.held if h.needed and h.piece not in earlier}
+    needed = [
+        *offer_.code,
+        *offer_.inputs,
+        *offer_.large,
+        *offer_.excluded,
+        *(p for h in offer_.held if h.needed for p in h.pieces),
+    ]
     found: dict[str, Access] = {}
     for r in readiness.requirements:
-        if r.missing:  # whatever else is published of it, a rerun cannot have all of it
-            found[r.id] = "none"
-        elif r.id in withheld:
+        mine = [p for p in needed if r.id in p.requirements]
+        gone = [key for key in offer_.lost if key[0] == r.id]
+        if any(key not in published for key in gone) or (r.missing and not gone):
+            found[r.id] = "none"  # whatever else is published of it, a rerun cannot have all of it
+            continue
+        withheld = any(p.key not in published for p in mine)
+        if r.kind == "package":
+            if not (r.source or {}).get("rebuildable"):
+                found[r.id] = "none"  # no source a rebuild could start from
+            elif withheld or _configuration(r, published) in ("partial", "on request"):
+                found[r.id] = "on request"
+            else:
+                found[r.id] = "public"
+        elif withheld:
             found[r.id] = "on request"
-        elif r.id in published:
+        elif mine or gone or any(key[0] == r.id for key in published):
             found[r.id] = "public"
         else:
             found[r.id] = _unoffered(r)
@@ -1107,25 +1096,23 @@ def _ran(requirement: Requirement) -> Mapping[str, Json] | None:
     )
 
 
-def _configuration(requirement: Requirement, approved: Iterable[Piece]) -> str:
+def _configuration(requirement: Requirement, published: Mapping[tuple[str, str], bytes]) -> str:
     """Whether a reader can have what a build was configured with, all of it or a part (its options
     that hold a path or a credential are left out, and counted in its first line): its source alone
     rebuilds it with other options."""
     entry = requirement.entry or {}
-    options = next(
-        (p for p in approved if p.name == OPTIONS and requirement.id in p.requirements), None
-    )
+    options = published.get((requirement.id, OPTIONS))
     if options is not None:
-        return "partial" if options.data.startswith(b"#") else "published"
+        return "partial" if options.startswith(b"#") else "published"
     return "on request" if entry.get("configuration") else "none"
 
 
 def _requirement(
-    requirement: Requirement, access: Access, approved: Iterable[Piece]
+    requirement: Requirement, access: Access, published: Mapping[tuple[str, str], bytes]
 ) -> PublishedRequirement:
     facts = _facts(requirement)
     if requirement.kind == "package":
-        facts["configuration"] = _configuration(requirement, approved)
+        facts["configuration"] = _configuration(requirement, published)
     tool = requirement.kind == "input" and requirement.label in _TOOLS
     return PublishedRequirement(
         id=requirement.id if not requirement.id.startswith("listing:") else "listing",
@@ -1143,40 +1130,28 @@ def _requirement(
 
 
 def bundled(study: str, pieces: Iterable[Piece]) -> list[tuple[PublishedArtifact, bytes]]:
-    """``pieces`` as the files published: a patch per owner and base, of the files approved, and
-    each other file on its own."""
-    patches: dict[tuple[str, str, str], list[Piece]] = {}  # two builds may share a name and base
+    """``pieces`` as the files published: each on its own, a patch with the files it changes."""
     found: list[tuple[PublishedArtifact, bytes]] = []
     for piece in pieces:
         if piece.is_patch:
-            assert piece.base is not None
-            patches.setdefault((piece.owner, piece.base, piece.requirements[0]), []).append(piece)
+            files = tuple(
+                PublishedFile(name, added, removed) for name, added, removed in piece.files
+            )
         else:
-            one: tuple[PublishedFile, ...] = (
-                PublishedFile(piece.name, piece.added, piece.removed),
-            )
-            found.append(
-                _artifact(
-                    study,
-                    piece.group,
-                    piece.owner,
-                    piece.name,
-                    "file",
-                    piece.data,
-                    piece.stages,
-                    piece.requirements,
-                    None,
-                    one,
-                )
-            )
-    for (owner, base, _), part in patches.items():
-        data = b"".join(p.data for p in part)
-        files = tuple(PublishedFile(p.name, p.added, p.removed) for p in part)
-        stages = tuple(sorted({s for p in part for s in p.stages}))
-        needs = tuple(dict.fromkeys(r for p in part for r in p.requirements))
+            files = (PublishedFile(piece.name, piece.added, piece.removed),)
+        kind: Literal["patch", "file"] = "patch" if piece.is_patch else "file"
         found.append(
             _artifact(
-                study, "code", owner, f"{owner}.patch", "patch", data, stages, needs, base, files
+                study,
+                piece.group,
+                piece.owner,
+                piece.name,
+                kind,
+                piece.data,
+                piece.stages,
+                piece.requirements,
+                piece.base,
+                files,
             )
         )
     return found

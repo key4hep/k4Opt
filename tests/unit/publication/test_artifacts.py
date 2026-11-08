@@ -55,6 +55,17 @@ def made(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, StudyResults]:
         monkeypatch.undo()
 
 
+def idle_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A directory of code on ``PYTHONPATH`` that no stage reads, for a study made after it."""
+    import os
+
+    idle = tmp_path / "idle"
+    idle.mkdir()
+    (idle / "notes.py").write_text("IDEA = 1\n")
+    monkeypatch.setenv("PYTHONPATH", f"{idle}:{os.environ.get('PYTHONPATH', '')}".rstrip(":"))
+    return idle
+
+
 OURS = ("ddmarlinpandora", "helpers", "")  # the local work of these tests; the rest is the
 # mini geometry and the test evaluators, local too, and offered as such
 
@@ -84,38 +95,48 @@ def test_a_patch_splits_into_its_files_whatever_they_are_called() -> None:
     assert b"".join(s.data for s in found) == PATCH  # every byte is in one part
 
 
-def test_what_is_used_is_offered_and_what_lies_beside_it_is_held(
+def test_a_build_and_a_directory_a_stage_read_are_offered_whole(
     made: tuple[Path, StudyResults],
 ) -> None:
     found = offer(made[1])
     assert names(found.code) == [
-        "ddmarlinpandora/New.h",  # untracked: installed by the build
         "ddmarlinpandora/cmake-options.txt",  # how it was configured, without its paths
-        "ddmarlinpandora/src/DDCaloHitCreator.cc",  # a tracked file edited
-        "helpers/ecal_tweak.py",  # a stage read it
+        "ddmarlinpandora/ddmarlinpandora.patch",  # its whole state, untracked files and all
+        "helpers/ecal_tweak.py",  # a stage read from this directory: all of it
+        "helpers/unrelated.py",
     ]
+    (patch,) = [p for p in found.code if p.is_patch]
+    counts = {name: (added, removed) for name, added, removed in patch.files}
+    assert counts["src/DDCaloHitCreator.cc"] == (1, 1)
+    assert set(counts) == {"New.h", "notes.txt", "blob.dat", "src/DDCaloHitCreator.cc"}
+    assert counts["blob.dat"] == (None, None)  # binary, and part of the state like the rest
     assert names(found.inputs) == ["ecal_scale.json"]
-    held = {h.label: h.why for h in found.held}
-    assert held["ddmarlinpandora/notes.txt"] == "untracked, not used"
-    assert held["ddmarlinpandora/blob.dat"] == "untracked, not used"
-    assert held["helpers/unrelated.py"] == "not read by any stage"
-    assert not found.findings
+    assert not [h for h in found.held if h.owner in OURS] and not found.findings
 
 
-def test_a_held_file_is_offered_once_named_and_a_name_of_nothing_is_refused(
+def test_a_directory_no_stage_read_is_held_whole_and_offered_once_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    idle = idle_directory(tmp_path, monkeypatch)
+    results = load_study(fresh(tmp_path, monkeypatch))
+    (held,) = [h for h in offer(results).held if h.owner == idle.name]
+    assert (held.why, held.needed) == ("not read by any stage", False)
+    assert "idle/notes.py" in [p.label for p in offer(results, include=["notes.py"]).code]
+    with pytest.raises(PublicationError, match=r"named nosuch\.txt"):
+        offer(results, exclude=["nosuch.txt"])  # a slip must not publish what was meant to stay
+
+
+def test_a_file_left_out_by_name_leaves_out_all_of_its_unit(
     made: tuple[Path, StudyResults],
 ) -> None:
-    found = offer(made[1], include=["notes.txt"])
-    assert "ddmarlinpandora/notes.txt" in names(found.code)
-    with pytest.raises(PublicationError, match=r"named nosuch\.txt"):
-        offer(made[1], exclude=["nosuch.txt"])  # a slip must not publish what was meant to stay
-
-
-def test_a_file_left_out_by_name_is_not_offered(made: tuple[Path, StudyResults]) -> None:
-    found = offer(made[1], exclude=["ecal_tweak.py", "ecal_scale.json"])
-    assert "helpers/ecal_tweak.py" not in names(found.code)
+    found = offer(made[1], exclude=["unrelated.py", "ecal_scale.json", "notes.txt"])
+    assert not [p for p in found.code if p.owner in ("helpers", "ddmarlinpandora")]
     assert not found.inputs
-    assert sorted(names(found.excluded)) == ["ecal_scale.json", "helpers/ecal_tweak.py"]
+    assert {p.owner or p.name for p in found.excluded} == {
+        "helpers",
+        "ddmarlinpandora",
+        "ecal_scale.json",
+    }
 
 
 def piece(name: str, size: int, group: str = "inputs") -> Piece:
@@ -238,11 +259,14 @@ def test_what_was_approved_is_published_exactly_and_reads_back(
     assert sheet is not None
     by = {artifact.name: artifact for artifact in sheet.artifacts}
     patch = by["ddmarlinpandora.patch"]
-    assert patch.kind == "patch"
-    assert {file.name for file in patch.files} == {"New.h", "src/DDCaloHitCreator.cc"}
-    data = publication.artifact(patch)
-    assert b"1.05 * eCalToEMGeV" in data
-    assert b"not for anyone" not in data and b"binary" not in data  # what was held back stays
+    assert patch.kind == "patch" and patch.requirements == ("package:ddmarlinpandora",)
+    assert {file.name for file in patch.files} == {
+        "New.h",
+        "notes.txt",
+        "blob.dat",
+        "src/DDCaloHitCreator.cc",
+    }
+    assert b"1.05 * eCalToEMGeV" in publication.artifact(patch)
     assert publication.artifact(by["ecal_scale.json"]) == b'{"scale": 1.05}\n'
     assert all(a.path.startswith(f"studies/{results.id}/artifacts/") for a in sheet.artifacts)
     assert {r.label: r.access for r in sheet.requirements}["ddmarlinpandora"] == "public"
@@ -333,13 +357,14 @@ def artifacts_of(pub: Path) -> list[str]:
 
 
 CODE = ["ddmarlinpandora.patch"]
+HELPERS = ["ecal_tweak.py", "unrelated.py"]
 
 
 @pytest.mark.parametrize(
     ("answers", "expected"),
     [
-        ("y\ny\n", ["cmake-options.txt", *CODE, "ecal_scale.json", "ecal_tweak.py"]),
-        ("y\nn\n", ["cmake-options.txt", *CODE, "ecal_tweak.py"]),
+        ("y\ny\n", ["cmake-options.txt", *CODE, "ecal_scale.json", *HELPERS]),
+        ("y\nn\n", ["cmake-options.txt", *CODE, *HELPERS]),
         ("n\ny\n", ["ecal_scale.json"]),
         ("\n\n", []),  # the default is no
         ("", []),  # no answer at all: no
@@ -365,12 +390,14 @@ def test_the_listing_says_what_goes_and_what_does_not(
 ) -> None:
     root, _ = made
     _, out, _ = run(root / "study", tmp_path / "pub", "n\nn\n", monkeypatch=monkeypatch)
-    assert "patch against" in out and "src/DDCaloHitCreator.cc" in out and "+1" in out
-    assert "not published" in out and "ddmarlinpandora/notes.txt" in out and "(untracked" in out
-    assert f"read by {STAGE}" in out
-    assert "scan" in out and "nothing found" in out
-    assert out.count("published ") >= 1 and "(snapshot " in out
-    assert str(root) not in out.split("to  ")[0]
+    listing = out.split("Publish the code above?")[0]
+    assert "patch against" in listing and "4 files" in listing
+    for name in ("src/DDCaloHitCreator.cc", "notes.txt", "blob.dat", "New.h"):
+        assert name in listing  # every file a unit holds is shown before the question
+    assert f"read by {STAGE}" in listing
+    assert "scan" in listing and "nothing found" in listing
+    assert "(snapshot " in out
+    assert str(root) not in listing.split("to  ")[0]
 
 
 def test_without_a_terminal_it_refuses_rather_than_decide(
@@ -388,7 +415,7 @@ def test_yes_answers_only_for_the_code_and_a_script_names_its_inputs(
     root, _ = made
     code, _, _ = run(root / "study", tmp_path / "a", None, "--yes", monkeypatch=monkeypatch)
     assert code == 0
-    assert artifacts_of(tmp_path / "a") == ["cmake-options.txt", *CODE, "ecal_tweak.py"]
+    assert artifacts_of(tmp_path / "a") == ["cmake-options.txt", *CODE, *HELPERS]
     code, _, _ = run(
         root / "study",
         tmp_path / "b",
@@ -439,24 +466,6 @@ def test_a_build_nothing_read_is_not_offered(
     assert not [p for p in found.code if p.owner == "ddmarlinpandora"]  # it did not run
 
 
-def test_a_binary_a_stage_read_is_held_and_named_as_needed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tests.support.studies import mini_environment
-
-    mini_environment(monkeypatch)
-    study = local_study(tmp_path, monkeypatch)
-    read_by_stage(study, tmp_path / "src" / "DDMarlinPandora" / "blob.dat")
-    results = load_study(study)
-    found = offer(results)
-    (held,) = [h for h in found.held if h.name == "blob.dat"]
-    assert (held.why, held.needed) == ("binary", True)
-    entry = publish(results, tmp_path / "pub", release=found.release(code=True, inputs=True))
-    sheet = open_publication(tmp_path / "pub").software(entry)
-    assert sheet is not None  # the rest of its changes are published; a reader still has to ask
-    assert {r.label: r.access for r in sheet.requirements}["ddmarlinpandora"] == "on request"
-
-
 @pytest.mark.parametrize("cached", ["unrelated.cpython-314.pyc", "unrelated.cpython-314.opt-1.pyc"])
 def test_a_module_python_read_from_its_cache_was_used(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cached: str
@@ -475,14 +484,13 @@ def test_a_module_python_read_from_its_cache_was_used(
 
 
 def test_what_no_stage_was_seen_to_read_is_only_unused_if_every_stage_was_seen(
-    made: tuple[Path, StudyResults], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dataclasses import replace
-
     from k4opt.publication import artifacts
 
-    _, results = made
-    assert {h.label: h.needed for h in offer(results).held}["helpers/unrelated.py"] is False
+    idle = idle_directory(tmp_path, monkeypatch)
+    results = load_study(fresh(tmp_path, monkeypatch))
+    assert idle.name in [h.owner for h in offer(results).held]
     real = artifacts.requirements
 
     def unobserved(*args: Any, **kwargs: Any) -> Any:
@@ -490,10 +498,9 @@ def test_what_no_stage_was_seen_to_read_is_only_unused_if_every_stage_was_seen(
         return replace(real(*args, **kwargs), gaps=gap, public_gaps=gap)
 
     monkeypatch.setattr(artifacts, "requirements", unobserved)
-    held = {h.label: h for h in offer(results).held}
-    assert held["helpers/unrelated.py"].why == "not known to be used"
-    assert held["helpers/unrelated.py"].needed  # so its requirement is on request, not "not needed"
-    assert "helpers/unrelated.py" not in names(offer(results).code)  # and it is still not offered
+    found = offer(results)
+    assert idle.name not in [h.owner for h in found.held]  # not known: offered, not judged unused
+    assert f"{idle.name}/notes.py" in [p.label for p in found.code]
 
 
 def test_a_local_geometry_and_the_evaluators_are_code_never_inputs(
@@ -634,17 +641,15 @@ def test_a_link_out_to_a_local_path_is_not_published(tmp_path: Path) -> None:
     assert "c.py" not in manifest["links"] and b"/home/me" not in manifest.__repr__().encode()
 
 
-def test_equal_bytes_elsewhere_do_not_make_a_file_used(
+def test_equal_bytes_elsewhere_do_not_make_a_directory_used(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tests.support.studies import mini_environment
-
-    mini_environment(monkeypatch)
-    study = local_study(tmp_path, monkeypatch)
+    idle = idle_directory(tmp_path, monkeypatch)
+    study = fresh(tmp_path, monkeypatch)
     twin = tmp_path / "elsewhere.py"
-    twin.write_bytes((tmp_path / "helpers" / "unrelated.py").read_bytes())
-    read_by_stage(study, twin)  # the same bytes as unrelated.py, read from another place
-    assert "helpers/unrelated.py" not in names(offer(load_study(study)).code)
+    twin.write_bytes((idle / "notes.py").read_bytes())
+    read_by_stage(study, twin)  # the same bytes as idle/notes.py, read from another place
+    assert idle.name in [h.owner for h in offer(load_study(study)).held]
 
 
 def test_a_builds_options_are_published_without_its_paths(
@@ -700,7 +705,7 @@ def test_external_geometry_files_of_one_name_stay_apart(tmp_path: Path) -> None:
     }
     pieces: list[Piece] = []
     requirement = Requirement("geometry", "geometry", "c", "3 files, kept")
-    artifacts._from_files(requirement, store, "geometry", files, pieces)
+    artifacts._from_files(requirement, store, "geometry", files, pieces, [])
     assert sorted(p.name for p in pieces) == sorted(
         [
             "compact/det.xml",
@@ -765,13 +770,16 @@ def job_directory(
 
 
 def test_a_link_out_of_a_job_directory_is_data_and_not_code(tmp_path: Path) -> None:
-    pieces, held, private = job_directory(tmp_path)
+    pieces, _, private = job_directory(tmp_path)
     assert not any(b"1.10" in p.data for p in pieces if p.group == "code")
-    assert not any(p.name == "calibration.json" for p in pieces)
-    (out,) = held
-    assert (out.group, out.name, out.needed) == ("inputs", "calibration.json", True)
-    assert out.piece.group == "inputs" and out.piece.place == str(private)
-    assert "Pandora.py" in [p.name for p in pieces] and "inner.py" in [p.name for p in pieces]
+    (out,) = [p for p in pieces if p.group == "inputs"]
+    assert (out.name, out.place, out.unit) == (
+        "calibration.json",
+        str(private),
+        "link:pi0/reco/calibration.json",
+    )
+    assert "steering:pi0/reco" in out.requirements  # withheld, its job directory is on request
+    assert {"Pandora.py", "inner.py"} <= {p.name for p in pieces}
 
 
 def test_a_credential_in_a_cmake_option_is_never_written(tmp_path: Path) -> None:
@@ -844,7 +852,7 @@ def test_equal_inputs_at_two_places_stay_two(
     assert one.place == str(first) and len(one.requirements) == 1
 
 
-def test_a_deleted_module_of_a_directory_is_offered_though_nothing_can_read_it(
+def test_a_directory_of_code_in_a_checkout_is_held_with_its_whole_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from k4opt.software import keep, source
@@ -857,13 +865,16 @@ def test_a_deleted_module_of_a_directory_is_offered_though_nothing_can_read_it(
         keep, "checkout", lambda path, release: source.checkout(str(clean), release)
     )
     repo = checkout(tmp_path / "src", "shadows")
-    (repo / "README.md").unlink()  # a real deletion, which can change what an import finds
+    (repo / "README.md").unlink()  # a deletion: part of its state like an edit
     (repo / "src" / "DDCaloHitCreator.cc").write_text("edited, and read by nothing\n")
     monkeypatch.setenv("PYTHONPATH", str(repo))
-    found = offer(load_study(mixed_study(tmp_path / "study", 1)))
-    assert "README.md" in [p.name for p in found.code if p.owner == "shadows"]
-    held = {h.name: h.why for h in found.held if h.owner == "shadows"}
-    assert held["src/DDCaloHitCreator.cc"] == "not read by any stage"
+    results = load_study(mixed_study(tmp_path / "study", 1))
+    (held,) = [h for h in offer(results).held if h.owner == "shadows"]
+    (patch,) = held.pieces
+    assert {name for name, _, _ in patch.files} == {"README.md", "src/DDCaloHitCreator.cc"}
+    assert [p.name for p in offer(results, include=["shadows"]).code if p.owner == "shadows"] == [
+        "shadows.patch"
+    ]
 
 
 def test_a_home_configuration_is_needed_and_only_a_venvs_marker_is_not(
@@ -953,10 +964,13 @@ def test_a_script_with_an_unset_variable_publishes_no_input(
 
 
 def test_a_chain_of_links_out_of_a_job_directory_is_data(tmp_path: Path) -> None:
-    pieces, held, private = job_directory(tmp_path, [("chain.json", "calibration.json")])
-    assert not any(b"1.10" in p.data for p in pieces)
-    out = {h.piece.place for h in held if h.name in ("chain.json", "calibration.json")}
-    assert out == {str(private)}
+    pieces, _, private = job_directory(tmp_path, [("chain.json", "calibration.json")])
+    assert not any(b"1.10" in p.data for p in pieces if p.group == "code")
+    out = {p.unit: p.place for p in pieces if p.group == "inputs"}
+    assert out == {
+        "link:pi0/reco/calibration.json": str(private),
+        "link:pi0/reco/chain.json": str(private),
+    }
     manifest = next(p for p in pieces if p.name == "job-files.json")
     assert b"chain.json" not in manifest.data and b"calibration.json" not in manifest.data
 
@@ -976,9 +990,9 @@ def test_a_link_to_a_directory_outside_leaves_it_too(tmp_path: Path) -> None:
 
 def test_broken_links_and_cycles_publish_nothing_and_stop_nothing(tmp_path: Path) -> None:
     links = [("broken", "nowhere"), ("loop-a", "loop-b"), ("loop-b", "loop-a")]
-    pieces, held, _ = job_directory(tmp_path, links)
-    named = {p.name for p in pieces} | {h.name for h in held}
-    assert not named & {"broken", "loop-a", "loop-b"}
+    pieces, lost, _ = job_directory(tmp_path, links)
+    assert not {p.name for p in pieces} & {"broken", "loop-a", "loop-b"}
+    assert {name for _, name in lost} >= {"broken", "loop-a", "loop-b"}  # said, never shown
 
 
 def test_what_was_published_before_stays_public_in_a_later_sheet(
@@ -1073,26 +1087,6 @@ def access_in(entry: Any, root: Path) -> dict[str, str]:
     sheet = open_publication(root).software(entry)
     assert sheet is not None
     return {r.id: r.access for r in sheet.requirements}
-
-
-def test_the_source_of_a_build_no_remote_has_is_needed_though_no_stage_read_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    results = load_study(fresh(tmp_path, monkeypatch, private=True))
-    found = offer(results)
-    held = {h.name: h for h in found.held if h.owner == "ddmarlinpandora"}
-    assert held["src/DDCaloHitCreator.cc"].needed  # compiled, so never read at run time
-    entry = publish(results, tmp_path / "pub", release=found.release(code=True, inputs=True))
-    assert access_in(entry, tmp_path / "pub")["package:ddmarlinpandora"] == "on request"
-
-
-def test_an_untracked_header_of_a_build_may_be_needed_and_a_note_may_not(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    results = load_study(fresh(tmp_path, monkeypatch, untracked=("Extra.h",)))
-    held = {h.name: h for h in offer(results).held if h.owner == "ddmarlinpandora"}
-    assert held["Extra.h"].needed and not held["notes.txt"].needed
-    assert "Extra.h" not in names(offer(results).code)  # asked for by name, like any other
 
 
 def test_inputs_of_equal_bytes_approved_one_after_the_other_both_stay_public(
@@ -1290,7 +1284,7 @@ def test_an_empty_cmake_setting_is_kept_since_it_differs_from_none(tmp_path: Pat
     assert b"ENABLE_CORRECTION=\n" in text and b"NOTE=\n" in text and not text.startswith(b"#")
 
 
-def test_inputs_of_equal_bytes_both_declined_later_are_one_entry_each_time(
+def test_inputs_of_equal_bytes_both_declined_later_each_keep_their_own_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     study = fresh(tmp_path, monkeypatch)
@@ -1305,7 +1299,8 @@ def test_inputs_of_equal_bytes_both_declined_later_are_one_entry_each_time(
     sheet = open_publication(tmp_path / "pub").software(entry)
     assert sheet is not None
     same = [a for a in sheet.artifacts if a.name == "config.json"]
-    assert len(same) == 1 and len(same[0].requirements) == 2
+    assert len({a.path for a in same}) == 1  # one file, for two inputs, each its own entry
+    assert len({a.requirements[0] for a in same}) == 2
 
 
 # --- what the sixth review of the publication found ----------------------------------------------
@@ -1413,19 +1408,6 @@ def test_a_build_published_with_options_in_part_is_not_all_there(
     assert "ddmarlinpandora build options" in tables.rerun_missing(sheet)
 
 
-def test_an_untracked_link_a_stage_read_through_is_used(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tests.support.studies import mini_environment
-
-    mini_environment(monkeypatch)
-    repo_parent = tmp_path / "src" / "DDMarlinPandora"
-    study = local_study(tmp_path, monkeypatch, links={"alias.h": "New.h"})
-    read_by_stage(study, repo_parent / "alias.h")
-    found = offer(load_study(study))
-    assert "ddmarlinpandora/alias.h" in names(found.code)
-
-
 def test_republishing_a_studys_json_form_keeps_its_sheet(
     made: tuple[Path, StudyResults], tmp_path: Path
 ) -> None:
@@ -1446,23 +1428,6 @@ def test_naming_a_package_of_two_installations_is_refused(tmp_path: Path) -> Non
     assert len(_named(one, "pkg")) == 2
 
 
-def test_every_untracked_file_of_a_build_no_remote_has_is_needed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    results = load_study(fresh(tmp_path, monkeypatch, private=True, untracked=("config.h.in",)))
-    held = {h.name: h for h in offer(results).held if h.owner == "ddmarlinpandora"}
-    assert held["config.h.in"].needed and held["notes.txt"].needed
-
-
-@pytest.mark.parametrize("name", ["config.h.in", "gen.f90", "kernel.cu", "Dict.xml"])
-def test_untracked_build_inputs_of_more_kinds_may_be_needed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
-) -> None:
-    results = load_study(fresh(tmp_path, monkeypatch, untracked=(name,)))
-    held = {h.name: h for h in offer(results).held if h.owner == "ddmarlinpandora"}
-    assert held[name].needed
-
-
 def test_an_incomplete_record_still_says_it_needs_access(
     made: tuple[Path, StudyResults], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1479,3 +1444,106 @@ def test_an_incomplete_record_still_says_it_needs_access(
     entry = publish(results, tmp_path / "pub")
     sheet = open_publication(tmp_path / "pub").software(entry)
     assert sheet is not None and sheet.status == "Not rerun · record incomplete · needs access"
+
+
+# --- what the seventh review of the publication found --------------------------------------------
+
+
+def test_an_evaluator_inside_k4opt_is_offered_as_its_own_unit(tmp_path: Path) -> None:
+    import k4opt
+    from k4opt.publication import artifacts
+    from k4opt.software.keep import Store
+    from k4opt.software.readiness import Readiness, Requirement
+
+    store = Store(tmp_path)
+    kept = store.put(b"class Mine: ...\n")
+    inside = Path(k4opt.__file__).parent / "mine.py"  # an untracked evaluator in k4opt's checkout
+    entry = {"path": str(inside), "files": {"mine.py": {"sha256": kept, "kept": kept}}}
+    evaluator = Requirement("evaluator:mine", "evaluator", "mine v1", "1 files, kept", entry=entry)
+    readiness = Readiness((evaluator,), (), "2026-11-08T00:00:00+00:00", store=store)
+    pieces, _, _ = artifacts._gathered(readiness)
+    assert [(p.unit, p.name) for p in pieces] == [("evaluator:mine", "mine.py")]
+    release = artifacts.Release(artifacts.Offer(readiness, code=tuple(pieces)))
+    access = artifacts._access(readiness, release, {})
+    assert access["evaluator:mine"] == "on request"  # never "public" for what was not published
+
+
+def test_a_builds_untracked_files_are_in_its_patch_whatever_they_are(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names_ = ("weights.json", "config.h.in", "gen.py")  # configure_file, templates, generators
+    results = load_study(fresh(tmp_path, monkeypatch, untracked=names_))
+    (patch,) = [p for p in offer(results).code if p.is_patch]
+    assert set(names_) <= {name for name, _, _ in patch.files}
+
+
+def test_two_links_of_one_name_in_a_job_are_two_inputs_approved_apart(tmp_path: Path) -> None:
+    from k4opt.publication import artifacts
+    from k4opt.publication.artifacts import bundled
+
+    first = Piece("inputs", "", "a/c.json", b"1", ("link:s/a/c.json", "steering:s"), ())
+    second = Piece("inputs", "", "b/c.json", b"1", ("link:s/b/c.json", "steering:s"), ())
+    found = artifacts.Offer(None, inputs=(first, second))
+    study = "12345678-1234-4234-8234-123456789012"
+    published = bundled(study, found.release(inputs=["a/c.json"]).pieces)
+    assert len({a.requirements[0] for a, _ in bundled(study, (first, second))}) == 2
+    _, earlier = artifacts.still_public(found.release(), published)
+    assert set(earlier) == {first.key}  # the other, of equal bytes, was never approved
+
+
+def test_republishing_with_a_unit_left_out_keeps_one_patch_that_applies(
+    made: tuple[Path, StudyResults], tmp_path: Path
+) -> None:
+    _, results = made
+    publish(results, tmp_path / "pub", release=offer(results).release(code=True))
+    found = offer(results, exclude=["src/DDCaloHitCreator.cc"])  # one file of the patch
+    entry = publish(results, tmp_path / "pub", release=found.release(code=True))
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None
+    patches = [a for a in sheet.artifacts if a.kind == "patch" and a.owner == "ddmarlinpandora"]
+    assert len(patches) == 1  # the earlier one, whole: nothing overlaps it
+    assert {r.label: r.access for r in sheet.requirements}["ddmarlinpandora"] == "public"
+
+
+def test_a_published_copy_stands_in_for_a_kept_file_that_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.software.keep import DIRECTORY, Store
+
+    study = fresh(tmp_path, monkeypatch)
+    results = load_study(study)
+    first = publish(results, tmp_path / "pub", release=offer(results).release(code=True))
+    geometry = {
+        a.name
+        for a in open_publication(tmp_path / "pub").software(first).artifacts  # type: ignore[union-attr]
+        if a.owner == "geometry"
+    }
+    (state,) = (study / DIRECTORY).glob("software-*.json")
+    files = json.loads(state.read_text())["geometry"]["files"]
+    Store(study / DIRECTORY).path(next(f["kept"] for f in files.values())).unlink()
+    entry = publish(load_study(study), tmp_path / "pub", release=offer(results).release(code=True))
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None
+    assert {a.name for a in sheet.artifacts if a.owner == "geometry"} == geometry
+    assert {r.id: r.access for r in sheet.requirements}["geometry"] == "public"
+
+
+def test_a_build_is_public_only_with_its_source_and_all_of_its_options(tmp_path: Path) -> None:
+    from k4opt.publication import artifacts
+    from k4opt.software.readiness import Readiness, Requirement
+
+    def access(rebuildable: bool, options: bytes) -> str:
+        package = Requirement(
+            "package:p", "package", "p", "x", ("s",), source={"rebuildable": rebuildable}, entry={}
+        )
+        readiness = Readiness((package,), (), "2026-11-08T00:00:00+00:00")
+        piece = Piece("code", "p", artifacts.OPTIONS, options, ("package:p",), ("s",))
+        release = artifacts.Release(artifacts.Offer(readiness, code=(piece,)), (piece,))
+        published = {piece.key: piece.data}
+        found = artifacts._access(readiness, release, published)
+        return f"{found['package:p']} {artifacts._status(readiness, found)}"
+
+    assert access(False, b"A=1\n").startswith("none")  # options alone rebuild nothing
+    assert access(True, b"# 1 more option holds a local path\nA=1\n").startswith("on request")
+    assert access(True, b"# 1 more option holds a local path\nA=1\n").endswith("needs access")
+    assert access(True, b"A=1\n").startswith("public")

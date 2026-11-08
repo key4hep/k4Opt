@@ -126,9 +126,7 @@ its measurements), then:
 Publishing the same state of a study again adds no snapshot and does not change when it was
 published: what a rerun needs is **checked again**, and the study's software sheet says when
 (a nightly may have been overwritten since). A sheet lists what this publication approved, and what
-an earlier one published that is still of the study, since a publication is never taken back:
-`k4opt publish` says which, and it stays *public* whatever is answered this time. An input counts
-as published only as the input it was approved as, never because another holds equal bytes. A
+an earlier one published that is still of the study ([below](#what-else-is-published)). A
 publication that fails removes every file it wrote, and writes nothing until its software sheet is
 made and checked. Publishing a study's JSON form again keeps its sheet. A
 **later state** (more trials, or more of them ended) replaces the study's entry; its earlier
@@ -148,49 +146,58 @@ before the catalog, and a reader never meets a catalog entry whose snapshot is n
 The study keeps privately what a rerun needs ([software](software.md#what-a-rerun-needs)).
 What of it leaves the machine is decided here. Recording is automatic; **publishing is not**.
 
+Local code is approved in **units**, each published whole or not at all: which files of it a rerun
+needs is never guessed, since what is compiled in is never read at run time.
+
+| Unit | What it holds |
+| --- | --- |
+| a local build | its checkout's whole state against the revision the nightly built (or every file, if no remote has its history): edits, untracked files and binaries a checkout holds alike; its `cmake-options.txt`; what it installed that a stage read, as `installed/...`, since that can differ from what its source installs |
+| a directory of local code | its every kept file, or its checkout's whole state; offered if a stage read from it, or if that is not known; held back (`--include` offers it) if every stage was observed and none read from it |
+| k4opt's own checkout, an evaluator, the geometry | their kept files (the geometry with an `aliases.json` of its files' other names) |
+| a changed job directory | its changed and added files and a `job-files.json`: the stack's files it removed, its executable files, its links within it |
+| an input | one file; a job file that leads out of its directory, through any chain of links, is an input of its own (`link:<stage>/<file>`), not code |
+
 | What | Published |
 | --- | --- |
 | the study's **software sheet**: the status, each requirement with its state and who can get it | always, made field by field: no path, size, variable name, host, or digest of an unpublished file |
-| **code that ran**: a build's edits against the revision the nightly built, changed job files, local code a stage read, a local geometry's and the evaluators' own files | after the first question |
-| an untracked file of a checkout | only if a stage read it or the build installed it; the rest are listed, and can be named with `--include` |
-| a file no stage was seen to read, when not every stage was observed | held back as *not known to be used*, and counted as on request: a failure to look is no evidence it was not needed |
-| **input files** the stages read | after a second, separate question that names where they go; up to 10 MB in all |
-| what passes the 10 MB of its group | a warning, not published; `--include-large` publishes it |
-| a file you leave out | `--exclude NAME`: the dashboard shows its name, *on request* |
-| a binary a checkout holds | held back unless named with `--include` |
+| the **code** units | after the first question |
+| the **input** units | after a second, separate question that names where they go; up to 10 MB in all |
+| a unit past the 10 MB of its group | a warning, not published; `--include-large` publishes it |
+| a unit you leave out | `--exclude NAME` of it or of any of its files: the dashboard shows its name, *on request* |
 | a file under `~/.` a stage read, `.rootrc` among them | held back, and on request: `--include-inputs NAME` publishes it |
 | a venv's `pyvenv.cfg` | listed only: it says where an interpreter is, and the environment is a requirement of its own |
-| a job file that leads out of its directory, through any chain of links | data, not code: held back, and on request: `--include-inputs NAME` publishes it |
 | a build no stage read | not offered |
-| a source file of a build that may be needed to compile it (any file of a checkout no remote has; an untracked source, header, template, Fortran or CUDA file, ROOT dictionary selection) | held back and on request, since no stage opens what is compiled in; `--include` names it, or the package (by its id, `package:name:2`, when two installations share a name) |
-| what a build installed that a stage read | offered as `installed/...`, since it can differ from what its source installs |
 
-A Python module counts as read when a stage read it from its `__pycache__`: with a valid cache,
-Python never opens the source. A file counts as read only where it was read: the same bytes elsewhere say nothing of this copy.
-A file deleted from a local directory is offered although nothing can read it, since its absence can
-change what an import finds. The options of a build's CMake cache whose names say a credential are
-left out with those that name a local path, `CMAKE_TOOLCHAIN_FILE` and `CMAKE_PREFIX_PATH` among
-them, and such a build's options then read *partially published*, which the Software tab counts
-among what a rerun lacks. A path on the stack or the system is published as it is; where the build
-installed is no setting. An empty setting is kept, since it differs from none. A local geometry's other names for
-its files come as an `aliases.json`.
-With a changed job directory comes a `job-files.json`, listing the stack's files it removed, its
-executable files and its links within it. With a build comes its `cmake-options.txt`: the options of
-its CMake cache that hold no path, the others counted in the file. Never published: a library or
-program (only its SHA-256 and build-id), the CMake cache itself, or an environment's list of
-distributions (only how many).
+A file counts as read where it was read (equal bytes elsewhere say nothing), a Python module also
+when its `__pycache__` was. Of a build's CMake cache, `cmake-options.txt` holds the options that name
+no local path and whose name says no credential (an empty one too; a path on the stack or the
+system as it is); the others, `CMAKE_TOOLCHAIN_FILE` and `CMAKE_PREFIX_PATH` among them, are counted
+in its first line, and the build's options then read *partially published*: the build is on request.
+Where it installed is no setting. Never published: a library or program (only its SHA-256 and
+build-id), the CMake cache itself, or an environment's list of distributions (only how many).
 
 `--include` names code and `--include-inputs` inputs, each only of its own kind, so that naming an
-input never opts in a file of the code. A name for `--exclude`, `--include` or `--include-inputs` is a file's path, its own name, its
-requirement's id (`input:2`, shown beside inputs that share a name) or a package. One that names
-nothing is refused, an empty one always (a script's unset variable selects nothing), and so is one that fits several files when approving (`--include`,
-`--include-inputs`), with how to name each: approving one file must never approve two. A release is
-bound to the study and the state it was reviewed in.
+input never opts in code. A name is a file's path or its own name, a unit's name, or its id
+(`package:ddmarlinpandora:2`, `input:7c1e09a2b4f3`, shown beside inputs that share a name). One that
+names nothing is refused, an empty one always (a script's unset variable selects nothing), and so is
+one that fits several units when approving, with how to name each: approving one must never approve
+two. A release is bound to the study and the state it was reviewed in.
+
+**Publishing again.** Every unit keeps its id between publications, so a later sheet knows what an
+earlier one published by that id and the file's name, never by its bytes: what was published stays
+listed and *public*, since a publication is never taken back (`k4opt publish` says which), unless
+its unit holds other bytes now; a published copy stands in for a kept file that is gone.
 
 ```text
-code        ddmarlinpandora   patch against 821384f   src/DDCaloHitCreator.cc  +1 −1
-                              ecal_tweak.py  4.2 kB  read by pi0_50gev/reconstruction
-            not published  ddmarlinpandora/notes.txt   (untracked, not used)
+code        ddmarlinpandora   1.2 kB
+              patch against 821384f   3 files  +2 −1
+                src/DDCaloHitCreator.cc  +1 −1
+                notes.txt  +1 −0
+                New.h  +1 −0
+              cmake-options.txt  187 B
+            helpers   4.3 kB
+              ecal_tweak.py  4.2 kB  read by pi0_50gev/reconstruction
+              __init__.py  0 B
 inputs      ecal_scale.json   1.1 kB   read by pi0_50gev/reconstruction   1.1 kB of 10 MB
 warning:    pi0_overlay.root, 48 MB, over 10 MB: not published (--include-large to publish it)
 scan        nothing found

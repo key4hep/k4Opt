@@ -77,7 +77,8 @@ class Check:
 class Requirement:
     """One thing a rerun needs.
 
-    ``id`` names it within the study (``base``, ``package:ddmarlinpandora``, ``input:2``), ``kind``
+    ``id`` names it within the study (``base``, ``package:ddmarlinpandora``,
+    ``input:7c1e09a2b4f3``: an id that holds between checks), ``kind``
     is what it is and ``label`` what to call it; ``identified`` says what identifies it, for a
     person; ``used_by`` the stages that used it, as their records say, and ``trials`` the trials
     whose records say so (their run directories, relative to the study at the top). ``source`` is
@@ -824,7 +825,7 @@ def _origin(
         if not files and not problem:
             checks.append(Check(at, "available", "nothing in it can be loaded: nothing to keep"))
     return Requirement(
-        f"code:{index}",
+        f"code:{key}",
         "code",
         str(origin.get("prefix")),
         identified,
@@ -917,6 +918,15 @@ def _listings(listed: Mapping[str, str], at: str) -> list[Requirement]:
     ]
 
 
+def _stable(entry: Mapping[str, Any]) -> str:
+    """What names an input between checks and publications, revealing nothing of it: its
+    commitment, or the digest of its random salt."""
+    said = entry.get("commitment")
+    if not isinstance(said, str):
+        said = hashlib.sha256(str(entry.get("salt")).encode()).hexdigest()
+    return said[:12]
+
+
 def _input(index: int, entry: Mapping[str, Any], store: Store, at: str) -> Requirement:
     path = str(entry.get("path"))
     kept = entry.get("kept")
@@ -938,7 +948,7 @@ def _input(index: int, entry: Mapping[str, Any], store: Store, at: str) -> Requi
     through = f", read through {entry['variable']}" if entry.get("variable") else ""
     size = f"{entry['bytes']} bytes" if isinstance(entry.get("bytes"), int) else "size unknown"
     return Requirement(
-        f"input:{index}",
+        f"input:{_stable(entry)}",
         "input",
         os.path.basename(path),
         f"{entry.get('origin')} input, {size}{through}",

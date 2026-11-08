@@ -204,30 +204,33 @@ def _used(piece: Piece) -> str:
 
 
 def _list(found: Offer, where: str, out: TextIO, style: Style) -> None:
-    """What would be published, and what would not, with why (see ``docs/publication.md``)."""
+    """What would be published, unit by unit, and what would not, with why (see
+    ``docs/publication.md``)."""
     label = "code"
-    owner: str | None = None
     code = _all(found, "code")  # what the question will be about, over the budget or not
-    for piece in code:
-        shown = "" if piece.owner == owner else style.bold(printable(piece.owner))
-        padding = " " * (_OWNER - (0 if piece.owner == owner else len(printable(piece.owner))))
-        owner = piece.owner
-        against = f"patch against {printable(piece.base)}   " if piece.base else ""
-        parts = [f"{shown}{padding}{against}{style.bold(printable(piece.name))}"]
-        parts.append(_change(piece, style))
-        if piece in found.large:
-            parts.append(style.yellow(f"{_size(piece.size)}, over {_size(BUDGET)}"))
-        if not piece.base and piece.stages:
-            parts.append(printable(_used(piece)))
-        _line(out, style, label, "  ".join(parts))
+    for part in _by_unit(code):
+        owner = printable(part[0].owner)
+        size = sum(piece.size for piece in part)
+        over = (
+            style.yellow(f"   {_size(size)}, over {_size(BUDGET)}")
+            if part[0] in found.large
+            else ""
+        )
+        _line(out, style, label, f"{style.bold(owner)}   {_size(size)}{over}")
         label = ""
+        for piece in part:
+            _piece(piece, out, style)
     if not code:
         _line(out, style, label, "nothing local to publish")
         label = ""
-    held = [h for h in found.held if h.group == "code"]
-    for why in sorted({h.why for h in held}):
-        names = ", ".join(printable(h.label) for h in held if h.why == why)
-        _line(out, style, label, style.gray(f"not published  {names}   ({why})"))
+    for h in (h for h in found.held if h.group == "code"):
+        files = ", ".join(printable(p.name) for p in h.pieces)
+        _line(
+            out,
+            style,
+            label,
+            style.gray(f"not published  {printable(h.label)}: {files}   ({h.why})"),
+        )
         label = ""
     _input_lines(found, out, style)
     for piece in found.large:
@@ -241,8 +244,9 @@ def _list(found: Offer, where: str, out: TextIO, style: Style) -> None:
                     f"{_size(BUDGET)}: not published (--include-large to publish it)"
                 ),
             )
-    for piece in found.excluded:
-        _line(out, style, "", style.gray(f"not published  {printable(piece.label)}   (excluded)"))
+    for part in _by_unit(found.excluded):
+        said = printable(part[0].owner or part[0].name)
+        _line(out, style, "", style.gray(f"not published  {said}   (excluded, with all of it)"))
     if found.readiness is not None:
         for gap in found.readiness.public_gaps:
             _line(out, style, "warning:", style.yellow(printable(gap)))
@@ -258,6 +262,32 @@ def _list(found: Offer, where: str, out: TextIO, style: Style) -> None:
         _line(out, style, "scan", style.green("nothing found"))
     _line(out, style, "to", style.cyan(printable(where)))
     print(file=out)
+
+
+def _by_unit(pieces: Sequence[Piece]) -> list[list[Piece]]:
+    found: dict[str, list[Piece]] = {}
+    for piece in pieces:
+        found.setdefault(piece.unit, []).append(piece)
+    return list(found.values())
+
+
+def _piece(piece: Piece, out: TextIO, style: Style) -> None:
+    """One file of a unit: a patch with each file it changes, any other with its change."""
+    if piece.is_patch:
+        line = f"patch against {printable(piece.base)}   {len(piece.files)} files"
+        _line(out, style, "", f"  {line}  {_change(piece, style)}")
+        for name, added, removed in piece.files:
+            counted = (
+                "binary"
+                if added is None or removed is None
+                else f"{style.green(f'+{added}')} {style.red(f'{_MINUS}{removed}')}"
+            )
+            _line(out, style, "", f"    {style.bold(printable(name))}  {counted}")
+        return
+    parts = [f"  {style.bold(printable(piece.name))}", _change(piece, style)]
+    if piece.stages:
+        parts.append(printable(_used(piece)))
+    _line(out, style, "", "  ".join(parts))
 
 
 def _input_lines(found: Offer, out: TextIO, style: Style) -> None:

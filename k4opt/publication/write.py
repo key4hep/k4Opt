@@ -208,12 +208,12 @@ def _sheet(
         for artifact in (previous.artifacts if previous is not None else ())
         if (content := _verified(directory / artifact.path, artifact)) is not None
     ]
-    commitments = {
-        r.id: r.facts.get("commitment") for r in (previous.requirements if previous else ())
-    }
-    kept, earlier = still_public(release, published, commitments)
-    for label in sorted({piece.label for piece in earlier}):
-        warn(f"{label} was published before and stays readable: a publication is never taken back")
+    kept, earlier = still_public(release, published)
+    for unit, name in sorted(earlier):
+        warn(
+            f"{name} ({unit}) was published before and stays readable: a publication is never "
+            "taken back"
+        )
     text = public_form(results, release, snapshot, first, [*artifacts, *kept], earlier).to_json()
     data = text.encode()
     if len(data) > MAX_SHEET_BYTES:  # a reader refuses it: none is written
