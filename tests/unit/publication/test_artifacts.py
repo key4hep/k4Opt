@@ -579,13 +579,13 @@ def test_an_input_held_back_that_a_stage_read_is_on_request(
     results = load_study(study)
     found = offer(results)
     held = {h.name: h for h in found.held if h.group == "inputs"}
-    assert held["calibration.json"].needed and not held[".rootrc"].needed
+    assert held["calibration.json"].needed and held[".rootrc"].needed
     entry = publish(results, tmp_path / "pub", release=found.release(code=True, inputs=True))
     sheet = open_publication(tmp_path / "pub").software(entry)
     assert sheet is not None
     by = {r.label: r for r in sheet.requirements}
     assert by["calibration.json"].access == "on request" and "needs access" in sheet.status
-    assert by[".rootrc"].unused  # every ROOT job reads it: no rerun needs it from the author
+    assert by[".rootrc"].access == "on request" and not by[".rootrc"].unused
 
 
 def steering(tmp_path: Path, **changes: Any) -> tuple[Any, Any]:
@@ -717,3 +717,172 @@ def test_two_builds_of_one_name_are_two_patches() -> None:
     ]
     study = "12345678-1234-4234-8234-123456789012"
     assert sorted(data for _, data in bundled(study, pieces)) == [b"diff 1\n", b"diff 2\n"]
+
+
+# --- what the second review of the publication found ---------------------------------------------
+
+
+def job_directory(tmp_path: Path) -> tuple[list[Piece], list[Any], Path]:
+    """The pieces of a real job directory, as a session keeps it: a changed file, a link within it
+    and a link to a private file outside it."""
+    import hashlib
+
+    from k4opt.publication import artifacts
+    from k4opt.software.keep import Store, _steering
+    from k4opt.software.readiness import Requirement
+
+    job, private = tmp_path / "job", tmp_path / "private" / "calibration.json"
+    private.parent.mkdir()
+    job.mkdir()
+    private.write_text('{"scale": 1.10}\n')
+    (job / "Pandora.py").write_text("x = 1\n")
+    (job / "inner.py").symlink_to("Pandora.py")
+    (job / "calibration.json").symlink_to(private)
+    inputs = {
+        f"samples.pi0.reco.directory/{path.name}": {
+            "path": str(path),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in job.iterdir()
+    }
+    store = Store(tmp_path / "kept")
+    (entry,) = _steering(store, [], {"inputs": inputs}, None)
+    requirement = Requirement("steering:pi0/reco", "steering", "pi0/reco", "x", entry=entry)
+    pieces: list[Piece] = []
+    held: list[Any] = []
+    artifacts._from_steering(requirement, store, pieces, held)
+    return pieces, held, private
+
+
+def test_a_link_out_of_a_job_directory_is_data_and_not_code(tmp_path: Path) -> None:
+    pieces, held, private = job_directory(tmp_path)
+    assert not any(b"1.10" in p.data for p in pieces if p.group == "code")
+    assert not any(p.name == "calibration.json" for p in pieces)
+    (out,) = held
+    assert (out.group, out.name, out.needed) == ("inputs", "calibration.json", True)
+    assert out.piece.group == "inputs" and out.piece.place == str(private)
+    assert "Pandora.py" in [p.name for p in pieces] and "inner.py" in [p.name for p in pieces]
+
+
+def test_a_credential_in_a_cmake_option_is_never_written(tmp_path: Path) -> None:
+    from k4opt.publication.artifacts import _options
+
+    text = _options(
+        b"CMAKE_BUILD_TYPE:STRING=Release\n"
+        b"MY_API_KEY:STRING=secret-value-123456\n"
+        b"DB_PASSWORD:STRING=hunter2hunter2\n"
+        b"GITLAB_TOKEN:STRING=abc\n"
+        b"ENABLE_X:BOOL=ON\n"
+    )
+    assert b"Release" in text and b"ENABLE_X=ON" in text
+    assert b"123456" not in text and b"hunter2" not in text and b"abc" not in text
+    assert b"# 3 more options" in text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "MY_API_KEY=secret-value-123456",
+        "export DB_PASSWORD=hunter2hunter2",
+        "auth_token: abc12345678",
+    ],
+)
+def test_the_scan_sees_unquoted_and_prefixed_secrets(text: str) -> None:
+    assert scan([Piece("code", "o", "x", text.encode(), (), ())])
+
+
+@pytest.mark.parametrize(
+    "text", ["password = getpass()", "secret = load_the_secret_now", "api_key: ${API_KEY}"]
+)
+def test_the_scan_leaves_a_secret_that_is_only_referred_to_alone(text: str) -> None:
+    assert not scan([Piece("code", "o", "x", text.encode(), (), ())])
+
+
+def test_include_inputs_opts_in_no_code_and_include_no_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    study = local_study(tmp_path, monkeypatch)
+    data = tmp_path / "data" / "notes.txt"
+    data.write_text("an input\n")
+    add_input(study, data)
+    results = load_study(study)
+    found = offer(results, include_inputs=["notes.txt"])
+    assert "ddmarlinpandora/notes.txt" not in names(found.code)  # untracked, not used: still held
+    with pytest.raises(PublicationError, match="nothing of this study is named"):
+        offer(results, include=["ecal_scale.json"])  # an input is approved as an input
+
+
+def test_equal_inputs_at_two_places_stay_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    study = local_study(tmp_path, monkeypatch)
+    first, second = tmp_path / "one" / "config.json", tmp_path / "two" / "config.json"
+    for path in (first, second):
+        path.parent.mkdir()
+        path.write_text('{"scale": 1}\n')
+        add_input(study, path)
+    found = offer(load_study(study))
+    same = [p for p in found.inputs if p.name == "config.json"]
+    assert sorted(str(p.place) for p in same) == sorted([str(first), str(second)])
+    (one,) = found.release(inputs=[str(first)]).pieces
+    assert one.place == str(first) and len(one.requirements) == 1
+
+
+def test_a_deleted_module_of_a_directory_is_offered_though_nothing_can_read_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.software import keep, source
+    from tests.support.checkouts import checkout
+    from tests.support.studies import mini_environment, mixed_study
+
+    mini_environment(monkeypatch)
+    clean = checkout(tmp_path / "k4opt", "k4Opt")
+    monkeypatch.setattr(
+        keep, "checkout", lambda path, release: source.checkout(str(clean), release)
+    )
+    repo = checkout(tmp_path / "src", "shadows")
+    (repo / "README.md").unlink()  # a real deletion, which can change what an import finds
+    (repo / "src" / "DDCaloHitCreator.cc").write_text("edited, and read by nothing\n")
+    monkeypatch.setenv("PYTHONPATH", str(repo))
+    found = offer(load_study(mixed_study(tmp_path / "study", 1)))
+    assert "README.md" in [p.name for p in found.code if p.owner == "shadows"]
+    held = {h.name: h.why for h in found.held if h.owner == "shadows"}
+    assert held["src/DDCaloHitCreator.cc"] == "not read by any stage"
+
+
+def test_a_home_configuration_is_needed_and_only_a_venvs_marker_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    study = local_study(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".rootrc").write_text("Unix.*.Root.UseTTFonts: false\n")
+    (tmp_path / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    add_input(study, home / ".rootrc")
+    add_input(study, tmp_path / "pyvenv.cfg")
+    monkeypatch.setenv("HOME", str(home))
+    held = {h.name: h for h in offer(load_study(study)).held if h.group == "inputs"}
+    assert held[".rootrc"].needed and not held["pyvenv.cfg"].needed
+
+
+@pytest.mark.parametrize("field", ["checked", "first_checked"])
+def test_a_time_that_is_no_time_refuses_the_sheet(
+    made: tuple[Path, StudyResults], tmp_path: Path, field: str
+) -> None:
+    from k4opt.publication import SoftwareSheet
+
+    entry = publish(made[1], tmp_path / "pub")
+    assert entry.software is not None
+    sheet = json.loads((tmp_path / "pub" / entry.software.path).read_text())
+    sheet[field] = "yesterday"
+    with pytest.raises(PublicationError, match="no time"):
+        SoftwareSheet.from_json(json.dumps(sheet), entry.id, entry.snapshot.sha256, "here")

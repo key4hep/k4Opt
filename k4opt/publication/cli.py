@@ -65,14 +65,14 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         action="append",
         default=[],
         metavar="NAME",
-        help="publish this input file, by name, without asking; may be repeated",
+        help="publish this input file, also one held back, without asking; may be repeated",
     )
     parser.add_argument(
         "--include",
         action="append",
         default=[],
         metavar="NAME",
-        help="offer a file that is held back (untracked and not used, binary); may be repeated",
+        help="offer code that is held back (untracked and not used, binary); may be repeated",
     )
     parser.add_argument(
         "--exclude",
@@ -100,7 +100,8 @@ def cmd_publish(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     style = Style(color(out))
     found = offer(
         results,
-        include=[*args.include, *args.include_inputs],
+        include=args.include,
+        include_inputs=args.include_inputs,
         exclude=args.exclude,
         include_large=args.include_large,
     )

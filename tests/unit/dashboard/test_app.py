@@ -465,3 +465,23 @@ def test_a_published_input_can_be_downloaded_from_the_software_tab(
     assert not at.exception
     labels = [button.proto.label for button in at.get("download_button")]
     assert "ecal_scale.json" in labels
+
+
+def test_two_published_files_of_equal_bytes_each_get_their_button(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.publication import offer, publish
+    from tests.support.published import add_input
+
+    study = local_study(tmp_path, monkeypatch)
+    for name in ("one", "two"):
+        path = tmp_path / name / "config.json"
+        path.parent.mkdir()
+        path.write_text('{"scale": 1}\n')
+        add_input(study, path)
+    results = load_study(study)
+    publish(results, tmp_path / "pub", release=offer(results).release(inputs=True))
+    at = study_page(monkeypatch, tmp_path, results, view="Software")
+    assert not at.exception
+    labels = [button.proto.label for button in at.get("download_button")]
+    assert labels.count("config.json") == 2

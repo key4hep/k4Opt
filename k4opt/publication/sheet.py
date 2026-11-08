@@ -19,6 +19,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal, NoReturn, cast
 
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
@@ -191,8 +192,8 @@ class SoftwareSheet:
             study=study,
             snapshot=snapshot,
             status=_text(data["status"], f"{where}: status"),
-            checked=_text(data["checked"], f"{where}: checked"),
-            first_checked=_text(data["first_checked"], f"{where}: first_checked"),
+            checked=_time(data["checked"], f"{where}: checked"),
+            first_checked=_time(data["first_checked"], f"{where}: first_checked"),
             first_status=_text(data["first_status"], f"{where}: first_status"),
             gaps=_texts(data["gaps"], f"{where}: gaps"),
             altered=_texts(data["altered"], f"{where}: altered"),
@@ -336,6 +337,15 @@ def _text(value: object, where: str) -> str:
     if not isinstance(value, str):
         _refuse(where, f"is {value!r}, not text")
     return value
+
+
+def _time(value: object, where: str) -> str:
+    text = _text(value, where)
+    try:
+        datetime.fromisoformat(text)
+    except ValueError:
+        _refuse(where, f"is {text!r}, no time")
+    return text
 
 
 def _texts(value: object, where: str) -> tuple[str, ...]:

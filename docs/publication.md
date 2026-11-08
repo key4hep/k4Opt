@@ -154,19 +154,24 @@ What of it leaves the machine is decided here. Recording is automatic; **publish
 | what passes the 10 MB of its group | a warning, not published; `--include-large` publishes it |
 | a file you leave out | `--exclude NAME`: the dashboard shows its name, *on request* |
 | a binary a checkout holds | held back unless named with `--include` |
-| a file under `~/.` a stage read | held back, and on request: `--include-inputs NAME` publishes it |
-| `.rootrc`, `.rootmap`, a venv's `pyvenv.cfg` | listed only: every job reads them, and no rerun needs them from the author |
+| a file under `~/.` a stage read, `.rootrc` among them | held back, and on request: `--include-inputs NAME` publishes it |
+| a venv's `pyvenv.cfg` | listed only: it says where an interpreter is, and the environment is a requirement of its own |
+| a job file that is a link out of its directory | data, not code: held back, and on request: `--include-inputs NAME` publishes it |
 | a build no stage read | not offered |
 
 A Python module counts as read when a stage read it from its `__pycache__`: with a valid cache,
 Python never opens the source. A file counts as read only where it was read: the same bytes elsewhere say nothing of this copy.
+A file deleted from a local directory is offered although nothing can read it, since its absence can
+change what an import finds. The options of a build's CMake cache whose names say a credential are
+left out with those that hold a path.
 With a changed job directory comes a `job-files.json`, listing the stack's files it removed, its
 executable files and its links within it. With a build comes its `cmake-options.txt`: the options of
 its CMake cache that hold no path, the others counted in the file. Never published: a library or
 program (only its SHA-256 and build-id), the CMake cache itself, or an environment's list of
 distributions (only how many).
 
-A name for `--exclude`, `--include` or `--include-inputs` is a file's path, its own name, its
+`--include` names code and `--include-inputs` inputs, each only of its own kind, so that naming an
+input never opts in a file of the code. A name for `--exclude`, `--include` or `--include-inputs` is a file's path, its own name, its
 requirement's id (`input:2`, shown beside inputs that share a name) or a package. One that names
 nothing is refused, and so is one that fits several files when approving (`--include`,
 `--include-inputs`), with how to name each: approving one file must never approve two. A release is

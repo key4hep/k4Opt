@@ -27,7 +27,7 @@ import json
 import os
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 import k4opt as k4opt_package
@@ -60,9 +60,9 @@ BUDGET = 10_000_000
 """How many bytes of code, and of inputs, are published unless ``--include-large`` says more."""
 NEEDS_ACCESS = "Not rerun · needs access"
 _UNKNOWN = "not known to be used"
-_TOOLS = (".rootrc", ".rootmap", "pyvenv.cfg")
-"""Configuration every job of the stack reads by itself: listed, and no rerun needs it from the
-author."""
+_TOOLS = ("pyvenv.cfg",)
+"""What says only where an environment's interpreter is: listed, and no rerun needs it from the
+author; the environment is a requirement of its own."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +75,7 @@ class Section:
     binary: bool
     added: int
     removed: int
+    deleted: bool = False
 
 
 _HEADER = re.compile(rb"^diff --git ", re.MULTILINE)
@@ -96,7 +97,8 @@ def sections(patch: bytes) -> list[Section]:
             for line in body.split(b"\n"):
                 added += line[:1] == b"+"
                 removed += line[:1] == b"-"
-        found.append(Section(name, text, binary, added, removed))
+        head = text[: text.index(b"\n@@")] if b"\n@@" in text else text
+        found.append(Section(name, text, binary, added, removed, b"\ndeleted file mode " in head))
     return found
 
 
@@ -221,8 +223,10 @@ _SECRETS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     (
         "a secret assigned in the open",
         re.compile(
-            rb"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)"
-            rb"\b\s*[:=]\s*[\"'][^\"'\s]{8,}[\"']"
+            rb"(?i)(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)"
+            rb"\b\s*[:=]\s*(?:[\"'](?!/)[^\"'\s]{8,256}[\"']"
+            # unquoted: what a token looks like, not a name, a call or a path
+            rb"|(?=[\w+=-]{0,255}\d)[\w+=-]{8,256}(?![\w+=(.\[/-]))"
         ),
     ),
 )
@@ -325,26 +329,36 @@ def offer(
     results: StudyResults,
     *,
     include: Sequence[str] = (),
+    include_inputs: Sequence[str] = (),
     exclude: Sequence[str] = (),
     include_large: bool = False,
 ) -> Offer:
-    """What of ``results`` may be published (see the module): ``include`` names what is otherwise
-    held back, ``exclude`` what to leave out, ``include_large`` publishes past the budget. Raises
-    :class:`PublicationError` for a name that names nothing: a slip must not publish a file its
-    author meant to leave out."""
+    """What of ``results`` may be published (see the module): ``include`` names the code otherwise
+    held back and ``include_inputs`` the inputs, each only of its own kind, so that naming an input
+    never opts in code; ``exclude`` what to leave out, ``include_large`` publishes past the budget.
+    Raises :class:`PublicationError` for a name that names nothing: a slip must not publish a file
+    its author meant to leave out."""
     snapshot = hashlib.sha256(results.to_json().encode()).hexdigest()
     if results.directory is None:
         return Offer(None, study=results.id, snapshot=snapshot)
     readiness = requirements(results.directory, results.document)
     pieces, held = _gathered(readiness)
-    wanted = [piece for name in include for piece in _named((h.piece for h in held), name)]
+    of = {group: [h.piece for h in held if h.group == group] for group in ("code", "inputs")}
+    wanted = [piece for name in include for piece in _named(of["code"], name)]
+    wanted += [piece for name in include_inputs for piece in _named(of["inputs"], name)]
     named = [h for h in held if h.piece in wanted]
     pieces = _merged([*pieces, *(h.piece for h in named)])
     held = [h for h in held if h not in named]
     excluded = [p for p in pieces if any(p.matches(name) for name in exclude)]
     pieces = [p for p in pieces if p not in excluded]
     known = [*pieces, *excluded, *(h.piece for h in held), *(h.piece for h in named)]
-    unknown = [n for n in (*exclude, *include) if not any(p.matches(n) for p in known)]
+    unknown = [n for n in exclude if not any(p.matches(n) for p in known)]
+    unknown += [
+        name
+        for names, group in ((include, "code"), (include_inputs, "inputs"))
+        for name in names
+        if not any(p.group == group and p.matches(name) for p in known)
+    ]
     if unknown:
         raise PublicationError(f"nothing of this study is named {', '.join(unknown)}")
     code, large_code = _budget([p for p in pieces if p.group == "code"])
@@ -384,23 +398,17 @@ def _budget(pieces: Sequence[Piece]) -> tuple[tuple[Piece, ...], tuple[Piece, ..
 
 def _merged(pieces: Iterable[Piece]) -> list[Piece]:
     """``pieces``, each file once: two stages can run the same job file."""
-    found: dict[tuple[str, str, bytes], Piece] = {}
+    found: dict[tuple[str, str, bytes, str | None], Piece] = {}
     for piece in pieces:
-        key = (piece.owner, piece.name, piece.data)
+        key = (piece.owner, piece.name, piece.data, piece.place)  # two inputs stay two: equal bytes
         held = found.get(key)
         found[key] = (
             piece
             if held is None
-            else Piece(
-                piece.group,
-                piece.owner,
-                piece.name,
-                piece.data,
-                tuple(dict.fromkeys((*held.requirements, *piece.requirements))),
-                tuple(sorted({*held.stages, *piece.stages})),
-                piece.base,
-                piece.added,
-                piece.removed,
+            else replace(
+                piece,
+                requirements=tuple(dict.fromkeys((*held.requirements, *piece.requirements))),
+                stages=tuple(sorted({*held.stages, *piece.stages})),
             )
         )
     return list(found.values())
@@ -552,21 +560,27 @@ def _from_origin(
 
 OPTIONS = "cmake-options.txt"
 _OPTION = re.compile(r"^([A-Za-z_][\w.+-]*):(BOOL|STRING)=(.*)$")
+_SENSITIVE = re.compile(
+    r"(?i)pass(?:word|wd|phrase)?|pwd|secret|token|credential|api[_-]?key|private[_-]?key|auth"
+)
 
 
 def _options(cache: bytes) -> bytes:
-    """The options of a CMake cache that hold no path: what a rebuild needs of it, without where
-    the build was made (its paths, the compiler's among them, are the author's to give)."""
+    """The options of a CMake cache that hold no path and whose name says no credential: what a
+    rebuild needs of it, without where the build was made (those left out are counted, and are the
+    author's to give)."""
     kept, left = [], 0
     for line in cache.decode(errors="replace").splitlines():
         option = _OPTION.match(line)
         if option is None:
             continue
-        if "/" in option[3] or option[1].endswith("-ADVANCED"):
+        if "/" in option[3] or option[1].endswith("-ADVANCED") or _SENSITIVE.search(option[1]):
             left += 1
         elif option[3]:
             kept.append(f"{option[1]}={option[3]}")
-    note = [f"# {left} more options hold local paths: ask the author"] if left else []
+    note = (
+        [f"# {left} more options hold local paths or credentials: ask the author"] if left else []
+    )
     return "\n".join([*note, *sorted(kept)]).encode() + b"\n"
 
 
@@ -610,8 +624,8 @@ def _from_section(
         why, needed = "binary", True
     elif whole and not stages and not installed:
         why = "no public commit, not used"
-    elif not compiled and not stages:
-        why = "not read by any stage"
+    elif not compiled and not stages and not section.deleted:  # what is gone was read by no one,
+        why = "not read by any stage"  # and can change what an import finds
     if why not in (None, "binary") and not reads.complete:
         why, needed = _UNKNOWN, True  # a failure to look is no evidence that it was not used
     if why is None:
@@ -639,6 +653,20 @@ def _from_steering(
         data = _kept(store, file.get("kept"))
         if data is None or str(name).endswith(".pyc") or "__pycache__/" in str(name):
             continue  # made again by whoever runs it
+        if _leaves(str(name), file.get("link")):  # another file's bytes, not this directory's
+            shown = os.path.basename(str(name))
+            piece = Piece(
+                "inputs",
+                "",
+                shown,
+                data,
+                (requirement.id,),
+                requirement.used_by,
+                place=str(file["link"]),
+            )
+            why = "a link out of its job directory"
+            held.append(Held("inputs", "", shown, why, requirement.id, True, piece))
+            continue
         if _binary(data):
             piece = Piece("code", owner, str(name), data, (requirement.id,), requirement.used_by)
             held.append(Held("code", owner, str(name), "binary", requirement.id, True, piece))
@@ -658,6 +686,16 @@ def _from_steering(
         )
 
 
+def _leaves(name: str, link: object) -> bool:
+    """Whether the link ``link`` at ``name`` of a job directory leads out of it, other than to the
+    stack, which is public."""
+    if not isinstance(link, str) or link.startswith("/cvmfs/"):
+        return False
+    return os.path.isabs(link) or os.path.normpath(
+        os.path.join(os.path.dirname(name), link)
+    ).startswith("..")
+
+
 def _manifest(entry: Mapping[str, Any], files: Mapping[str, Any]) -> bytes | None:
     """What the files of a job directory do not say of it: which files of the stack's package it
     removed, which of its files are executable and which are links within it; ``None`` if nothing.
@@ -668,7 +706,7 @@ def _manifest(entry: Mapping[str, Any], files: Mapping[str, Any]) -> bytes | Non
         for name, file in described.items()
         if isinstance(file.get("link"), str)
         and not os.path.isabs(file["link"])
-        and not os.path.normpath(os.path.join(os.path.dirname(name), file["link"])).startswith("..")
+        and not _leaves(name, file["link"])
     }
     document = {
         "package": entry.get("package"),
@@ -737,7 +775,7 @@ def _from_input(
     piece = Piece("inputs", "", name, data, (requirement.id,), requirement.used_by, place=path)
     if name in _TOOLS:
         held.append(
-            Held("inputs", "", name, "a tool's configuration", requirement.id, False, piece)
+            Held("inputs", "", name, "an environment's marker", requirement.id, False, piece)
         )
     elif path.startswith(f"{os.path.expanduser('~')}/."):
         held.append(Held("inputs", "", name, "home configuration", requirement.id, True, piece))

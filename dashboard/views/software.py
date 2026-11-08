@@ -89,6 +89,12 @@ def _artifact(where: str, artifact: PublishedArtifact) -> None:
     _download(where, artifact)
 
 
+def _key(artifact: PublishedArtifact) -> str:
+    """A widget's key for ``artifact``: two can hold equal bytes, none answers the same things."""
+    parts = ("get", artifact.sha256[:16], artifact.owner, artifact.name, *artifact.requirements)
+    return "-".join(parts)
+
+
 def _download(where: str, artifact: PublishedArtifact) -> None:
     """A way to get a published file: its bytes, checked against its SHA-256, or, too large to
     hold in the page, its link or its place in the publication."""
@@ -99,7 +105,7 @@ def _download(where: str, artifact: PublishedArtifact) -> None:
             st.error(f"This file does not hold up: {labels.plain(exc)}")
             return
         name = artifact.name.rpartition("/")[2]
-        st.download_button(artifact.name, content, file_name=name, key=f"get-{artifact.sha256}")
+        st.download_button(artifact.name, content, file_name=name, key=_key(artifact))
         return
     link = tables.artifact_link(where, artifact)
     if link is not None:
