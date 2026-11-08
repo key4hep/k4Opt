@@ -265,7 +265,12 @@ def test_study_show_trial_and_export_read_a_study_and_change_nothing(
     assert lines[6] == "limits:     test.trade_off/analysis/a:max  <= 400 mm"
     assert lines[7].startswith("trials:     6: ") and "invalid" in lines[7]
     assert lines[8].startswith("pareto:     ")
-    assert all(line.startswith("            trial ") for line in lines[9:])
+    rerun = next(i for i, line in enumerate(lines) if line.startswith("rerun:"))
+    assert all(line.startswith("            trial ") for line in lines[9:rerun])
+    # what a rerun needs, checked just now: the test stack's build, k4opt, the evaluator
+    assert lines[rerun].startswith("rerun:      Not rerun · ")
+    needs = "\n".join(lines[rerun + 1 :])
+    assert "base        Key4hep LCG devkey-head" in needs and "evaluator   test.trade_off" in needs
     assert "\x1b" not in out  # not a terminal: no color
 
     code, out, err = study("trial", str(output), "0")

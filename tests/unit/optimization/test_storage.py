@@ -160,6 +160,7 @@ def test_a_database_outside_the_directory_keeps_the_trials_and_no_journal_is_mad
     assert [t.status for t in report.trials] == ["valid", "valid"]
     assert (tmp_path / "studies.db").is_file()
     assert sorted(p.name for p in (tmp_path / "s").iterdir()) == [
+        "software",
         "study.json",
         "trial-000000",
         "trial-000001",

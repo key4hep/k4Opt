@@ -540,6 +540,7 @@ def _build_manifest(
         "output": {"root": str(out), "compact": source.compact},
         "reachable_files": list(graph.files),
         "resources": [*catalog.resources, *extra.resources],
+        "added": extra.hashes,
         "external_includes": [
             {"file": e.file, "line": e.line, "ref": e.ref, "reason": e.reason} for e in externals
         ],

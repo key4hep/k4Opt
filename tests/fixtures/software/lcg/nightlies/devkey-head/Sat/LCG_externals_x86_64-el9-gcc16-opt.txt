@@ -3,3 +3,5 @@ VERSION: devkey-head
 COMPILER: gcc;16.1.0
 DD4hep; 1a2b3; HEAD; /cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Sat/DD4hep/HEAD/x86_64-el9-gcc16-opt; ROOT-4c5d6
 ROOT; 4c5d6; 6.38.00; /cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Sat/ROOT/6.38.00/x86_64-el9-gcc16-opt;
+cldconfig; cb73f; HEAD; /cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Sat/cldconfig/HEAD/x86_64-el9-gcc16-opt; DD4hep-1a2b3
+ddmarlinpandora; bc2c6; HEAD; /cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Sat/ddmarlinpandora/HEAD/x86_64-el9-gcc16-opt; DD4hep-1a2b3

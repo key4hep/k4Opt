@@ -247,6 +247,7 @@ def _geometry(
         ),
         "externals": context.externals,
         "candidate_externals": externals,
+        "candidate_files": snapshot.manifest["added"],
     }
     tree = Tree.of(own) if own.is_dir() else None
     outcome = TaskOutcome(

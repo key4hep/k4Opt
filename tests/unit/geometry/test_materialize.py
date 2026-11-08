@@ -500,6 +500,21 @@ def test_manifest_keeps_unchanged_external_with_the_same_value(tmp_path: Path) -
     assert externals == [("${X}/new.stl", 2), ("${CAD}/outside.stl", 3)]
 
 
+def test_the_manifest_says_what_only_a_redirect_reached_as_it_was_copied(tmp_path: Path) -> None:
+    geo = write_tree(
+        tmp_path / "geo",
+        {
+            "main.xml": '<lccdd><include ref="a.xml"/></lccdd>',
+            "a.xml": "<lccdd/>",
+            "b.xml": "<lccdd/>",
+        },
+    )
+    source = GeometrySource("main.xml", root=geo)
+    result = source.materialize([Override("lccdd.include.ref", "b.xml")], tmp_path / "out")
+    assert result.manifest["added"] == {"b.xml": _sha256(geo / "b.xml")}
+    assert source.materialize([], tmp_path / "same").manifest["added"] == {}
+
+
 @pytest.mark.parametrize("redirect", [False, True])
 def test_relocation_rejects_reachable_resources_outside_the_root(
     tmp_path: Path, redirect: bool

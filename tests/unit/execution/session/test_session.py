@@ -1208,6 +1208,7 @@ def test_a_candidate_records_and_checks_the_external_files_its_values_name(
     geometry = outcome.summary["geometry"]
     read = {"path": str(model), "sha256": hashlib.sha256(b"solid b").hexdigest()}
     assert geometry["candidate_externals"] == {"${CAD}/b.stl": read}  # type: ignore[index]
+    assert geometry["candidate_files"] == {}  # type: ignore[index]
     assert geometry["externals"] == opened  # type: ignore[index]
     unchanged = session.evaluate({RADIUS: 450.0, "support": "cad/support.stl"}, tmp_path / "b")
     assert unchanged.summary["geometry"]["candidate_externals"] == {}  # type: ignore[index]

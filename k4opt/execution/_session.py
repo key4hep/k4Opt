@@ -220,7 +220,7 @@ def _study_inputs(runs: Iterable[Path], local: Sequence[Local]) -> dict[str, Jso
             checked.add(at)
             made.update(found.made)  # only what the checks need is kept, not the footprint
             looked.append((f"{run.name}/{stage}", found.appeared(local, ())))
-        for path, (then, stage) in recorded_inputs(summary).items():
+        for path, (then, (stage, *_)) in recorded_inputs(summary).items():
             first = held.setdefault(path, (then, f"{run.name}/{stage}"))
             if first[0] != then:
                 raise ProvenanceError(

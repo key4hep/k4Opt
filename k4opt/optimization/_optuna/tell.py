@@ -27,6 +27,7 @@ from optuna.trial import FrozenTrial, Trial, TrialState
 
 from k4opt.errors import K4OptError
 from k4opt.execution import Rejected, RunOutcome
+from k4opt.optimization._keep import Keeper
 from k4opt.optimization._optuna import marks
 from k4opt.optimization._optuna.read import trial_result
 from k4opt.optimization._optuna.space import constraint_values, objective_values
@@ -54,6 +55,8 @@ class _Study:
     warn: Warn
     # what each reference only candidates name read, and the first trial that read it
     read: dict[str, tuple[int, object]] = field(default_factory=dict)
+    # what keeps, for a rerun, what each trial's stages read (the top study's, at every level)
+    keeper: Keeper | None = None
 
 
 def _report(
@@ -88,6 +91,8 @@ def _report(
             )
     for warning in warnings:
         run.warn(warning)
+    if run.keeper is not None:  # what its stages read, before anything of it can change
+        run.keeper.trial(run.directory / trial_directory(number))
     trial.set_user_attr(marks.STATUS, result.status)
     path = f"{trial_directory(number)}/{SUMMARY_NAME}"
     record = {"id": result.record, "sha256": result.sha256, "path": path}

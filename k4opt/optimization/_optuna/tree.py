@@ -237,7 +237,7 @@ class Tree:
             database = open_storage(directory, None)
             self._journals[document["id"]] = database
         study = open_optuna(directory, document, database, resume)
-        child = _Study(directory, document, scope, study, self._warn)
+        child = _Study(directory, document, scope, study, self._warn, keeper=run.keeper)
         if resume:
             check_optuna_study(study, document)
             _recover(child, lambda result: None)

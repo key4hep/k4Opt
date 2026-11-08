@@ -91,7 +91,12 @@ A relative or empty entry (`.`, or the empty one in `a::b`) is the directory k4o
 its own process and its workers import from, as Python resolves it when it starts; so is a file
 named with a `/` (`LD_PRELOAD=./libpatch.so`). A bare library name (`LD_PRELOAD=libpatch.so`) is
 looked up on the library path, whose local directories are identified already. A program a stage
-runs starts in the stage's own directory, which k4opt makes.
+runs starts in the stage's own directory, which k4opt makes. One exception: an empty entry
+of `ROOT_INCLUDE_PATH` (the one `k4_local_repo` leaves at its end) stays as text. ROOT skips it: a
+header in the working directory is found by `#include "..."` with the variable unset, empty or
+`.`, and by `#include <...>` only with `.` (verified), so the empty entry adds nothing, and
+identifying every file below the working directory would take in the study being written there,
+which then could never run. `.` is identified as any other entry.
 
 | Variable | What can be loaded through a local entry |
 | --- | --- |
@@ -188,6 +193,83 @@ is why [another study](execution.md#stages-made-once-reuse) reuses an output onl
 software: the footprint then guards what lies outside the identity, and is never the proof that a
 change in the software did not matter. Rebuilding a reconstruction package therefore simulates again
 across studies, which costs time and never correctness.
+
+## What a rerun needs
+
+A study keeps privately, in its `software/` directory, what a rerun would need that is not public,
+and `k4opt study show` says what that is and whether it is there (the study at the top of a nested
+optimization keeps it for every level). Nothing of it leaves the machine.
+
+| Kept | When | What |
+| --- | --- | --- |
+| the release | a session opens | the LCG view's manifests (34 kB gzipped), which name each package's version, build hash and place, and for each package built from a repository's head the commit it was built from and lcgcmake's revision (`.buildinfo_<package>.txt`), which they do not. No file of the build |
+| local builds | a session opens | each local entry of the software grouped into its *origin*: a CMake installation (`<checkout>/install` from `k4_local_repo`), a directory of local code, or an environment of installed distributions. A build is linked to its checkout and the package of the stack it stands in for, its binaries identified by SHA-256 and GNU build-id, and its CMake cache kept (its options, compiler and flags). What else a build installed that can be loaded (Python modules, headers, registries) is kept file by file: it may differ from what its source installs. A binary is never kept, whether of a build or of a directory of no build; one a checkout itself holds, tracked or untracked and not ignored, is part of its state and in its patch |
+| sources | a session opens | the complete state of each checkout (`HEAD`, staged, unstaged and untracked files; ignored files, its installation and its build trees left out, but for what can be loaded from a local entry, kept file by file or, if compiled, identified), as a patch against the revision the nightly built that package from, the newest commit a remote has, or, if no remote has any of its history, as every file. Untracked files over 10 MB are listed, not kept. Local code in no checkout is kept file by file |
+| steering | a session opens | each reconstruction's job directory against the package of the stack it is a copy of (by its name, `CLDConfig`): its changed and added files are kept, with whether each is executable and where a link led, the removed ones named |
+| geometry | a session opens; a trial's record is accepted | every file reachable from the compact file, with the other names of those files, unless the stack holds it, and what its external references read; then what a candidate's `ref` parameters reach beyond those, as inputs |
+| evaluators | a session opens | each evaluator's file and every local module it imports, as its identity lists them; one that cannot be found is recorded as not kept |
+| inputs | a trial's record is accepted | each file the stages read that the stack, the system and the software do not identify (from the problem or the footprints), up to 100 MB (a compiled file is identified, never kept), with the variable that names it, the trials that read it and a salted commitment `sha256(salt ‖ sha256(file))` that a publication can show without letting anyone test a guess. A path read as another file is another entry, never merged with the first |
+| what ran | a trial's record is accepted | which files of local entries each observed stage read, where, and which kept state of the software each trial ran with |
+
+All of it within 100 MB per study (a study without large inputs keeps a few hundred kB: the manifests,
+the patches of its checkouts, a few small files), content-addressed and gzipped, written whole and
+checked on every read: bytes altered on disk are reported, never used, and so are records that no
+longer match what they name (a `software-*.json` is named by the SHA-256 of its content; a kept file
+must be the bytes its record says it was read as). What cannot be kept never stops a study: it is said
+once, recorded, and `study show` lists it. Nothing is written into a checkout: its state is a git tree
+made with a temporary index and object store, reading the checkout's objects through git's
+alternates. A remote is recorded without a password, and over HTTP(S) without any user part (a token
+is often written there); an SSH user is kept.
+
+**Only its owner can read it.** `software/` and every directory below it are `0700` (made so again
+each time a session opens), and every file is `0600` from the moment it exists. On AFS the
+directory's access list decides instead (`fs listacl`): a study there says so when it starts.
+
+**Source and binary are two facts.** A patch does not rebuild the same binary: the same source built
+in another directory has another build-id and other bytes. So a local build that ran is *rebuildable
+from source* when its state is kept whole against a known revision (or whole, if no remote has its
+history), its CMake configuration is kept, and its link to the binary is `verified` (a CMake cache
+installs into its prefix, and the build tree holds every installed binary, with its build-id) or
+`likely` (the cache does, but the binaries cannot be compared or differ); `adjacent` (in a checkout,
+no build tree says so) and `none` are not enough. Nor is a source whose files changed after its newest
+binary was made, or that differs between the kept states the study's trials ran with, or that lacks
+untracked files too large to keep: what is kept is then not known to be what ran. Its original binary
+is a *fingerprint only*: identified, never available. A local binary of no build and no checkout is
+*binary only — source unknown*. A local build no stage read from (all of them observed completely) is
+*changed locally — not used*: on LCG views `k4_local_repo` leaves `MARLIN_DLL` on the nightly's
+library, so a rebuilt Marlin processor does not run unless it is set by hand. Which build ran is told
+by where its files were read, not only by their bytes: two installations may hold the same library.
+
+```text
+$ k4opt study show runs/cld-ecal-study
+...
+rerun:      Not rerun · rebuild needed · availability not established (checked 2026-11-08T09:12:44+00:00)
+needs:      base        Key4hep LCG devkey-head, built Sat Nov 7 04:17:32 2026: x86_64-el9-gcc16-opt, 989 packages, 66 built from a repository's head, with their revisions; available; used by pi0/reconstruction, pi0/simulation
+                        a nightly: a later build overwrites its slot, and this one is then gone
+            package     ddmarlinpandora: 821384f + 1 uncommitted files + 1 untracked (verified link); rebuildable from source; original binary: fingerprint only; available; used by pi0/reconstruction
+            environment /home/me/k4Opt/py-venv/lib/python3.14/site-packages: 60 distributions; not checked: installed distributions, not checked against an index
+            steering    pi0/reconstruction: a copy of cldconfig 8879e4e: 1 changed, 0 added, 0 removed; available; used by pi0/reconstruction
+            input       ecal_scale.json: observed input, 16 bytes, read through MY_ECAL_SCALE_FILE; available; used by pi0/reconstruction
+            ...
+```
+
+What a study used is read from the records of all its trials, at every level of a nested
+optimization; a stage whose output was reused is what the stage that made it used, as that stage's
+record says, in this study or another. The status never says a study was reproduced: that takes a
+rerun, which k4opt does not record yet.
+
+| Status | When |
+| --- | --- |
+| Not rerun · blocked | something a rerun needs is gone or altered (a nightly overwritten, a kept patch changed on disk, an input not kept that changed, a record of what was kept that no longer matches or cannot be read, a kept state a trial ran with), or a local build that ran cannot be built again (no kept source, a binary of no known build). A local build every stage was observed not to read blocks nothing |
+| Not rerun · record incomplete | what it needs is not fully known: a stage that ran its program was not observed completely, or its record says nothing of what it used, or a reused output's record cannot be read; a stage used the network, whose answers are not kept, or read a file that could not be identified; what a trial ran with or read was not noted (`used.json`, `inputs.json`); a stage reused an output of another study made with local code this study did not keep; no trial has a record yet; the study kept nothing; a path was read as different files by its trials; or a local build that ran has a kept source not known to be what it was built from (see above) |
+| Not rerun · availability not established | something could not be checked: the distributions of an environment, an unrecognized stack, a k4opt commit no remote was seen to have, a checkout's base commit no known remote can give, an input that was a device, a pipe or a socket, a directory a stage listed whose names changed |
+| Not rerun · rebuild needed | a local build ran: it can be built again from its kept source and configuration, and a rerun runs other bytes, compared by its results |
+| Not rerun · all available on DATE | every requirement was checked and found as it was, and no local build ran |
+
+*Rebuild needed* and *availability not established* are said together when both hold. Each check is
+dated, and true when it was made: a nightly is overwritten by a later build within about a week,
+after which its studies cannot be rerun. `k4opt software show` lists the origins this shell would
+record.
 
 ## What depends on it
 

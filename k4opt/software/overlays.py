@@ -17,7 +17,8 @@ What can be loaded through an entry, by role:
   the registries and dictionaries ROOT, DD4hep and Gaudi read there (``.rootmap``, ``.components``,
   ``.pcm``);
 - ``headers``: every file below the directory, which an ``#include`` may name relative to it,
-  with any extension or none;
+  with any extension or none; but for an empty entry (which ``k4_local_repo`` leaves), which
+  ROOT skips;
 - ``python``: what Python can import from the directory: its modules (``.py``, ``.pyc``, ``.so``)
   and ``.pth`` files, every file of a regular package (one with an ``__init__``), with its data,
   the modules of a namespace package (a directory whose name is an identifier), and the package
@@ -179,13 +180,19 @@ def site_identified(
 def _replaced(
     variable: str, role: Role, entries: list[str], seen: Seen
 ) -> tuple[str, tuple[Local, ...]]:
-    kept, local = [], []
+    kept: list[str] = []
+    local: list[Local] = []
     for given in entries:
         entry = given
         if not os.path.isabs(given) and (role != "files" or "/" in given):
             # "" and "." are the current directory, as "./libpatch.so" is a file in it; a bare
             # library name (LD_PRELOAD=libpatch.so) is looked up on the library path instead
             entry = os.path.normpath(os.path.join(os.getcwd(), given))
+        if role == "headers" and not given:
+            # ROOT skips an empty entry, and looks in the working directory for an #include "..."
+            # anyway; "." does add it, for an #include <...> too: identified as any other
+            kept.append(given)
+            continue
         if not _is_local(entry):  # a relative one that leads nowhere: as written, wherever it is
             kept.append(entry if os.path.exists(entry) else given)
             continue
@@ -397,6 +404,14 @@ def _package(
 def _nothing(directory: str, prefix: str, ancestors: frozenset[str], read: _Read) -> Listed:
     """What a variable of files loads through a directory on it: nothing."""
     return iter(())
+
+
+def listed_files(root: str) -> Iterator[tuple[str, str]]:
+    """Every file below ``root``, by its path relative to it and its path: the walk of an include
+    directory, which follows links but never back up the tree."""
+    for relative, path, status in _headers(root, "", frozenset(), []):
+        if status is not None:
+            yield relative, path
 
 
 _LISTED = {"libraries": _libraries, "headers": _headers, "python": _python, "files": _nothing}

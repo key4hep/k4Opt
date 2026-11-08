@@ -98,7 +98,7 @@ def test_every_trial_has_a_directory_with_its_complete_record(
     output = tmp_path / "s"
     report = study(write_problem(), output, trials=4)
     assert sorted(p.name for p in output.iterdir()) == sorted(
-        [STUDY_NAME, "study.journal", *[f"trial-{n:06d}" for n in range(4)]]
+        [STUDY_NAME, "software", "study.journal", *[f"trial-{n:06d}" for n in range(4)]]
     )
     document = json.loads((output / STUDY_NAME).read_text())
     optimizer = optuna_study(output)
