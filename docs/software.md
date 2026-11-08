@@ -198,7 +198,8 @@ across studies, which costs time and never correctness.
 
 A study keeps privately, in its `software/` directory, what a rerun would need that is not public,
 and `k4opt study show` says what that is and whether it is there (the study at the top of a nested
-optimization keeps it for every level). Nothing of it leaves the machine.
+optimization keeps it for every level). Nothing of it leaves the machine unless its author approves
+that with [`k4opt publish`](publication.md#what-else-is-published).
 
 | Kept | When | What |
 | --- | --- | --- |
@@ -265,6 +266,7 @@ rerun, which k4opt does not record yet.
 | Not rerun · availability not established | something could not be checked: the distributions of an environment, an unrecognized stack, a k4opt commit no remote was seen to have, a checkout's base commit no known remote can give, an input that was a device, a pipe or a socket, a directory a stage listed whose names changed |
 | Not rerun · rebuild needed | a local build ran: it can be built again from its kept source and configuration, and a rerun runs other bytes, compared by its results |
 | Not rerun · all available on DATE | every requirement was checked and found as it was, and no local build ran |
+| Not rerun · needs access | only in a publication: everything was there, and something a rerun needs is only on request from its author, since it was not approved for publishing. Said beside *rebuild needed* or *availability not established* when those hold too |
 
 *Rebuild needed* and *availability not established* are said together when both hold. Each check is
 dated, and true when it was made: a nightly is overwritten by a later build within about a week,

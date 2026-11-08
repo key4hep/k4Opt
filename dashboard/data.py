@@ -36,6 +36,8 @@ from k4opt.publication import (
     CatalogEntry,
     NothingPublishedError,
     PublicationUnavailableError,
+    PublishedArtifact,
+    SoftwareSheet,
     open_publication,
 )
 
@@ -173,6 +175,29 @@ def study(where: str, entry: CatalogEntry) -> StudyResults:
         _keep(key, results, entry.snapshot.bytes)
     entry.check(results)
     return results
+
+
+@st.cache_resource(max_entries=64, show_spinner=False)
+def _software(where: str, path: str, sha256: str, _entry: CatalogEntry) -> SoftwareSheet | None:
+    return open_publication(where).software(_entry)
+
+
+def software(where: str, entry: CatalogEntry) -> SoftwareSheet | None:
+    """The software sheet of ``entry``, kept by its path and SHA-256 (its name is its content), or
+    ``None`` if it has none; raises what reading it raises, and nothing of a failed read is kept."""
+    if entry.software is None:
+        return None
+    return _software(where, entry.software.path, entry.software.sha256, entry)
+
+
+@st.cache_resource(max_entries=32, show_spinner=False)
+def _artifact(where: str, path: str, sha256: str, _artifact: PublishedArtifact) -> bytes:
+    return open_publication(where).artifact(_artifact)
+
+
+def artifact(where: str, published: PublishedArtifact) -> bytes:
+    """The bytes of a published file, checked, kept by its path and SHA-256."""
+    return _artifact(where, published.path, published.sha256, published)
 
 
 def newest_first(catalog: Catalog) -> list[CatalogEntry]:

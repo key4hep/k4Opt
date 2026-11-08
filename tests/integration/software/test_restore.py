@@ -32,6 +32,8 @@ import pytest
 import yaml
 
 from k4opt.cli import main
+from k4opt.optimization import load_study
+from k4opt.publication import offer, open_publication, publish
 from k4opt.software.readiness import ALL_AVAILABLE, REBUILD, UNVERIFIED, requirements
 from k4opt.software.source import build_id
 from k4opt.software.stack import Release
@@ -216,6 +218,16 @@ def test_a_restored_candidate_measures_what_it_measured(
     assert "a copy of cldconfig" in steering.identified and "1 changed" in steering.identified
     scale = next(r for r in readiness.requirements if r.label == "ecal_scale.json")
     assert "MY_ECAL_SCALE_FILE" in scale.identified and scale.available
+    results = load_study(output)
+    found = offer(results)  # from what the stages were really seen to read
+    assert not found.findings
+    release = found.release(code=True, inputs=["ecal_scale.json"])
+    entry = publish(results, tmp_path / "pub", release=release)
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None and entry.software is not None
+    published = {artifact.name for artifact in sheet.artifacts}
+    assert {"ecal_tweak.py", "ParticleFlow/Pandora.py", "ecal_scale.json"} <= published
+    assert str(originals) not in (tmp_path / "pub" / entry.software.path).read_text()
 
     monkeypatch.undo()  # the rerun's environment names nothing of the originals
     restored = restore(output, tmp_path / "restored")

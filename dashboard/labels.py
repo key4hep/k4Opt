@@ -123,6 +123,44 @@ def axis(key: str, results: StudyResults) -> str:
     return f"{called.objective(name) if kind == 'objective' else called.parameter(name)} · {kind}"
 
 
+def size(count: int) -> str:
+    """A size in decimal units, as the budget of a publication is said (``4.2 kB``, ``48 MB``)."""
+    value, unit = float(count), "B"
+    for unit in ("B", "kB", "MB", "GB"):
+        if value < 1000 or unit == "GB":
+            break
+        value /= 1000
+    return f"{count} B" if unit == "B" else f"{_digits(value, 3)} {unit}"
+
+
+def text(content: bytes) -> str | None:
+    """``content`` as text, ``None`` if it is binary data."""
+    if b"\0" in content[:8000]:
+        return None
+    try:
+        return content.decode()
+    except UnicodeDecodeError:
+        return None
+
+
+ACCESS = {"public": "Public", "on request": "On request: ask the author", "none": "Not available"}
+"""Who can get a requirement, as the Software tab says it."""
+STATE = {
+    "available": "Available",
+    "gone": "Gone",
+    "altered": "Altered",
+    "not-checked": "Not checked",
+}
+"""What a requirement's check found, as the Software tab says it."""
+LINK = {
+    "verified": "Verified",
+    "likely": "Likely",
+    "adjacent": "Adjacent checkout",
+    "none": "None",
+}
+"""How sure a local build's link to its checkout is, as the Software tab says it."""
+
+
 def detector(geometry: str) -> str:
     """The detector a compact file describes, by the file's name (``CLD_o2_v09``), as k4Bench
     names it."""

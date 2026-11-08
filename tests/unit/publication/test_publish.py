@@ -40,7 +40,10 @@ def test_a_study_is_published_as_its_json_form_and_named_in_its_catalog(tmp_path
     entry = publish(results, tmp_path / "pub")
     assert tree_digest(tmp_path / "s") == before  # the study is only read
     snapshot = f"studies/{results.id}/snapshots/{entry.snapshot.sha256[:16]}.json"
-    assert sorted(files(tmp_path / "pub")) == [CATALOG_NAME, snapshot]  # and no lock left
+    assert entry.software is not None
+    assert sorted(files(tmp_path / "pub")) == sorted(
+        [CATALOG_NAME, snapshot, entry.software.path]
+    )  # and no lock left
     data = (tmp_path / "pub" / snapshot).read_bytes()
     assert data == results.to_json().encode()  # what k4opt study export --format json writes
     assert (entry.snapshot.path, entry.snapshot.bytes) == (snapshot, len(data))
@@ -57,7 +60,12 @@ def test_a_study_is_published_as_its_json_form_and_named_in_its_catalog(tmp_path
     assert Catalog.from_json((tmp_path / "pub" / CATALOG_NAME).read_bytes()) == Catalog((entry,))
 
 
-def test_publishing_the_same_state_again_changes_nothing(tmp_path: Path) -> None:
+def test_publishing_the_same_state_again_at_the_same_check_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.software import readiness
+
+    monkeypatch.setattr(readiness, "_now", lambda: "2026-11-01T10:00:00+00:00")
     results = load_study(mixed_study(tmp_path / "s"))
     first = publish(results, tmp_path / "pub")
     held = files(tmp_path / "pub")
@@ -202,10 +210,11 @@ def test_k4opt_publish_says_what_it_published_and_reads_the_study_as_k4opt_study
 ) -> None:
     output = mixed_study(tmp_path / "s")
     out, err = io.StringIO(), io.StringIO()
-    command = ["publish", str(output), "--output", str(tmp_path / "pub")]
-    assert main(command, stdout=out, stderr=err) == 0
+    command = ["publish", str(output), "--output", str(tmp_path / "pub"), "--yes"]
+    assert main(command, stdout=out, stderr=err) == 0  # the mini geometry is local code
     (entry,) = Catalog.from_json((tmp_path / "pub" / CATALOG_NAME).read_bytes()).studies
-    assert out.getvalue().startswith(f"{entry.name}: 8 trials (")
+    assert f"{entry.name} (snapshot {entry.snapshot.sha256[:8]}): code of " in out.getvalue()
+    assert "8 trials (" in out.getvalue()
     assert out.getvalue().rstrip().endswith(f"as {tmp_path / 'pub'}/{entry.snapshot.path}")
     assert err.getvalue() == ""
     (tmp_path / "s" / "study.json").write_text(json.dumps({"schema": "other"}))

@@ -31,6 +31,7 @@ the libraries it installs that a ``HEAD`` package of the release also installs.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -106,6 +107,9 @@ class GitState:
     changed: tuple[str, ...]
     patch: bytes | None = field(default=None, repr=False)
     ignored: frozenset[str] = field(default=frozenset(), repr=False)
+    untracked_files: Mapping[str, str] = field(default_factory=dict, repr=False)
+    """The SHA-256 of each untracked file of the state, by its name: whether one of them was used
+    is told by its content, wherever a stage read it."""
 
     @property
     def clean(self) -> bool:
@@ -128,6 +132,7 @@ class GitState:
             "tree": self.tree,
             "changed": list(self.changed),
             "patch": patch,
+            "untracked_files": dict(self.untracked_files),
         }
 
 
@@ -825,7 +830,19 @@ def _snapshot(checkout: str, revision: str | None, excluded: Sequence[str]) -> G
         tuple(n.decode(errors="surrogateescape") for n in changed.split(b"\0") if n),
         patch if len(patch) <= MAX_PATCH else None,
         frozenset(n.decode(errors="surrogateescape") for n in left.split(b"\0") if n),
+        {name: _sha256(os.path.join(real, name)) for name in kept},
     )
+
+
+def _sha256(path: str) -> str:
+    """The SHA-256 of the file ``path``, of the text of a link (which git keeps as a link), empty
+    if it cannot be read: then it matches nothing a stage read."""
+    try:
+        if os.path.islink(path):
+            return hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()
+        return sha256_of(path)
+    except OSError:
+        return ""
 
 
 # --- ELF -------------------------------------------------------------------------------------

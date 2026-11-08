@@ -3,13 +3,18 @@ headed by the names a reader knows the values by."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 pytest.importorskip("optuna")
 
+from k4opt.frozen import FrozenMap
 from k4opt.optimization import Rule, load_study, trade_offs
+from k4opt.publication import PublishedArtifact, PublishedRequirement, SoftwareSheet
 from tests.support.software import LABEL
 from tests.support.studies import mixed_study
 
@@ -224,3 +229,148 @@ def test_the_tuned_value_is_headed_with_the_unit_the_tuning_recorded(
                 value["unit"] = "mm"
     (row, *_) = tables.trials(StudyResults.from_dict(data))
     assert "seen, tuned [mm]" in row
+
+
+def _requirement(**changes: object) -> PublishedRequirement:
+    values: dict[str, Any] = {
+        "id": "package:ddmarlinpandora",
+        "kind": "package",
+        "label": "ddmarlinpandora",
+        "identified": "821384f + 1 uncommitted files (verified link)",
+        "used_by": ("pi0/reconstruction",),
+        "state": "available",
+        "access": "public",
+        "notes": (),
+        "facts": {"base": "821384f", "link": "verified", "rebuildable": True, "changed": 1},
+        "ran": FrozenMap(
+            {
+                "original": "fingerprint-only",
+                "files": (FrozenMap({"file": "lib/libD.so", "sha256": "1f2e" * 16}),),
+            }
+        ),
+        "unused": False,
+    }
+    return PublishedRequirement(**(values | changes))
+
+
+def _base(checked: str = "2026-11-12T10:00:00+00:00") -> PublishedRequirement:
+    return _requirement(
+        id="base",
+        kind="base",
+        label="Key4hep LCG devkey-head, built Sat Nov 7",
+        identified="x86_64-el9-gcc16-opt, 900 packages",
+        used_by=("pi0/simulation", "pi0/reconstruction"),
+        notes=("a nightly: a later build overwrites its slot, and this one is then gone",),
+        facts={},
+        ran=FrozenMap({"original": "on-cvmfs"}),
+    )
+
+
+def _sheet(*requirements: PublishedRequirement, **changes: object) -> SoftwareSheet:
+    values: dict[str, Any] = {
+        "study": "s",
+        "snapshot": "0" * 64,
+        "status": "Not rerun · rebuild needed",
+        "checked": "2026-11-12T10:00:00+00:00",
+        "first_checked": "2026-11-12T10:00:00+00:00",
+        "first_status": "Not rerun · rebuild needed",
+        "gaps": (),
+        "altered": (),
+        "not_kept": 0,
+        "on_request": (),
+        "requirements": requirements,
+        "artifacts": (),
+    }
+    return SoftwareSheet(**(values | changes))
+
+
+def test_a_local_build_says_rebuildable_and_never_that_its_binary_is_available() -> None:
+    import tables
+
+    (row,) = tables.local_changes(_sheet(_requirement()))
+    assert row["Change"] == "Modified"
+    assert row["Source"] == "821384f + 1 uncommitted files · Verified"
+    assert row["Rebuild"] == "Rebuildable from source"
+    assert "Original binary: fingerprint only" in str(row["What ran"])
+    assert "libD.so 1f2e1f2e…" in str(row["What ran"])
+    assert "fingerprint" in tables.REBUILD_NOTE
+
+
+def test_a_build_that_did_not_run_is_said_not_to_have_run() -> None:
+    import tables
+
+    (row,) = tables.local_changes(_sheet(_requirement(unused=True, ran=None, used_by=())))
+    assert row["Change"] == "Changed locally — not used"
+    assert row["Rebuild"] is None and row["What ran"] == "not read by any stage"
+
+
+def test_which_stages_used_the_changes_is_said_only_when_known() -> None:
+    import tables
+
+    sheet = _sheet(_base(), _requirement())
+    assert tables.stages_used(sheet) == (
+        "pi0/simulation used the nightly only; pi0/reconstruction used the changes above."
+    )
+    assert tables.stages_used(_sheet(_base(), _requirement(), gaps=("x not observed",))) is None
+
+
+def test_a_nightly_checked_long_ago_may_have_been_overwritten() -> None:
+    import tables
+
+    sheet = _sheet(_base())
+    assert not tables.software_warnings(sheet, datetime(2026, 11, 15, tzinfo=UTC))
+    (line,) = tables.software_warnings(sheet, datetime(2026, 12, 1, tzinfo=UTC))
+    assert "may have been overwritten" in line
+
+
+def test_a_first_check_and_a_later_one_are_kept_apart() -> None:
+    import tables
+
+    assert "not checked since" in tables.checked(_sheet())
+    later = tables.checked(_sheet(checked="2026-12-01T10:00:00+00:00"))
+    assert "At publication, 12 Nov 2026" in later and "Last checked 1 Dec 2026" in later
+
+
+def test_a_private_input_shows_its_commitment_and_a_published_one_does_not() -> None:
+    import tables
+
+    private = _requirement(
+        id="input:1",
+        kind="input",
+        label="ecal_scale.json",
+        identified="observed input",
+        access="on request",
+        facts={"commitment": "ab" * 32},
+        ran=None,
+    )
+    (row,) = tables.inputs(_sheet(private))
+    assert row["Access"] == "On request: ask the author"
+    assert row["Commitment"] == f"sha256:{'ab' * 6}…"
+    (row,) = tables.inputs(_sheet(replace(private, access="public")))
+    assert row["Commitment"] is None and row["Known from"] == "observed"
+
+
+def test_the_steps_of_a_rerun_say_where_each_thing_is() -> None:
+    import tables
+
+    private = _requirement(
+        id="input:1", kind="input", label="e.json", access="on request", facts={}, ran=None
+    )
+    steps = tables.rerun_steps(_sheet(_base(), _requirement(), private))
+    assert steps[0] == "Source the nightly: Key4hep LCG devkey-head, built Sat Nov 7."
+    assert "Clone ddmarlinpandora at 821384f, apply its changes (published here)" in steps[1]
+    assert steps[2] == "Obtain e.json (ask the author)."
+    assert steps[-1].startswith("Evaluate the candidate")
+
+
+def test_only_a_served_publication_links_to_its_files() -> None:
+    import tables
+
+    artifact = PublishedArtifact(
+        "code", "o", "o.patch", "patch", "a" * 64, 1, "studies/x/artifacts/aaaa", (), (), "b", ()
+    )
+    assert tables.artifact_link("/eos/pub", artifact) is None
+    assert (
+        tables.artifact_link("https://k4opt.web.cern.ch/", artifact)
+        == "https://k4opt.web.cern.ch/studies/x/artifacts/aaaa"
+    )

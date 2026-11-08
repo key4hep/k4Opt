@@ -29,6 +29,7 @@ from k4opt.publication.catalog import (
     MAX_CATALOG_BYTES,
     Catalog,
     CatalogEntry,
+    Snapshot,
     loads,
 )
 from k4opt.publication.errors import (
@@ -36,6 +37,7 @@ from k4opt.publication.errors import (
     PublicationError,
     PublicationUnavailableError,
 )
+from k4opt.publication.sheet import PublishedArtifact, SoftwareSheet
 
 TIMEOUT = 30.0
 """Seconds a server may take to connect, and between two parts of an answer."""
@@ -88,27 +90,47 @@ class Publication:
         (:meth:`~k4opt.optimization.StudyResults.from_dict`), and it is the study the entry
         describes. Raises :class:`PublicationUnavailableError` if it cannot be read just now or
         arrives short, and :class:`PublicationError` if it is missing or does not hold up."""
-        snapshot = entry.snapshot
-        where = f"{self.location}: {snapshot.path}"
-        try:
-            data = self._source.read(snapshot.path, snapshot.bytes)
-        except _MissingFileError:
-            raise PublicationError(
-                f"{where} is not there, though the catalog names it: it was moved away, or the "
-                "publication was copied in part"
-            ) from None
-        if len(data) < snapshot.bytes:
-            raise PublicationUnavailableError(
-                f"{where} arrived with {len(data)} of its {snapshot.bytes} bytes"
-            )
-        if hashlib.sha256(data).hexdigest() != snapshot.sha256:
-            raise PublicationError(f"{where} is not the snapshot its catalog names (other bytes)")
+        where = f"{self.location}: {entry.snapshot.path}"
+        data = self._checked(entry.snapshot, entry.snapshot.path)
         try:
             results = StudyResults.from_dict(loads(data, where))
         except OptimizationError as exc:
             raise PublicationError(f"{where}: {exc}") from None
         entry.check(results)
         return results
+
+    def software(self, entry: CatalogEntry) -> SoftwareSheet | None:
+        """The software sheet ``entry`` names, read and checked; ``None`` if it has none (a study
+        published from its JSON form). Raises what :meth:`study` raises for a file."""
+        if entry.software is None:
+            return None
+        data = self._checked(entry.software, entry.software.path)
+        where = f"{self.location}: {entry.software.path}"
+        return SoftwareSheet.from_json(data, entry.id, entry.snapshot.sha256, where)
+
+    def artifact(self, artifact: PublishedArtifact) -> bytes:
+        """The bytes of the file ``artifact`` names, exactly as its sheet says. Raises what
+        :meth:`study` raises for a file."""
+        where = Snapshot(artifact.path, artifact.sha256, artifact.bytes)
+        return self._checked(where, artifact.path)
+
+    def _checked(self, held: Snapshot, path: str) -> bytes:
+        """The bytes of the file ``held`` names, exactly its size and SHA-256."""
+        where = f"{self.location}: {path}"
+        try:
+            data = self._source.read(path, held.bytes)
+        except _MissingFileError:
+            raise PublicationError(
+                f"{where} is not there, though the catalog names it: it was moved away, or the "
+                "publication was copied in part"
+            ) from None
+        if len(data) < held.bytes:
+            raise PublicationUnavailableError(
+                f"{where} arrived with {len(data)} of its {held.bytes} bytes"
+            )
+        if hashlib.sha256(data).hexdigest() != held.sha256:
+            raise PublicationError(f"{where} is not the file its catalog names (other bytes)")
+        return data
 
 
 def open_publication(location: str | os.PathLike[str]) -> Publication:

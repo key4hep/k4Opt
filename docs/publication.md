@@ -11,8 +11,16 @@ k4opt publish runs/cld-ecal-study --output published/
 ```
 
 ```text
-cld-ecal-granularity-3f9c2a1b: 30 trials (28 feasible, 1 invalid, 1 failed), published 2026-11-03T10:00:00+00:00 as published/studies/3f9c2a1b-.../snapshots/9b1c0e7d2a4f5e68.json
+code        nothing local to publish
+scan        nothing found
+to          published/
+
+published   cld-ecal-granularity-3f9c2a1b (snapshot 9b1c0e7d): code of 0, 0 inputs, 0 large
+            30 trials (28 feasible, 1 invalid, 1 failed), published 2026-11-03T10:00:00+00:00 as published/studies/3f9c2a1b-.../snapshots/9b1c0e7d2a4f5e68.json
 ```
+
+A study that used local code or files lists them first and asks: see
+[What else is published](#what-else-is-published).
 
 ## What a publication holds
 
@@ -21,8 +29,12 @@ published/
 ├── catalog.json                                  k4opt.catalog/1: the one file rewritten
 └── studies/
     └── 3f9c2a1b-5d0e-4f43-9a52-77c1d2e0b6a4/     a study, by its id
-        └── snapshots/
-            └── 9b1c0e7d2a4f5e68.json             the study as published, never changed
+        ├── snapshots/
+        │   └── 9b1c0e7d2a4f5e68.json             the study as published, never changed
+        ├── software/
+        │   └── 4e1a7730c2d95b16.json             k4opt.software-sheet/1: what a rerun needs
+        └── artifacts/
+            └── a31f06c88e7d4b02                  a file its author approved, named by its content
 ```
 
 **A snapshot** is the study's [JSON form](optimization.md#export-formats), byte for byte what
@@ -41,7 +53,7 @@ What leaves the machine with a snapshot, and what does not:
 | each trial's candidate, assessment, outcome, times, message and diagnostics | the trial directories and every file in them (records, events, geometries, logs) |
 | each record's id and SHA-256, to identify it | the record's path or any link to it: the record stays in the study |
 | size and SHA-256 of every file the problem names, the evaluators' versions, source hashes and git commits, the geometry's compact file, fingerprint, targets and the hashes of what its external references read | the paths of those files, the geometry's source root, `K4GEO`, `KEY4HEP_STACK` (the build identifies the stack) |
-| the [software](software.md)'s `id`, build and system, the programs the stages ran (size and SHA-256 of `ddsim`, `k4run`), and k4opt's version, hash and commit | the optimizer's storage (a journal name, or a database URL with its host and user) |
+| the [software](software.md)'s `id`, build and system, the programs the stages ran (size and SHA-256 of `ddsim`, `k4run`), k4opt's version, hash and commit, and the [software sheet](#what-else-is-published) | the optimizer's storage (a journal name, or a database URL with its host and user) |
 | the optimizer, its sampler and seed, its directions and distributions | the names and digests of the software's variables, which can be private, and anything of `study.json` not on the list (`PORTABLE` in `k4opt/optimization/_study.py`) |
 
 **Publishing makes all of it readable to whoever can read the publication.** The problem
@@ -80,7 +92,8 @@ snapshot it is published at:
       "parameters": 1,
       "objectives": 2,
       "constraints": 0,
-      "snapshot": {"path": "studies/3f9c2a1b-.../snapshots/9b1c0e7d2a4f5e68.json", "sha256": "9b1c0e7d...", "bytes": 48213}
+      "snapshot": {"path": "studies/3f9c2a1b-.../snapshots/9b1c0e7d2a4f5e68.json", "sha256": "9b1c0e7d...", "bytes": 48213},
+      "software": {"path": "studies/3f9c2a1b-.../software/4e1a7730c2d95b16.json", "sha256": "4e1a7730...", "bytes": 9120}
     }
   ]
 }
@@ -92,7 +105,8 @@ progress can be published, and published again as it goes on. Nothing says wheth
 
 ## Publishing
 
-`k4opt publish DIR --output PUBLICATION [--storage URL]` reads the study as
+`k4opt publish DIR --output PUBLICATION [--storage URL] [--yes] [--include-inputs NAME]
+[--include NAME] [--exclude NAME] [--include-large]` reads the study as
 [`k4opt study`](optimization.md#inspecting-and-exporting-a-study) does, checked in full and
 unchanged (every record against the study and the optimizer, every assessment recomputed from
 its measurements), then:
@@ -100,13 +114,19 @@ its measurements), then:
 1. refuses a publication directory inside the study (also through a symlink); one that does not
    exist is made;
 2. names the local paths the snapshot carries (above);
-3. writes the snapshot, whole and on disk before it gets its name, as every k4opt record is
-   written; one already there with the same bytes is kept, one with other bytes is refused;
-4. under `.catalog.lock`, reads `catalog.json` (none yet: an empty catalog; a malformed one is
-   refused and left as it is) and writes it again whole with the study's entry, replacing the
-   old one by a rename, so a reader sees the old catalog or the new one.
+3. lists what else would be published, and asks ([below](#what-else-is-published));
+4. writes the snapshot and the files approved, whole and on disk before each gets its name, as
+   every k4opt record is written; a file already there with the same bytes is kept, one with
+   other bytes is refused;
+5. under `.catalog.lock`, reads `catalog.json` (none yet: an empty catalog; a malformed one is
+   refused and left as it is), writes the study's software sheet and writes the catalog again
+   whole with the study's entry, replacing the old one by a rename, so a reader sees the old
+   catalog or the new one.
 
-Publishing the same state of a study again changes nothing, not even the catalog's time. A
+Publishing the same state of a study again adds no snapshot and does not change when it was
+published: what a rerun needs is **checked again**, and the study's software sheet says when
+(a nightly may have been overwritten since). A later publication's sheet lists what *that*
+publication approved. A
 **later state** (more trials, or more of them ended) replaces the study's entry; its earlier
 snapshot stays, unnamed, so a reader that was reading it still reads it whole. An **earlier
 state** is refused: a publisher that read the study before another published it never takes the
@@ -119,6 +139,57 @@ A publication is a plain directory, so it can be published straight into its ser
 (an EOS directory behind WebEOS) or published locally and copied there; copy the snapshots
 before the catalog, and a reader never meets a catalog entry whose snapshot is not there yet.
 
+## What else is published
+
+The study keeps privately what a rerun needs ([software](software.md#what-a-rerun-needs)).
+What of it leaves the machine is decided here. Recording is automatic; **publishing is not**.
+
+| What | Published |
+| --- | --- |
+| the study's **software sheet**: the status, each requirement with its state and who can get it | always, made field by field: no path, size, variable name, host, or digest of an unpublished file |
+| **code that ran**: a build's edits against the revision the nightly built, changed job files, local code a stage read, a local geometry's and the evaluators' own files | after the first question |
+| an untracked file of a checkout | only if a stage read it or the build installed it; the rest are listed, and can be named with `--include` |
+| **input files** the stages read | after a second, separate question that names where they go; up to 10 MB in all |
+| what passes the 10 MB of its group | a warning, not published; `--include-large` publishes it |
+| a file you leave out | `--exclude NAME`: the dashboard shows its name, *on request* |
+| a binary a checkout holds | held back unless named with `--include` |
+| `~/.*` configuration, a venv's `pyvenv.cfg` | never offered; `--include-inputs NAME` names one |
+| a build no stage read | not offered |
+
+Never published: a library or program (only its SHA-256 and build-id), the CMake cache (it holds
+local paths), or an environment's list of distributions (only how many). A name for `--exclude`,
+`--include` or `--include-inputs` is a file's path, its own name, or a package: one that names
+nothing is refused, since a slip must not publish what was meant to stay.
+
+```text
+code        ddmarlinpandora   patch against 821384f   src/DDCaloHitCreator.cc  +1 −1
+                              ecal_tweak.py  4.2 kB  read by pi0_50gev/reconstruction
+            not published  ddmarlinpandora/notes.txt   (untracked, not used)
+inputs      ecal_scale.json   1.1 kB   read by pi0_50gev/reconstruction   1.1 kB of 10 MB
+warning:    pi0_overlay.root, 48 MB, over 10 MB: not published (--include-large to publish it)
+scan        nothing found
+to          /eos/project/k4opt/pub
+
+Publish the code above? [y/N]
+Also publish the contents of these input files? Anyone who can read
+/eos/project/k4opt/pub can read them. [y/N]
+published   pi0-cells (snapshot 7c1e09a2): code of 2, 1 input, 0 large
+```
+
+Both questions default to no, and the questions are separate since a file published by mistake
+cannot be taken back while a file forgotten is one more publish. **In a script:** `--yes` answers
+for the code only; inputs are published only if each is named with `--include-inputs NAME`, so a
+script never publishes data it does not name. Without a terminal and without `--yes`, if there is
+code to approve, `k4opt publish` refuses. A study with a local geometry always has code to approve.
+
+**The secret scan** looks through everything that would be published for private keys, access
+tokens, passwords in URLs and in assignments, and files named like credentials. A finding **blocks**
+with the file and line, nothing is written, and only removing or `--exclude`-ing the file lifts it. It
+is best effort: it supports your review of the list and does not replace it.
+
+**The status** of a published study says what a reader can do, not what the author can: what is
+only on request makes it *needs access*. It is never *reproduced*, which takes a rerun.
+
 ## Reading a publication
 
 ```python
@@ -130,6 +201,9 @@ for entry in catalog.studies:
     print(entry.name, entry.trials, entry.outcomes["feasible"])
 study = publication.study(catalog.studies[0])  # a StudyResults
 study.problem, study.trials, study.pareto
+sheet = publication.software(catalog.studies[0])  # a SoftwareSheet, None for one without
+sheet.status, sheet.requirements, sheet.artifacts
+publication.artifact(sheet.artifacts[0])  # its bytes, checked against its SHA-256
 ```
 
 A directory and its URL give the same studies: each file is read by the path its catalog gives,
@@ -161,7 +235,10 @@ records are not published:
   assessment and record against the problem and each other, every limit judged again on its
   recorded value (margin, normalized margin and verdict, so feasibility too), and the outcome
   counts and the Pareto front, recomputed;
-- and it is the study its catalog entry describes (id, name, counts).
+- and it is the study its catalog entry describes (id, name, counts);
+- a software sheet: the size and SHA-256 its entry names, of that study and that snapshot, well
+  formed in every part, each artifact's path the one its study and SHA-256 give; an artifact:
+  exactly the size and SHA-256 its sheet names.
 
 | Raised | When | What to do |
 | --- | --- | --- |
@@ -176,18 +253,23 @@ dashboard caches, and says how).
 
 ```python
 from k4opt.optimization import load_study
-from k4opt.publication import local_paths, publish
+from k4opt.publication import local_paths, offer, publish
 
 results = load_study("runs/cld-ecal-study")
 local_paths(results)  # [(where, path), ...]: what k4opt publish warns about
-entry = publish(results, "published/", warn=print)  # its CatalogEntry
+entry = publish(results, "published/", warn=print)  # its CatalogEntry; nothing but the public form
 entry.snapshot.path, entry.snapshot.sha256, entry.published
+
+found = offer(results, exclude=["private_notes.py"])  # what may be published, for you to review
+found.code, found.inputs, found.large, found.held, found.findings
+release = found.release(code=True, inputs=["ecal_scale.json"])  # refused if a secret was found
+publish(results, "published/", release=release)  # exactly that list
 ```
 
 ## Not done
 
-Publishing files of a trial (events, plots, logs) beside its snapshot, which needs a contract of
-its own; uploading to EOS or an object store (publish into a mounted directory, or copy);
+Publishing a trial's own files (events, plots, logs) beside its snapshot, which needs a contract of
+its own; recording that someone reran a study (nothing says *reproduced* yet); uploading to EOS or an object store (publish into a mounted directory, or copy);
 access control and authentication; a database-backed catalog for searching many studies; removing
 or renaming published studies. None of them is blocked: snapshots are named by content and
 studies by their own ids, and a reader only ever follows the paths a catalog gives.

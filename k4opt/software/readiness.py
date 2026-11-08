@@ -87,7 +87,8 @@ class Requirement:
     stack's, ``fingerprint-only`` for a local build's, whose binaries are not kept). ``checks`` are
     how its availability was checked; ``notes`` what else a reader must know (a local build that
     did not run, a source changed after its build). ``unused`` says that it is a local build every
-    stage of every record was observed not to read: listed, and needed by no rerun of them."""
+    stage of every record was observed not to read: listed, and needed by no rerun of them.
+    ``entry`` is the study's private record of it, for what publishes a part of it; never shown."""
 
     id: str
     kind: Kind
@@ -100,6 +101,7 @@ class Requirement:
     checks: tuple[Check, ...] = ()
     notes: tuple[str, ...] = ()
     unused: bool = False
+    entry: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
 
     @property
     def available(self) -> bool:
@@ -150,6 +152,12 @@ class Readiness:
     """The records of what the study kept that are gone or not what was written (a
     ``software-*.json`` a trial ran with, or whose content is not that of its name; an unreadable
     ``inputs.json`` or ``used.json``): nothing they say is used."""
+    public_gaps: tuple[str, ...] = field(default=())
+    """``gaps``, in the same order, as they can be published: without a path or a host."""
+    store: Store | None = field(default=None, repr=False, compare=False)
+    """Where the bytes the study kept are."""
+    ran: Mapping[tuple[str, str], set[str]] = field(default_factory=dict, repr=False, compare=False)
+    """What the observed stages read of local builds: by path and identity, the stages."""
 
     @property
     def status(self) -> str:
@@ -302,10 +310,10 @@ _HOPS = 8  # how many reused outputs a stage's evidence is followed through
 
 def _evidence(
     label: str, stage: Mapping[str, Any], cache: dict[str, Mapping[str, Any] | None]
-) -> tuple[Mapping[str, Any] | None, str | None]:
-    """What the stage ``label`` used (its ``observed``) and, if that is not fully known, why: a
-    stage that ran its program says how it was observed; one whose output was reused is what the
-    stage that made it says, in that stage's record, wherever it is."""
+) -> tuple[Mapping[str, Any] | None, tuple[str, str] | None]:
+    """What the stage ``label`` used (its ``observed``) and, if that is not fully known, why, as
+    a gap (:class:`_Gaps`): a stage that ran its program says how it was observed; one whose output
+    was reused is what the stage that made it says, in that stage's record, wherever it is."""
     for _ in range(_HOPS):
         reused = stage.get("reused")
         if not isinstance(reused, Mapping):
@@ -318,17 +326,35 @@ def _evidence(
         if made is None:
             return None, (
                 f"{label} reused an output of {where}, whose record does not say what its stage "
-                "used"
+                "used",
+                f"{label} reused an output of another run, whose record does not say what its "
+                "stage used",
             )
         stage = made
     observed = stage.get("observed")
     if "argv" not in stage:  # it ran no program
         return (observed if isinstance(observed, Mapping) else None), None
     if not isinstance(observed, Mapping):
-        return None, f"{label} ran its program, and its record does not say what it used"
+        said = f"{label} ran its program, and its record does not say what it used"
+        return None, (said, said)
     if observed.get("level") != "files" or observed.get("complete") is not True:
-        return observed, f"{label} was not observed completely"
+        said = f"{label} was not observed completely"
+        return observed, (said, said)
     return observed, None
+
+
+class _Gaps:
+    """What the records leave out: each said for the author, and as it can be published, without a
+    path or a host (the two the same when it holds neither)."""
+
+    def __init__(self) -> None:
+        self.said: dict[str, str] = {}
+
+    def add(self, text: str, public: str | None = None) -> None:
+        self.said.setdefault(text, text if public is None else public)
+
+    def __bool__(self) -> bool:
+        return bool(self.said)
 
 
 def requirements(
@@ -361,7 +387,7 @@ def requirements(
         found_records = records(directory.parent)
     else:
         found_records = [(f"record {n}", summary) for n, summary in enumerate(summaries)]
-    gaps: list[str] = []
+    gaps = _Gaps()
     used_local: dict[str, set[tuple[str, str]]] = {}  # entry path: (trial, stage) that read it
     stages_seen: set[str] = set()
     trials_seen: set[str] = set()
@@ -377,8 +403,8 @@ def requirements(
         expected.update((path, then) for path, then, _, _ in candidate_geometry(summary))
         for label, stage in _stages(summary):
             observed, gap = _evidence(label, stage, cache)
-            if gap is not None and gap not in gaps:
-                gaps.append(gap)
+            if gap is not None:
+                gaps.add(*gap)
             if isinstance(_footprint(stage), str) and _footprint(stage) not in footprints:
                 lost.add(label)
             if observed is None:
@@ -400,29 +426,35 @@ def requirements(
             if isinstance(reused, Mapping):
                 reused_from[label] = str(reused.get("run_dir"))
     if not found_records:
-        gaps.append("no trial has a record yet: what its stages use is not known")
+        gaps.add("no trial has a record yet: what its stages use is not known")
     if summaries is None and found_records and USED not in altered:
         if evidence is None:
-            gaps.append(f"{USED} is gone: what the trials ran with and read is not known")
+            gaps.add(f"{USED} is gone: what the trials ran with and read is not known")
         else:
             untold = sorted(trials_seen - used.keys())
             if untold:
-                gaps.append(f"nothing says what {', '.join(untold)} ran with")
+                gaps.add(f"nothing says what {', '.join(untold)} ran with")
     if evidence is not None:
-        gaps += [f"what {label} read of local builds was not noted" for label in sorted(lost)]
+        for label in sorted(lost):
+            gaps.add(f"what {label} read of local builds was not noted")
     # a local build no stage read from did not run, if every stage of every record says so
     known = bool(found_records) and not gaps and USED not in altered
-    gaps += [
-        f"{label} reached the network ({', '.join(sorted(reached))}): what it received is not kept"
-        for label, reached in sorted(network.items())
-    ]
-    gaps += [
-        f"{label} read {', '.join(sorted(paths))}, which could not be identified"
-        for label, paths in sorted(unidentified.items())
-    ]
+    for label, reached in sorted(network.items()):
+        gaps.add(
+            f"{label} reached the network ({', '.join(sorted(reached))}): what it received is not "
+            "kept",
+            f"{label} reached the network: what it received is not kept",
+        )
+    for label, paths in sorted(unidentified.items()):
+        gaps.add(
+            f"{label} read {', '.join(sorted(paths))}, which could not be identified",
+            f"{label} read {len(paths)} files that could not be identified",
+        )
     if not documents:
-        gaps.append("the study kept nothing of what it ran with")
-        return Readiness((), tuple(gaps), at, altered=tuple(altered))
+        gaps.add("the study kept nothing of what it ran with")
+        return Readiness(
+            (), tuple(gaps.said), at, altered=tuple(altered), public_gaps=tuple(gaps.said.values())
+        )
     # one study, one software: its build and system are the last state's. Each place a local build
     # or code was in is its own origin, as the last state that has it says: a build may have been
     # copied elsewhere between sessions, and its first trials read the first copy. A source that
@@ -442,9 +474,10 @@ def requirements(
     for path in sorted(set(used_local) - described):
         where = sorted({reused_from[s] for _, s in used_local[path] if s in reused_from})
         known = False
-        gaps.append(
+        gaps.add(
             f"{path} was read, and this study did not keep what it is"
-            + (f": see the study of {', '.join(where)}, whose output it reused" if where else "")
+            + (f": see the study of {', '.join(where)}, whose output it reused" if where else ""),
+            f"{os.path.basename(path)} was read, and this study did not keep what it is",
         )
     ran = _ran(footprints)
     ours = {each.get("k4opt") for each in documents}
@@ -468,11 +501,13 @@ def requirements(
     versions: dict[str, int] = {}
     for entry in inputs:
         versions[str(entry.get("path"))] = versions.get(str(entry.get("path")), 0) + 1
-    gaps += [
-        f"{path} was read as {count} different files by the trials of the study"
-        for path, count in versions.items()
-        if count > 1
-    ]
+    for path, count in versions.items():
+        if count > 1:
+            gaps.add(
+                f"{path} was read as {count} different files by the trials of the study",
+                f"{os.path.basename(path)} was read as {count} different files by the trials of "
+                "the study",
+            )
     found += [_input(index, entry, store, at) for index, entry in enumerate(inputs, start=1)]
     found += _listings(listed, at)
     if INPUTS not in altered:
@@ -481,19 +516,29 @@ def requirements(
             {path for path, _ in (expected | declared_inputs(identity).keys()) - have}
         )
         if unlisted:
-            gaps.append(f"{INPUTS} does not list what the study read: {', '.join(unlisted)}")
+            gaps.add(
+                f"{INPUTS} does not list what the study read: {', '.join(unlisted)}",
+                f"{INPUTS} does not list {len(unlisted)} files the study read",
+            )
     found.append(_k4opt(identity, document, store, at))
     for name, entry in (document.get("evaluators") or {}).items():
         found.append(_evaluator(name, entry, identity, store, at))
-    gaps += [
-        f"{r.label}: {_unproven(r)}"
-        for r in found
-        if r.kind in ("package", "code") and r.used_by and r.unproven
-    ]
+    for r in found:
+        if r.kind in ("package", "code") and r.used_by and r.unproven:
+            gaps.add(f"{r.label}: {_unproven(r)}", f"{os.path.basename(r.label)}: {_unproven(r)}")
     problems = tuple(
         dict.fromkeys(str(p) for each in documents for p in each.get("problems") or ())
     )
-    return Readiness(tuple(found), tuple(gaps), at, problems, tuple(altered))
+    return Readiness(
+        tuple(found),
+        tuple(gaps.said),
+        at,
+        problems,
+        tuple(altered),
+        tuple(gaps.said.values()),
+        store,
+        ran,
+    )
 
 
 def _unproven(requirement: Requirement) -> str:
@@ -721,6 +766,7 @@ def _origin(
             checks=tuple(checks),
             notes=tuple(notes),
             unused=unused,
+            entry=origin,
         )
     if kind == "environment":
         distributions = origin.get("distributions") or []
@@ -751,6 +797,7 @@ def _origin(
             checks=(Check(at, "available", "identified by SHA-256 and build-id, not kept"),),
             notes=("binary only — source unknown: its binaries are identified, never kept",),
             unused=bool(entries) and not stages and known,
+            entry=origin,
         )
     if isinstance(git, Mapping):
         identified = _git_line(git)
@@ -779,6 +826,7 @@ def _origin(
         source=source or None,
         checks=tuple(checks),
         notes=tuple(notes),
+        entry=origin,
     )
 
 
@@ -825,6 +873,7 @@ def _steering(entry: Mapping[str, Any], store: Store, at: str, base: Requirement
         (stage,),
         source={"package": package, "revision": revision, "removed": tuple(removed)},
         checks=tuple(checks),
+        entry=entry,
     )
 
 
@@ -840,7 +889,9 @@ def _geometry(entry: Mapping[str, Any], store: Store, at: str, base: Requirement
         checks.append(Check(at, state, "the files of the stack, with the build"))
         identified = f"the stack's, and {identified}" if files else "the stack's"
     compact = str(entry.get("compact"))
-    return Requirement("geometry", "geometry", compact, identified, checks=tuple(checks))
+    return Requirement(
+        "geometry", "geometry", compact, identified, checks=tuple(checks), entry=entry
+    )
 
 
 def _listings(listed: Mapping[str, str], at: str) -> list[Requirement]:
@@ -888,6 +939,7 @@ def _input(index: int, entry: Mapping[str, Any], store: Store, at: str) -> Requi
         tuple(entry.get("trials") or ()),
         source={"path": path, "commitment": entry.get("commitment")},
         checks=(check,),
+        entry=entry,
     )
 
 
@@ -943,6 +995,7 @@ def _k4opt(
         f"{commit}{' with uncommitted changes' if dirty else ''}",
         source={"commit": git.get("commit"), "sha256": k4opt.get("sha256")},
         checks=(check,),
+        entry=git_kept,
     )
 
 
@@ -966,6 +1019,7 @@ def _evaluator(
         f"{len(files)} files, kept",
         source={"sha256": entry.get("sha256")},
         checks=checks,
+        entry=entry,
     )
 
 

@@ -13,10 +13,12 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from k4opt.optimization import StudyResults, TradeOffs, TrialResult
 from k4opt.problem import Parameter
+from k4opt.publication import PublishedArtifact, PublishedRequirement, SoftwareSheet
 from k4opt.record import Limit, ObjectiveValue
 from k4opt.visualization import GraphNode, names
 
@@ -430,3 +432,223 @@ def trade_offs(results: StudyResults, found: TradeOffs) -> list[Row]:
             row[column.heading] = None if base == 0 else 100 * change / abs(base)
         rows.append(row)
     return rows
+
+
+# --- the Software tab --------------------------------------------------------------------------
+
+STALE_AFTER = timedelta(days=7)
+"""How old a check of a nightly can be before its slot may hold another build."""
+REBUILD_NOTE = (
+    "The original binary of a local build is not available: only its fingerprint is. Rebuilding "
+    "its source gives other bytes, so a rerun can be compared by results, not by binaries."
+)
+
+
+def requirement(sheet: SoftwareSheet, wanted: str) -> PublishedRequirement | None:
+    """The requirement of the sheet with the id ``wanted``, ``None`` if it has none."""
+    return next((r for r in sheet.requirements if r.id == wanted), None)
+
+
+def _local(sheet: SoftwareSheet) -> list[PublishedRequirement]:
+    """What the study ran that is not the nightly: local builds, code, changed job files, a local
+    geometry; and a local build that did not run, said as such."""
+    return [
+        r
+        for r in sheet.requirements
+        if r.kind in ("package", "code")
+        or (r.kind == "steering" and not r.identified.startswith("the stack's own"))
+        or (r.kind == "geometry" and "kept" in r.identified)
+    ]
+
+
+def _change(r: PublishedRequirement) -> str:
+    if r.unused:
+        return "Changed locally — not used"
+    if any(note.startswith("binary only") for note in r.notes):
+        return "Binary only — source unknown"
+    if r.kind == "steering":
+        return "Modified copy"
+    if r.kind == "package":
+        return "Modified" if r.facts.get("changed") else "Rebuilt"
+    return "Added"
+
+
+def _source(r: PublishedRequirement) -> str:
+    link = r.facts.get("link")
+    if link is None:
+        return r.identified
+    return (
+        f"{r.identified.rpartition(' (')[0] or r.identified} · {labels.LINK.get(str(link), link)}"
+    )
+
+
+def _rebuild(r: PublishedRequirement) -> str | None:
+    if r.kind != "package" or r.unused:
+        return None
+    return "Rebuildable from source" if r.facts.get("rebuildable") else "Source unavailable"
+
+
+def _what_ran(r: PublishedRequirement) -> str | None:
+    if r.unused:
+        return "not read by any stage"
+    if r.ran is None or r.kind != "package":
+        return None
+    files = r.ran.get("files")
+    names = [
+        f"{str(file['file']).rpartition('/')[2]} {str(file.get('sha256'))[:8]}…"
+        for file in (files if isinstance(files, tuple) else ())
+        if isinstance(file, Mapping)
+    ]
+    return " · ".join([*names, "Original binary: fingerprint only"])
+
+
+def local_changes(sheet: SoftwareSheet) -> list[Row]:
+    """Each local change of what the study ran: its source and what of it ran, kept apart."""
+    return [
+        {
+            "Name": r.label,
+            "Change": _change(r),
+            "Source": _source(r),
+            "Rebuild": _rebuild(r),
+            "What ran": _what_ran(r),
+            "Used by": ", ".join(r.used_by) or None,
+            "Check": labels.STATE[r.state],
+            "Access": labels.ACCESS[r.access],
+        }
+        for r in _local(sheet)
+    ]
+
+
+def inputs(sheet: SoftwareSheet) -> list[Row]:
+    """Each input the stack does not hold: how it is known, who read it, who can get it."""
+    return [
+        {
+            "Input": r.label,
+            "Known from": r.identified.removesuffix(" input"),
+            "Read by": ", ".join(r.used_by) or None,
+            "Check": labels.STATE[r.state],
+            "Access": labels.ACCESS[r.access],
+            "Commitment": None
+            if r.access == "public" or not r.facts.get("commitment")
+            else f"sha256:{str(r.facts['commitment'])[:12]}…",
+        }
+        for r in sheet.requirements
+        if r.kind == "input"
+    ]
+
+
+def other_requirements(sheet: SoftwareSheet) -> list[Row]:
+    """Every requirement of the sheet, one row each."""
+    return [
+        {
+            "Requirement": r.label,
+            "Kind": r.kind,
+            "Identified by": r.identified,
+            "Check": labels.STATE[r.state],
+            "Access": labels.ACCESS[r.access],
+            "Notes": "; ".join(r.notes) or None,
+        }
+        for r in sheet.requirements
+    ]
+
+
+def checked(sheet: SoftwareSheet) -> str:
+    """When the study was checked: at its publication, and last, which differ once it is
+    published again in the same state."""
+    first, last = labels.when(sheet.first_checked), labels.when(sheet.checked)
+    if sheet.first_checked == sheet.checked:
+        return f"Checked at publication, {first}; not checked since."
+    return f"At publication, {first}: {sheet.first_status}. Last checked {last}."
+
+
+def at_a_glance(sheet: SoftwareSheet) -> str:
+    """How much of what ran is not the nightly, and how far what the stages did is known."""
+    changes = len(_local(sheet))
+    held = len(inputs(sheet))
+    observed = "every stage observed" if not sheet.gaps else "what the stages used is not all known"
+    return " · ".join(
+        [
+            f"Local changes: {changes or 'none'}",
+            f"Inputs: {held or 'none outside the stack and the problem'}",
+            observed,
+        ]
+    )
+
+
+def software_warnings(sheet: SoftwareSheet, now: datetime | None = None) -> list[str]:
+    """What a reader must know before trusting the status: a nightly checked long ago, what was
+    altered or not kept, and what the records leave out."""
+    lines = []
+    base = requirement(sheet, "base")
+    moment = datetime.fromisoformat(sheet.checked)
+    moment = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    if (
+        base is not None
+        and any(note.startswith("a nightly") for note in base.notes)
+        and (now or datetime.now(UTC)) - moment > STALE_AFTER
+    ):
+        lines.append(
+            f"This nightly was last checked {labels.when(sheet.checked)}: its slot may have been "
+            "overwritten since."
+        )
+    lines += [f"Altered: {name}" for name in sheet.altered]
+    if sheet.not_kept:
+        lines.append(f"{labels.count(sheet.not_kept, 'thing')} could not be kept by the study.")
+    lines += list(sheet.gaps)
+    return lines
+
+
+def stages_used(sheet: SoftwareSheet) -> str | None:
+    """Which stages used only the nightly, and which also the local changes; ``None`` where that
+    is not known (not every stage was observed)."""
+    base = requirement(sheet, "base")
+    if base is None or sheet.gaps:
+        return None
+    local = {stage for r in _local(sheet) if not r.unused for stage in r.used_by}
+    nightly = [stage for stage in base.used_by if stage not in local]
+    parts = []
+    if nightly:
+        parts.append(f"{', '.join(nightly)} used the nightly only")
+    if local:
+        parts.append(f"{', '.join(sorted(local))} used the changes above")
+    return "; ".join(parts) + "." if parts else None
+
+
+def artifact_link(where: str, artifact: PublishedArtifact) -> str | None:
+    """Where a published file can be fetched from, for a publication served over HTTP(S): its path
+    is one the sheet's reader checked, of letters, digits, ``-`` and ``/``."""
+    return (
+        f"{where.rstrip('/')}/{artifact.path}"
+        if where.startswith(("http://", "https://"))
+        else None
+    )
+
+
+def _how_to_get(r: PublishedRequirement) -> str:
+    return {"public": "published here", "on request": "ask the author", "none": "not available"}[
+        r.access
+    ]
+
+
+def rerun_steps(sheet: SoftwareSheet) -> list[str]:
+    """What a rerun takes, in order, from what the sheet says; never more than it knows."""
+    base = requirement(sheet, "base")
+    steps = [f"Source the nightly: {base.label}." if base is not None else "Source the stack."]
+    for r in sheet.requirements:
+        if r.unused:
+            continue
+        if r.kind == "package":
+            start = f"at {r.facts['base']}" if r.facts.get("base") else "from its kept state"
+            steps.append(
+                f"Clone {r.label} {start}, apply its changes ({_how_to_get(r)}), build it, put it "
+                "in front of the stack with k4_local_repo, and check that MARLIN_DLL names the "
+                "local library if it is a Marlin processor."
+            )
+        elif r.kind == "code" and r.used_by:
+            steps.append(f"Put {r.label} on PYTHONPATH ({_how_to_get(r)}).")
+        elif r.kind == "steering" and not r.identified.startswith("the stack's own"):
+            steps.append(f"Apply the changes to {r.label}'s job files ({_how_to_get(r)}).")
+        elif r.kind == "input" and r.used_by:
+            steps.append(f"Obtain {r.label} ({_how_to_get(r)}).")
+    steps.append("Evaluate the candidate with k4opt evaluate and its parameters.")
+    return steps

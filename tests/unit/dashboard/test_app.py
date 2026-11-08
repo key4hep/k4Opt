@@ -16,6 +16,7 @@ from streamlit.testing.v1 import AppTest
 from k4opt.optimization import StudyResults, load_study
 from k4opt.publication import CATALOG_NAME, Catalog, CatalogEntry, Snapshot, publish
 from k4opt.visualization import task_graph
+from tests.support.published import local_study
 from tests.support.serve import served
 from tests.support.software import LABEL
 from tests.support.studies import mixed_study
@@ -406,3 +407,48 @@ def test_opening_a_study_of_another_level_leaves_no_trade_off_of_the_one_before(
     assert not at.exception
     # its rules named the objectives of the level above by their place
     assert dict(at.query_params) == {"study": "s", "inner": "1"}
+
+
+def test_the_software_tab_says_what_a_study_ran_on_and_what_a_rerun_needs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = published(tmp_path, trials=2)
+    at = study_page(monkeypatch, tmp_path, results, view="Software")
+    assert not at.exception
+    shown = texts(at)
+    assert "Not rerun" in shown and "To rerun" in [s.value for s in at.subheader]
+    assert "Checked at publication" in shown and "Source the nightly" in shown
+
+
+def test_the_software_tab_shows_local_work_and_only_as_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.publication import offer, publish
+
+    study = local_study(tmp_path, monkeypatch)
+    # text that would format, link or embed anywhere but in a code block
+    edited = tmp_path / "src" / "DDMarlinPandora" / "src" / "DDCaloHitCreator.cc"
+    assert "1.05" in edited.read_text()
+    results = load_study(study)
+    publish(results, tmp_path / "pub", release=offer(results).release(code=True))
+    at = study_page(monkeypatch, tmp_path, results, view="Software")
+    assert not at.exception
+    assert "rebuild needed" in texts(at)
+    (table, *_) = at.dataframe
+    rows = {row["Name"]: row for row in table.value.to_dict("records")}
+    assert rows["ddmarlinpandora"]["Rebuild"] == "Rebuildable from source"
+    assert "Original binary: fingerprint only" in rows["ddmarlinpandora"]["What ran"]
+    assert any("1.05 * eCalToEMGeV" in block.value for block in at.code)
+    # where the study's files were: never shown (the sidebar says where the publication is)
+    assert str(tmp_path / "src") not in texts(at) and str(tmp_path / "helpers") not in texts(at)
+
+
+def test_a_study_published_from_its_json_form_says_it_has_no_sheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.publication import publish
+
+    results = load_study(mixed_study(tmp_path / "s", 2))
+    publish(StudyResults.from_dict(results.to_dict()), tmp_path / "pub")
+    at = study_page(monkeypatch, tmp_path, results, view="Software")
+    assert not at.exception and "says nothing of the software" in texts(at)

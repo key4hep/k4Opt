@@ -24,18 +24,18 @@ PRIVATE = 0o600
 """The permissions of a file only its owner may read (``private``)."""
 
 
-def _staged(path: Path, text: str, private: bool = False) -> Path:
-    """``text`` (UTF-8) in a new hidden sibling of ``path``, flushed to disk and closed; readable by
-    its owner alone if ``private``, from the moment it exists."""
+def _staged(path: Path, text: str | bytes, private: bool = False) -> Path:
+    """``text`` (UTF-8, or the bytes as they are) in a new hidden sibling of ``path``, flushed to
+    disk and closed; readable by its owner alone if ``private``, from the moment it exists."""
     staged = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     # exclusive, so never another writer's file
     descriptor = os.open(
         staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, PRIVATE if private else 0o666
     )
-    handle = os.fdopen(descriptor, "w", encoding="utf-8")
+    handle = os.fdopen(descriptor, "wb")
     try:
         with handle:
-            handle.write(text)
+            handle.write(text.encode() if isinstance(text, str) else text)
             handle.flush()
             os.fsync(handle.fileno())
     except BaseException:
@@ -44,9 +44,9 @@ def _staged(path: Path, text: str, private: bool = False) -> Path:
     return staged
 
 
-def publish(path: Path, text: str, private: bool = False) -> None:
-    """Write ``text`` (UTF-8) into a hidden temporary sibling, then publish it with an exclusive
-    hard link.
+def publish(path: Path, text: str | bytes, private: bool = False) -> None:
+    """Write ``text`` (UTF-8, or the bytes as they are) into a hidden temporary sibling, then
+    publish it with an exclusive hard link.
 
     Writing, flushing to disk (fsync) and closing finish before the destination becomes visible.
     Without the fsync, EOS shows the destination of a hard link to unsynced bytes as empty for a

@@ -105,6 +105,13 @@ studies are read from. The pages:
     and the [analysis figures](visualization.md#how-the-parameters-act-on-an-objective-the-analysis-figures):
     parallel coordinates, a slice per parameter, the rank over each pair of parameters (offered
     with two at least), and the distribution of each objective.
+  - **Software**: what the study ran on and what a rerun would need, from its
+    [software sheet](publication.md#what-else-is-published): the status (*Not rerun · ...*; nothing
+    says reproduced without a rerun), the build, when it was checked at publication and last,
+    warning that a nightly checked over 7 days ago may have been overwritten; each local change
+    with its source and what of it ran kept apart (a local build is *Rebuildable from source*, its
+    *Original binary: fingerprint only*), which stages used only the nightly, the published patches
+    and files, shown as text and never run; each input and who can get it; and the steps of a rerun.
 
   **A trial** opens the same way wherever it is shown, by a click in a figure or by selecting
   its row: as a sheet over the page, named in the URL (`&trial=12`), with its outcome, its
@@ -245,7 +252,8 @@ rows) and `labels.py` (how names, numbers and times are worded).
 changing the snapshots: snapshots stay files (named by content, so any store serves them), and a
 catalog of rows (id, name, problem, created, published, counts, snapshot path and SHA-256, and
 whatever is to be searched) is what `Publication.catalog()` would read instead. The dashboard
-reads only `Catalog`, `CatalogEntry` and `StudyResults`.
+reads only `Catalog`, `CatalogEntry`, `StudyResults`, and, on its Software tab, `SoftwareSheet` and
+the files it names.
 
 ## Not done
 
