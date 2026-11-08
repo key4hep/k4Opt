@@ -86,7 +86,7 @@ def publish(
         )
     sha256 = hashlib.sha256(data).hexdigest()
     snapshot = Snapshot(snapshot_path(results.id, sha256), sha256, len(data))
-    approved = release if release is not None else Release(offer(results))
+    approved = release if release is not None else offer(results).release()
     if approved.offer.study != results.id:
         raise PublicationError(
             f"this release was made for another study ({approved.offer.study}), not {results.id}"
@@ -96,13 +96,30 @@ def publish(
             f"study {results.name} is in another state than when this release was made: review "
             "what it offers again"
         )
-    _write_once(directory / snapshot.path, data)
-    artifacts = bundled(results.id, approved.pieces)
-    for artifact, content in artifacts:
-        _write_once(directory / artifact.path, content)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PublicationError(f"cannot make {directory}: {exc}") from exc
     with _locked(directory):
         catalog = _read_catalog(directory)
         current = catalog.study(results.id)
+        made = datetime.now(UTC).isoformat(timespec="seconds")
+        entry = CatalogEntry.of(results, snapshot, made)
+        if (
+            current is not None
+            and current.snapshot != snapshot
+            and (entry.trials < current.trials or entry.finished < current.finished)
+        ):  # before anything is written: a refused publication leaves nothing to read
+            raise PublicationError(
+                f"{directory / CATALOG_NAME} holds a later state of study {results.name}: "
+                f"{current.trials} trials, {current.finished} ended (published "
+                f"{current.published}), not {entry.trials} and {entry.finished}; read the study "
+                "again and publish what it holds now"
+            )
+        _write_once(directory / snapshot.path, data)
+        artifacts = bundled(results.id, approved.pieces)
+        for artifact, content in artifacts:
+            _write_once(directory / artifact.path, content)
         software = _sheet(
             directory,
             results,
@@ -118,18 +135,7 @@ def publish(
             entry = replace(current, software=software)
             _replace_catalog(directory, catalog.with_entry(entry))
             return entry
-        entry = CatalogEntry.of(
-            results, snapshot, datetime.now(UTC).isoformat(timespec="seconds"), software
-        )
-        if current is not None and (
-            entry.trials < current.trials or entry.finished < current.finished
-        ):
-            raise PublicationError(
-                f"{directory / CATALOG_NAME} holds a later state of study {results.name}: "
-                f"{current.trials} trials, {current.finished} ended (published "
-                f"{current.published}), not {entry.trials} and {entry.finished}; read the study "
-                "again and publish what it holds now"
-            )
+        entry = replace(entry, software=software)
         _replace_catalog(directory, catalog.with_entry(entry))
     return entry
 
@@ -185,12 +191,10 @@ def _sheet(
     first = None
     if previous is not None and previous.snapshot == snapshot:
         first = previous.first_checked, previous.first_status
-    held = {artifact.path for artifact in artifacts}
-    published = [
+    published = [  # by what each answers: a path is only its bytes, which two can share
         (artifact, content)
         for artifact in (previous.artifacts if previous is not None else ())
-        if artifact.path not in held
-        and (content := _verified(directory / artifact.path, artifact)) is not None
+        if (content := _verified(directory / artifact.path, artifact)) is not None
     ]
     kept, earlier = still_public(release, published)
     for label in sorted({piece.label for piece in earlier}):

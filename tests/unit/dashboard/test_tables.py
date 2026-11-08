@@ -429,3 +429,21 @@ def test_a_build_published_in_part_says_there_is_more_to_ask_for() -> None:
     assert row["Build options"] == "Partially published: ask the author for the rest"
     step = next(s for s in tables.rerun_steps(_sheet(partial)) if s.startswith("Clone"))
     assert "its CMake options (in part here; ask the author for the rest)" in step
+
+
+def test_a_python_environment_a_stage_used_is_said_to_be_missing_from_a_rerun() -> None:
+    import tables
+
+    used = _requirement(
+        id="environment:1",
+        kind="environment",
+        label="a Python environment",
+        identified="60 distributions",
+        access="none",
+        facts={},
+        ran=None,
+    )
+    assert tables.rerun_missing(_sheet(_base(), used)) == ["a Python environment"]
+    assert any("60 distributions" in step for step in tables.rerun_steps(_sheet(_base(), used)))
+    idle = replace(used, used_by=())
+    assert tables.rerun_missing(_sheet(_base(), idle)) == []

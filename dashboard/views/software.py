@@ -116,11 +116,13 @@ def _download(where: str, artifact: PublishedArtifact) -> None:
 
 def _inputs(where: str, sheet: SoftwareSheet) -> None:
     rows = tables.inputs(sheet)
-    if not rows:
+    published = [artifact for artifact in sheet.artifacts if artifact.group == "inputs"]
+    if not rows and not published:
         return
     st.subheader("Inputs")
-    widgets.table(rows)
-    for artifact in (a for a in sheet.artifacts if a.group == "inputs"):
+    if rows:
+        widgets.table(rows)
+    for artifact in published:
         _download(where, artifact)
     st.caption(
         "A commitment binds this publication to a file without showing anything of it: someone "

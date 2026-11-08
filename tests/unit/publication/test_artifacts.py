@@ -1057,3 +1057,252 @@ def test_a_build_with_options_left_out_says_so_in_its_sheet(
     assert sheet is not None
     package = next(r for r in sheet.requirements if r.label == "ddmarlinpandora")
     assert package.facts["configuration"] == "partial"
+
+
+# --- what the fourth review of the publication found ---------------------------------------------
+
+
+def fresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **changes: Any) -> Path:
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    return local_study(tmp_path, monkeypatch, **changes)
+
+
+def access_in(entry: Any, root: Path) -> dict[str, str]:
+    sheet = open_publication(root).software(entry)
+    assert sheet is not None
+    return {r.id: r.access for r in sheet.requirements}
+
+
+def test_the_source_of_a_build_no_remote_has_is_needed_though_no_stage_read_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = load_study(fresh(tmp_path, monkeypatch, private=True))
+    found = offer(results)
+    held = {h.name: h for h in found.held if h.owner == "ddmarlinpandora"}
+    assert held["src/DDCaloHitCreator.cc"].needed  # compiled, so never read at run time
+    entry = publish(results, tmp_path / "pub", release=found.release(code=True, inputs=True))
+    assert access_in(entry, tmp_path / "pub")["package:ddmarlinpandora"] == "on request"
+
+
+def test_an_untracked_header_of_a_build_may_be_needed_and_a_note_may_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = load_study(fresh(tmp_path, monkeypatch, untracked=("Extra.h",)))
+    held = {h.name: h for h in offer(results).held if h.owner == "ddmarlinpandora"}
+    assert held["Extra.h"].needed and not held["notes.txt"].needed
+    assert "Extra.h" not in names(offer(results).code)  # asked for by name, like any other
+
+
+def test_inputs_of_equal_bytes_approved_one_after_the_other_both_stay_public(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = fresh(tmp_path, monkeypatch)
+    first, second = tmp_path / "one" / "config.json", tmp_path / "two" / "config.json"
+    for path in (first, second):
+        path.parent.mkdir()
+        path.write_text('{"scale": 1}\n')
+        add_input(study, path)
+    results = load_study(study)
+    found = offer(results)
+    ids = {p.place: p.requirements[0] for p in found.inputs if p.name == "config.json"}
+    publish(results, tmp_path / "pub", release=found.release(inputs=[str(first)]))
+    entry = publish(results, tmp_path / "pub", release=found.release(inputs=[str(second)]))
+    access = access_in(entry, tmp_path / "pub")
+    assert access[ids[str(first)]] == access[ids[str(second)]] == "public"
+
+
+def test_a_large_file_that_would_be_published_is_listed_before_the_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = fresh(tmp_path, monkeypatch)
+    big = tmp_path / "overlay.root"
+    big.write_bytes(b"y" * (BUDGET + 1))
+    add_input(study, big)
+    code, out, _ = run(
+        study, tmp_path / "pub", "n\ny\n", "--include-large", monkeypatch=monkeypatch
+    )
+    assert code == 0
+    listing = out.split("Publish the code above?")[0]
+    assert "overlay.root" in listing and "over 10 MB" in listing
+    assert "overlay.root" in artifacts_of(tmp_path / "pub")
+
+
+def test_two_installations_each_say_how_much_of_their_options_is_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from tests.support.checkouts import build, checkout
+    from tests.support.studies import mini_environment
+
+    mini_environment(monkeypatch)
+    other = build(checkout(tmp_path / "other"), build_id="aabbccdd")
+    cache = other.parent / "build" / "CMakeCache.txt"
+    cache.write_text(cache.read_text() + "DATA:STRING=/opt/private/geometry\n")
+    monkeypatch.setenv(
+        "LD_LIBRARY_PATH", f"{other / 'lib'}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+    )
+    study = local_study(tmp_path, monkeypatch)
+    read_by_stage(study, other / "lib" / "libDDMarlinPandora.so.0.14.0")
+    results = load_study(study)
+    entry = publish(results, tmp_path / "pub", release=offer(results).release(code=True))
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None
+    states = sorted(
+        str(r.facts["configuration"]) for r in sheet.requirements if r.label == "ddmarlinpandora"
+    )
+    assert states == ["partial", "published"]
+
+
+def test_a_requirement_whose_kept_bytes_are_gone_is_not_public(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.software.keep import DIRECTORY, Store
+
+    study = fresh(tmp_path, monkeypatch)
+    directory = study / DIRECTORY
+    (state,) = directory.glob("software-*.json")
+    files = json.loads(state.read_text())["geometry"]["files"]
+    kept = next(file["kept"] for file in files.values())
+    Store(directory).path(kept).unlink()
+    results = load_study(study)
+    entry = publish(results, tmp_path / "pub", release=offer(results).release(code=True))
+    assert access_in(entry, tmp_path / "pub")["geometry"] == "none"
+
+
+def test_what_a_build_installed_and_a_stage_read_is_offered_apart_from_its_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = fresh(tmp_path, monkeypatch)
+    install = tmp_path / "src" / "DDMarlinPandora" / "install" / "include"
+    read_by_stage(study, install / "New.h")
+    found = offer(load_study(study))
+    code = names(found.code)
+    assert "ddmarlinpandora/installed/include/New.h" in code
+    assert not any("DDCaloHitCreator.h" in name for name in code)  # installed, and read by no one
+    assert not any("DDCaloHitCreator.h" in h.label for h in found.held)
+
+
+@pytest.mark.parametrize(
+    ("line", "partial"),
+    [
+        ("WITH_TRACKING:BOOL=ON", False),
+        ("CUSTOM_GEOMETRY:FILEPATH=/home/user/geometry.xml", True),
+        ("EXTERNAL_DATA:PATH=/opt/mydata", True),
+        ("NOTHING:PATH=", False),
+        ("CMAKE_CXX_COMPILER:FILEPATH=/cvmfs/gcc/bin/g++", False),
+        ("Gaudi_DIR:PATH=/cvmfs/stack/Gaudi/lib/cmake/Gaudi", False),
+        ("GIVEN:UNINITIALIZED=/opt/x", True),
+    ],
+)
+def test_every_option_left_out_that_can_matter_makes_the_options_partial(
+    line: str, partial: bool
+) -> None:
+    from k4opt.publication.artifacts import _options
+
+    assert (
+        _options(f"CMAKE_BUILD_TYPE:STRING=Release\n{line}\n".encode()).startswith(b"#") is partial
+    )
+
+
+def test_a_refused_publication_leaves_nothing_in_the_public_directory(
+    tmp_path: Path,
+) -> None:
+    from k4opt.optimization import optimize
+    from tests.support.evaluators import trade_off
+    from tests.support.studies import mixed_study
+
+    output = mixed_study(tmp_path / "s", trials=4)
+    earlier = load_study(output)
+    optimize(tmp_path / "s.yaml", [trade_off()], output, trials=2, resume=True)
+    publish(load_study(output), tmp_path / "pub")
+    before = published_files(tmp_path / "pub")
+    release = offer(earlier).release(code=True)
+    with pytest.raises(PublicationError, match="later state"):
+        publish(earlier, tmp_path / "pub", release=release)
+    assert published_files(tmp_path / "pub") == before
+
+
+def test_the_name_of_a_private_record_is_not_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.software.keep import DIRECTORY
+
+    study = fresh(tmp_path, monkeypatch)
+    (state,) = (study / DIRECTORY).glob("software-*.json")
+    state.write_text(state.read_text() + " ")
+    results = load_study(study)
+    entry = publish(results, tmp_path / "pub")
+    assert entry.software is not None
+    text = (tmp_path / "pub" / entry.software.path).read_text()
+    assert state.name not in text
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None and sheet.altered == ("a kept record of what the study ran on",)
+
+
+def test_publishing_without_a_release_is_blocked_by_a_secret_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = fresh(tmp_path, monkeypatch)
+    leaked = tmp_path / "token.txt"
+    leaked.write_text(f"{SECRET}\n")
+    add_input(study, leaked)
+    with pytest.raises(PublicationError, match="possible secrets"):
+        publish(load_study(study), tmp_path / "pub")
+    assert not (tmp_path / "pub").exists()
+
+
+def test_a_study_with_no_kept_software_left_is_published_as_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.software.keep import DIRECTORY
+
+    study = fresh(tmp_path, monkeypatch)
+    for path in (study / DIRECTORY).glob("software-*.json"):
+        path.unlink()
+    results = load_study(study)
+    entry = publish(results, tmp_path / "pub")
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None and sheet.requirements == ()
+    assert "record incomplete" in sheet.status or "blocked" in sheet.status
+
+
+def test_a_geometrys_aliases_are_published_and_no_path_with_them(tmp_path: Path) -> None:
+    from k4opt.publication.artifacts import _aliases
+    from k4opt.software.readiness import Requirement
+
+    aliases = {"part_link.xml": "part.xml", "/home/me/out.xml": "part.xml", "a.xml": "/home/me/b"}
+    entry = {"aliases": aliases}
+    requirement = Requirement("geometry", "geometry", "c", "1 files, kept", entry=entry)
+    piece = _aliases(requirement)
+    assert piece is not None and piece.name == "aliases.json"
+    assert json.loads(piece.data) == {"part_link.xml": "part.xml"}
+    entry["aliases"] = {}
+    assert _aliases(requirement) is None
+
+
+def test_an_empty_cmake_setting_is_kept_since_it_differs_from_none(tmp_path: Path) -> None:
+    from k4opt.publication.artifacts import _options
+
+    text = _options(b"ENABLE_CORRECTION:BOOL=\nNOTE:STRING=\n")
+    assert b"ENABLE_CORRECTION=\n" in text and b"NOTE=\n" in text and not text.startswith(b"#")
+
+
+def test_inputs_of_equal_bytes_both_declined_later_are_one_entry_each_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = fresh(tmp_path, monkeypatch)
+    for name in ("one", "two"):
+        path = tmp_path / name / "config.json"
+        path.parent.mkdir()
+        path.write_text('{"scale": 1}\n')
+        add_input(study, path)
+    results = load_study(study)
+    publish(results, tmp_path / "pub", release=offer(results).release(inputs=True))
+    entry = publish(results, tmp_path / "pub")
+    sheet = open_publication(tmp_path / "pub").software(entry)
+    assert sheet is not None
+    same = [a for a in sheet.artifacts if a.name == "config.json"]
+    assert len(same) == 1 and len(same[0].requirements) == 2

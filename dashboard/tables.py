@@ -656,7 +656,10 @@ def rerun_missing(sheet: SoftwareSheet) -> list[str]:
     return [
         r.label
         for r in sheet.requirements
-        if not r.unused and r.access != "public" and r.kind != "environment" and r.id != "listing"
+        if not r.unused
+        and r.access != "public"
+        and r.id != "listing"
+        and (r.kind != "environment" or r.used_by)
     ]
 
 
@@ -677,6 +680,11 @@ def rerun_steps(sheet: SoftwareSheet) -> list[str]:
                 f"Clone {r.label} {start}, apply its changes ({_how_to_get(r)}), build it with its "
                 f"CMake options ({options}), put it in front of the stack with k4_local_repo, and "
                 "check that MARLIN_DLL names the local library if it is a Marlin processor."
+            )
+        elif r.kind == "environment" and r.used_by:
+            steps.append(
+                f"Recreate the Python environment a stage used ({r.identified}): its versions "
+                "are not published, so ask the author."
             )
         elif r.kind == "geometry" and "kept" in r.identified:
             steps.append(f"Restore the geometry {r.label} ({_how_to_get(r)}) and set K4GEO to it.")

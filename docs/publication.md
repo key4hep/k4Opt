@@ -159,12 +159,17 @@ What of it leaves the machine is decided here. Recording is automatic; **publish
 | a venv's `pyvenv.cfg` | listed only: it says where an interpreter is, and the environment is a requirement of its own |
 | a job file that leads out of its directory, through any chain of links | data, not code: held back, and on request: `--include-inputs NAME` publishes it |
 | a build no stage read | not offered |
+| a source file of a build that may be needed to compile it (no remote has its checkout, or an untracked source or header) | held back and on request, since no stage opens what is compiled in; `--include` names it, or the package |
+| what a build installed that a stage read | offered as `installed/...`, since it can differ from what its source installs |
 
 A Python module counts as read when a stage read it from its `__pycache__`: with a valid cache,
 Python never opens the source. A file counts as read only where it was read: the same bytes elsewhere say nothing of this copy.
 A file deleted from a local directory is offered although nothing can read it, since its absence can
 change what an import finds. The options of a build's CMake cache whose names say a credential are
-left out with those that hold a path, and such a build's options then read *partially published*.
+left out with those that hold a path, among them `PATH` and `FILEPATH` settings other than what CMake
+found by itself (compilers, the stack's packages), and such a build's options then read *partially
+published*. An empty setting is kept, since it differs from none. A local geometry's other names for
+its files come as an `aliases.json`.
 With a changed job directory comes a `job-files.json`, listing the stack's files it removed, its
 executable files and its links within it. With a build comes its `cmake-options.txt`: the options of
 its CMake cache that hold no path, the others counted in the file. Never published: a library or

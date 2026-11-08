@@ -485,3 +485,32 @@ def test_two_published_files_of_equal_bytes_each_get_their_button(
     assert not at.exception
     labels = [button.proto.label for button in at.get("download_button")]
     assert labels.count("config.json") == 2
+
+
+def test_a_published_input_of_no_input_requirement_can_still_be_downloaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import json
+
+    from k4opt.publication import offer, publish
+    from k4opt.publication.catalog import sheet_path
+
+    results = load_study(local_study(tmp_path, monkeypatch))
+    entry = publish(results, tmp_path / "pub", release=offer(results).release(inputs=True))
+    assert entry.software is not None
+    sheet = json.loads((tmp_path / "pub" / entry.software.path).read_text())
+    for requirement in sheet["requirements"]:  # as for a job file that links out of its directory
+        if requirement["kind"] == "input":
+            requirement["kind"] = "steering"
+    text = json.dumps(sheet)
+    sha256 = hashlib.sha256(text.encode()).hexdigest()
+    path = sheet_path(results.id, sha256)
+    (tmp_path / "pub" / path).parent.mkdir(exist_ok=True, parents=True)
+    (tmp_path / "pub" / path).write_text(text)
+    catalog = json.loads((tmp_path / "pub" / CATALOG_NAME).read_text())
+    catalog["studies"][0]["software"] = {"path": path, "sha256": sha256, "bytes": len(text)}
+    (tmp_path / "pub" / CATALOG_NAME).write_text(json.dumps(catalog))
+    at = study_page(monkeypatch, tmp_path, results, view="Software")
+    assert not at.exception
+    assert "ecal_scale.json" in [button.proto.label for button in at.get("download_button")]

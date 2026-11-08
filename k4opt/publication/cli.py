@@ -207,18 +207,21 @@ def _list(found: Offer, where: str, out: TextIO, style: Style) -> None:
     """What would be published, and what would not, with why (see ``docs/publication.md``)."""
     label = "code"
     owner: str | None = None
-    for piece in found.code:
+    code = _all(found, "code")  # what the question will be about, over the budget or not
+    for piece in code:
         shown = "" if piece.owner == owner else style.bold(printable(piece.owner))
         padding = " " * (_OWNER - (0 if piece.owner == owner else len(printable(piece.owner))))
         owner = piece.owner
         against = f"patch against {printable(piece.base)}   " if piece.base else ""
         parts = [f"{shown}{padding}{against}{style.bold(printable(piece.name))}"]
         parts.append(_change(piece, style))
+        if piece in found.large:
+            parts.append(style.yellow(f"{_size(piece.size)}, over {_size(BUDGET)}"))
         if not piece.base and piece.stages:
             parts.append(printable(_used(piece)))
         _line(out, style, label, "  ".join(parts))
         label = ""
-    if not found.code:
+    if not code:
         _line(out, style, label, "nothing local to publish")
         label = ""
     held = [h for h in found.held if h.group == "code"]
@@ -259,14 +262,15 @@ def _list(found: Offer, where: str, out: TextIO, style: Style) -> None:
 
 def _input_lines(found: Offer, out: TextIO, style: Style) -> None:
     label = "inputs"
-    used = sum(piece.size for piece in found.inputs)
-    for index, piece in enumerate(found.inputs):
+    inputs = _all(found, "inputs")  # what the question will be about, over the budget or not
+    used = sum(piece.size for piece in inputs)
+    for index, piece in enumerate(inputs):
         total = (
-            f"   {style.bold(_size(used))} of {_size(BUDGET)}"
-            if index == len(found.inputs) - 1
-            else ""
+            f"   {style.bold(_size(used))} of {_size(BUDGET)}" if index == len(inputs) - 1 else ""
         )
-        shared = sum(other.name == piece.name for other in found.inputs) > 1
+        if piece in found.large:
+            total += "   " + style.yellow(f"over {_size(BUDGET)}")
+        shared = sum(other.name == piece.name for other in inputs) > 1
         where = f" ({piece.requirements[0]}: {piece.place})" if shared else ""
         _line(
             out,

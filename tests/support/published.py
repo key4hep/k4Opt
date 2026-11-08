@@ -14,7 +14,7 @@ import pytest
 
 from k4opt.software import keep, source
 from k4opt.software.keep import DIRECTORY, USED, keep_inputs
-from tests.support.checkouts import build, checkout, variables
+from tests.support.checkouts import build, checkout, git, variables
 from tests.support.studies import mixed_study
 
 STAGE = "pi0/reconstruction"
@@ -40,10 +40,18 @@ def add_input(study: Path, path: Path) -> None:
     keep_inputs(study / DIRECTORY, [(str(path), identity(path), [STAGE], "observed")])
 
 
-def local_study(root: Path, monkeypatch: pytest.MonkeyPatch, trials: int = 2) -> Path:
+def local_study(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trials: int = 2,
+    *,
+    private: bool = False,
+    untracked: tuple[str, ...] = (),
+) -> Path:
     """A study in ``root/study`` run on a build of DDMarlinPandora with one edited file, one
     untracked header it installed, one untracked note and one untracked binary, a directory of
-    helpers of which a stage read one, and a calibration file that stage read."""
+    helpers of which a stage read one, and a calibration file that stage read. ``private``: no
+    remote has its checkout, so that its patch holds every file; ``untracked``: more files of it."""
     repo = checkout(root / "src")
     clean = checkout(root / "k4opt", "k4Opt")  # k4opt's own, whatever the tests run from
     monkeypatch.setattr(
@@ -53,8 +61,19 @@ def local_study(root: Path, monkeypatch: pytest.MonkeyPatch, trials: int = 2) ->
     (repo / "New.h").write_text("class New;\n")
     (repo / "notes.txt").write_text("not for anyone\n")
     (repo / "blob.dat").write_bytes(b"\0\1\2binary")
+    if private:
+        git(repo, "remote", "remove", "origin")
+    for name in untracked:
+        (repo / name).write_text("// compiled in\n")
     past = time.time() - 60  # all of it before the build: not stale
-    for path in (*repo.rglob("*.cc"), repo / "New.h", repo / "notes.txt", repo / "blob.dat"):
+    extra = [repo / name for name in untracked]
+    for path in (
+        *repo.rglob("*.cc"),
+        repo / "New.h",
+        repo / "notes.txt",
+        repo / "blob.dat",
+        *extra,
+    ):
         os.utime(path, (past, past))
     prefix = build(repo)
     (prefix / "include" / "New.h").write_text("class New;\n")

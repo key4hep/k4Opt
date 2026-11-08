@@ -434,7 +434,8 @@ def _merged(pieces: Iterable[Piece]) -> list[Piece]:
 def _gathered(readiness: Readiness) -> tuple[list[Piece], list[Held]]:
     pieces: list[Piece] = []
     held: list[Held] = []
-    assert readiness.store is not None
+    if readiness.store is None:  # nothing kept is left to offer; its status says so
+        return pieces, held
     store = readiness.store
     reads = _Reads(readiness.ran, not readiness.gaps)
     k4opt = next(
@@ -454,6 +455,9 @@ def _gathered(readiness: Readiness) -> tuple[list[Piece], list[Held]]:
             _from_steering(requirement, store, pieces, held)
         elif requirement.kind == "geometry":
             _from_files(requirement, store, "geometry", requirement.entry.get("files"), pieces)
+            aliases = _aliases(requirement)
+            if aliases is not None:
+                pieces.append(aliases)
         elif requirement.kind == "evaluator":
             path = str(requirement.entry.get("path"))
             if not path.startswith((f"{k4opt}/", f"{_K4OPT}/")):  # k4opt's own code otherwise
@@ -553,8 +557,7 @@ def _from_origin(
             pieces.append(
                 Piece("code", owner, OPTIONS, text, (requirement.id,), requirement.used_by)
             )
-    if is_build and isinstance(git, Mapping):
-        return  # what it installed is what its source installs
+    sourced = is_build and isinstance(git, Mapping)
     for name, file in (origin.get("files") or {}).items():
         if not isinstance(file, Mapping):
             continue
@@ -565,36 +568,45 @@ def _from_origin(
         roots += [os.path.realpath(root) for root in roots]
         places = [os.path.join(root, str(name)) for root in roots]
         stages = reads.stages(places, file.get("sha256"))
-        piece = Piece("code", owner, str(name), data, (requirement.id,), stages)
+        # what a build installed may differ from what its source installs: what ran is offered
+        shown = f"installed/{name}" if sourced else str(name)
+        piece = Piece("code", owner, shown, data, (requirement.id,), stages)
         if stages:
             pieces.append(piece)
-        else:
+        elif not sourced:
             why = "not read by any stage" if reads.complete else _UNKNOWN
-            held.append(
-                Held("code", owner, str(name), why, requirement.id, not reads.complete, piece)
-            )
+            held.append(Held("code", owner, shown, why, requirement.id, not reads.complete, piece))
 
 
 OPTIONS = "cmake-options.txt"
-_OPTION = re.compile(r"^([A-Za-z_][\w.+-]*):(BOOL|STRING)=(.*)$")
+_OPTION = re.compile(r"^([A-Za-z_][\w.+-]*):(BOOL|STRING|PATH|FILEPATH|UNINITIALIZED)=(.*)$")
+_TOOLING = re.compile(r"^CMAKE_|_(?:DIR|LIBRARY|EXECUTABLE)$")
+"""Paths CMake finds by itself, of the compiler and of the stack's packages: not settings."""
+_COMPILE_TIME = re.compile(
+    r"(?:\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|icc|ipp|inl|cmake)|CMakeLists\.txt)$"
+)
 _SENSITIVE = re.compile(
     r"(?i)pass(?:word|wd|phrase)?|pwd|secret|token|credential|api[_-]?key|private[_-]?key|auth"
 )
 
 
 def _options(cache: bytes) -> bytes:
-    """The options of a CMake cache that hold no path and whose name says no credential: what a
-    rebuild needs of it, without where the build was made (those left out are counted, and are the
-    author's to give)."""
+    """The options of a CMake cache that hold no path and whose name says no credential, an empty
+    one too (it differs from none): what a rebuild needs of it, without where the build was made.
+    Those left out are counted, and are the author's to give; the paths CMake found by itself are
+    not settings."""
     kept, left = [], 0
     for line in cache.decode(errors="replace").splitlines():
         option = _OPTION.match(line)
         if option is None:
             continue
-        if "/" in option[3] or option[1].endswith("-ADVANCED") or _SENSITIVE.search(option[1]):
+        name, kind, value = option[1], option[2], option[3]
+        if kind in ("PATH", "FILEPATH") and _TOOLING.search(name):
+            continue
+        if "/" in value or _SENSITIVE.search(name):
             left += 1
-        elif option[3]:
-            kept.append(f"{option[1]}={option[3]}")
+        else:
+            kept.append(f"{name}={value}")
     note = (
         [f"# {left} more options hold local paths or credentials: ask the author"] if left else []
     )
@@ -636,14 +648,26 @@ def _from_section(
     why: str | None = None
     needed = False
     if is_untracked and not stages and not installed:
-        why = "untracked, not used"
+        # no stage opens what is compiled in: not being read does not make it unnecessary
+        if compiled and _COMPILE_TIME.search(section.name):
+            why, needed = "not read at run time; a build may need it", True
+        else:
+            why = "untracked, not used"
     elif section.binary:
         why, needed = "binary", True
     elif whole and not stages and not installed:
-        why = "no public commit, not used"
+        # nothing else can give the source of a build no remote has
+        why, needed = (
+            ("no public commit: a rebuild needs it", True)
+            if compiled
+            else (
+                "no public commit, not used",
+                False,
+            )
+        )
     elif not compiled and not stages and not section.deleted:  # what is gone was read by no one,
         why = "not read by any stage"  # and can change what an import finds
-    if why not in (None, "binary") and not reads.complete:
+    if why not in (None, "binary") and not needed and not reads.complete:
         why, needed = _UNKNOWN, True  # a failure to look is no evidence that it was not used
     if why is None:
         pieces.append(piece)
@@ -769,6 +793,20 @@ def _from_files(
             pieces.append(Piece("code", owner, shown, data, (requirement.id,), requirement.used_by))
 
 
+def _aliases(requirement: Requirement) -> Piece | None:
+    """The other names of a geometry's files, which its references can use, as a file; those that
+    name a place of the author's are left out."""
+    aliases = {
+        str(name): target
+        for name, target in ((requirement.entry or {}).get("aliases") or {}).items()
+        if isinstance(target, str) and not os.path.isabs(str(name)) and not os.path.isabs(target)
+    }
+    if not aliases:
+        return None
+    data = (json.dumps(aliases, indent=2, sort_keys=True) + "\n").encode()
+    return Piece("code", "geometry", "aliases.json", data, (requirement.id,), requirement.used_by)
+
+
 def _from_input(
     requirement: Requirement,
     store: Store,
@@ -827,15 +865,17 @@ def still_public(
     the pieces they hold. A publication is never taken back: what it holds stays readable, so it
     must not be said to be private, however the author answers this time."""
     waiting = [piece for piece in release.offer.everything if piece not in release.pieces]
-    kept: list[PublishedArtifact] = []
+    kept: dict[tuple[str, str, str], PublishedArtifact] = {}  # equal bytes: one file, many needs
     pieces: set[Piece] = set()
     for artifact, data in published:
         same = [piece for piece in waiting if _holds(artifact, data, piece)]
         if same:
             pieces.update(same)
-            needs = tuple(dict.fromkeys(r for piece in same for r in piece.requirements))
-            kept.append(replace(artifact, requirements=needs))
-    return kept, frozenset(pieces)
+            key = (artifact.path, artifact.owner, artifact.name)
+            earlier = kept[key].requirements if key in kept else ()
+            needs = (*earlier, *(r for piece in same for r in piece.requirements))
+            kept[key] = replace(artifact, requirements=tuple(dict.fromkeys(needs)))
+    return list(kept.values()), frozenset(pieces)
 
 
 def _holds(artifact: PublishedArtifact, data: bytes, piece: Piece) -> bool:
@@ -861,7 +901,7 @@ def public_form(
     readiness = release.offer.readiness
     assert readiness is not None
     access = _access(readiness, release, earlier)
-    approved = {piece.label: piece for piece in (*release.pieces, *earlier)}
+    approved = (*release.pieces, *earlier)
     public = tuple(_requirement(r, access[r.id], approved) for r in readiness.requirements)
     status = _status(readiness, access)
     return SoftwareSheet(
@@ -872,7 +912,7 @@ def public_form(
         first_checked=first[0] if first else readiness.at,
         first_status=first[1] if first else status,
         gaps=readiness.public_gaps,
-        altered=readiness.altered,
+        altered=_altered(readiness.altered),
         not_kept=len(readiness.problems),
         on_request=tuple(
             sorted({piece.label for piece in release.offer.excluded if piece not in earlier})
@@ -880,6 +920,14 @@ def public_form(
         requirements=public,
         artifacts=tuple(artifacts),
     )
+
+
+def _altered(names: Iterable[str]) -> tuple[str, ...]:
+    """What was altered, in public: a kept state is named by the digest of its private content."""
+    said = (
+        "a kept record of what the study ran on" if n.startswith("software-") else n for n in names
+    )
+    return tuple(dict.fromkeys(said))
 
 
 def _status(readiness: Readiness, access: Mapping[str, Access]) -> str:
@@ -906,7 +954,9 @@ def _access(
     withheld |= {h.requirement for h in offer_.held if h.needed and h.piece not in earlier}
     found: dict[str, Access] = {}
     for r in readiness.requirements:
-        if r.id in withheld:
+        if r.missing:  # whatever else is published of it, a rerun cannot have all of it
+            found[r.id] = "none"
+        elif r.id in withheld:
             found[r.id] = "on request"
         elif r.id in published:
             found[r.id] = "public"
@@ -1014,19 +1064,21 @@ def _ran(requirement: Requirement) -> Mapping[str, Json] | None:
     )
 
 
-def _configuration(requirement: Requirement, approved: Mapping[str, Piece]) -> str:
+def _configuration(requirement: Requirement, approved: Iterable[Piece]) -> str:
     """Whether a reader can have what a build was configured with, all of it or a part (its options
     that hold a path or a credential are left out, and counted in its first line): its source alone
     rebuilds it with other options."""
     entry = requirement.entry or {}
-    options = approved.get(f"{_public_name(entry)}/{OPTIONS}")
+    options = next(
+        (p for p in approved if p.name == OPTIONS and requirement.id in p.requirements), None
+    )
     if options is not None:
         return "partial" if options.data.startswith(b"#") else "published"
     return "on request" if entry.get("configuration") else "none"
 
 
 def _requirement(
-    requirement: Requirement, access: Access, approved: Mapping[str, Piece]
+    requirement: Requirement, access: Access, approved: Iterable[Piece]
 ) -> PublishedRequirement:
     facts = _facts(requirement)
     if requirement.kind == "package":
