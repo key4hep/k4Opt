@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 from k4opt.record.write import SUMMARY_NAME, recorded_footprints, recorded_inputs
 from k4opt.software import Software, SoftwareError
-from k4opt.software.keep import DIRECTORY, keep_inputs, keep_used, take
+from k4opt.software.keep import DIRECTORY, candidate_geometry, keep_inputs, keep_used, take
 
 _SAID = 3  # how many problems a warning names
 
@@ -30,6 +30,7 @@ class Keeper:
         self._warn = warn
         self._roots: list[str] = []
         self._snapshot: str | None = None  # the state of the software this session kept
+        self._geometry: set[str] = set()  # the files of the geometry kept so far
 
     def open(self, identity: Mapping[str, Any]) -> None:
         """Keep what a session with ``identity`` runs on (:func:`~k4opt.software.keep.take`)."""
@@ -41,6 +42,7 @@ class Keeper:
             self._warn(f"the study keeps nothing of what it runs with: {exc}")
             return
         self._snapshot = taken.path.name
+        self._geometry = set(taken.geometry)
         if os.path.realpath(self.directory).startswith("/afs/"):
             self._warn(
                 f"{self.directory} keeps private copies of local code and inputs; on AFS its "
@@ -56,7 +58,7 @@ class Keeper:
             return
         if not isinstance(summary, Mapping):
             return
-        inputs = [
+        inputs: list[tuple[str, str, Iterable[str], str]] = [
             (path, then, stages, "observed")
             for path, (then, stages) in recorded_inputs(summary).items()
         ]
@@ -65,11 +67,12 @@ class Keeper:
         except ValueError:
             where = str(run)
         try:
+            inputs += candidate_geometry(run, summary, self._geometry)
             problems = keep_inputs(self.directory, inputs, trial=where)
             footprints = recorded_footprints(summary)
             keep_used(self.directory, run, footprints, self._roots, where, self._snapshot)
-        except (SoftwareError, OSError) as exc:
-            problems = [str(exc)]
+        except (SoftwareError, OSError, ValueError, KeyError) as exc:
+            problems = [f"{where}: {exc}"]
         self._say(problems)
 
     def _say(self, problems: list[str]) -> None:

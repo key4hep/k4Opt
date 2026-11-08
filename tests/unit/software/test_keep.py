@@ -17,7 +17,7 @@ import pytest
 from k4opt.software import Software, SoftwareError, keep
 from k4opt.software.keep import Store, commitment, keep_inputs, keep_used, take
 from k4opt.software.stack import Release
-from tests.support.checkouts import build, checkout, variables
+from tests.support.checkouts import build, checkout, elf, variables
 from tests.support.software import lcg_view
 
 GEOMETRY = Path(__file__).parents[2] / "fixtures" / "geometry" / "mini_geo"
@@ -410,3 +410,68 @@ def test_a_steering_file_made_executable_has_changed(tmp_path: Path) -> None:
     identity = {"inputs": {"samples.pi0.reconstruction.directory/run.sh": entry}}
     (steering,) = keep._steering(Store(tmp_path / "kept"), [], identity, release)
     assert steering["unchanged"] == 0 and steering["changed"]["run.sh"]["executable"] is True
+
+
+def test_a_local_file_of_a_geometry_on_the_stack_is_kept(tmp_path: Path) -> None:
+    model = tmp_path / "model.stl"
+    model.write_text("solid")
+    digest = hashlib.sha256(b"solid").hexdigest()
+    identity = geometry_identity(Path("/cvmfs/sw.hsf.org/k4geo"))
+    identity["geometry"]["externals"] = {"${CAD}/model.stl": {"path": str(model), "sha256": digest}}
+    taken = take(tmp_path / "kept", Software.now({}, site=[]), identity, {})
+    kept = json.loads(taken.path.read_text())["geometry"]
+    assert kept["stack"] is True
+    assert Store(tmp_path / "kept").get(kept["files"][str(model)]["kept"]) == b"solid"
+
+
+def test_the_other_names_of_a_geometrys_files_are_kept(tmp_path: Path) -> None:
+    root = tmp_path / "mine"
+    root.mkdir()
+    (root / "part.xml").write_text("<lccdd/>")
+    (root / "part_link.xml").symlink_to("part.xml")
+    (root / "main.xml").write_text(
+        '<lccdd><includes><gdmlFile ref="part.xml"/><gdmlFile ref="part_link.xml"/></includes>'
+        "</lccdd>"
+    )
+    identity = geometry_identity(root)
+    identity["geometry"]["compact"] = "main.xml"
+    taken = take(tmp_path / "kept", Software.now({}, site=[]), identity, {})
+    assert json.loads(taken.path.read_text())["geometry"]["aliases"] == {
+        "part_link.xml": "part.xml"
+    }
+
+
+def test_what_a_candidates_geometry_reaches_beyond_the_kept_is_an_input(tmp_path: Path) -> None:
+    root = tmp_path / "mine"
+    root.mkdir()
+    (root / "main.xml").write_text("<lccdd/>")
+    (root / "alternative.xml").write_text("<lccdd/>")
+    run = tmp_path / "run"
+    (run / "geometry").mkdir(parents=True)
+    manifest = {"reachable_files": ["main.xml", "alternative.xml"], "resources": []}
+    (run / "geometry" / "manifest.json").write_text(json.dumps(manifest))
+    other = tmp_path / "other.stl"
+    summary = {
+        "geometry": {
+            "status": "done",
+            "source_root": str(root),
+            "manifest": "geometry/manifest.json",
+            "candidate_externals": {"${CAD}/o.stl": {"path": str(other), "sha256": "a" * 64}},
+        }
+    }
+    known = {"main.xml"}
+    found = keep.candidate_geometry(run, summary, known)
+    digest = hashlib.sha256(b"<lccdd/>").hexdigest()
+    assert (str(root / "alternative.xml"), f"sha256:{digest}", ["geometry"], "geometry") in found
+    assert (str(other), "sha256:" + "a" * 64, ["geometry"], "geometry") in found
+    assert keep.candidate_geometry(run, summary, known) == []  # once
+
+
+def test_a_compiled_input_is_identified_and_not_kept(tmp_path: Path) -> None:
+    helper = tmp_path / "helper"
+    helper.write_bytes(elf("abcd"))
+    digest = hashlib.sha256(helper.read_bytes()).hexdigest()
+    keep_inputs(tmp_path / "kept", [(str(helper), f"sha256:{digest}", ["s/r"], "observed")])
+    entry = one(keep.kept_inputs(tmp_path / "kept"), str(helper))
+    assert entry["kept"] is None and entry["why"].startswith("compiled")
+    assert entry["commitment"] == commitment(entry["salt"], digest)

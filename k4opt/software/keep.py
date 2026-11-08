@@ -43,12 +43,13 @@ from typing import Any, Literal
 
 import k4opt
 from k4opt.geometry import GeometryError, GeometrySource
+from k4opt.hashing import sha256_of
 from k4opt.jsonio import PRIVATE, publish, replace
 from k4opt.software.errors import SoftwareError
 from k4opt.software.identity import Software, compared_variables
-from k4opt.software.observe import STACK, SYSTEM, load
+from k4opt.software.observe import STACK, _undeclared, load
 from k4opt.software.overlays import listed_files
-from k4opt.software.source import Origin, checkout, origins
+from k4opt.software.source import Origin, checkout, compiled, origins
 from k4opt.software.stack import MANIFESTS, Package, Release
 
 DIRECTORY = "software"
@@ -178,11 +179,12 @@ class Store:
 
 @dataclass(frozen=True, slots=True)
 class Taken:
-    """What :func:`take` kept: the file it wrote (or found, for a state kept before), and what
-    could not be kept."""
+    """What :func:`take` kept: the file it wrote (or found, for a state kept before), what could
+    not be kept, and the files of the geometry it holds."""
 
     path: Path
     problems: tuple[str, ...]
+    geometry: tuple[str, ...] = ()
 
 
 def take(
@@ -237,7 +239,8 @@ def take(
     path = directory / name
     with contextlib.suppress(FileExistsError):  # the same state, kept before
         publish(path, text, private=True)
-    return Taken(path, tuple(problems))
+    files = (document["geometry"] or {}).get("files") or {}
+    return Taken(path, tuple(problems), tuple(files))
 
 
 def _kept(store: Store, problems: list[str], what: str, data: bytes) -> str | None:
@@ -386,46 +389,91 @@ def _listing(root: str) -> dict[str, str]:
     return found
 
 
-def _shared(path: str) -> bool:
-    return any(path == root or path.startswith(f"{root}/") for root in (*STACK, *SYSTEM))
+def _externals(externals: object) -> dict[str, object]:
+    """What geometry ``externals`` (:meth:`~k4opt.geometry.GeometrySource.external_files`) read
+    that the stack and the system do not hold: by path, its SHA-256."""
+    found: dict[str, object] = {}
+    for entry in externals.values() if isinstance(externals, Mapping) else ():
+        path = entry.get("path")
+        if not isinstance(path, str) or not _undeclared(path):
+            continue
+        found[path] = entry.get("sha256")
+        for name, sha256 in (entry.get("files") or {}).items():
+            found[os.path.normpath(os.path.join(os.path.dirname(path), name))] = sha256
+    return found
 
 
 def _geometry(
     store: Store, problems: list[str], identity: Mapping[str, Any]
 ) -> dict[str, Any] | None:
-    """The geometry the session starts from: every file reachable from its compact file and what
-    its external references read, each with its SHA-256 and what it is kept as, unless the stack
-    holds it (``files`` empty) or it cannot be read (``files`` ``None``)."""
+    """The geometry the session starts from: every file reachable from its compact file, unless
+    the stack holds it (``stack``), the other names of those (``aliases``), and what its external
+    references read, each with its SHA-256 and what it is kept as (``files`` ``None`` if it cannot
+    be read)."""
     geometry = identity.get("geometry")
     if not isinstance(geometry, Mapping) or not isinstance(geometry.get("source_root"), str):
         return None
     root, compact = geometry["source_root"], geometry.get("compact")
-    found: dict[str, Any] = {"root": root, "compact": compact, "files": {}}
-    if _shared(root):
-        return found
-    try:
-        catalog = GeometrySource(str(compact), root).discover()
-    except (GeometryError, OSError) as exc:
-        problems.append(f"the geometry {compact} not kept: {exc}")
-        return {**found, "files": None}
-    wanted = {
-        name: (os.path.join(root, name), sha256)
-        for name, sha256 in {**catalog.file_hashes, **catalog.resource_hashes}.items()
+    local = _undeclared(root)
+    found: dict[str, Any] = {
+        "root": root,
+        "compact": compact,
+        "stack": not local,
+        "aliases": {},
+        "files": {},
     }
-    for entry in (geometry.get("externals") or {}).values():
-        path = entry.get("path")
-        if not isinstance(path, str) or _shared(path):
-            continue
-        wanted[path] = (path, entry.get("sha256"))
-        for name, sha256 in (entry.get("files") or {}).items():
-            reached = os.path.normpath(os.path.join(os.path.dirname(path), name))
-            wanted[reached] = (reached, sha256)
+    wanted = {
+        path: (path, sha256) for path, sha256 in _externals(geometry.get("externals")).items()
+    }
+    if local:
+        try:
+            catalog = GeometrySource(str(compact), root).discover()
+        except (GeometryError, OSError) as exc:
+            problems.append(f"the geometry {compact} not kept: {exc}")
+            return {**found, "files": None}
+        found["aliases"] = dict(catalog.file_aliases)
+        for name, digest in {**catalog.file_hashes, **catalog.resource_hashes}.items():
+            wanted[name] = (os.path.join(root, name), digest)
     for name, (path, sha256) in wanted.items():
         kept = None
         if isinstance(sha256, str):
             kept = _kept_file(store, problems, path, sha256)
         found["files"][name] = {"sha256": sha256, "kept": kept}
     return found
+
+
+def candidate_geometry(
+    run: Path, summary: Mapping[str, Any], known: set[str]
+) -> list[tuple[str, str, Iterable[str], str]]:
+    """What the geometry of the candidate of the record ``summary`` (in ``run``) read beyond the
+    files of the geometry ``known`` (:attr:`Taken.geometry`, updated): a ``ref`` parameter can
+    reach other files. As inputs for :func:`keep_inputs`. Raises :class:`OSError` or
+    :class:`ValueError` if the candidate's manifest cannot be read."""
+    geometry = summary.get("geometry")
+    if not isinstance(geometry, Mapping) or geometry.get("status") != "done":
+        return []
+    found: dict[str, object] = {
+        path: sha256
+        for path, sha256 in _externals(geometry.get("candidate_externals")).items()
+        if path not in known
+    }
+    root = geometry.get("source_root")
+    if isinstance(root, str) and _undeclared(root):
+        manifest = json.loads((run / str(geometry.get("manifest"))).read_text(encoding="utf-8"))
+        for name in (*manifest["reachable_files"], *manifest["resources"]):
+            if name not in known:
+                found[name] = sha256_of(os.path.join(root, name))
+    known.update(found)
+    return [
+        (
+            path if os.path.isabs(path) else os.path.join(str(root), path),
+            f"{_SHA256}{sha256}",
+            ["geometry"],
+            "geometry",
+        )
+        for path, sha256 in found.items()
+        if isinstance(sha256, str)
+    ]
 
 
 def _kept_file(store: Store, problems: list[str], path: str, sha256: str) -> str | None:
@@ -567,7 +615,10 @@ def keep_inputs(
             entry["commitment"] = commitment(salt, sha256)
             try:
                 entry["bytes"] = os.stat(path).st_size
-                entry["kept"] = store.put_file(path, sha256)
+                if compiled(path):
+                    entry["why"] = "compiled: identified, never kept"
+                else:
+                    entry["kept"] = store.put_file(path, sha256)
             except (SoftwareError, OSError) as exc:
                 entry["why"] = str(exc)
                 problems.append(f"{path} not kept: {exc}")
@@ -668,6 +719,7 @@ __all__ = [
     "USED",
     "Store",
     "Taken",
+    "candidate_geometry",
     "commitment",
     "declared_inputs",
     "keep_inputs",

@@ -452,7 +452,7 @@ def _binaries(prefix: str, entries: Iterable[Local]) -> tuple[tuple[Binary, ...]
             )
         elif role == "python" and os.path.isdir(entry.path):  # a compiled extension module
             listed = _LISTED["python"](entry.path, "", frozenset(), [])
-            files = sorted(path for _, path, status in listed if status and _binary(path))
+            files = sorted(path for _, path, status in listed if status and compiled(path))
         else:
             continue
         for path in files:
@@ -565,7 +565,7 @@ def _elf(path: str) -> bool:
         return False
 
 
-def _binary(path: str) -> bool:
+def compiled(path: str) -> bool:
     """Whether ``path`` is compiled: fingerprinted, never kept (an ELF file, a ROOT module)."""
     return path.endswith(".pcm") or _elf(path)
 
@@ -582,7 +582,7 @@ def _files(entry: Local) -> dict[str, tuple[str, str]]:
     for relative, path, status in listed:
         if status is None:
             continue
-        if _binary(path):  # identified among the binaries, never kept
+        if compiled(path):  # identified among the binaries, never kept
             continue
         try:
             found[relative or os.path.basename(path)] = (path, sha256_of(path, status))
@@ -602,7 +602,7 @@ def _loose(entry: Local) -> list[Binary]:
     )
     found = []
     for relative, path, status in listed:
-        if status is None or not _binary(path):
+        if status is None or not compiled(path):
             continue
         try:
             found.append(

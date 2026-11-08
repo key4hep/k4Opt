@@ -28,7 +28,7 @@ from k4opt.software.readiness import (
     records,
     requirements,
 )
-from tests.support.checkouts import build, checkout, git, variables
+from tests.support.checkouts import build, checkout, elf, git, variables
 from tests.support.software import lcg_view, republish
 
 IDENTITY: dict[str, Any] = {
@@ -703,3 +703,15 @@ def test_an_ignored_module_that_ran_is_required(tmp_path: Path, stack: Path) -> 
     Store(study / DIRECTORY).path(kept).unlink()
     readiness = requirements(study, IDENTITY, [summary(local=[str(repo)])])
     assert readiness.status == BLOCKED
+
+
+def test_a_compiled_input_gone_blocks_a_rerun(tmp_path: Path, stack: Path) -> None:
+    study = tmp_path / "study"
+    study_on(study, stack)
+    helper = tmp_path / "helper"
+    helper.write_bytes(elf("abcd"))
+    then = f"sha256:{hashlib.sha256(helper.read_bytes()).hexdigest()}"
+    keep_inputs(study / DIRECTORY, [(str(helper), then, ["pi0/reconstruction"], "observed")])
+    assert requirements(study, IDENTITY, [summary()]).status.startswith(ALL_AVAILABLE)
+    helper.unlink()
+    assert requirements(study, IDENTITY, [summary()]).status == BLOCKED

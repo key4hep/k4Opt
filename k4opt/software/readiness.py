@@ -827,15 +827,15 @@ def _geometry(entry: Mapping[str, Any], store: Store, at: str, base: Requirement
     files = entry.get("files")
     if files is None:
         checks = [Check(at, "gone", "its files could not be read when the session opened")]
-    elif files:
+    else:
         checks = _kept_files(files, store, at)
-    else:  # the stack's: as available as the build
+    identified = f"{len(files or ())} files, kept"
+    if entry.get("stack"):  # as available as the build
         state = base.checks[0].state if base.checks else "not-checked"
-        checks = [Check(at, state, "the files of the stack, with the build")]
-    identified = f"{len(files)} files, kept" if files else "the stack's"
-    return Requirement(
-        "geometry", "geometry", str(entry.get("compact")), identified, checks=tuple(checks)
-    )
+        checks.append(Check(at, state, "the files of the stack, with the build"))
+        identified = f"the stack's, and {identified}" if files else "the stack's"
+    compact = str(entry.get("compact"))
+    return Requirement("geometry", "geometry", compact, identified, checks=tuple(checks))
 
 
 def _listings(listed: Mapping[str, str], at: str) -> list[Requirement]:
