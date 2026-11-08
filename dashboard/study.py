@@ -1,8 +1,8 @@
 """The Study page: one study, chosen in the sidebar and named in the URL (``/study?study=<id>``),
 so that a link names it, in tabs across the top, the one open in the URL too (``&view=Trials``):
 its *Overview* (how far it got, what it optimizes, how a candidate is evaluated), *Results*,
-*Trade-offs*, *Trials* and *Analysis*; a trial opened from any of them is a sheet over the page
-(``&trial=12``)."""
+*Trade-offs*, *Trials*, *Analysis* and *Software*; a trial opened from any of them is a sheet over
+the page (``&trial=12``)."""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ from k4opt.visualization import names
 import data
 import labels
 import trial
-from views import analysis, overview, trade_offs, trials
+from views import analysis, overview, software, trade_offs, trials
 from views import results as measured
 
-TABS = ("Overview", "Results", "Trade-offs", "Trials", "Analysis")
+TABS = ("Overview", "Results", "Trade-offs", "Trials", "Analysis", "Software")
 PAGES = (overview.render, measured.render, trade_offs.render, trials.render, analysis.render)
 
 
@@ -64,7 +64,10 @@ def main(found: data.Source) -> None:
     _header(entry)
     if path:
         _below(top, path)
-    PAGES[TABS.index(view if view in TABS else TABS[0])](results)
+    if view == "Software":  # of the whole study, at every level: it ran on one software
+        software.render(found.location, entry)
+    else:
+        PAGES[TABS.index(view if view in TABS else TABS[0])](results)
     trial.sheet(results)
 
 

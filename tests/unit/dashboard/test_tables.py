@@ -3,13 +3,18 @@ headed by the names a reader knows the values by."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 pytest.importorskip("optuna")
 
+from k4opt.frozen import FrozenMap
 from k4opt.optimization import Rule, load_study, trade_offs
+from k4opt.publication import PublishedArtifact, PublishedRequirement, SoftwareSheet
 from tests.support.software import LABEL
 from tests.support.studies import mixed_study
 
@@ -224,3 +229,280 @@ def test_the_tuned_value_is_headed_with_the_unit_the_tuning_recorded(
                 value["unit"] = "mm"
     (row, *_) = tables.trials(StudyResults.from_dict(data))
     assert "seen, tuned [mm]" in row
+
+
+def _requirement(**changes: object) -> PublishedRequirement:
+    values: dict[str, Any] = {
+        "id": "package:ddmarlinpandora",
+        "kind": "package",
+        "label": "ddmarlinpandora",
+        "identified": "821384f + 1 uncommitted files (verified link)",
+        "used_by": ("pi0/reconstruction",),
+        "state": "available",
+        "access": "public",
+        "notes": (),
+        "facts": {"base": "821384f", "link": "verified", "rebuildable": True, "changed": 1},
+        "ran": FrozenMap(
+            {
+                "original": "fingerprint-only",
+                "files": (FrozenMap({"file": "lib/libD.so", "sha256": "1f2e" * 16}),),
+            }
+        ),
+        "unused": False,
+    }
+    return PublishedRequirement(**(values | changes))
+
+
+def _base(checked: str = "2026-11-12T10:00:00+00:00") -> PublishedRequirement:
+    return _requirement(
+        id="base",
+        kind="base",
+        label="Key4hep LCG devkey-head, built Sat Nov 7",
+        identified="x86_64-el9-gcc16-opt, 900 packages",
+        used_by=("pi0/simulation", "pi0/reconstruction"),
+        notes=("a nightly: a later build overwrites its slot, and this one is then gone",),
+        facts={},
+        ran=FrozenMap({"original": "on-cvmfs"}),
+    )
+
+
+def _sheet(*requirements: PublishedRequirement, **changes: object) -> SoftwareSheet:
+    values: dict[str, Any] = {
+        "study": "s",
+        "snapshot": "0" * 64,
+        "status": "Not rerun · rebuild needed",
+        "checked": "2026-11-12T10:00:00+00:00",
+        "first_checked": "2026-11-12T10:00:00+00:00",
+        "first_status": "Not rerun · rebuild needed",
+        "gaps": (),
+        "altered": (),
+        "not_kept": 0,
+        "on_request": (),
+        "requirements": requirements,
+        "artifacts": (),
+    }
+    return SoftwareSheet(**(values | changes))
+
+
+def test_a_local_build_says_rebuildable_and_never_that_its_binary_is_available() -> None:
+    import tables
+
+    (row,) = tables.local_changes(_sheet(_requirement()))
+    assert row["Change"] == "Modified"
+    assert row["Source"] == "821384f + 1 uncommitted files · Verified"
+    assert row["Rebuild"] == "Rebuildable from source"
+    assert "Original binary: fingerprint only" in str(row["What ran"])
+    assert "libD.so 1f2e1f2e…" in str(row["What ran"])
+    assert "fingerprint" in tables.REBUILD_NOTE
+
+
+def test_a_build_that_did_not_run_is_said_not_to_have_run() -> None:
+    import tables
+
+    (row,) = tables.local_changes(_sheet(_requirement(unused=True, ran=None, used_by=())))
+    assert row["Change"] == "Changed locally — not used"
+    assert row["Rebuild"] is None and row["What ran"] == "not read by any stage"
+
+
+def test_which_stages_used_the_changes_is_said_only_when_known() -> None:
+    import tables
+
+    sheet = _sheet(_base(), _requirement())
+    assert tables.stages_used(sheet) == (
+        "pi0/simulation used the nightly only; pi0/reconstruction used the changes above."
+    )
+    assert tables.stages_used(_sheet(_base(), _requirement(), gaps=("x not observed",))) is None
+
+
+def test_a_nightly_checked_long_ago_may_have_been_overwritten() -> None:
+    import tables
+
+    sheet = _sheet(_base())
+    assert not tables.software_warnings(sheet, datetime(2026, 11, 15, tzinfo=UTC))
+    (line,) = tables.software_warnings(sheet, datetime(2026, 12, 1, tzinfo=UTC))
+    assert "may have been overwritten" in line
+
+
+def test_a_first_check_and_a_later_one_are_kept_apart() -> None:
+    import tables
+
+    assert "not checked since" in tables.checked(_sheet())
+    later = tables.checked(_sheet(checked="2026-12-01T10:00:00+00:00"))
+    assert "At publication, 12 Nov 2026" in later and "Last checked 1 Dec 2026" in later
+
+
+def test_a_private_input_shows_its_commitment_and_a_published_one_does_not() -> None:
+    import tables
+
+    private = _requirement(
+        id="input:1",
+        kind="input",
+        label="ecal_scale.json",
+        identified="observed input",
+        access="on request",
+        facts={"commitment": "ab" * 32},
+        ran=None,
+    )
+    (row,) = tables.inputs(_sheet(private))
+    assert row["Access"] == "On request: ask the author"
+    assert row["Commitment"] == f"sha256:{'ab' * 6}…"
+    (row,) = tables.inputs(_sheet(replace(private, access="public")))
+    assert row["Commitment"] is None and row["Known from"] == "observed"
+
+
+def test_the_steps_of_a_rerun_say_where_each_thing_is() -> None:
+    import tables
+
+    private = _requirement(
+        id="input:1", kind="input", label="e.json", access="on request", facts={}, ran=None
+    )
+    steps = tables.rerun_steps(_sheet(_base(), _requirement(), private))
+    assert steps[0] == "Source the nightly: Key4hep LCG devkey-head, built Sat Nov 7."
+    assert "Clone ddmarlinpandora at 821384f, apply its changes (published here)" in steps[1]
+    assert steps[2] == "Obtain e.json (ask the author)."
+    assert steps[-1].startswith("Evaluate the candidate")
+
+
+def test_only_a_served_publication_links_to_its_files() -> None:
+    import tables
+
+    artifact = PublishedArtifact(
+        "code", "o", "o.patch", "patch", "a" * 64, 1, "studies/x/artifacts/aaaa", (), (), "b", ()
+    )
+    assert tables.artifact_link("/eos/pub", artifact) is None
+    assert (
+        tables.artifact_link("https://k4opt.web.cern.ch/", artifact)
+        == "https://k4opt.web.cern.ch/studies/x/artifacts/aaaa"
+    )
+
+
+def test_a_rerun_says_how_to_get_the_geometry_the_evaluators_and_k4opt() -> None:
+    import tables
+
+    geometry = _requirement(
+        id="geometry", kind="geometry", label="C/d.xml", identified="4 files, kept", facts={}
+    )
+    evaluator = _requirement(
+        id="evaluator:mine", kind="evaluator", label="mine v1", access="on request", facts={}
+    )
+    k4opt = _requirement(id="k4opt", kind="k4opt", label="k4opt 0.1", facts={"commit": "a" * 40})
+    steps = "\n".join(tables.rerun_steps(_sheet(_base(), geometry, evaluator, k4opt)))
+    assert "Restore the geometry C/d.xml (published here) and set K4GEO to it" in steps
+    assert "Get the evaluator mine v1 (ask the author)" in steps
+    assert f"Use k4opt at commit {'a' * 12}" in steps
+
+
+def test_a_rerun_says_when_what_is_published_does_not_suffice() -> None:
+    import tables
+
+    private = _requirement(
+        id="input:1", kind="input", label="e.json", access="on request", facts={}, ran=None
+    )
+    assert tables.rerun_missing(_sheet(_base(), _requirement())) == []
+    assert tables.rerun_missing(_sheet(_base(), private)) == ["e.json"]
+
+
+def test_a_build_says_whether_its_options_can_be_had_beside_its_source() -> None:
+    import tables
+
+    published = _requirement(
+        facts={"link": "verified", "rebuildable": True, "configuration": "published"}
+    )
+    (row,) = tables.local_changes(_sheet(published))
+    assert (row["Rebuild"], row["Build options"]) == ("Rebuildable from source", "Published")
+    asked = _requirement(
+        facts={"link": "verified", "rebuildable": True, "configuration": "on request"}
+    )
+    (row,) = tables.local_changes(_sheet(asked))
+    assert row["Build options"] == "On request"
+    step = next(s for s in tables.rerun_steps(_sheet(asked)) if s.startswith("Clone"))
+    assert "its CMake options (ask the author)" in step
+
+
+def test_a_build_published_in_part_says_there_is_more_to_ask_for() -> None:
+    import tables
+
+    partial = _requirement(
+        facts={"link": "verified", "rebuildable": True, "configuration": "partial"}
+    )
+    (row,) = tables.local_changes(_sheet(partial))
+    assert row["Build options"] == "Partially published: ask the author for the rest"
+    step = next(s for s in tables.rerun_steps(_sheet(partial)) if s.startswith("Clone"))
+    assert "its CMake options (in part here; ask the author for the rest)" in step
+
+
+def test_a_python_environment_a_stage_used_is_said_to_be_missing_from_a_rerun() -> None:
+    import tables
+
+    used = _requirement(
+        id="environment:1",
+        kind="environment",
+        label="a Python environment",
+        identified="60 distributions",
+        access="none",
+        facts={},
+        ran=None,
+    )
+    assert tables.rerun_missing(_sheet(_base(), used)) == ["a Python environment"]
+    assert any("60 distributions" in step for step in tables.rerun_steps(_sheet(_base(), used)))
+    idle = replace(used, used_by=())
+    assert tables.rerun_missing(_sheet(_base(), idle)) == []
+
+
+def test_a_local_geometry_keeps_any_stage_from_reading_as_nightly_only() -> None:
+    import tables
+
+    geometry = _requirement(
+        id="geometry",
+        kind="geometry",
+        label="C/d.xml",
+        identified="4 files, kept",
+        facts={},
+        used_by=(),
+    )
+    line = tables.stages_used(_sheet(_base(), geometry))
+    assert line is not None and "nightly only" not in line and "local geometry" in line
+
+
+def test_k4opts_own_changes_are_a_step_of_a_rerun() -> None:
+    import tables
+
+    k4opt = _requirement(
+        id="k4opt",
+        kind="k4opt",
+        label="k4opt 0.1",
+        identified="abc1234 with uncommitted changes",
+        facts={"commit": "a" * 40},
+        ran=None,
+    )
+    checkout = _requirement(
+        id="code:3",
+        kind="code",
+        label="k4Opt",
+        identified="abc1234 + 2 uncommitted files",
+        notes=("k4opt's own checkout",),
+        used_by=(),
+        access="on request",
+        facts={},
+        ran=None,
+    )
+    steps = "\n".join(tables.rerun_steps(_sheet(_base(), k4opt, checkout)))
+    assert "Use k4opt at commit aaaaaaaaaaaa with its local changes (ask the author)" in steps
+    assert "k4Opt" in tables.rerun_missing(_sheet(_base(), k4opt, checkout))
+
+
+def test_a_published_environment_is_recreated_from_its_list() -> None:
+    import tables
+
+    published = _requirement(
+        id="environment:site-packages",
+        kind="environment",
+        label="a Python environment",
+        identified="60 distributions",
+        access="public",
+        facts={},
+        ran=None,
+    )
+    steps = "\n".join(tables.rerun_steps(_sheet(_base(), published)))
+    assert "pip install -r its requirements.txt (published here)" in steps
+    assert tables.rerun_missing(_sheet(_base(), published)) == []

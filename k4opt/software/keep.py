@@ -58,6 +58,10 @@ INPUTS = "inputs.json"
 INPUTS_SCHEMA = "k4opt.inputs/1"
 USED = "used.json"
 USED_SCHEMA = "k4opt.used/1"
+SALT = "salt"
+"""The study's own random salt: what the ids of its local builds and directories are derived
+from, with where each is, so that an id holds whatever else is installed and says nothing of
+where it is."""
 
 MAX_INPUT = 100 << 20
 """The largest input a study keeps a copy of; a larger one is identified and located only."""
@@ -81,6 +85,25 @@ def private_directory(path: Path) -> None:
 
 _SHA256 = "sha256:"
 _LISTED = "names:"
+
+
+def salt(directory: Path) -> str:
+    """The salt of the study that keeps in ``directory`` (:data:`SALT`), made once, by whichever
+    session opens first."""
+    path = directory / SALT
+    if not path.is_file():
+        with contextlib.suppress(FileExistsError):
+            publish(path, secrets.token_hex(16) + "\n", private=True)
+    return path.read_text(encoding="utf-8").strip()
+
+
+def known_salt(directory: Path) -> str | None:
+    """The salt of the study that keeps in ``directory``, ``None`` if it has none (it never opened
+    a session, or the salt was removed)."""
+    try:
+        return (directory / SALT).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
 
 
 def commitment(salt: str, sha256: str) -> str:
@@ -201,6 +224,7 @@ def take(
     variables = os.environ if environment is None else environment
     private_directory(directory)
     private_directory(directory / "blobs")
+    salt(directory)
     store = Store(directory)
     problems: list[str] = []
     release = Release.of(variables.get("KEY4HEP_STACK"))
@@ -221,8 +245,10 @@ def take(
                 store, problems, f"the {role} manifest", release.manifests[role]
             )
         document["release"] = {**release.to_dict(), "manifests": manifests}
-    found = origins(software.local, release)
-    code = checkout(os.path.dirname(os.path.abspath(k4opt.__file__)), release)
+    # the study's own files are its records, never part of a checkout it lies in
+    outside = [str(directory.parent)]
+    found = origins(software.local, release, outside)
+    code = checkout(os.path.dirname(os.path.abspath(k4opt.__file__)), release, outside)
     if code is not None and all(code.prefix != (o.git.checkout if o.git else None) for o in found):
         found.append(code)  # k4opt run from its checkout, not through a search path
     document["k4opt"] = None if code is None else code.prefix
@@ -291,6 +317,7 @@ def _origin(store: Store, problems: list[str], origin: Origin) -> dict[str, Any]
         "git": git,
         "files": files,
         "distributions": list(origin.distributions),
+        "unlisted": list(origin.unlisted),
         "problem": origin.problem,
     }
 
@@ -346,10 +373,24 @@ def _steering(
                 except (SoftwareError, OSError) as exc:
                     problems.append(f"{file['path']} not kept: {exc}")
             group = "changed" if original is not None else "added"
-            result[group][name] = {"sha256": sha256, "kept": kept, **_nature(str(file["path"]))}
+            result[group][name] = {
+                "sha256": sha256,
+                "kept": kept,
+                **_nature(str(file["path"])),
+                "outside": _outside(root, str(file["path"])),
+            }
         result["removed"] = sorted(theirs)
         found.append(result)
     return found
+
+
+def _outside(root: str, path: str) -> str | None:
+    """Where the file ``path`` of the job directory ``root`` really is, every link followed, if
+    that is out of the directory and not on the stack, which is public; ``None`` otherwise."""
+    real = os.path.realpath(path)
+    if real.startswith("/cvmfs/") or real.startswith(f"{os.path.realpath(root)}/"):
+        return None
+    return real
 
 
 def _nature(path: str) -> dict[str, object]:

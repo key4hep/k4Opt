@@ -194,7 +194,7 @@ def test_a_snapshot_is_read_only_as_the_bytes_its_entry_names(
     data = path.read_bytes()
     publication = open_publication(copy)
     path.write_bytes(data.replace(b'"valid"', b'"VALID"', 1))  # as long, other bytes
-    with pytest.raises(PublicationError, match="not the snapshot its catalog names"):
+    with pytest.raises(PublicationError, match="not the file its catalog names"):
         publication.study(entry)
     path.write_bytes(data + b" ")
     with pytest.raises(PublicationError, match="larger than"):

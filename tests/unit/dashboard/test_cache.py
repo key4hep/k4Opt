@@ -28,3 +28,22 @@ def test_studies_are_kept_within_a_budget_of_their_snapshots_bytes(
     assert (data._held(key("b")), data._held(key("a"))) == (None, studies["a"])
     data._keep(key("d"), studies["d"], 500)  # larger than the budget alone: kept alone
     assert [data._held(key(name)) for name in "acd"] == [None, None, studies["d"]]
+
+
+def test_a_software_sheet_is_kept_for_the_snapshot_it_was_read_for(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    import data
+
+    pytest.importorskip("optuna")
+    from k4opt.optimization import load_study
+    from k4opt.publication import PublicationError, Snapshot, publish
+    from tests.support.studies import mixed_study
+
+    entry = publish(load_study(mixed_study(tmp_path / "s", 2)), tmp_path / "pub")
+    assert data.software(str(tmp_path / "pub"), entry) is not None
+    other = replace(entry, snapshot=Snapshot(entry.snapshot.path, "0" * 64, entry.snapshot.bytes))
+    with pytest.raises(PublicationError, match="not the sheet"):
+        data.software(str(tmp_path / "pub"), other)  # the cached sheet names another snapshot

@@ -198,13 +198,14 @@ across studies, which costs time and never correctness.
 
 A study keeps privately, in its `software/` directory, what a rerun would need that is not public,
 and `k4opt study show` says what that is and whether it is there (the study at the top of a nested
-optimization keeps it for every level). Nothing of it leaves the machine.
+optimization keeps it for every level). Nothing of it leaves the machine unless its author approves
+that with [`k4opt publish`](publication.md#what-else-is-published).
 
 | Kept | When | What |
 | --- | --- | --- |
 | the release | a session opens | the LCG view's manifests (34 kB gzipped), which name each package's version, build hash and place, and for each package built from a repository's head the commit it was built from and lcgcmake's revision (`.buildinfo_<package>.txt`), which they do not. No file of the build |
 | local builds | a session opens | each local entry of the software grouped into its *origin*: a CMake installation (`<checkout>/install` from `k4_local_repo`), a directory of local code, or an environment of installed distributions. A build is linked to its checkout and the package of the stack it stands in for, its binaries identified by SHA-256 and GNU build-id, and its CMake cache kept (its options, compiler and flags). What else a build installed that can be loaded (Python modules, headers, registries) is kept file by file: it may differ from what its source installs. A binary is never kept, whether of a build or of a directory of no build; one a checkout itself holds, tracked or untracked and not ignored, is part of its state and in its patch |
-| sources | a session opens | the complete state of each checkout (`HEAD`, staged, unstaged and untracked files; ignored files, its installation and its build trees left out, but for what can be loaded from a local entry, kept file by file or, if compiled, identified), as a patch against the revision the nightly built that package from, the newest commit a remote has, or, if no remote has any of its history, as every file. Untracked files over 10 MB are listed, not kept. Local code in no checkout is kept file by file |
+| sources | a session opens | the complete state of each checkout (`HEAD`, staged, unstaged and untracked files; ignored files, its installation and its build trees left out, but for what can be loaded from a local entry, kept file by file or, if compiled, identified), as a patch against the revision the nightly built that package from, the newest commit a remote has, or, if no remote has any of its history, as every file. Untracked files over 10 MB are listed, not kept. The study's own directory, if it lies in a checkout, is no part of that checkout's state. Local code in no checkout is kept file by file |
 | steering | a session opens | each reconstruction's job directory against the package of the stack it is a copy of (by its name, `CLDConfig`): its changed and added files are kept, with whether each is executable and where a link led, the removed ones named |
 | geometry | a session opens; a trial's record is accepted | every file reachable from the compact file, with the other names of those files, unless the stack holds it, and what its external references read; then what a candidate's `ref` parameters reach beyond those, as inputs |
 | evaluators | a session opens | each evaluator's file and every local module it imports, as its identity lists them; one that cannot be found is recorded as not kept |
@@ -265,6 +266,7 @@ rerun, which k4opt does not record yet.
 | Not rerun · availability not established | something could not be checked: the distributions of an environment, an unrecognized stack, a k4opt commit no remote was seen to have, a checkout's base commit no known remote can give, an input that was a device, a pipe or a socket, a directory a stage listed whose names changed |
 | Not rerun · rebuild needed | a local build ran: it can be built again from its kept source and configuration, and a rerun runs other bytes, compared by its results |
 | Not rerun · all available on DATE | every requirement was checked and found as it was, and no local build ran |
+| Not rerun · needs access | only in a publication: everything was there, and something a rerun needs is only on request from its author, since it was not approved for publishing. Said beside *rebuild needed* or *availability not established* when those hold too |
 
 *Rebuild needed* and *availability not established* are said together when both hold. Each check is
 dated, and true when it was made: a nightly is overwritten by a later build within about a week,
