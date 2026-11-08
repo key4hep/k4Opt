@@ -154,6 +154,7 @@ needs is never guessed, since what is compiled in is never read at run time.
 | a local build | its checkout's whole state against the revision the nightly built (or every file, if no remote has its history): edits, untracked files and binaries a checkout holds alike; its `cmake-options.txt`; what it installed that a stage read, as `installed/...`, since that can differ from what its source installs |
 | a directory of local code | its every kept file, or its checkout's whole state; offered if a stage read from it, or if that is not known; held back (`--include` offers it) if every stage was observed and none read from it |
 | k4opt's own checkout, an evaluator, the geometry | their kept files (the geometry with an `aliases.json` of its files' other names) |
+| a Python environment a stage used | its distributions, `name==version`, as a `requirements.txt` to `pip install -r`; whether an index still has them is not checked, so the status keeps saying *availability not established* |
 | a changed job directory | its changed and added files and a `job-files.json`: the stack's files it removed, its executable files, its links within it |
 | an input | one file; a job file that leads out of its directory, through any chain of links, is an input of its own (`link:<stage>/<file>`), not code |
 
@@ -164,7 +165,8 @@ needs is never guessed, since what is compiled in is never read at run time.
 | the **input** units | after a second, separate question that names where they go; up to 10 MB in all |
 | a unit past the 10 MB of its group | a warning, not published; `--include-large` publishes it |
 | a unit you leave out | `--exclude NAME` of it or of any of its files: the dashboard shows its name, *on request* |
-| a file under `~/.` a stage read, `.rootrc` among them | held back, and on request: `--include-inputs NAME` publishes it |
+| a file under `~/.` a stage read, `.rootrc` among them | an input like any other, asked for with the inputs |
+| what holds the account's credentials (`~/.ssh/`, `~/.gnupg/`, `~/.aws/`, `~/.kube/`, `~/.docker/`, `~/.netrc`, `~/.pgpass`, `~/.git-credentials`) | never offered, and on request: `--include-inputs NAME` names one |
 | a venv's `pyvenv.cfg` | listed only: it says where an interpreter is, and the environment is a requirement of its own |
 | a build no stage read | not offered |
 

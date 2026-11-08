@@ -780,7 +780,7 @@ def _origin(
         distributions = origin.get("distributions") or []
         check = Check(at, "not-checked", "installed distributions, not checked against an index")
         return Requirement(
-            f"environment:{index}",
+            f"environment:{key}",
             "environment",
             str(origin.get("prefix")),
             f"{len(distributions)} distributions",

@@ -700,10 +700,16 @@ def rerun_steps(sheet: SoftwareSheet) -> list[str]:
                 "check that MARLIN_DLL names the local library if it is a Marlin processor."
             )
         elif r.kind == "environment" and r.used_by:
-            steps.append(
-                f"Recreate the Python environment a stage used ({r.identified}): its versions "
-                "are not published, so ask the author."
-            )
+            if r.access == "public":
+                steps.append(
+                    f"Recreate the Python environment a stage used ({r.identified}): pip install "
+                    "-r its requirements.txt (published here)."
+                )
+            else:
+                steps.append(
+                    f"Recreate the Python environment a stage used ({r.identified}): its versions "
+                    f"are not published ({_how_to_get(r)})."
+                )
         elif r.kind == "geometry" and "kept" in r.identified:
             steps.append(f"Restore the geometry {r.label} ({_how_to_get(r)}) and set K4GEO to it.")
         elif r.kind == "evaluator" and _has_own_files(sheet, r):

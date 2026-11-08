@@ -587,9 +587,8 @@ def test_an_input_held_back_that_a_stage_read_is_on_request(
     monkeypatch.setenv("HOME", str(home))
     results = load_study(study)
     found = offer(results)
-    held = {h.name: h for h in found.held if h.group == "inputs"}
-    assert held["calibration.json"].needed and held[".rootrc"].needed
-    entry = publish(results, tmp_path / "pub", release=found.release(code=True, inputs=True))
+    assert {"calibration.json", ".rootrc"} <= {p.name for p in found.inputs}
+    entry = publish(results, tmp_path / "pub", release=found.release(code=True))
     sheet = open_publication(tmp_path / "pub").software(entry)
     assert sheet is not None
     by = {r.label: r for r in sheet.requirements}
@@ -891,8 +890,9 @@ def test_a_home_configuration_is_needed_and_only_a_venvs_marker_is_not(
     add_input(study, home / ".rootrc")
     add_input(study, tmp_path / "pyvenv.cfg")
     monkeypatch.setenv("HOME", str(home))
-    held = {h.name: h for h in offer(load_study(study)).held if h.group == "inputs"}
-    assert held[".rootrc"].needed and not held["pyvenv.cfg"].needed
+    found = offer(load_study(study))
+    held = {h.name: h for h in found.held if h.group == "inputs"}
+    assert ".rootrc" in [p.name for p in found.inputs] and not held["pyvenv.cfg"].needed
 
 
 @pytest.mark.parametrize("field", ["checked", "first_checked"])
@@ -1547,3 +1547,59 @@ def test_a_build_is_public_only_with_its_source_and_all_of_its_options(tmp_path:
     assert access(True, b"# 1 more option holds a local path\nA=1\n").startswith("on request")
     assert access(True, b"# 1 more option holds a local path\nA=1\n").endswith("needs access")
     assert access(True, b"A=1\n").startswith("public")
+
+
+# --- plain studies: their environment and their home configuration -------------------------------
+
+
+def test_a_python_environment_a_stage_used_is_offered_as_its_list_of_distributions(
+    tmp_path: Path,
+) -> None:
+    from k4opt.publication import artifacts
+    from k4opt.software.keep import Store
+    from k4opt.software.readiness import Check, Readiness, Requirement
+
+    used = Requirement(
+        "environment:site-packages",
+        "environment",
+        "/home/me/venv/lib/python3.14/site-packages",
+        "2 distributions",
+        ("pi0/simulation",),
+        source={"distributions": ("pyyaml==6.0.2", "lxml==6.1.3")},
+        checks=(Check("2026-11-08", "not-checked", "not checked against an index"),),
+    )
+    idle = replace(used, id="environment:site-packages:2", used_by=())
+    readiness = Readiness((used, idle), (), "2026-11-08T00:00:00+00:00", store=Store(tmp_path))
+    pieces, held, _ = artifacts._gathered(readiness)
+    (listed,) = pieces
+    assert (listed.owner, listed.name, listed.data) == (
+        "python-environment",
+        "requirements.txt",
+        b"lxml==6.1.3\npyyaml==6.0.2\n",
+    )
+    assert [h.requirement for h in held] == ["environment:site-packages:2"]
+    found = artifacts.Offer(readiness, code=tuple(pieces), held=tuple(held))
+    published = {listed.key: listed.data}
+    access = artifacts._access(readiness, found.release(code=True), published)
+    assert access["environment:site-packages"] == "public"
+    assert artifacts._access(readiness, found.release(), {})["environment:site-packages"] == (
+        "on request"
+    )
+    assert b"/home/me" not in listed.data
+
+
+def test_home_configuration_is_an_input_and_credentials_stay_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = fresh(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".rootrc").write_text("Unix.*.Root.UseTTFonts: false\n")
+    (home / ".ssh" / "config").write_text("Host lxplus\n")
+    for path in (home / ".rootrc", home / ".ssh" / "config"):
+        add_input(study, path)
+    monkeypatch.setenv("HOME", str(home))
+    found = offer(load_study(study))
+    assert ".rootrc" in [p.name for p in found.inputs]
+    held = {h.name: h for h in found.held}
+    assert (held["config"].why, held["config"].needed) == ("credentials of the account", True)

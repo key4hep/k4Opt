@@ -475,6 +475,9 @@ def _gathered(readiness: Readiness) -> tuple[list[Piece], list[Held], list[tuple
         None,
     )
     for requirement in readiness.requirements:
+        if requirement.kind == "environment":
+            _from_environment(requirement, reads, pieces, held)
+            continue
         if requirement.unused or requirement.entry is None:  # needed by no rerun of them
             continue
         if requirement.kind in ("package", "code"):
@@ -815,6 +818,44 @@ def _aliases(requirement: Requirement) -> Piece | None:
     return Piece("code", "geometry", "aliases.json", data, (requirement.id,), requirement.used_by)
 
 
+def _from_environment(
+    requirement: Requirement, reads: _Reads, pieces: list[Piece], held: list[Held]
+) -> None:
+    """A Python environment, as the list of its distributions (``requirements.txt``, for ``pip
+    install -r``): what a rerun recreates it from. Offered if a stage used it, or if that is not
+    known; its files are not kept, and neither is where it is."""
+    listed = (requirement.source or {}).get("distributions")
+    if not isinstance(listed, (list, tuple)) or not listed:
+        return
+    data = "".join(f"{name}\n" for name in sorted(map(str, listed), key=str.lower)).encode()
+    piece = Piece(
+        "code",
+        "python-environment",
+        "requirements.txt",
+        data,
+        (requirement.id,),
+        requirement.used_by,
+    )
+    if requirement.used_by or not reads.complete:
+        pieces.append(piece)
+    else:
+        why = "not used by any stage"
+        held.append(Held("code", piece.owner, piece.owner, why, requirement.id, False, (piece,)))
+
+
+_CREDENTIALS = (
+    ".ssh/",
+    ".gnupg/",
+    ".aws/",
+    ".kube/",
+    ".docker/",
+    ".netrc",
+    ".pgpass",
+    ".git-credentials",
+)
+"""What of a home directory holds the account's credentials: never offered, whatever read it."""
+
+
 def _from_input(
     requirement: Requirement,
     store: Store,
@@ -845,9 +886,10 @@ def _from_input(
     if name in _TOOLS:
         why = "an environment's marker"
         held.append(Held("inputs", "", name, why, requirement.id, False, (piece,)))
-    elif path.startswith(f"{os.path.expanduser('~')}/."):
-        held.append(Held("inputs", "", name, "home configuration", requirement.id, True, (piece,)))
-    else:
+    elif os.path.relpath(path, os.path.expanduser("~")).startswith(_CREDENTIALS):
+        why = "credentials of the account"
+        held.append(Held("inputs", "", name, why, requirement.id, True, (piece,)))
+    else:  # other home configuration (.rootrc) is an input like any, asked for with the inputs
         pieces.append(piece)
 
 
@@ -1001,7 +1043,9 @@ def _unoffered(requirement: Requirement) -> Access:
     """Who can get a requirement of which nothing is published: the stack's own is public; what
     was not kept, or is no file to give, no one."""
     entry = requirement.entry or {}
-    if requirement.kind in ("environment", "listing") or requirement.unused:
+    if requirement.id.startswith("listing:") or requirement.unused:
+        return "none"
+    if requirement.kind == "environment":  # no list of its distributions to give
         return "none"
     if requirement.kind == "input":
         return "public" if str(entry.get("identity", "")).startswith("cvmfs:") else "none"

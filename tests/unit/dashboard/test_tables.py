@@ -489,3 +489,20 @@ def test_k4opts_own_changes_are_a_step_of_a_rerun() -> None:
     steps = "\n".join(tables.rerun_steps(_sheet(_base(), k4opt, checkout)))
     assert "Use k4opt at commit aaaaaaaaaaaa with its local changes (ask the author)" in steps
     assert "k4Opt" in tables.rerun_missing(_sheet(_base(), k4opt, checkout))
+
+
+def test_a_published_environment_is_recreated_from_its_list() -> None:
+    import tables
+
+    published = _requirement(
+        id="environment:site-packages",
+        kind="environment",
+        label="a Python environment",
+        identified="60 distributions",
+        access="public",
+        facts={},
+        ran=None,
+    )
+    steps = "\n".join(tables.rerun_steps(_sheet(_base(), published)))
+    assert "pip install -r its requirements.txt (published here)" in steps
+    assert tables.rerun_missing(_sheet(_base(), published)) == []
