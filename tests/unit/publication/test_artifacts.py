@@ -1812,6 +1812,10 @@ def test_an_environment_with_distributions_not_from_an_index_is_on_request(
         ("{'api_" + "key': 'abc12345678'}", True),  # and a dict
         ('{"api_key": "${API_KEY}"}', False),  # a variable it is read from
         ('{"password": "~/.secrets/db"}', False),  # a file it is read from
+        ("SECRET" + '_KEY = "thisIsAnActual' + 'Secret012345"', True),  # Django's
+        ("JWT_SECRET" + "_KEY=thisIsAnActual" + "Secret012345", True),
+        ('public_key = "thisIsAnActual' + 'Secret012345"', False),  # whose words name no secret
+        ('secret_key = os.environ["SECRET_KEY"]', False),
     ],
 )
 def test_the_scan_reads_a_name_that_is_quoted_as_one_that_is_not(text: str, found: bool) -> None:

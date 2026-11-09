@@ -49,11 +49,11 @@ class Finding:
 
 
 # what names a credential: a name or a key that ends in one of these, in any case (DB_PASSWORD,
-# githubToken, private_key, client-secret, credentials), alike in text and in a mapping; not
-# tokenizer or candidate_key, whose last word is another
+# githubToken, private_key, JWT_SECRET_KEY, client-secret, credentials), alike in text and in a
+# mapping; not tokenizer, candidate_key or public_key, whose last words name no secret
 _CREDENTIAL = (
-    r"(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
-    r"|credentials?)"
+    r"(?:password|passwd|passphrase|pwd|secret|token|credentials?"
+    r"|(?:api|access|private|secret|signing|encryption)[_-]?key)"
 )
 
 # what is looked for, best effort: enough to stop an accident, no substitute for looking

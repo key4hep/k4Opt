@@ -366,6 +366,10 @@ SECRET = "correct" + "horsebattery"
         {"auth": {"api_key": SECRET}},
         [{"token": SECRET}],
         {"credentials": int("123456789012")},
+        {"secret_key": SECRET},  # Django's
+        {"JWT_SECRET_KEY": SECRET},
+        {"signingKey": SECRET},
+        {"encryption-key": SECRET},
     ],
 )
 def test_a_value_is_a_credential_by_the_key_it_is_under(value: object) -> None:
@@ -384,6 +388,7 @@ def test_a_value_is_a_credential_by_the_key_it_is_under(value: object) -> None:
         {"tokenizer": SECRET},
         {"secret_level": SECRET},
         {"candidate_key": SECRET},
+        {"public_key": SECRET},  # whose last words name no secret
     ],
 )
 def test_a_key_that_names_no_credential_or_a_value_that_is_none_is_left_alone(
@@ -393,15 +398,16 @@ def test_a_key_that_names_no_credential_or_a_value_that_is_none_is_left_alone(
 
 
 @pytest.mark.parametrize(
-    "said",
+    ("said", "key"),
     [  # put together here, so that no line of this file holds one
-        'authentication failed: {"github' + 'Token": "' + "hunter2" * 2 + '"}',  # as JSON
-        "{'private" + "_key': 'abcdefgh" + "1234'}",  # a dict, and no key of PEM
-        "login with client" + "-secret=" + "hunter2" * 2,
+        ('authentication failed: {"github' + 'Token": "' + "hunter2" * 2 + '"}', "githubToken"),
+        ("{'private" + "_key': 'abcdefgh" + "1234'}", "private_key"),  # a dict, no key of PEM
+        ("login with client" + "-secret=" + "hunter2" * 2, "client-secret"),
+        ("settings: SECRET" + '_KEY = "thisIsAnActual' + 'Secret012345"', "SECRET_KEY"),
     ],
 )
 def test_a_message_that_names_a_credential_is_withheld_as_a_mapping_would_be(
-    tmp_path: Path, said: str
+    tmp_path: Path, said: str, key: str
 ) -> None:
     results = load_study(mixed_study(tmp_path / "s", trials=2))
     first, second = results.trials
@@ -420,7 +426,6 @@ def test_a_message_that_names_a_credential_is_withheld_as_a_mapping_would_be(
     ]
     assert said not in public.text and not public.findings
     # the same names as keys of a mapping are found by the key they are under
-    key = said.split("'" if "'" in said else '"')[1] if "{" in said else "client-secret"
     assert [f.what for f in exposed({key: "hunter2" * 2}, "the study's")] == [KEYED]
 
 
