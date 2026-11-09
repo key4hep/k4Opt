@@ -27,6 +27,7 @@ from k4opt.problem.plan import Kind, Task, TaskId
 from k4opt.record import SUMMARY_NAME, Assessment, RecordError
 from k4opt.record.results import TaskResult
 from k4opt.record.write import assemble
+from k4opt.software.observe import FOOTPRINT
 from tests.support import simulation
 from tests.support.common import counted_hashes, scientific
 from tests.support.evaluators import (
@@ -380,8 +381,11 @@ def test_an_artifact_and_an_edm4hep_output_are_each_hashed_once(
     artifact = tmp_path / "a" / "samples" / "gamma" / "evaluators" / "test.cell_count"
     events = tmp_path / "a" / "samples" / "gamma" / "simulation" / "events.edm4hep.root"
     # a gun reads no file; the simulation's output is hashed when it ends, the artifact when the
-    # evaluation returns
-    assert hashed == [str(events), str(artifact / "histogram.json")]
+    # evaluation returns, and the simulation's footprint when the record is written, which says
+    # what the stage looked for in vain (if strace could observe it)
+    footprint = events.with_name(FOOTPRINT)
+    observed = [str(footprint)] if footprint.exists() else []
+    assert hashed == [str(events), str(artifact / "histogram.json"), *observed]
 
 
 @pytest.mark.parametrize(

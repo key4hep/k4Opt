@@ -35,7 +35,7 @@ from k4opt.evaluation import (
     Scalar,
 )
 from k4opt.execution._backends import Backend, InlineBackend
-from k4opt.execution._baseline import Baseline, candidate_reads
+from k4opt.execution._baseline import Baseline, candidate_reads, recorded_footprint
 from k4opt.execution._binding import _bind_problem, _Binding, _context, task_cpus
 from k4opt.execution._cpus import AUTO, INLINE, usable_cpus, usable_memory
 from k4opt.execution._drive import WAIT, Activity, Wait, _drive, _Run
@@ -51,7 +51,6 @@ from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.geometry import Override
 from k4opt.geometry import Parameter as GeometryParameter
-from k4opt.hashing import sha256_of
 from k4opt.problem.candidate import (
     Configuration,
     configure,
@@ -73,8 +72,8 @@ from k4opt.record.signature import (
     stage_document,
 )
 from k4opt.record.write import SUMMARY_NAME, recorded_footprints, recorded_inputs
-from k4opt.software import Footprint, Local, SoftwareError
-from k4opt.software.observe import changed_inputs, load
+from k4opt.software import Local
+from k4opt.software.observe import changed_inputs, findable
 
 
 def _supplied(
@@ -194,14 +193,18 @@ class Evaluations:
         self.close()
 
 
-def _study_inputs(runs: Iterable[Path], local: Sequence[Local]) -> dict[str, Json]:
-    """The undeclared inputs the records in ``runs`` read, by path, each as it is now. Raises
-    :class:`ProvenanceError` if one is not what a record says it read, two records read it as
-    different files, or a path a stage looked for in vain outside the stack and the software
-    (``local``) exists now and no stage of the study made it (its footprint): a resume must not
-    add trials made from other inputs."""
+def _study_inputs(
+    runs: Iterable[Path], local: Sequence[Local]
+) -> tuple[dict[str, Json], dict[str, str], set[str]]:
+    """The undeclared inputs the records in ``runs`` read, by path, each as it is now, the paths
+    their stages looked for in vain outside the stack and the software (``local``), with how
+    (:meth:`~k4opt.software.Footprint.looked`), and the paths they made. Raises
+    :class:`ProvenanceError` if an input is not what a record says it read, two records read it as
+    different files, or a stage would now find a path one looked for in vain, and no stage of the
+    study made it (its footprint): a resume must not add trials made from other inputs."""
     held: dict[str, tuple[str, str]] = {}
-    looked: list[tuple[str, list[str]]] = []  # what each stage missed outside the stack, by it
+    looked: list[tuple[str, list[str]]] = []  # what each stage would find now, by it
+    unfound: dict[str, str] = {}  # what the stages looked for in vain outside the stack
     made: set[str] = set()
     checked: set[Path] = set()  # a footprint many trials reused is read once
     for run in runs:
@@ -215,11 +218,13 @@ def _study_inputs(runs: Iterable[Path], local: Sequence[Local]) -> dict[str, Jso
             at = run / file if file else None  # an absolute file: the one another study made
             if at is not None and at in checked:
                 continue
-            found = _footprint(at, sha256, f"{run.name}/{stage}")
-            assert at is not None  # _footprint refused a record that names none
+            found = recorded_footprint(at, sha256, f"{run.name}/{stage}", _RESUMES)
+            assert at is not None  # recorded_footprint refused a record that names none
             checked.add(at)
             made.update(found.made)  # only what the checks need is kept, not the footprint
-            looked.append((f"{run.name}/{stage}", found.appeared(local, ())))
+            missed = found.looked(local)
+            unfound |= missed
+            looked.append((f"{run.name}/{stage}", findable(missed)))
         for path, (then, (stage, *_)) in recorded_inputs(summary).items():
             first = held.setdefault(path, (then, f"{run.name}/{stage}"))
             if first[0] != then:
@@ -237,31 +242,14 @@ def _study_inputs(runs: Iterable[Path], local: Sequence[Local]) -> dict[str, Jso
         appeared = [path for path in there if path not in made]
         if appeared:
             raise ProvenanceError(
-                f"{', '.join(appeared)}, which {stage} looked for and did not find, exists now: a "
-                "resume would add trials made from other inputs; remove it, or start a new study"
+                f"{', '.join(appeared)}, which {stage} looked for and did not find, can be "
+                "found now: a resume would add trials made from other inputs; remove it, or start "
+                "a new study"
             )
-    return {path: then for path, (then, _) in held.items()}
+    return {path: then for path, (then, _) in held.items()}, unfound, made
 
 
-def _footprint(path: Path | None, sha256: object, stage: str) -> Footprint:
-    """The footprint a record names for ``stage``, the file it is at with the SHA-256 the record
-    holds. Raises :class:`ProvenanceError` if it is not there, cannot be read or is another file:
-    what the stage looked for could not be checked, and a resume must not assume it."""
-    why = "its record names none where one may be"
-    if path is not None:
-        try:
-            if sha256_of(path) != sha256:
-                why = f"{path} is not the file its record names"
-            else:
-                return load(path)
-        except OSError as exc:
-            why = f"{path} cannot be read ({exc.strerror or exc})"
-        except SoftwareError as exc:
-            why = str(exc)
-    raise ProvenanceError(
-        f"{stage}: what it looked for cannot be checked, since its footprint is not there as "
-        f"recorded: {why}; a study that reused another's outputs resumes while they are there"
-    )
+_RESUMES = "a study that reused another's outputs resumes while they are there"
 
 
 def _observation(asked: Observation) -> tuple[Observation, str | None]:
@@ -575,7 +563,9 @@ class EvaluationSession:
             runs += run_directories(path)
         if resumed:
             local = self._baseline.software.local
-            self._baseline.remember_observed(_study_inputs(runs, local))
+            inputs, looked, made = _study_inputs(runs, local)
+            self._baseline.remember_observed(inputs)
+            self._baseline.remember_looked(looked, made)
         return self._reuse.index(runs, across=not resumed)
 
     def check_limits(self) -> None:

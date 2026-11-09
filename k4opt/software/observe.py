@@ -136,6 +136,10 @@ _UNIX = re.compile(
 )
 _SOCKET = re.compile(rb"^(?P<family>AF_INET6?)\b")
 _LOADED = re.compile(rb"^\s*\d+:\s+calling init: (?P<path>.+?)\s*$")
+MISSING = "missing"
+"""How a stage failed to open a path that was not there."""
+DENIED = "denied"
+"""How a stage failed to open a path it was refused."""
 _MISSING = (b"ENOENT", b"ENOTDIR")
 _DENIED = (b"EACCES", b"EPERM")
 _SPECIAL = "special"
@@ -295,18 +299,22 @@ class Footprint:
                     return found
         return found
 
+    def looked(self, local: Sequence[Local]) -> dict[str, str]:
+        """The paths it looked for in vain, of those outside the stack, the system and what the
+        software identifies (:func:`covered`), each with how: :data:`MISSING` or :data:`DENIED`
+        (refused). What a session and a resume watch, as inputs (:func:`findable`)."""
+        failed = dict.fromkeys(self.denied, DENIED) | dict.fromkeys(self.missing, MISSING)
+        return {
+            path: how
+            for path, how in failed.items()
+            if _undeclared(path) and not covered(path, local)
+        }
+
     def appeared(self, local: Sequence[Local], made: Collection[str] = ()) -> list[str]:
-        """The paths it looked for in vain that exist now, of those outside the stack, the system
-        and what the software identifies (:func:`covered`), and but those in ``made``: what the
-        stages of a study made themselves. What a resume refuses, as an input that changed."""
-        return [
-            path
-            for path in self.missing
-            if _undeclared(path)
-            and path not in made
-            and not covered(path, local)
-            and os.path.lexists(path)
-        ]
+        """The paths it looked for in vain that a stage would find now (:meth:`looked`,
+        :func:`findable`), but those in ``made``: what the stages of a study made themselves. What a
+        resume refuses, as an input that changed."""
+        return [path for path in findable(self.looked(local)) if path not in made]
 
     def summary(self, local: Sequence[Local]) -> dict[str, Json]:
         """What a stage's record keeps of it: how it was observed (``level``), whether that is
@@ -698,6 +706,16 @@ def load(path: Path) -> Footprint:
     return Footprint.from_dict(data)
 
 
+def findable(looked: Mapping[str, str]) -> list[str]:
+    """Each of the paths ``looked`` for in vain (path: how, :meth:`Footprint.looked`) that a stage
+    would find now: one that was missing exists, one that was refused can be read."""
+    return [
+        path
+        for path, how in looked.items()
+        if (os.access(path, os.R_OK) if how == DENIED else os.path.lexists(path))
+    ]
+
+
 def changed_inputs(undeclared: Mapping[str, Json]) -> list[str]:
     """Each of ``undeclared`` (path: identity, as :meth:`Footprint.summary` keeps them) that is
     not what it was, by its path."""
@@ -705,8 +723,10 @@ def changed_inputs(undeclared: Mapping[str, Json]) -> list[str]:
 
 
 __all__ = [
+    "DENIED",
     "FOOTPRINT",
     "IGNORED",
+    "MISSING",
     "SCHEMA",
     "SERVICES",
     "STACK",
@@ -714,6 +734,7 @@ __all__ = [
     "Footprint",
     "changed_inputs",
     "covered",
+    "findable",
     "footprint",
     "identity",
     "load",

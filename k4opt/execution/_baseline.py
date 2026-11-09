@@ -17,13 +17,15 @@ through it (:meth:`Baseline.check_read`). So are the files a stage read that not
 identifies, its *undeclared inputs* (:mod:`k4opt.software.observe`: a ``~/.rootrc``, a calibration
 file a helper reads through a variable): once a record names one, every later candidate is
 evaluated with it as it was (:meth:`Baseline.check_observed`), and a change to it stops the session
-(:meth:`Baseline.verify`).
+(:meth:`Baseline.verify`). So does a path such a stage looked for in vain that a stage would find
+now (:meth:`Baseline.check_looked`), unless a stage of the study made it: a cache, by the study's
+own doing.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from pathlib import Path
 
 from k4opt import __version__
@@ -33,14 +35,14 @@ from k4opt.execution._binding import _Binding, _implementations
 from k4opt.execution._work import content
 from k4opt.execution.errors import ProvenanceError, RunError
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
-from k4opt.hashing import readable_identity
+from k4opt.hashing import readable_identity, sha256_of
 from k4opt.problem.candidate import Configuration
 from k4opt.problem.models import ProblemSpec, ResolvedProblem
 from k4opt.program import identify
 from k4opt.record.results import TaskResult
 from k4opt.revision import code_identity, code_unchanged
-from k4opt.software import Build, Software, System, compared_variables
-from k4opt.software.observe import changed_inputs
+from k4opt.software import Build, Footprint, Software, SoftwareError, System, compared_variables
+from k4opt.software.observe import changed_inputs, findable, load
 
 
 def check_code() -> None:
@@ -63,6 +65,8 @@ class Baseline:
     __slots__ = (
         "_inputs",
         "_listed",
+        "_looked",
+        "_made",
         "_read",
         "_variables",
         "classes",
@@ -97,6 +101,9 @@ class Baseline:
         self._variables = compared_variables()
         # what each undeclared input the records name was, by its path
         self._inputs: dict[str, Json] = {}
+        # what their stages looked for in vain (path: how), and what the study's stages made
+        self._looked: dict[str, str] = {}
+        self._made: set[str] = set()
 
     @property
     def software(self) -> Software:
@@ -253,28 +260,50 @@ class Baseline:
                     "same files"
                 )
 
-    def verify(self, local: bool = True) -> None:
+    def verify(self, local: bool = True, made: Collection[str] = ()) -> None:
         """Raise :class:`ProvenanceError` if the environment, k4opt's code, a file the stages read,
         what the geometry's external references read, the identity of an implementation or a
         module it imports changed since the session opened. The files of a local build are looked at
         only with ``local`` (tens of milliseconds for a virtual environment): before a record is
-        written, which a change since the session opened refuses."""
+        written, which a change since the session opened refuses. ``made`` are the paths the
+        stages of the candidate to be recorded made, as those of the study
+        (:meth:`check_looked`)."""
         self._verify_environment(local)
         check_code()
         self._verify_programs()
         self.verify_inputs()
         self._verify_externals()
         self._verify_implementations()
-        self._verify_observed()
+        self._verify_observed(made)
 
-    def _verify_observed(self) -> None:
-        """Each undeclared input a record names is what it was (:meth:`remember_observed`)."""
+    def _verify_observed(self, made: Collection[str]) -> None:
+        """Each undeclared input a record names is what it was (:meth:`remember_observed`), and
+        no path its stages looked for in vain can be found (:meth:`remember_looked`)."""
         changed = changed_inputs(self._inputs)
         if changed:
             raise ProvenanceError(
                 f"{', '.join(changed)}, read by stages of this session, changed after a record "
                 "named it; the candidates of a session read the same files"
             )
+        self.check_looked(self._looked, made)
+
+    def check_looked(self, looked: Mapping[str, str], made: Collection[str] = ()) -> None:
+        """Raise :class:`ProvenanceError` if a stage would now find one of the paths ``looked`` for
+        in vain (path: how, :meth:`k4opt.software.Footprint.looked`) that neither a stage of the
+        study (:meth:`remember_looked`) nor one in ``made`` made: a candidate evaluated now would
+        not be evaluated as the one that looked for it."""
+        appeared = [p for p in findable(looked) if p not in self._made and p not in made]
+        if appeared:
+            raise ProvenanceError(
+                f"{', '.join(appeared)}, which a stage of this session looked for and did not "
+                "find, can be found now; the candidates of a session read the same files"
+            )
+
+    def remember_looked(self, looked: Mapping[str, str], made: Iterable[str]) -> None:
+        """The paths ``looked`` for in vain by a recorded candidate's stages, and those they
+        ``made``: no later candidate may find one of the first that the study did not make."""
+        self._looked |= looked
+        self._made.update(made)
 
     def check_observed(self, inputs: Mapping[str, Json]) -> None:
         """Raise :class:`ProvenanceError` if a stage read one of the undeclared ``inputs`` (path:
@@ -386,6 +415,27 @@ class Baseline:
                 f"the software changed after the session opened: {'; '.join(changed)}; the "
                 "candidates of a session run on one software"
             )
+
+
+def recorded_footprint(path: Path | None, sha256: object, stage: str, advice: str) -> Footprint:
+    """The footprint a record names for ``stage``, the file it is at with the SHA-256 the record
+    holds. Raises :class:`ProvenanceError` if it is not there, cannot be read or is another file:
+    what the stage looked for could not be checked, which ``advice`` says what to do of."""
+    why = "its record names none where one may be"
+    if path is not None:
+        try:
+            if sha256_of(path) != sha256:
+                why = f"{path} is not the file its record names"
+            else:
+                return load(path)
+        except OSError as exc:
+            why = f"{path} cannot be read ({exc.strerror or exc})"
+        except SoftwareError as exc:
+            why = str(exc)
+    raise ProvenanceError(
+        f"{stage}: what it looked for cannot be checked, since its footprint is not there as "
+        f"recorded: {why}; {advice}"
+    )
 
 
 def candidate_reads(geometry: TaskResult) -> dict[str, dict[str, Json]]:

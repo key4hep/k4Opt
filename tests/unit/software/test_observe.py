@@ -15,9 +15,12 @@ import pytest
 from k4opt import program
 from k4opt.software import Footprint, Local, SoftwareError
 from k4opt.software.observe import (
+    DENIED,
     FOOTPRINT,
+    MISSING,
     changed_inputs,
     covered,
+    findable,
     footprint,
     identity,
     load,
@@ -805,6 +808,21 @@ def test_what_appeared_of_what_a_run_looked_for_is_what_a_resume_refuses(tmp_pat
     override.touch()
     cache.touch()
     assert found.appeared([], made={str(cache)}) == [str(override)]  # the study made the cache
+
+
+def test_what_a_run_looked_for_in_vain_is_found_as_it_failed(tmp_path: Path) -> None:
+    absent, refused = tmp_path / "absent", tmp_path / "refused"
+    refused.touch()
+    found = Footprint(
+        "files", missing=(str(absent), "/usr/share/absent"), denied=(str(refused), str(absent))
+    )
+    looked = found.looked([])
+    assert looked == {str(absent): MISSING, str(refused): DENIED}  # missing is the stricter
+    refused.chmod(0)
+    absent.symlink_to(tmp_path / "nowhere")  # it exists, though nothing can be read through it
+    assert set(findable(looked)) == {str(absent)} | ({str(refused)} if os.geteuid() == 0 else set())
+    refused.chmod(0o644)
+    assert set(findable(looked)) == {str(absent), str(refused)}
 
 
 def test_inputs_that_changed_are_named(tmp_path: Path) -> None:

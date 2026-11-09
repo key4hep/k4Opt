@@ -32,8 +32,9 @@ path in that run, its size and SHA-256).
 An output recorded by an earlier session serves only while what made it would still find what it
 found: its stage's footprint (:mod:`k4opt.software.observe`) must hold, each file it read the same,
 each directory the same names, no path it failed to find there now. That is checked once per
-session, the first time the output would serve; from then on its undeclared inputs are watched as
-those of a stage of the session are, and a change to one stops the session. An output of another
+session, the first time the output would serve; from then on its undeclared inputs, and what it
+looked for in vain, are watched as those of a stage of the session are, and a change to one stops
+the session. An output of another
 study (:meth:`Reuse.index` with ``across``) needs more: a complete footprint, observed at the
 ``files`` level, and no network connection, since what is not known is taken to differ. With equal
 signatures both ran on the same software, its local builds included. A refused output is skipped, as
