@@ -35,7 +35,7 @@ from k4opt.publication.catalog import (
     snapshot_path,
 )
 from k4opt.publication.errors import PublicationError
-from k4opt.publication.exposure import exposed, public_snapshot
+from k4opt.publication.exposure import exposed, public_snapshot, said_of_path, said_of_withheld
 from k4opt.publication.sheet import PublishedArtifact, SoftwareSheet
 
 LOCK_NAME = ".catalog.lock"
@@ -54,8 +54,11 @@ def publish(
     ``release`` is what its author approved of an :func:`~k4opt.publication.offer` of this study,
     which lists what the author reviews: what looks like a secret (which blocks it), the messages
     withheld and the local paths the snapshot carries. Without one, nothing but the snapshot and the
-    software sheet is published, as an offer made now allows. ``warn`` is told of what an earlier
-    publication made public and stays so. Publishing the same state of a study again checks what a
+    software sheet is published, as an offer made now allows, and ``warn`` is told, before anything
+    is written, of what such an offer lists: each local path the snapshot carries and each message
+    withheld. With a release, its offer said so to the author, and is not said again. ``warn`` is
+    always told of what an earlier publication made public and stays so. Publishing the same state
+    of a study again checks what a
     rerun needs again and adds no snapshot: its software sheet says when it was last checked. Raises
     :class:`PublicationError` if what would be published looks like it holds a secret (the
     software sheet included), the catalog is malformed, another publication holds its lock, or
@@ -72,7 +75,8 @@ def publish(
             f"{directory} is in the study directory {study}; publishing adds nothing to a study, "
             "so publish somewhere else"
         )
-    data = public_snapshot(results).data
+    public = public_snapshot(results)
+    data = public.data
     if len(data) > MAX_SNAPSHOT_BYTES:  # a reader refuses it: none is written
         raise PublicationError(
             f"the snapshot of study {results.name} would be {len(data)} bytes, more than the "
@@ -90,6 +94,11 @@ def publish(
             f"study {results.name} is in another state than when this release was made: review "
             "what it offers again"
         )
+    if release is None:  # no offer was reviewed: what one lists is told
+        for where, path in public.paths:
+            (warn or (lambda message: None))(said_of_path(where, path))
+        for withheld in public.withheld:
+            (warn or (lambda message: None))(said_of_withheld(withheld))
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

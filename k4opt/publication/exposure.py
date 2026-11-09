@@ -48,6 +48,14 @@ class Finding:
     snapshot: bool = False
 
 
+# what names a credential: a name or a key that ends in one of these, in any case (DB_PASSWORD,
+# githubToken, private_key, client-secret, credentials), alike in text and in a mapping; not
+# tokenizer or candidate_key, whose last word is another
+_CREDENTIAL = (
+    r"(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
+    r"|credentials?)"
+)
+
 # what is looked for, best effort: enough to stop an accident, no substitute for looking
 _SECRETS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     ("a private key", re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----")),
@@ -63,10 +71,11 @@ _SECRETS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     (
         "a secret assigned in the open",
         re.compile(
-            rb"(?i)(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)"
-            # the name may be quoted, as JSON and a dict write it; a quoted value that starts like
-            # a path or a variable (${API_KEY}) refers to one
-            rb"\b[\"']?\s*[:=]\s*(?:[\"'](?![/$~])[^\"'\s]{8,256}[\"']"
+            rb"(?i)"
+            + _CREDENTIAL.encode()
+            # the name ends there, and may be quoted, as JSON and a dict write it; a quoted value
+            # that starts like a path or a variable (${API_KEY}) refers to one
+            + rb"[\"']?\s*[:=]\s*(?:[\"'](?![/$~])[^\"'\s]{8,256}[\"']"
             # unquoted: what a token looks like, not a name, a call or a path
             rb"|(?=[\w+=-]{0,255}\d)[\w+=-]{8,256}(?![\w+=(.\[/-]))"
         ),
@@ -77,18 +86,25 @@ _CREDENTIAL_NAMES = re.compile(
     r"|\.(?:pem|p12|pfx|key)$"
 )
 
-# a key whose last word names a credential (db_password, githubToken, client-secret, api_key), and
-# what such a key's value is when it is one: a word of 8 to 256 characters, not a path or a variable
-_CREDENTIAL_KEY = re.compile(
-    r"(?:^|[_.-])(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key"
-    r"|private[_-]?key|credentials?)$"
-)
+# a key that names a credential, and what such a key's value is when it is one: a word of 8 to
+# 256 characters, not a path or a variable
+_CREDENTIAL_KEY = re.compile(_CREDENTIAL + "$", re.IGNORECASE)
 _CREDENTIAL_VALUE = re.compile(r"(?![/$~])\S{8,256}")
 KEYED = "a secret, by the key it is under"
 """What a value under a key that names a credential is found as (:func:`exposed`)."""
 
 WITHHELD = "[withheld by k4opt publish: it looks like it holds {what}]"
 """What a message that looks like it holds a secret is published as."""
+
+
+def said_of_path(where: str, path: str) -> str:
+    """What a publisher is told of a local path the snapshot carries (:func:`local_paths`)."""
+    return f"{where} holds the local path {path}; it is published"
+
+
+def said_of_withheld(withheld: Finding) -> str:
+    """What a publisher is told of a message withheld (:func:`public_snapshot`)."""
+    return f"{withheld.label} looks like it holds {withheld.what}: published as a note saying so"
 
 
 def secrets_in(data: bytes) -> list[tuple[str, int, bytes]]:
@@ -134,12 +150,12 @@ def _entries(value: object, path: str = "") -> Iterator[tuple[str, str, object]]
 
 
 def _keyed(key: str, item: object) -> bool:
-    """Whether ``item`` is a credential by the ``key`` it is under: a key that names one, as its
-    last word in any case or spelling, and a value that is one (:data:`_CREDENTIAL_VALUE`)."""
+    """Whether ``item`` is a credential by the ``key`` it is under: a key that names one, as an
+    assignment in text does (:data:`_CREDENTIAL`), and a value that is one
+    (:data:`_CREDENTIAL_VALUE`)."""
     if isinstance(item, bool) or not isinstance(item, (str, int)):
         return False
-    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower()  # githubToken: github_token
-    return bool(_CREDENTIAL_KEY.search(words)) and bool(_CREDENTIAL_VALUE.fullmatch(str(item)))
+    return bool(_CREDENTIAL_KEY.search(key)) and bool(_CREDENTIAL_VALUE.fullmatch(str(item)))
 
 
 def _line(text: bytes, offset: int) -> int:

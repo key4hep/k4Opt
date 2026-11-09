@@ -332,7 +332,9 @@ from k4opt.publication import local_paths, offer, publish
 
 results = load_study("runs/cld-ecal-study")
 local_paths(results)  # [(where, path), ...]: what k4opt publish lists
-entry = publish(results, "published/", warn=print)  # its CatalogEntry; nothing but the public form
+# its CatalogEntry; nothing but the public form, and warn is told of each local path and message
+# withheld, which no offer listed
+entry = publish(results, "published/", warn=print)
 entry.snapshot.path, entry.snapshot.sha256, entry.published
 
 found = offer(results, exclude=["private_notes.py"])  # what may be published, for you to review

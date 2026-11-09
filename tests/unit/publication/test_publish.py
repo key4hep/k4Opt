@@ -204,6 +204,15 @@ def test_the_local_paths_a_snapshot_carries_are_listed_before_anything_is_publis
     ]
     assert invalid and local_paths(results) == expected  # not /cvmfs, which is public; nor "1/mm"
     assert list(offer(results).paths) == expected  # what its author reviews
+    # without a release no offer was reviewed: publish tells what one would have listed
+    told: list[str] = []
+    publish(results, tmp_path / "api", warn=told.append)
+    assert told == [
+        f"{where} holds the local path {path}; it is published" for where, path in expected
+    ]
+    told.clear()
+    publish(results, tmp_path / "reviewed", warn=told.append, release=offer(results).release())
+    assert told == []  # its offer listed them
     out = io.StringIO()
     command = ["publish", str(output), "--output", str(tmp_path / "pub"), "--yes"]
     assert main(command, stdout=out, stderr=io.StringIO()) == 0
@@ -278,6 +287,12 @@ def test_a_message_that_looks_like_it_holds_a_secret_is_published_as_a_note(
     assert entry.snapshot.sha256 == found.snapshot  # what was reviewed is what was published
     assert "hunter2" not in (tmp_path / "pub" / entry.snapshot.path).read_text()
     published = open_publication(tmp_path / "pub").study(entry)  # a reader reads it, checked
+    told: list[str] = []
+    publish(results, tmp_path / "api", warn=told.append)  # no offer reviewed: it is told
+    assert told == [
+        f"trial {number}'s message looks like it holds {what}: published as a note saying so"
+        for number in invalid
+    ]
     assert [t.message for t in published.trials] == [
         WITHHELD.format(what=what) if t.number in invalid else t.message for t in results.trials
     ]
@@ -350,7 +365,7 @@ SECRET = "correct" + "horsebattery"
         {"client-secret": SECRET},
         {"auth": {"api_key": SECRET}},
         [{"token": SECRET}],
-        {"credentials": 123456789012},
+        {"credentials": int("123456789012")},
     ],
 )
 def test_a_value_is_a_credential_by_the_key_it_is_under(value: object) -> None:
@@ -375,6 +390,38 @@ def test_a_key_that_names_no_credential_or_a_value_that_is_none_is_left_alone(
     value: object,
 ) -> None:
     assert exposed(value, "the software sheet's") == []
+
+
+@pytest.mark.parametrize(
+    "said",
+    [  # put together here, so that no line of this file holds one
+        'authentication failed: {"github' + 'Token": "' + "hunter2" * 2 + '"}',  # as JSON
+        "{'private" + "_key': 'abcdefgh" + "1234'}",  # a dict, and no key of PEM
+        "login with client" + "-secret=" + "hunter2" * 2,
+    ],
+)
+def test_a_message_that_names_a_credential_is_withheld_as_a_mapping_would_be(
+    tmp_path: Path, said: str
+) -> None:
+    results = load_study(mixed_study(tmp_path / "s", trials=2))
+    first, second = results.trials
+    diagnostic = {"task": "readout", "status": "failed", "message": said}
+    shown = dataclasses.replace(
+        results,
+        trials=(
+            dataclasses.replace(first, message=said),
+            dataclasses.replace(second, diagnostics=(diagnostic,)),
+        ),
+    )
+    public = public_snapshot(shown)
+    assert [w.label for w in public.withheld] == [
+        f"trial {first.number}'s message",
+        f"trial {second.number}'s diagnostic readout",
+    ]
+    assert said not in public.text and not public.findings
+    # the same names as keys of a mapping are found by the key they are under
+    key = said.split("'" if "'" in said else '"')[1] if "{" in said else "client-secret"
+    assert [f.what for f in exposed({key: "hunter2" * 2}, "the study's")] == [KEYED]
 
 
 def test_the_messages_of_the_studies_of_a_nested_study_are_checked_too(tmp_path: Path) -> None:
