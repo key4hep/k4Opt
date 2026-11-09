@@ -12,7 +12,7 @@ import yaml
 
 from k4opt.problem import ProblemConfigError, parse_problem
 from k4opt.problem.candidate import configure, replicate_seed, validate_candidate
-from k4opt.problem.models import StageDestination
+from k4opt.problem.models import Stage, StageDestination
 from k4opt.problem.plan import Kind, plan_tasks, rejecting
 from tests.support.problems import two_samples
 
@@ -67,6 +67,20 @@ def test_a_reconstruction_may_have_a_seed_which_a_replicate_derives(reco: dict[s
     assert stages["reconstruction"].seed == replicate_seed(7, 1)  # new random numbers too
     assert stages["simulation"].seed == replicate_seed(simulation.seed or 0, 1)
     assert configure(problem, values).samples["gamma"].stages["reconstruction"].seed == 7
+
+
+def test_a_parameter_cannot_set_the_seed_the_reconstruction_has(reco: dict[str, Any]) -> None:
+    reco["samples"]["gamma"]["reconstruction"]["seed"] = 42
+    reco["parameters"]["random_input"] = {
+        "type": "integer",
+        "bounds": [1, 100],
+        "targets": {"reconstruction": "seed"},
+    }
+    reject(reco, "'seed' is a key of the stage itself, not an option of its executor")
+    # nor can a stage be made whose options hide its own seed: its definition would say 7, the
+    # job take 42
+    with pytest.raises(ProblemConfigError, match="seed is a key of the stage itself"):
+        Stage("reconstruction", executor="k4run", seed=42, options={"seed": 7})
 
 
 def test_the_samples_complete_a_shared_reconstruction(reco: dict[str, Any]) -> None:

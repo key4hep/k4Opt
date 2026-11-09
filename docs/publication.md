@@ -60,9 +60,12 @@ What leaves the machine with a snapshot, and what does not:
 **Publishing makes all of it readable to whoever can read the publication.** The problem
 definition and the messages are published as they are: a stage `file:` given as an absolute
 path, an evaluator setting naming a file, or an evaluator that writes a path into its message
-puts that path into the snapshot. `k4opt publish` therefore lists, before it asks or writes
-anything, every absolute path outside `/cvmfs` that the problem's definition and the trials'
-messages hold, at every level of a nested study:
+puts that path into the snapshot, and so does an external reference of the geometry that its XML
+writes as an absolute path (`study.json` keeps it, as written, under `geometry.externals`).
+`k4opt publish` therefore lists, before it asks or writes anything, every absolute path outside
+`/cvmfs` the snapshot holds: in the problem's definition, anywhere else in `study.json` and in the
+trials and their messages, at every level of a nested study (a geometry target's locator, an XPath,
+is no path):
 
 ```text
 warning:    trial 7's message holds the local path /home/me/logs/ddsim.log; it is published

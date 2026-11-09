@@ -15,6 +15,7 @@ import pytest
 pytest.importorskip("optuna")
 
 from k4opt.cli import main
+from k4opt.frozen import thaw
 from k4opt.optimization import StudyResults, load_study, optimize
 from k4opt.publication import (
     CATALOG_NAME,
@@ -209,6 +210,26 @@ def test_the_local_paths_a_snapshot_carries_are_listed_before_anything_is_publis
     listed = out.getvalue()
     said = f"trial {invalid[0]}'s message holds the local path /home/me/logs/ddsim.log"
     assert said in listed and listed.index(said) < listed.index("published   ")
+
+
+def test_a_local_path_anywhere_in_study_json_is_listed_once_and_a_locator_is_none(
+    tmp_path: Path,
+) -> None:
+    results = load_study(mixed_study(tmp_path / "s", trials=2))
+    document = thaw(results.document)
+    assert isinstance(document, dict)
+    locators = [target["locator"] for target in document["geometry"]["targets"]]
+    assert all(locator.startswith("/") for locator in locators)  # XPaths, no paths
+    reference = "/home/alice/private-geometry/calibration.xml"  # as the geometry's XML writes it
+    document["geometry"].setdefault("externals", {})[reference] = {"sha256": None}
+    first, second = results.trials
+    inner = dataclasses.replace(results, document=document, trials=(second,))
+    nested = dataclasses.replace(
+        results, document=document, trials=(dataclasses.replace(first, inner=inner),)
+    )
+    expected = [("the study's geometry.externals", reference)]  # not again at the level below
+    assert local_paths(nested) == expected
+    assert list(public_snapshot(nested).paths) == expected
 
 
 # the secret is put together when the evaluator runs: its code, offered beside the snapshot, holds

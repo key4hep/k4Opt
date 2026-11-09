@@ -279,6 +279,21 @@ def test_a_destination_is_set_once(
     reject(doc, message)
 
 
+@pytest.mark.parametrize(
+    ("stage", "key"),
+    [("simulation", "seed"), ("simulation", "events"), ("simulation", "timeout")],
+)
+def test_a_key_of_the_stage_itself_is_no_option_a_parameter_sets(
+    doc: dict[str, Any], stage: str, key: str
+) -> None:
+    # as an option, its definition would record the parameter's value, its run use the stage's
+    reject(
+        add(doc, "k", {stage: key}, type="integer", bounds=[1, 100]),
+        f"parameters.k.targets.{stage}: {key!r} is a key of the stage itself, not an option of "
+        "its executor: a parameter cannot set it",
+    )
+
+
 def test_an_option_written_in_the_shared_stages_points_there(doc: dict[str, Any]) -> None:
     doc = two_samples(doc)
     doc["stages"] = {"simulation": doc["samples"]["gamma"].pop("simulation")}

@@ -259,6 +259,11 @@ class Reference:
         return {"sample": self.sample, "stage": self.stage}
 
 
+STAGE_KEYS = ("executor", "file", "events", "seed", "timeout")
+"""The keys of a stage that are k4opt's own, not options of its executor: an option of that name
+would hide the stage's own value in its definition (:meth:`Stage.to_dict`), and so is no option."""
+
+
 @dataclass(frozen=True, slots=True)
 class Stage:
     """One stage of a sample: a pipeline stage, run by an ``executor`` or given as a ``file``.
@@ -288,6 +293,12 @@ class Stage:
         # Direct construction gets the same defensive copy as parsing does.
         options = freeze(self.options, self.type)
         assert isinstance(options, Mapping)
+        clashing = [key for key in STAGE_KEYS if key in options]
+        if clashing:
+            raise ProblemConfigError(
+                f"{self.type}: {', '.join(clashing)} is a key of the stage itself, not an "
+                f"option of {self.executor}"
+            )
         object.__setattr__(self, "options", options)
 
     def to_dict(self) -> dict[str, object]:

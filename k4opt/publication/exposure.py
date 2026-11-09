@@ -253,28 +253,61 @@ def _snapshot_found(
 
 def local_paths(results: StudyResults) -> list[tuple[str, str]]:
     """Each absolute path, outside :data:`PUBLIC_PREFIXES`, that the JSON form of ``results``
-    carries where a person writes text: in the problem's definition (a stage's ``file``, an
-    evaluator setting) and in the trials' messages and diagnostics, at every level of a nested
-    study (``trial 3's inner trial 12's message``), with where it is."""
+    carries, with where it is: in the problem's definition as written (a stage's ``file``, an
+    evaluator setting), anywhere else in ``study.json`` (an external reference of the geometry
+    written as an absolute path, ``the study's geometry.externals``) and in the trials, their
+    messages and diagnostics, at every level of a nested study (``trial 3's inner trial 12's
+    message``). A path that ``study.json`` repeats at a level below is named once; the locator of
+    a geometry target, an XPath (``/lccdd/define/constant``), is no path."""
     found: list[tuple[str, str]] = []
+    named: set[str] = set()  # of study.json, at any level
 
-    def scan(value: object, where: str) -> None:
+    def scan(value: object, where: str, join: str = " ", once: bool = False) -> None:
         for path, text in _texts(value):
-            found.extend(
-                (f"{where}.{path}" if path else where, local)
-                for local in _ABSOLUTE.findall(text)
-                if not local.startswith(PUBLIC_PREFIXES)
-            )
+            for local in _ABSOLUTE.findall(text):
+                if local.startswith(PUBLIC_PREFIXES) or (once and local in named):
+                    continue
+                if once:
+                    named.add(local)
+                found.append((f"{where}{join}{path}" if path else where, local))
 
-    def trials(study: StudyResults, prefix: str) -> None:
-        for trial in study.trials:
-            own = f"{prefix}trial {trial.number}"
-            scan(trial.message, f"{own}'s message")
-            for diagnostic in trial.diagnostics:
-                scan(diagnostic["message"], f"{own}'s diagnostic {diagnostic['task']}")
-            if trial.inner is not None:
-                trials(trial.inner, f"{own}'s inner ")
+    def level(
+        data: Mapping[str, object], study: str, trials: str, definition: object = None
+    ) -> None:
+        """The paths of one level: its ``study.json`` (labeled by ``study``), its problem's
+        definition as its author wrote it, and its trials (``trials`` names what they are of)."""
+        document = data.get("study")
+        document = document if isinstance(document, Mapping) else {}
+        problem = document.get("problem")
+        problem = problem if isinstance(problem, Mapping) else {}
+        top = study == "the study's"
+        written = problem.get("definition", definition)
+        where = "the problem's definition" if top else f"{study} problem.definition"
+        scan(written, where, ".", once=True)
+        rest = {key: value for key, value in document.items() if key != "problem"}
+        rest["problem"] = {key: value for key, value in problem.items() if key != "definition"}
+        geometry = document.get("geometry")
+        if isinstance(geometry, Mapping) and isinstance(geometry.get("targets"), list):
+            rest["geometry"] = {
+                **geometry,
+                "targets": [
+                    {key: value for key, value in target.items() if key != "locator"}
+                    if isinstance(target, Mapping)
+                    else target
+                    for target in geometry["targets"]
+                ],
+            }
+        scan(rest, study, once=True)
+        listed = data.get("trials")
+        for trial in listed if isinstance(listed, list) else ():
+            own = f"{trials}trial {trial['number']}"
+            scan(trial.get("message"), f"{own}'s message")
+            for diagnostic in trial.get("diagnostics") or ():
+                scan(diagnostic.get("message"), f"{own}'s diagnostic {diagnostic.get('task')}")
+            kept = ("message", "diagnostics", "inner")
+            scan({key: value for key, value in trial.items() if key not in kept}, f"{own}'s")
+            if isinstance(trial.get("inner"), Mapping):
+                level(trial["inner"], f"{own}'s inner study's", f"{own}'s inner ")
 
-    scan(results.problem.to_dict(), "the problem's definition")
-    trials(results, "")
+    level(results.to_dict(), "the study's", "", results.problem.to_dict())
     return found

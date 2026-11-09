@@ -38,6 +38,7 @@ from k4opt.problem._fields import (
 from k4opt.problem._samples import _Place
 from k4opt.problem.candidate import EXPRESSION_UNITS
 from k4opt.problem.models import (
+    STAGE_KEYS,
     Destination,
     EvaluatorSpec,
     GeometryDestination,
@@ -321,6 +322,12 @@ def _stage(
             path,
             f"the problem has the samples {', '.join(samples)}; say which this parameter sets: "
             f"{{option: {draft.option}, samples: [...]}}",
+        )
+    if draft.option in STAGE_KEYS:  # its definition would say one value, the stage use another
+        raise _fail(
+            path,
+            f"{draft.option!r} is a key of the stage itself, not an option of its executor: a "
+            "parameter cannot set it",
         )
     for sample in named:
         stage = samples[sample].stages.get(draft.stage)

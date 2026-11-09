@@ -28,6 +28,7 @@ from k4opt.problem._fields import (
 from k4opt.problem.candidate import edges, stage_value
 from k4opt.problem.errors import ProblemConfigError
 from k4opt.problem.models import (
+    STAGE_KEYS,
     EvaluatorSpec,
     Parameter,
     Sample,
@@ -38,10 +39,6 @@ from k4opt.problem.models import (
 from k4opt.problem.plan import TaskId, stage_task, varied
 from k4opt.problem.stages import STAGE_TYPES, executors, stage_reads
 from k4opt.program import ProgramError
-
-# the rest of a stage are executor options
-_STAGE_KEYS = ("executor", "file", "events", "seed", "timeout")
-
 
 # lowercase, so that no two names differ only in case (run directories are named after them)
 _SAMPLE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
@@ -233,7 +230,7 @@ def _stage(where: str, place: _Place, m: Mapping[str, Any]) -> Stage:
                     f"{executor} runs inside {inside}, which sets the {key}; set {instead} instead",
                 )
     timeout = _seconds(m["timeout"], place.key("timeout")) if "timeout" in m else None
-    raw = {key: value for key, value in m.items() if key not in _STAGE_KEYS}
+    raw = {key: value for key, value in m.items() if key not in STAGE_KEYS}
     try:
         options = freeze(raw, path)
     except ProblemConfigError as exc:  # its message starts with the stage: samples.g.simulation...
