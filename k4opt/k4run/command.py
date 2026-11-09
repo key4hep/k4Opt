@@ -34,6 +34,13 @@ Verified against the ``k4run`` of the Key4hep nightly 2026-10-20 (k4FWCore's ``b
   (:func:`k4opt.k4run.verify`).
 * A job may set its own number of events (``CLDReconstruction.py`` sets ``EvtMax = 3``), so
   k4opt always passes ``--num-events=-1``: every event of the input.
+* A job draws its random numbers from seeds of its own (smearing digitized hits, picking the
+  events of an overlay): Marlin processors derive each event's from its event and run numbers and
+  the seed of Gaudi's random engine (``RndmGenSvc.Engine.Seeds``), k4FWCore's functional
+  algorithms from those and ``UniqueIDGenSvc.Seed``. The event numbers of new events are those of
+  the old, so a stage's ``seed``, which k4opt's options file gives both and a replicate derives
+  anew, is what gives a replicate new random numbers; those two properties are not arguments of
+  the stage.
 
 Everything here is pure: nothing is run or read.
 """
@@ -61,6 +68,9 @@ files or directories of data the job reads (``data``), which k4opt identifies. E
 is an argument of the job."""
 
 _EVERY_EVENT = "k4opt reconstructs every event of the simulation it reads"
+_SEED = (
+    "it is the stage's seed: write seed: N, which k4opt gives the job and a replicate derives anew"
+)
 _BATCH = "k4opt runs the job in batch, to its end"
 
 # the arguments of k4run itself that k4opt sets or that would not run the job to its end
@@ -91,6 +101,8 @@ _MANAGED: Mapping[tuple[str, str], str] = {
     ),
     ("IOSvc", "Output"): "k4opt chooses the output file",
     ("ApplicationMgr", "EvtMax"): _EVERY_EVENT,
+    ("RndmGenSvc.Engine", "Seeds"): _SEED,
+    ("UniqueIDGenSvc", "Seed"): _SEED,
 }
 
 # the components whose every property k4opt manages

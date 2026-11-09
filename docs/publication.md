@@ -38,7 +38,8 @@ published/
 ```
 
 **A snapshot** is the study's [JSON form](optimization.md#export-formats), byte for byte what
-`k4opt study export --format json` writes: the problem definition, every trial with its
+`k4opt study export --format json` writes, but for a message [withheld](#what-else-is-published)
+because it looks like it holds a secret: the problem definition, every trial with its
 candidate, objectives (values, units, uncertainties), limits (values, margins, verdicts),
 outcome, times and messages, the Pareto front, and `study.json` without its locations. It is
 named by the first 16 hex digits of its SHA-256, so a name stands for one content: a snapshot is
@@ -59,12 +60,12 @@ What leaves the machine with a snapshot, and what does not:
 **Publishing makes all of it readable to whoever can read the publication.** The problem
 definition and the messages are published as they are: a stage `file:` given as an absolute
 path, an evaluator setting naming a file, or an evaluator that writes a path into its message
-puts that path into the snapshot. `k4opt publish` therefore names, before it writes anything,
-every absolute path outside `/cvmfs` that the problem's definition and the trials' messages
-hold:
+puts that path into the snapshot. `k4opt publish` therefore lists, before it asks or writes
+anything, every absolute path outside `/cvmfs` that the problem's definition and the trials'
+messages hold, at every level of a nested study:
 
 ```text
-k4opt: warning: trial 7's message holds the local path /home/me/logs/ddsim.log; it is published
+warning:    trial 7's message holds the local path /home/me/logs/ddsim.log; it is published
 ```
 
 Publish into a staging directory first if a study may hold what should not be public, look at
@@ -113,12 +114,12 @@ its measurements), then:
 
 1. refuses a publication directory inside the study (also through a symlink); one that does not
    exist is made;
-2. names the local paths the snapshot carries (above);
-3. lists what else would be published, and asks ([below](#what-else-is-published));
-4. writes the snapshot and the files approved, whole and on disk before each gets its name, as
+2. lists what else would be published, the local paths the snapshot carries (above) and what
+   the secret scan found, and asks ([below](#what-else-is-published));
+3. writes the snapshot and the files approved, whole and on disk before each gets its name, as
    every k4opt record is written; a file already there with the same bytes is kept, one with
    other bytes is refused;
-5. under `.catalog.lock`, reads `catalog.json` (none yet: an empty catalog; a malformed one is
+4. under `.catalog.lock`, reads `catalog.json` (none yet: an empty catalog; a malformed one is
    refused and left as it is), writes the study's software sheet and writes the catalog again
    whole with the study's entry, replacing the old one by a rename, so a reader sees the old
    catalog or the new one.
@@ -236,9 +237,24 @@ script never publishes data it does not name. Without a terminal and without `--
 code to approve, `k4opt publish` refuses. A study with a local geometry always has code to approve.
 
 **The secret scan** looks through everything that would be published for private keys, access
-tokens, passwords in URLs and in assignments, and files named like credentials. A finding **blocks**
-with the file and line, nothing is written, and only removing or `--exclude`-ing the file lifts it. It
-is best effort: it supports your review of the list and does not replace it.
+tokens, passwords in URLs and in assignments, and files named like credentials: the files listed,
+the snapshot and the software sheet, each text as a reader reads it. Where it finds one decides
+what happens:
+
+- **in a file listed**, it **blocks** with the file and line, nothing is written, and only removing
+  or `--exclude`-ing the file lifts it;
+- **in a trial's message** or a diagnostic's, at any level of a nested study, the message is
+  **withheld**: the snapshot holds `[withheld by k4opt publish: it looks like it holds a GitHub
+  token]` in its place, and the list says so. A message is what a program printed (the last lines
+  of its error output) or an evaluator wrote, which no one can change once the study ran;
+- **anywhere else in the snapshot** (the problem's definition, `study.json`), it **blocks**,
+  naming the field (`the study's problem.definition.evaluators[0].settings.calibration`): that is
+  the study itself, whose identity digest a reader checks, so it is published as it is or not at
+  all. Such a study is not published;
+- **in the software sheet**, which says only what k4opt found of the study's software, it blocks
+  as well.
+
+It is best effort: it supports your review of the list and does not replace it.
 
 **The status** of a published study says what a reader can do, not what the author can: what is
 only on request makes it *needs access*. It is never *reproduced*, which takes a rerun.
@@ -309,12 +325,12 @@ from k4opt.optimization import load_study
 from k4opt.publication import local_paths, offer, publish
 
 results = load_study("runs/cld-ecal-study")
-local_paths(results)  # [(where, path), ...]: what k4opt publish warns about
+local_paths(results)  # [(where, path), ...]: what k4opt publish lists
 entry = publish(results, "published/", warn=print)  # its CatalogEntry; nothing but the public form
 entry.snapshot.path, entry.snapshot.sha256, entry.published
 
 found = offer(results, exclude=["private_notes.py"])  # what may be published, for you to review
-found.code, found.inputs, found.large, found.held, found.findings
+found.code, found.inputs, found.large, found.held, found.findings, found.withheld, found.paths
 release = found.release(code=True, inputs=["ecal_scale.json"])  # refused if a secret was found
 publish(results, "published/", release=release)  # exactly that list
 ```

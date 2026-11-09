@@ -145,6 +145,26 @@ def test_every_simulated_event_is_reconstructed_on_the_geometry_k4opt_gave(
     assert (run.cwd / "PandoraSettingsCLD").is_dir()
 
 
+def test_the_stage_s_seed_reaches_the_random_numbers_of_the_job(
+    cld: tuple[Path, Path], simulated: Path, tmp_path: Path
+) -> None:
+    compact, _ = cld
+    options = job(cld, geometry="compactFile", cms=91, truthTracking=True)
+    assert dry_run(compact=compact, workdir=tmp_path / "dry", seed=1234, **options) is None
+    run = reconstruct(
+        compact=compact,
+        input_file=simulated,
+        workdir=tmp_path / "reconstruction",
+        seed=1234,
+        **options,
+    )
+    assert run.error is None, run.error
+    resolved = properties(run.files["joboptions"].read_text())
+    # whence Marlin's global seed; CLD's job draws nothing through UniqueIDGenSvc
+    assert resolved["RndmGenSvc.Engine.Seeds"] == [1234]
+    assert resolved["UniqueIDGenSvc.Seed"] == 1234
+
+
 def test_a_job_that_keeps_its_own_default_geometry_is_caught(
     cld: tuple[Path, Path], simulated: Path, tmp_path: Path
 ) -> None:

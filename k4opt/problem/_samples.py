@@ -211,16 +211,17 @@ def _stage(where: str, place: _Place, m: Mapping[str, Any]) -> Stage:
             )
         seed = _integer(m["seed"], place.key("seed"))
     elif spec.inside is None:  # it processes every event of the stage it reads
-        for key in ("events", "seed"):
-            if key in m:
-                reads = " and ".join(f"{where}.{need}" for need in stage_reads(name))
-                reason = (
-                    f"{executor} processes every event of {reads}; set the events there"
-                    if key == "events"
-                    else f"{executor} takes no seed of k4opt's; a seed the job itself reads is "
-                    "one of its arguments, an option like any other"
-                )
-                raise _fail(place.key(key), reason)
+        if "events" in m:
+            reads = " and ".join(f"{where}.{need}" for need in stage_reads(name))
+            raise _fail(
+                place.key("events"),
+                f"{executor} processes every event of {reads}; set the events there",
+            )
+        if "seed" in m:
+            if not spec.seed:
+                raise _fail(place.key("seed"), f"{executor} takes no seed")
+            # optional: without one, the job draws the random numbers it would draw anyway
+            seed = _integer(m["seed"], place.key("seed"), minimum=0)
     else:
         for key in ("events", "seed"):
             if key in m:

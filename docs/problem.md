@@ -327,9 +327,10 @@ takes only its own keys:
   optional `data` naming the job's arguments that name the data it reads (`{dataFolder:
   /scratch/calibration/}`, passed by k4opt and identified file by file), and any other key is an
   argument of the job, named as `k4run OPTIONS.py --help` names it, such
-  as `cms: 91` ([k4run](k4run.md)). It has no `events` or `seed`: the job reconstructs every
-  event of the simulation, whose `events` and `seed` made them; a seed the job itself reads is
-  one of its arguments.
+  as `cms: 91` ([k4run](k4run.md)). It has no `events`: the job reconstructs every event of the
+  simulation, whose `events` and `seed` made them. An optional `seed` is that of the job's random
+  numbers (the smearing of hits, an overlay), which a replicate derives anew
+  ([k4run](k4run.md#random-numbers)).
 
 Every stage that runs (not one given as a `file:`) may take a `timeout`: how many seconds it may
 take, the problem's `timeout` when not given ([Time limits](#time-limits)).
@@ -775,7 +776,8 @@ evaluators to keep the expensive part at the top.
 derived, [replicates](execution.md#k4opt-evaluate)) before its level above is told it, since the
 best of many trials on the same events looks better than it is. So every sample must make its events
 from its seeds: a stage given as a `file` (HepMC generation, a given simulation) is refused under
-`inner`.
+`inner`. A reconstruction's random numbers are new only if it has a `seed`
+([k4run](k4run.md#random-numbers)); `k4opt problem explain` warns of one that has none.
 
 `k4opt problem explain PROBLEM --trials N` says all this for a problem, and at most what it runs if
 every stage succeeds, with nothing run and no Key4hep needed ([optimization](optimization.md#what-a-study-will-do-k4opt-problem-explain)).

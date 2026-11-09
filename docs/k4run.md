@@ -22,6 +22,7 @@ samples:
       geometry: compactFile                   # the job's own argument for the compact file
       cms: 240                                # --cms=240
       truthTracking: true                     # --truthTracking
+      seed: 42                                # of the job's random numbers
 ```
 
 ## The job
@@ -32,6 +33,7 @@ samples:
 | `directory` | Optional. A directory the job runs from a writable copy of, in the stage's own directory (`job/`). A reconstruction such as CLD's runs only from its own directory: its Pandora settings name files relative to where it runs. `$NAME` and `${NAME}` are environment variables (`$CLDCONFIG`, set by the Key4hep environment), read when the session opens: every candidate runs the job the session identified, and a variable that changes after that stops the session, as [any variable](software.md#the-variables) does. `~` is the home directory, also read when the session opens. |
 | `geometry` | Optional. The job's own argument that takes the compact file (CLD's and ILD's `compactFile`), for a job that derives more than the geometry service from it. Without it, k4opt sets `GeoSvc.detectors` (ALLEGRO, IDEA). |
 | `input` | Optional. The job's own argument that takes the input files (CLD's `inputFiles`). Without it, k4opt sets `IOSvc.Input`. |
+| `seed` | Optional. The seed of the job's random numbers: of Gaudi's random engine (`RndmGenSvc.Engine.Seeds`), from which Marlin processors take theirs, and of k4FWCore's `UniqueIDGenSvc`, from which functional algorithms derive theirs ([below](#random-numbers)). A [replicate](execution.md#k4opt-evaluate) derives it anew, as it does a simulation's. Without it, the job draws the random numbers it draws by itself. |
 | `data` | Optional. Each argument of the job that names a file or a directory of data it reads, with its path: `data: {dataFolder: /scratch/calibration/}` for ALLEGRO's calibration maps and ONNX models. k4opt passes it (`--dataFolder=/scratch/calibration/`, a trailing `/` kept, since a job may append file names to it) and identifies what it names, a directory by every file in it, as it identifies the job's own files; the data is read where it is, not copied. Paths are read as `directory`'s are. |
 | any other key | An argument of the job or a Gaudi property, named as `k4run OPTIONS.py --help` names it, without the dashes: `cms: 91` is `--cms=91`, `GeoSvc.OutputLevel: 3` is `--GeoSvc.OutputLevel=3`, a list is `--key v1 v2`, `true` the flag `--key`. `false` is refused: a flag of the job's own (CLD's `--truthTracking`, an argparse `store_true`) takes no value and cannot be switched off, and leaving it out keeps the job's default, which k4opt does not know, so leave the key out yourself; a Gaudi property, which takes a value, is given the text `'False'` (`GeoSvc.EnableGeant4Geo: 'False'`). A mapping or `null` is refused, as is a list value starting with `-`, which k4run would read as an argument. |
 
@@ -59,11 +61,26 @@ texts a Marlin processor reads (a boolean as the text `'true'`). The resolved op
 value after the run, or the stage fails. A parameter can set such a key
 ([problem](problem.md#parameters)).
 
-A reconstruction takes no `events` or `seed`: it reconstructs every event of the simulation it
-reads, whose `events` and `seed` made them (an evaluator of the reconstruction gets those as
-`request.events` and `request.seed`). A seed the job itself reads is one of its arguments.
-`timeout` limits it as any stage ([Time limits](problem.md#time-limits)), the copy of
-`directory` included.
+A reconstruction takes no `events`: it reconstructs every event of the simulation it reads, whose
+`events` and `seed` made them (an evaluator of the reconstruction gets those as `request.events`
+and `request.seed`). `timeout` limits it as any stage ([Time limits](problem.md#time-limits)), the
+copy of `directory` included.
+
+### Random numbers
+
+A reconstruction draws random numbers too: CLD's smears the hits of its trackers, and an overlay
+picks the background events it adds. Marlin processors (CLD's, ILD's) derive the seed of each
+event from its event and run numbers and the seed of Gaudi's random engine; k4FWCore's functional
+algorithms from those and `UniqueIDGenSvc.Seed`. Neither seed is an argument of CLD's
+reconstruction (`k4run CLDReconstruction.py --help` lists none), and the events of a replicate have
+the numbers of the old ones: without `seed`, a replicate's reconstruction draws, event by event,
+the random numbers it drew before. With `seed`, k4opt's options file gives both, the resolved
+options must show them after the run, and a replicate derives it anew, so the events are new and so
+are the random numbers. Checked on CLD (nightly 2026-10-20): with the engine's seed changed the
+tracker hits are smeared otherwise and the calorimeter hits, which no random number touches, stay
+the same. `k4opt problem explain` warns of a reconstruction without a seed in a nested problem,
+whose best trials are evaluated again on new events. A seed a job takes as an argument of its own
+is passed as any argument is, and a replicate leaves it as it is.
 
 ## What k4opt sets, and checks
 
@@ -80,14 +97,17 @@ arguments: a file after `--inputFiles a.root` would be read as one more input fi
 
 - `--num-events=-1`: every event of the input. A job may set its own number of events
   (`CLDReconstruction.py` sets 3), which would otherwise reconstruct only some.
+- `seed`, if the stage has one: k4opt's options file sets `RndmGenSvc.Engine.Seeds` (of the
+  engine type the job's `RndmGenSvc` names) and `UniqueIDGenSvc.Seed` to it.
 - The arguments k4opt sets are refused in a problem, in both of k4run's spellings of a property
   (`GeoSvc.detectors` and `detectors.GeoSvc`): `num-events`, `n`, `evt-max`,
-  `GeoSvc.detectors`, `IOSvc.Input`, `IOSvc.Output`, `ApplicationMgr.EvtMax`, every property of
+  `GeoSvc.detectors`, `IOSvc.Input`, `IOSvc.Output`, `ApplicationMgr.EvtMax`,
+  `RndmGenSvc.Engine.Seeds`, `UniqueIDGenSvc.Seed`, every property of
   `JobOptionsSvc`, the argument `geometry` or `input` names, and k4run's own `dry-run`, `list`,
   `gdb`, `interactive`, `interactive-root` and `help`.
 - After the job ran, its resolved options must show `GeoSvc.detectors` = the candidate's compact
-  file, `IOSvc.Input` = the simulation and `IOSvc.Output` = the output, or the reconstruction
-  fails with what the job used. CLD's reconstruction, for one, sets its geometry from its own
+  file, `IOSvc.Input` = the simulation, `IOSvc.Output` = the output and, with a `seed`, both seeds
+  = it, or the reconstruction fails with what the job used. CLD's reconstruction, for one, sets its geometry from its own
   `--compactFile`, whose default is CLD_o2_v07: a reconstruction that forgot `geometry:
   compactFile` would otherwise reconstruct the candidate's events on another detector without a
   word.

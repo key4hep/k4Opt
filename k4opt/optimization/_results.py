@@ -79,9 +79,10 @@ class TrialResult:
     ``error`` trial whose record the optimizer never took. ``record`` and ``sha256`` identify the
     ``summary.json`` read, which is ``trial-NNNNNN/summary.json`` in the study directory
     (:meth:`StudyResults.record_path`); ``elapsed_seconds`` (the whole evaluation) and
-    ``stage_seconds`` (each stage that ran, by label: ``gamma/simulation``) are the wall-clock
-    times it records, no estimate. ``diagnostics`` holds, as the record does, each diagnostic that
-    did not succeed (``task``, ``status``, ``message``): what the status leaves out. ``recovered``
+    ``stage_seconds`` (each stage that ran, by label: ``gamma/simulation``; not one that reused
+    the output of another) are the wall-clock times it records, no estimate. ``diagnostics``
+    holds, as the record does, each diagnostic that did not succeed (``task``, ``status``,
+    ``message``): what the status leaves out. ``recovered``
     marks a trial a resume finished. A trial that stands for a study of the level below holds
     that study (``inner``) and the best trial of it, evaluated again for its record (``selected``:
     ``study``, ``trial`` and the ``values`` it adds to the candidate); it is ``unscored``, with
@@ -355,10 +356,11 @@ def record_of(
         assessment = Assessment.from_summary(scope.spec, summary)
     except RecordError as exc:
         raise OptimizationError(f"{where}: {exc}") from None
-    timed = {  # every time was checked by from_summary
+    timed = {  # every time was checked by from_summary; a stage that reused an output ran nothing
         f"{sample}/{stage}": seconds(entry.get("elapsed_seconds"), stage)
         for sample, part in summary["samples"].items()
         for stage, entry in part["stages"].items()
+        if "reused" not in entry
     }
     references = [parameter.name for parameter in scope.spec.parameters]
     result = TrialResult(

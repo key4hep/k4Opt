@@ -43,7 +43,7 @@ def sim(tmp_path: Path) -> Path:
     return path
 
 
-def run(job: Path, sim: Path, workdir: Path, **options: Any) -> Any:
+def run(job: Path, sim: Path, workdir: Path, seed: int | None = None, **options: Any) -> Any:
     return reconstruct(
         files=[job / "CLDReconstruction.py"],
         directory=job,
@@ -51,6 +51,7 @@ def run(job: Path, sim: Path, workdir: Path, **options: Any) -> Any:
         input_file=sim,
         workdir=workdir,
         options={"options": "CLDReconstruction.py", "directory": str(job), **options},
+        seed=seed,
     )
 
 
@@ -214,6 +215,39 @@ def test_a_key_of_a_map_is_set_by_k4opt_s_options_file_and_must_be_held(
     install_k4run(monkeypatch, keep_maps=True)  # a job that sets its map again
     said = run(job, sim, tmp_path / "b", **key).error
     assert said is not None and "Pandora.Parameters[Cut] is nothing, not ['2.0']" in said
+
+
+def test_the_stage_s_seed_is_given_to_the_job_s_random_numbers_and_must_be_held(
+    monkeypatch: pytest.MonkeyPatch, job: Path, sim: Path, tmp_path: Path
+) -> None:
+    install_k4run(monkeypatch)
+    done = run(job, sim, tmp_path / "a", seed=7)
+    assert done.error is None, done.error
+    written = done.files["options"].read_text()
+    assert '("RndmGenSvc.Engine").Seeds = [7]' in written  # whichever engine the job has
+    assert "UniqueIDGenSvc().Seed = 7" in written and "DUMPFILE" in written
+    assert not any("Seed" in argument for argument in done.argv)  # no argument of the job
+    assert "Seed" not in run(job, sim, tmp_path / "b").files["options"].read_text()  # its own
+    install_k4run(monkeypatch, keep_seed=True)  # a job that seeds its random numbers itself
+    said = run(job, sim, tmp_path / "c", seed=7).error
+    assert (
+        said is not None and "RndmGenSvc.Engine.Seeds is nothing, not the stage's seed [7]" in said
+    )
+    files = [job / "CLDReconstruction.py"]
+    options = {"options": "CLDReconstruction.py", "directory": str(job)}
+    workdir = tmp_path / "dry"
+    assert (
+        dry_run(
+            files=files,
+            directory=job,
+            compact=Path("/g.xml"),
+            options=options,
+            workdir=workdir,
+            seed=7,
+        )
+        is None
+    )
+    assert "UniqueIDGenSvc().Seed = 7" in (workdir / "k4opt.opts.py").read_text()
 
 
 def test_a_dry_run_sets_the_keys_of_maps_too(

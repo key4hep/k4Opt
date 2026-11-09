@@ -46,6 +46,27 @@ def test_the_levels_read_as_loops_with_what_picks_and_what_judges() -> None:
     assert warnings == []
 
 
+def test_a_reconstruction_of_a_nested_problem_without_a_seed_is_warned_of() -> None:
+    def unseeded(document: dict[str, Any]) -> None:
+        del document["samples"]["pi0_50gev"]["reconstruction"]["seed"]
+
+    _, warnings = outline(example(change=unseeded), 8)
+    assert warnings == [
+        "the reconstruction of 50 GeV π⁰ has no seed: on the new events it draws the random "
+        "numbers of the old, event by event (smearing, overlay); give it one "
+        "(samples.pi0_50gev.reconstruction.seed)"
+    ]
+    assert outline(example(ORDINARY), 8)[1] == []  # no new events: nothing to warn of
+
+    def seeded(document: dict[str, Any]) -> None:
+        document["samples"]["pi0_50gev"]["reconstruction"]["seed"] = 7
+
+    lines, warnings = outline(example(change=seeded), 8)
+    assert warnings == []
+    derived = f"seeds 42 → {replicate_seed(42, 1)}, 7 → {replicate_seed(7, 1)}"
+    assert lines[2] == f"  evaluate the best again on new events ({derived})"
+
+
 def test_each_level_below_is_a_loop_inside_the_one_above_with_events_of_its_own() -> None:
     def three_levels(document: dict[str, Any]) -> None:
         document["parameters"]["hcal_mip_threshold"] = {

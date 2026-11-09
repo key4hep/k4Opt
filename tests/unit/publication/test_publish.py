@@ -3,24 +3,29 @@ only a later state of the study replaces; the study itself is only read."""
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 pytest.importorskip("optuna")
 
 from k4opt.cli import main
-from k4opt.optimization import load_study, optimize
+from k4opt.optimization import StudyResults, load_study, optimize
 from k4opt.publication import (
     CATALOG_NAME,
     Catalog,
     PublicationError,
     local_paths,
+    offer,
+    open_publication,
     publish,
 )
+from k4opt.publication.exposure import WITHHELD, public_snapshot
 from tests.support.common import tree_digest
 from tests.support.evaluators import trade_off
 from tests.support.software import LABEL
@@ -172,7 +177,9 @@ PROBE = """
 """
 
 
-def test_the_local_paths_a_snapshot_carries_are_told_before_it_is_written(tmp_path: Path) -> None:
+def test_the_local_paths_a_snapshot_carries_are_listed_before_anything_is_published(
+    tmp_path: Path,
+) -> None:
     probe = evaluator_from(tmp_path / "evaluators", "probe", PROBE)
     output = study(
         tmp_path / "s",
@@ -187,22 +194,147 @@ def test_the_local_paths_a_snapshot_carries_are_told_before_it_is_written(tmp_pa
     )
     results = load_study(output)
     invalid = [t.number for t in results.trials if t.status == "invalid"]
-    told: list[str] = []
-    publish(results, tmp_path / "pub", warn=told.append)
     expected = [
-        "the problem's definition.evaluators[0].settings.calibration holds the local path "
-        "/eos/user/m/me/calibration.json; it is published",
-        *(
-            f"trial {number}'s message holds the local path /home/me/logs/ddsim.log; it is "
-            "published"
-            for number in invalid
+        (
+            "the problem's definition.evaluators[0].settings.calibration",
+            "/eos/user/m/me/calibration.json",
         ),
+        *((f"trial {number}'s message", "/home/me/logs/ddsim.log") for number in invalid),
     ]
-    assert invalid and told == expected  # not /cvmfs, which is public; nor "1/mm"
-    assert [where for where, _ in local_paths(results)] == [
-        "the problem's definition.evaluators[0].settings.calibration",
-        *(f"trial {number}'s message" for number in invalid),
+    assert invalid and local_paths(results) == expected  # not /cvmfs, which is public; nor "1/mm"
+    assert list(offer(results).paths) == expected  # what its author reviews
+    out = io.StringIO()
+    command = ["publish", str(output), "--output", str(tmp_path / "pub"), "--yes"]
+    assert main(command, stdout=out, stderr=io.StringIO()) == 0
+    listed = out.getvalue()
+    said = f"trial {invalid[0]}'s message holds the local path /home/me/logs/ddsim.log"
+    assert said in listed and listed.index(said) < listed.index("published   ")
+
+
+# the secret is put together when the evaluator runs: its code, offered beside the snapshot, holds
+# none of it
+LEAKY = """
+    from k4opt.evaluation import Evaluator
+
+    class Probe(Evaluator):
+        name, version = "test.trade_off", "1"
+        settings = {"x": float}
+        metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
+
+        def evaluate(self, request):
+            x = request.settings["x"]
+            if x < 200:
+                self.invalid("login failed with pass" + 'word = "' + "hunter2" * 2 + '"')
+            return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
+"""
+
+
+def test_a_message_that_looks_like_it_holds_a_secret_is_published_as_a_note(
+    tmp_path: Path,
+) -> None:
+    leaky = evaluator_from(tmp_path / "evaluators", "leaky", LEAKY)
+    output = study(
+        tmp_path / "s",
+        6,
+        implementations=[leaky],
+        parameter={
+            "targets": {"geometry": "InnerTracker_Barrel_radius_1"},
+            "type": "categorical",
+            "choices": [300, 170],
+        },
+        evaluators=[TRADE],
+    )
+    results = load_study(output)
+    invalid = [t.number for t in results.trials if t.status == "invalid"]
+    assert invalid and '\\"hunter2hunter2\\"' in results.to_json()  # escaped, as JSON writes it
+    found = offer(results)
+    assert not found.findings  # the study itself holds none: it is published
+    what = "a secret assigned in the open"
+    assert [(w.label, w.what, w.line) for w in found.withheld] == [
+        (f"trial {number}'s message", what, 1) for number in invalid
     ]
+    entry = publish(results, tmp_path / "pub", release=found.release(code=True))
+    assert entry.snapshot.sha256 == found.snapshot  # what was reviewed is what was published
+    assert "hunter2" not in (tmp_path / "pub" / entry.snapshot.path).read_text()
+    published = open_publication(tmp_path / "pub").study(entry)  # a reader reads it, checked
+    assert [t.message for t in published.trials] == [
+        WITHHELD.format(what=what) if t.number in invalid else t.message for t in results.trials
+    ]
+    out = io.StringIO()
+    command = ["publish", str(output), "--output", str(tmp_path / "pub2"), "--yes"]
+    assert main(command, stdout=out, stderr=io.StringIO()) == 0
+    assert f"withheld    trial {invalid[0]}'s message looks like it holds {what}" in out.getvalue()
+
+
+def test_a_secret_in_the_study_itself_blocks_publishing_it(tmp_path: Path) -> None:
+    probe = evaluator_from(tmp_path / "evaluators", "probe", PROBE)
+    token = "ghp_" + "a1" * 18
+    output = study(
+        tmp_path / "s",
+        2,
+        implementations=[probe],
+        evaluators=[TRADE | {"settings": {"calibration": f"https://example.org/c.json?{token}"}}],
+    )
+    results = load_study(output)
+    found = offer(results)
+    (finding,) = found.findings  # once, wherever study.json repeats it
+    assert finding.snapshot and finding.what == "a GitHub token"
+    assert finding.label.startswith("the study's problem.definition.evaluators[0].settings")
+    with pytest.raises(PublicationError, match="in the study itself: a study is published as it"):
+        found.release()
+    with pytest.raises(PublicationError, match="in the study itself"):
+        publish(results, tmp_path / "pub")
+    assert not (tmp_path / "pub").exists()
+    out = io.StringIO()
+    command = ["publish", str(output), "--output", str(tmp_path / "pub"), "--yes"]
+    assert main(command, stdout=out, stderr=io.StringIO()) == 1
+    assert f"blocked:    {finding.label}:1: a GitHub token" in out.getvalue()
+    assert "a study is published as it is, so this one is not" in out.getvalue()
+    assert not (tmp_path / "pub").exists()
+    # a study read from its JSON form offers nothing beside its snapshot, which is checked alike
+    form = StudyResults.from_dict(json.loads(results.to_json()))
+    assert offer(form).findings == found.findings
+
+
+def test_the_messages_of_the_studies_of_a_nested_study_are_checked_too(tmp_path: Path) -> None:
+    results = load_study(mixed_study(tmp_path / "s", trials=2))
+    first, second = results.trials
+    inner = dataclasses.replace(
+        results,
+        trials=(
+            dataclasses.replace(first, message="see /home/me/inner.log"),
+            dataclasses.replace(second, message="auth_token" + ": abc123456789"),
+        ),
+    )
+    nested = dataclasses.replace(results, trials=(dataclasses.replace(first, inner=inner), second))
+    public = public_snapshot(nested)
+    within = f"trial {first.number}'s inner trial"
+    assert [(w.label, w.what) for w in public.withheld] == [
+        (f"{within} {second.number}'s message", "a secret assigned in the open")
+    ]
+    assert (f"{within} {first.number}'s message", "/home/me/inner.log") in public.paths
+    assert "abc123456789" not in public.text and not public.findings
+
+
+def test_a_software_sheet_that_would_hold_a_secret_is_never_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from k4opt.publication import write
+
+    results = load_study(mixed_study(tmp_path / "s", trials=2))
+    made = write.public_form
+
+    def leaky(*args: Any, **kwargs: Any) -> Any:
+        sheet = made(*args, **kwargs)
+        cloned = "cloned from https://me:" + "hunter2" * 2 + "@gitlab.cern.ch/me/x"
+        return dataclasses.replace(sheet, gaps=(*sheet.gaps, cloned))
+
+    monkeypatch.setattr(write, "public_form", leaky)
+    with pytest.raises(
+        PublicationError, match=r"a URL with a password \(the software sheet's gaps"
+    ):
+        publish(results, tmp_path / "pub")
+    assert files(tmp_path / "pub") == {}  # nor its lock
 
 
 def test_k4opt_publish_says_what_it_published_and_reads_the_study_as_k4opt_study_does(
@@ -228,8 +360,6 @@ def test_k4opt_publish_says_what_it_published_and_reads_the_study_as_k4opt_study
 
 
 def test_a_study_whose_id_is_no_uuid_is_never_written_anywhere(tmp_path: Path) -> None:
-    import dataclasses
-
     results = load_study(mixed_study(tmp_path / "s", trials=2))
     crafted = dataclasses.replace(results, id="../../outside")  # a study.json made to escape
     with pytest.raises(PublicationError, match="is not the id of a study"):

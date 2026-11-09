@@ -165,15 +165,18 @@ graph. The dashboard folds every sample at first when a graph has more than 30 t
 
 An edge is drawn only where no other path implies it: every evaluation of a sample reads the
 geometry, but through its simulation, so the geometry's edge goes to the simulation alone. Of a
-study, each stage shows the median of its recorded times and in how many trials it recorded one;
-a stage run by another (the particle gun, fired by ddsim) has no time of its own. Hovering a task
+study, each stage shows the median of its recorded times and how often it ran ("median 1.6 min ·
+ran 104 times"), at every level of a nested study: its reconstruction runs for every trial of its
+inner studies as well, which the study's own records do not count. A stage that reused an output
+did not run, and a stage run by another (the particle gun, fired by ddsim) has no time of its own. Hovering a task
 shows everything the problem says of it (options, settings, collections, what it reads, the
 parameters that reach it, its directory); hovering an edge, what it carries.
 
 **Stacks.** Samples alike but for the options of their stages (an energy scan: the same stages,
 evaluators and objectives for each energy) are drawn as one box, *2 samples*, listing the samples
 and what tells them apart (`energy: 10 GeV, 50 GeV`); each task in it stands for that task of
-every sample, its time each trial's mean over them ("median 12 min per sample"). Samples read in
+every sample, its time each trial's mean over those whose stage ran in it ("median 12 min per
+sample · ran in 30 trials"). Samples read in
 different roles (signal and background) are not alike, and neither are samples with other
 objectives. `expanded={"gamma_10gev"}` draws the stack whose first sample that is sample by
 sample; `stack=False` draws every one.

@@ -65,3 +65,19 @@ def test_the_keys_of_maps_must_be_held_as_they_were_set() -> None:
     assert said is not None and "Pandora.Parameters[Gone] is nothing" in said
     said = verify(DUMP, keys={key: ("2.0",)}, **common)
     assert said is not None and "Pandora.Parameters[Cut] is nothing" in said
+
+
+def test_the_seed_must_be_held_by_the_random_engine_and_the_unique_id_service() -> None:
+    common = {"compact": COMPACT, "input_file": SIM, "output": RECO}
+    # as Gaudi dumps them: a property no component read says so after it
+    dump = DUMP + "RndmGenSvc.Engine.Seeds = [ 7 ];\nUniqueIDGenSvc.Seed = 7; // unused\n"
+    assert properties(dump)["UniqueIDGenSvc.Seed"] == 7
+    assert properties("IOSvc.Input = [ 'root://eos//a.root' ];")["IOSvc.Input"] == [
+        "root://eos//a.root"  # a // in a text is no comment
+    ]
+    assert verify(dump, seed=7, **common) is None
+    said = verify(dump, seed=8, **common)
+    assert said is not None
+    assert "RndmGenSvc.Engine.Seeds is [7], not the stage's seed [8]" in said
+    assert "UniqueIDGenSvc.Seed is 7, not the stage's seed 8" in said
+    assert verify(DUMP, **common) is None  # without a seed, the job's own are not checked

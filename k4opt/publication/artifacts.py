@@ -11,8 +11,9 @@ of it is offered for publication, in two groups the author answers for separatel
 
 Which files of a unit a rerun needs is not guessed: what is compiled is never read at run time, so a
 build's whole state is offered, and a unit is published whole or not at all. Leaving out one of its
-files (``exclude``) leaves out the unit, which is then on request. :func:`scan` looks through what
-would be published for secrets, whose findings block publishing (:meth:`Offer.release`).
+files (``exclude``) leaves out the unit, which is then on request. :func:`scan` looks through the
+files that would be published for secrets, and :func:`offer` through the snapshot as well
+(:mod:`k4opt.publication.exposure`); a finding blocks publishing (:meth:`Offer.release`).
 
 Every unit has an id that holds between publications (:class:`~k4opt.software.readiness.Requirement`
 ids; ``link:<stage>/<file>`` for a job file that leads out of its directory), so a later
@@ -37,6 +38,7 @@ from typing import Any, Literal, cast
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.optimization import StudyResults
 from k4opt.publication.errors import PublicationError
+from k4opt.publication.exposure import Finding, credentials_named, public_snapshot, secrets_in
 from k4opt.publication.sheet import (
     Access,
     Group,
@@ -300,43 +302,6 @@ class Held:
         return self.name
 
 
-@dataclass(frozen=True, slots=True)
-class Finding:
-    """A secret :func:`scan` saw: ``what`` it looks like, in which file (``label``), at ``line``."""
-
-    label: str
-    line: int
-    what: str
-
-
-# what :func:`scan` looks for, best effort: enough to stop an accident, no substitute for looking
-_SECRETS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
-    ("a private key", re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----")),
-    ("an AWS access key", re.compile(rb"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    ("a GitHub token", re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,})\b")),
-    ("a GitLab token", re.compile(rb"\bglpat-[\w-]{20,}\b")),
-    ("a Slack token", re.compile(rb"\bxox[abprs]-[\w-]{10,}\b")),
-    ("a Google API key", re.compile(rb"\bAIza[\w-]{35}\b")),
-    (
-        "a URL with a password",
-        re.compile(rb"\b[a-z][a-z0-9+.-]{0,31}://[^/\s:@'\"${}]{1,256}:[^/\s@'\"${}]{1,256}@"),
-    ),
-    (
-        "a secret assigned in the open",
-        re.compile(
-            rb"(?i)(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)"
-            rb"\b\s*[:=]\s*(?:[\"'](?!/)[^\"'\s]{8,256}[\"']"
-            # unquoted: what a token looks like, not a name, a call or a path
-            rb"|(?=[\w+=-]{0,255}\d)[\w+=-]{8,256}(?![\w+=(.\[/-]))"
-        ),
-    ),
-)
-_SECRET_NAMES = re.compile(
-    r"(?:^|/)(?:\.netrc|\.pgpass|\.htpasswd|\.env|id_(?:rsa|dsa|ecdsa|ed25519)|credentials)$"
-    r"|\.(?:pem|p12|pfx|key)$"
-)
-
-
 def scan(pieces: Iterable[Piece]) -> list[Finding]:
     """What of ``pieces`` looks like a secret, the first of each kind per file."""
     findings = []
@@ -351,12 +316,10 @@ def scan(pieces: Iterable[Piece]) -> list[Finding]:
             else [piece]
         )
         for part in parts:
-            if _SECRET_NAMES.search(part.name):
+            if credentials_named(part.name):
                 findings.append(Finding(part.label, 1, "a file of credentials, by its name"))
-            for what, pattern in _SECRETS:
-                match = pattern.search(part.data)
-                if match is not None:
-                    findings.append(Finding(part.label, _line(part, match.start()), what))
+            for what, offset, _ in secrets_in(part.data):
+                findings.append(Finding(part.label, _line(part, offset), what))
     return findings
 
 
@@ -383,9 +346,13 @@ class Offer:
 
     ``code`` and ``inputs`` are offered, unit by unit; ``large`` the units past the :data:`BUDGET`
     of their group (published only ``include_large``); ``held`` the units listed and not offered;
-    ``excluded`` the units the author left out by name; ``findings`` what :func:`scan` saw in what
-    would be published; ``lost`` what should be kept and is not (the unit and the file's name). A
-    study read from its JSON form offers nothing (``readiness`` is ``None``)."""
+    ``excluded`` the units the author left out by name; ``findings`` what looks like a secret in
+    what would be published, the snapshot's first
+    (:func:`~k4opt.publication.exposure.public_snapshot`), then the files' (:func:`scan`); ``lost``
+    what should be kept and is not (the unit and the file's name); ``withheld`` the messages of the
+    snapshot that are published as a note, since they look like they hold a secret; ``paths`` the
+    local paths the snapshot carries (:func:`~k4opt.publication.local_paths`). A study read from
+    its JSON form offers nothing beside its snapshot (``readiness`` is ``None``)."""
 
     readiness: Readiness | None
     code: tuple[Piece, ...] = ()
@@ -398,8 +365,10 @@ class Offer:
     study: str = ""
     """The id of the study it was made from."""
     snapshot: str = ""
-    """The SHA-256 of that study's snapshot when it was reviewed."""
+    """The SHA-256 of that study's snapshot, as published, when it was reviewed."""
     lost: tuple[Lost, ...] = ()
+    withheld: tuple[Finding, ...] = ()
+    paths: tuple[tuple[str, str], ...] = ()
 
     @property
     def everything(self) -> tuple[Piece, ...]:
@@ -411,6 +380,11 @@ class Offer:
         """What the author approved: all of ``code`` or none, and of ``inputs`` all (``True``), none
         or the ones named. Raises :class:`PublicationError` if a scan found a secret, or a name
         names no input offered."""
+        if any(finding.snapshot for finding in self.findings):
+            raise PublicationError(
+                f"{len(self.findings)} possible secrets in what would be published, in the study "
+                "itself: a study is published as it is, so this one is not"
+            )
         if self.findings:
             raise PublicationError(
                 f"{len(self.findings)} possible secrets in what would be published: "
@@ -460,9 +434,16 @@ def offer(
     ``include_large`` publishes past the budget. Raises :class:`PublicationError` for a name that
     names nothing: a slip must not publish a file its author meant to leave out."""
     _refuse_empty((*include, *include_inputs, *exclude))
-    snapshot = hashlib.sha256(results.to_json().encode()).hexdigest()
+    public = public_snapshot(results)
     if results.directory is None:
-        return Offer(None, study=results.id, snapshot=snapshot)
+        return Offer(
+            None,
+            findings=public.findings,
+            study=results.id,
+            snapshot=public.sha256,
+            withheld=public.withheld,
+            paths=public.paths,
+        )
     readiness = requirements(results.directory, results.document)
     pieces, held, lost = _gathered(readiness)
     of = {
@@ -497,11 +478,13 @@ def offer(
         large,
         tuple(held),
         tuple(excluded),
-        tuple(scan([*code, *inputs, *(large if include_large else ())])),
+        (*public.findings, *scan([*code, *inputs, *(large if include_large else ())])),
         include_large,
         results.id,
-        snapshot,
+        public.sha256,
         tuple(lost),
+        public.withheld,
+        public.paths,
     )
 
 

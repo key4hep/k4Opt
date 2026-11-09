@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from k4opt.problem import ProblemConfigError, parse_problem
-from k4opt.problem.candidate import configure, validate_candidate
+from k4opt.problem.candidate import configure, replicate_seed, validate_candidate
 from k4opt.problem.models import StageDestination
 from k4opt.problem.plan import Kind, plan_tasks, rejecting
 from tests.support.problems import two_samples
@@ -55,6 +55,20 @@ def test_a_reconstruction_reads_the_simulation_and_keeps_its_options(reco: dict[
     assert parse_problem(problem.to_dict()) == problem
 
 
+def test_a_reconstruction_may_have_a_seed_which_a_replicate_derives(reco: dict[str, Any]) -> None:
+    reco["samples"]["gamma"]["reconstruction"]["seed"] = 7
+    problem = parse_problem(reco)
+    stage = problem.samples["gamma"].stages["reconstruction"]
+    assert (stage.seed, stage.to_dict()["seed"]) == (7, 7)  # in its definition, and signature
+    assert "seed" not in stage.options and parse_problem(problem.to_dict()) == problem
+    values, _ = validate_candidate(problem, {"ecal_cell_size": 5.0})
+    stages = configure(problem, values, 1).samples["gamma"].stages
+    simulation = problem.samples["gamma"].stages["simulation"]
+    assert stages["reconstruction"].seed == replicate_seed(7, 1)  # new random numbers too
+    assert stages["simulation"].seed == replicate_seed(simulation.seed or 0, 1)
+    assert configure(problem, values).samples["gamma"].stages["reconstruction"].seed == 7
+
+
 def test_the_samples_complete_a_shared_reconstruction(reco: dict[str, Any]) -> None:
     doc = two_samples(reco)
     del doc["samples"]["gamma"]["reconstruction"]
@@ -76,8 +90,18 @@ def test_the_samples_complete_a_shared_reconstruction(reco: dict[str, Any]) -> N
             "samples.gamma.simulation; set the events there",
         ),
         (
-            lambda s: s["reconstruction"].update(seed=1),
-            "samples.gamma.reconstruction.seed: k4run takes no seed of k4opt's",
+            lambda s: s["reconstruction"].update(seed=-1),
+            "samples.gamma.reconstruction.seed: must be >= 0, got -1",
+        ),
+        (
+            lambda s: s["reconstruction"].update({"UniqueIDGenSvc.Seed": 5}),
+            "samples.gamma.reconstruction.UniqueIDGenSvc.Seed: k4opt sets this argument itself: "
+            "it is the stage's seed",
+        ),
+        (
+            lambda s: s["reconstruction"].update({"Seeds.RndmGenSvc.Engine": [5]}),
+            "samples.gamma.reconstruction.Seeds.RndmGenSvc.Engine: k4opt sets this argument "
+            "itself: it is the stage's seed",
         ),
         (
             lambda s: s["reconstruction"].pop("options"),

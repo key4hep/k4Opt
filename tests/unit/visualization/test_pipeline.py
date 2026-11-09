@@ -219,12 +219,12 @@ def test_a_study_holds_the_times_of_each_stage_and_the_trials_a_diagnostic_faile
     ]
     graph = task_graph(study(without_constraint(), trials))
     simulation = graph.node("gamma_50gev/simulation")
-    assert dict(simulation.seconds or {}) == {0: 30.0, 1: 90.0, 2: 600.0}
+    assert dict(simulation.seconds or {}) == {(0,): 30.0, (1,): 90.0, (2,): 600.0}
     assert simulation.median_seconds == 90.0
     assert graph.node("pi0_50gev/simulation").median_seconds is None
     assert graph.node("readout").failed == (0, 2) and graph.recorded == 3
     dot = pipeline_graph(study(without_constraint(), trials))
-    assert "median 1.5 min · 3 trials" in dot
+    assert "median 1.5 min · ran 3 times" in dot
     assert '<font point-size="10" color="#e11d48">⚠ did not succeed in 2 of 3 trials</font>' in dot
     assert "did not succeed" not in pipeline_graph(without_constraint())
 
@@ -328,10 +328,30 @@ def test_a_stack_holds_each_trials_mean_time_over_its_samples() -> None:
     times = {"gamma_10gev/simulation": 60.0, "gamma_50gev/simulation": 120.0}
     graph = task_graph(study(spec, [trial(0, stage_seconds=times)]))
     simulation = graph.node("stack:gamma_10gev|stage:simulation")
-    assert dict(simulation.seconds or {}) == {0: 90.0}
-    assert "median 1.5 min per sample · 1 trials" in pipeline_graph(
+    assert dict(simulation.seconds or {}) == {(0,): 90.0}
+    assert "median 1.5 min per sample · ran in 1 trial" in pipeline_graph(
         study(spec, [trial(0, stage_seconds=times)])
     )
+    # a sample alike reused the other's output in trial 1: the mean is over the one that ran
+    reused = [
+        trial(0, stage_seconds=times),
+        trial(1, stage_seconds={"gamma_10gev/simulation": 30.0}),
+    ]
+    simulation = task_graph(study(spec, reused)).node("stack:gamma_10gev|stage:simulation")
+    assert dict(simulation.seconds or {}) == {(0,): 90.0, (1,): 30.0}
+
+
+def test_a_nested_study_counts_every_run_of_a_stage_at_every_level() -> None:
+    spec = parse_problem(example())
+    label = "gamma_50gev/simulation"
+    inner = study(spec, [trial(0, stage_seconds={label: 30.0}), trial(1)])  # 1 reused it
+    top = study(
+        spec,
+        [trial(0, stage_seconds={label: 90.0}, inner=inner), trial(1, stage_seconds={label: 60.0})],
+    )
+    simulation = task_graph(top).node(label)
+    assert dict(simulation.seconds or {}) == {(0,): 90.0, (0, 0): 30.0, (1,): 60.0}
+    assert "median 1 min · ran 3 times" in pipeline_graph(top)
 
 
 def test_a_stage_run_by_another_has_no_time_of_its_own() -> None:

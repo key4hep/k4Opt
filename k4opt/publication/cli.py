@@ -106,6 +106,12 @@ def cmd_publish(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         include_large=args.include_large,
     )
     _list(found, args.output, out, style)
+    if any(finding.snapshot for finding in found.findings):
+        print(
+            style.red("nothing was published: a study is published as it is, so this one is not"),
+            file=out,
+        )
+        return 1
     if found.findings:
         print(style.red("nothing was published: remove or --exclude those files"), file=out)
         return 1
@@ -250,6 +256,14 @@ def _list(found: Offer, where: str, out: TextIO, style: Style) -> None:
     if found.readiness is not None:
         for gap in found.readiness.public_gaps:
             _line(out, style, "warning:", style.yellow(printable(gap)))
+    for where, path in found.paths:
+        said = f"{where} holds the local path {path}; it is published"
+        _line(out, style, "warning:", style.yellow(printable(said)))
+    for withheld in found.withheld:
+        said = (
+            f"{withheld.label} looks like it holds {withheld.what}: published as a note saying so"
+        )
+        _line(out, style, "withheld", style.yellow(printable(said)))
     if found.findings:
         for finding in found.findings:
             _line(

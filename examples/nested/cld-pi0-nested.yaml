@@ -58,6 +58,7 @@ samples:
       geometry: compactFile
       cms: 240
       truthTracking: true  # the photons need no pattern recognition
+      seed: 42
 evaluators:
   - name: pfo.pi0
     version: "1"

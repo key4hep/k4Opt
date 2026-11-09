@@ -265,7 +265,8 @@ class Stage:
 
     ``type`` says what the stage does (``generation``, ``simulation``); the entry is named after
     it. A stage that runs has its executor's ``options``: the particle gun's keys for ``gun``,
-    ddsim options for ``ddsim``, which also has ``events`` (how many to simulate) and ``seed``.
+    ddsim options for ``ddsim``, which also has ``events`` (how many to simulate) and ``seed``, the
+    job's options and arguments for ``k4run``, which may have a ``seed`` of its random numbers.
     A stage given as a ``file`` (a path; a relative one is read from the problem file's
     directory) is not run: the file is its output. Which executors and options are valid is
     checked by :func:`k4opt.problem.parse_problem`. ``timeout`` is how many seconds a stage that
