@@ -25,7 +25,6 @@ Typical use::
 from k4opt.publication.artifacts import (
     BUDGET,
     NEEDS_ACCESS,
-    Finding,
     Held,
     Offer,
     Piece,
@@ -40,6 +39,7 @@ from k4opt.publication.errors import (
     PublicationError,
     PublicationUnavailableError,
 )
+from k4opt.publication.exposure import Finding, local_paths
 from k4opt.publication.read import Publication, open_publication
 from k4opt.publication.sheet import (
     PublishedArtifact,
@@ -47,7 +47,7 @@ from k4opt.publication.sheet import (
     PublishedRequirement,
     SoftwareSheet,
 )
-from k4opt.publication.write import local_paths, publish
+from k4opt.publication.write import publish
 
 __all__ = [
     "BUDGET",

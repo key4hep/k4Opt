@@ -37,7 +37,8 @@ from k4opt.program import Settable
 
 @dataclass(frozen=True, slots=True)
 class Executor:
-    """What runs a stage: whether it takes ``events`` (required) and ``seed``, what checks its
+    """What runs a stage: whether it takes ``events`` (required) and ``seed``, or a ``seed`` alone
+    (optional: k4run's, of the job's random numbers), what checks its
     own options (raising a :class:`~k4opt.program.ProgramError`) given those that parameters
     set, which it then does not have (the pending ones), how a parameter sets one of its options
     (``settable``, raising for one it cannot set) and the stage whose process runs it, if another
@@ -55,6 +56,7 @@ class Executor:
     inside: str | None = None
     asks: bool = False
     program: str | None = None
+    seed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +111,7 @@ _STAGES: Mapping[str, StageType] = {
                 settable=k4run.settable_option,
                 asks=True,
                 program="k4run",
+                seed=True,
             )
         },
         geometry=True,

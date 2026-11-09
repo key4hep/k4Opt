@@ -487,6 +487,7 @@ def _run_reconstruction(
         workdir=workdir,
         options=stage.options,
         data=_data(context, stage),
+        seed=stage.seed,
         timeout=context.timeout,
         started=context.started,
         die_with_parent=context.die_with_parent,
@@ -597,8 +598,10 @@ class DryRuns:
         ``options``, does not take its arguments; ``None`` if it does."""
         stage = replace(context.stages["reconstruction"], options=options)
         files, directory = _job(context, stage)
+        # any seed is taken alike: a replicate's derived one asks nothing new
+        seeded = stage.seed is not None
         key = json.dumps(
-            [[str(file) for file in files], str(directory), thaw(options)], sort_keys=True
+            [[str(file) for file in files], str(directory), thaw(options), seeded], sort_keys=True
         )
         if (unfound := context.unfound("k4run")) is not None:
             return unfound
@@ -613,6 +616,7 @@ class DryRuns:
                 workdir=workdir,
                 options=options,
                 data=_data(context, stage),
+                seed=stage.seed,
                 placeholder=self._scratch / "placeholder.edm4hep.root",
                 executable=context.executable("k4run"),
             )

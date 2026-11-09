@@ -80,6 +80,17 @@ def test_the_trials_of_a_study_reuse_its_one_simulation_also_after_a_resume(
     assert [t.status for t in load_study(output).trials] == ["valid"] * 5
 
 
+def test_a_stage_that_reused_an_output_ran_nothing_and_has_no_time(
+    tmp_path: Path, analysis_problem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    _optimize(analysis_problem, tmp_path / "s", 3, seed=1)
+    results = load_study(tmp_path / "s")
+    # its record says 0 s, which a median of the stage's times must not count
+    assert summary(tmp_path / "s", 1)["samples"]["gamma"]["stages"]["simulation"]["reused"]
+    assert ["gamma/simulation" in t.stage_seconds for t in results.trials] == [True, False, False]
+
+
 def test_a_study_reuses_what_another_one_it_is_given_made(
     tmp_path: Path, analysis_problem: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

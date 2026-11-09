@@ -186,6 +186,33 @@ def test_a_file_named_as_credentials_blocks() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("name", "found"),
+    [
+        (".env", True),
+        (".env.local", True),
+        (".env.production", True),
+        ("deploy/.env.prod", True),
+        (".envrc", True),  # direnv's
+        (".env.example", False),  # a template, meant to be shared: its content is scanned
+        ("deploy/.env.sample", False),
+        (".env.template", False),
+        ("env.py", False),
+    ],
+)
+def test_an_environment_file_holds_credentials_by_its_name_and_a_template_does_not(
+    name: str, found: bool
+) -> None:
+    named = "a file of credentials, by its name"
+    plain = scan([Piece("code", "o", name, b"A=1\n", (), ())])
+    patch = f"diff --git a/{name} b/{name}\n@@ -0,0 +1 @@\n+A=1\n".encode()
+    patched = scan([Piece("code", "o", "checkout.patch", patch, (), (), base="abc")])
+    for findings in (plain, patched):
+        assert (named in [finding.what for finding in findings]) is found
+    if found:  # a file a patch changes is named as such
+        assert [finding.label for finding in patched] == [f"o/{name}"]
+
+
 def test_what_passes_the_budget_is_published_only_if_asked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -825,7 +852,12 @@ def test_the_scan_sees_unquoted_and_prefixed_secrets(text: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "text", ["password = getpass()", "secret = load_the_secret_now", "api_key: ${API_KEY}"]
+    "text",
+    [
+        "password = getpass()",
+        "secret = load_the_secret_now",
+        "api_key: ${API_KEY}",
+    ],
 )
 def test_the_scan_leaves_a_secret_that_is_only_referred_to_alone(text: str) -> None:
     assert not scan([Piece("code", "o", "x", text.encode(), (), ())])
@@ -1798,3 +1830,20 @@ def test_an_environment_with_distributions_not_from_an_index_is_on_request(
     assert artifacts._access(readiness, found.release(code=True), published)[used.id] == (
         "on request"
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [  # put together here, so that no line of this file holds one
+        ('{"pass' + 'word": "correct-horse"}', True),  # a quoted name, as JSON writes it
+        ("{'api_" + "key': 'abc12345678'}", True),  # and a dict
+        ('{"api_key": "${API_KEY}"}', False),  # a variable it is read from
+        ('{"password": "~/.secrets/db"}', False),  # a file it is read from
+        ("SECRET" + '_KEY = "thisIsAnActual' + 'Secret012345"', True),  # Django's
+        ("JWT_SECRET" + "_KEY=thisIsAnActual" + "Secret012345", True),
+        ('public_key = "thisIsAnActual' + 'Secret012345"', False),  # whose words name no secret
+        ('secret_key = os.environ["SECRET_KEY"]', False),
+    ],
+)
+def test_the_scan_reads_a_name_that_is_quoted_as_one_that_is_not(text: str, found: bool) -> None:
+    assert bool(scan([Piece("code", "o", "x", text.encode(), (), ())])) is found

@@ -181,6 +181,23 @@ def _key_options(options: Mapping[str, Json]) -> str:
     return "".join([_SET_KEY, *(f"{call}\n" for call in calls)]) if calls else ""
 
 
+def _seed_options(seed: int | None) -> str:
+    """What k4opt's options file adds to give the job's random numbers ``seed``: the seeds of
+    Gaudi's random engine, of whichever type the job's ``RndmGenSvc`` names, from which Marlin
+    processors take theirs, and of k4FWCore's ``UniqueIDGenSvc``; nothing without one."""
+    if seed is None:
+        return ""
+    return (
+        "\n# the stage's seed: of Gaudi's random engine, from which Marlin processors take\n"
+        "# theirs, and of k4FWCore's UniqueIDGenSvc, from which functional algorithms derive an\n"
+        "# event's\n"
+        "from Configurables import RndmGenSvc, UniqueIDGenSvc\n"
+        "from GaudiKernel.ConfigurableDb import getConfigurable\n\n"
+        f'getConfigurable(RndmGenSvc().getProp("Engine"))("RndmGenSvc.Engine").Seeds = [{seed}]\n'
+        f"UniqueIDGenSvc().Seed = {seed}\n"
+    )
+
+
 def _dump_options(dump: Path) -> str:
     """k4opt's options file: Gaudi writes the job's resolved options to ``dump``."""
     return (
@@ -216,6 +233,7 @@ def reconstruct(
     workdir: Path,
     options: Mapping[str, Json],
     data: Mapping[str, str] | None = None,
+    seed: int | None = None,
     timeout: float | None = None,
     started: Callable[[int], None] | None = None,
     die_with_parent: bool = False,
@@ -229,14 +247,16 @@ def reconstruct(
 
     ``options`` are the stage's (:data:`~k4opt.k4run.command.EXECUTOR_KEYS` and the job's
     arguments, see :func:`~k4opt.k4run.command.k4run_arguments`); ``data`` the absolute path of
-    each argument its ``data`` names, as written there if ``None``. The job runs in ``workdir/job``,
+    each argument its ``data`` names, as written there if ``None``; ``seed`` the stage's, which the
+    job's random numbers are drawn from (its own, if ``None``). The job runs in ``workdir/job``,
     a writable copy of ``directory`` or an empty directory; ``workdir`` receives
     ``events.edm4hep.root`` and the files of :data:`LOG_FILES`. ``timeout`` limits the whole run,
     the copy of ``directory`` included: a ``k4run`` still running when it is over is killed with
     every process it started, and the run fails with its logs kept; ``started``,
     ``die_with_parent`` and ``observe`` are as for :func:`k4opt.program.run`. After the run, the
-    job's resolved options must show that it read ``compact`` and ``input_file`` and wrote the
-    output (:func:`~k4opt.k4run.verify`). Raises :class:`K4runError` for unsupported options,
+    job's resolved options must show that it read ``compact`` and ``input_file``, wrote the
+    output and took ``seed`` (:func:`~k4opt.k4run.verify`). Raises :class:`K4runError` for
+    unsupported options,
     a ``timeout`` that is not a positive number of seconds, or an existing ``workdir``.
     """
     check_options(options)
@@ -274,7 +294,9 @@ def reconstruct(
     began = time.monotonic()
     try:
         job = _stage(workdir, directory)
-        paths["options"].write_text(_dump_options(paths["joboptions"]) + _key_options(options))
+        paths["options"].write_text(
+            _dump_options(paths["joboptions"]) + _seed_options(seed) + _key_options(options)
+        )
     except OSError as exc:
         return made((), None, f"cannot prepare the reconstruction in {workdir}: {exc}")
     remaining = None if timeout is None else timeout - (time.monotonic() - began)
@@ -324,6 +346,7 @@ def reconstruct(
                 geometry=geometry,
                 input_argument=input_argument,
                 keys=map_keys(options),
+                seed=seed,
             )
         if error is None and not output.is_file():
             error = f"k4run finished but wrote no {output.name} (logs in {workdir})"
@@ -338,6 +361,7 @@ def dry_run(
     workdir: Path,
     options: Mapping[str, Json],
     data: Mapping[str, str] | None = None,
+    seed: int | None = None,
     placeholder: Path | None = None,
     timeout: float = DRY_RUN_TIMEOUT,
     executable: Path | None = None,
@@ -347,9 +371,9 @@ def dry_run(
     directory ``workdir``, on the geometry ``compact`` and the input ``placeholder``
     (``workdir/placeholder.edm4hep.root`` if ``None``), an EDM4hep file of one empty event that
     the job writes first unless it exists: dry runs that share one write it once. The job's
-    options files run, a key of a map the job does not set is refused, and every argument is
-    parsed, strictly; nothing is reconstructed. Raises :class:`K4runError` as :func:`reconstruct`
-    does."""
+    options files run, a key of a map the job does not set is refused, the job's random engine is
+    given ``seed``, and every argument is parsed, strictly; nothing is reconstructed. Raises
+    :class:`K4runError` as :func:`reconstruct` does."""
     check_options(options)
     workdir = Path(os.path.abspath(workdir))
     if placeholder is None:
@@ -358,7 +382,9 @@ def dry_run(
     try:
         job = _stage(workdir, directory)
         mine = workdir / LOG_FILES["options"]
-        mine.write_text(_placeholder_options(placeholder) + _key_options(options))
+        mine.write_text(
+            _placeholder_options(placeholder) + _seed_options(seed) + _key_options(options)
+        )
     except OSError as exc:
         return f"cannot prepare the dry run in {workdir}: {exc}"
     arguments = k4run_arguments(

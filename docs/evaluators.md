@@ -219,14 +219,18 @@ thresholds:
 | 3 | 0.70 | 0.44 | 0.26 | 0.08 |
 | 5 | 0.07 | 0.38 | 0.22 | 0.04 |
 
-With CLD's threshold 4 mm looks best; with a threshold for each cell size, 2.5 mm does. From 10 mm on
-no threshold tried resolves the pion. Comparing cell sizes at one threshold answers the wrong
-question, so the [nested example](../examples/nested/cld-pi0-nested.yaml) tunes it for each: a study
-of 12 trials of the threshold for each cell size, the best evaluated again on new events
+With CLD's threshold 4 mm looks best. With a threshold for each cell size, tuning brings 2.5 mm from
+far behind (0.16) level with the best: 0.79 against 0.72 for 4 mm, each the best of seven thresholds
+on the same 160 events, too close to tell apart. From 10 mm on no threshold tried resolves the pion.
+Comparing cell sizes at one threshold answers the wrong question, so the
+[nested example](../examples/nested/cld-pi0-nested.yaml) tunes it for each: a study of 12 trials of
+the threshold for each cell size, the best evaluated again on new events
 ([nested studies](optimization.md#nested-studies)). The threshold is a key of the `Parameters` of
 CLD's Pandora processor ([k4run](k4run.md#the-job)). The numbers above are single runs of 160
 selected events, and the best of each column is optimistic: what the example compares are the values
-on new events.
+on new events. Which cell size is best, each with its own threshold, is still open: a run of the
+example over eight cell sizes resolved 0.79 ± 0.03 at 2.5 mm on new events, but tried none between
+2.5 and 6.3 mm, where it would be decided. Deciding it takes a study of that range, with more events.
 
 ## Not done
 

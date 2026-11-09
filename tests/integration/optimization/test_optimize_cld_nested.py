@@ -36,7 +36,7 @@ EVALUATORS = (
 )
 EVENTS = 6
 TUNING = 3
-SEED = 42  # the simulation's
+SEED = 42  # the simulation's, and the reconstruction's
 PANDORA = "MyDDMarlinPandora_10ns.Parameters"
 THRESHOLD = f"{PANDORA}[ECalMipThreshold]"
 
@@ -96,6 +96,7 @@ def test_each_cell_size_is_judged_at_its_best_threshold_on_new_events(
         simulated, reconstructed = stages["simulation"], stages["reconstruction"]
         assert (summary["level"], summary["replicate"]) == (0, 1)
         assert simulated["definition"]["seed"] == replicate_seed(SEED, 1)
+        assert reconstructed["definition"]["seed"] == replicate_seed(SEED, 1)  # new random numbers
         assert simulated["events_read"] == reconstructed["events_read"] == EVENTS
         assert reconstructed["definition"][THRESHOLD] == trial.candidate["ecal_mip_threshold"]
         run = output / f"trial-{trial.number:06d}"
@@ -109,6 +110,7 @@ def test_each_cell_size_is_judged_at_its_best_threshold_on_new_events(
             assert inner.directory is not None
             stages = record(inner.directory, tuned.number)["samples"]["pi0_50gev"]["stages"]
             assert stages["simulation"]["definition"]["seed"] == SEED
+            assert stages["reconstruction"]["definition"]["seed"] == SEED
             made.append("reused" not in stages["simulation"])
             assert "reused" not in stages["reconstruction"]
         assert sum(made) == 1, made

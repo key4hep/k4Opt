@@ -259,13 +259,19 @@ class Reference:
         return {"sample": self.sample, "stage": self.stage}
 
 
+STAGE_KEYS = ("executor", "file", "events", "seed", "timeout")
+"""The keys of a stage that are k4opt's own, not options of its executor: an option of that name
+would hide the stage's own value in its definition (:meth:`Stage.to_dict`), and so is no option."""
+
+
 @dataclass(frozen=True, slots=True)
 class Stage:
     """One stage of a sample: a pipeline stage, run by an ``executor`` or given as a ``file``.
 
     ``type`` says what the stage does (``generation``, ``simulation``); the entry is named after
     it. A stage that runs has its executor's ``options``: the particle gun's keys for ``gun``,
-    ddsim options for ``ddsim``, which also has ``events`` (how many to simulate) and ``seed``.
+    ddsim options for ``ddsim``, which also has ``events`` (how many to simulate) and ``seed``, the
+    job's options and arguments for ``k4run``, which may have a ``seed`` of its random numbers.
     A stage given as a ``file`` (a path; a relative one is read from the problem file's
     directory) is not run: the file is its output. Which executors and options are valid is
     checked by :func:`k4opt.problem.parse_problem`. ``timeout`` is how many seconds a stage that
@@ -287,6 +293,12 @@ class Stage:
         # Direct construction gets the same defensive copy as parsing does.
         options = freeze(self.options, self.type)
         assert isinstance(options, Mapping)
+        clashing = [key for key in STAGE_KEYS if key in options]
+        if clashing:
+            raise ProblemConfigError(
+                f"{self.type}: {', '.join(clashing)} is a key of the stage itself, not an "
+                f"option of {self.executor}"
+            )
         object.__setattr__(self, "options", options)
 
     def to_dict(self) -> dict[str, object]:

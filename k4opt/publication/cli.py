@@ -20,6 +20,7 @@ from typing import TextIO
 
 from k4opt.optimization import load_study
 from k4opt.publication import BUDGET, Offer, Piece, PublicationError, offer, publish
+from k4opt.publication.exposure import said_of_path, said_of_withheld
 from k4opt.terminal import Style, color, is_tty, printable
 
 _LABEL = 12  # the column of what a line says, after its label
@@ -106,6 +107,12 @@ def cmd_publish(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         include_large=args.include_large,
     )
     _list(found, args.output, out, style)
+    if any(finding.snapshot for finding in found.findings):
+        print(
+            style.red("nothing was published: a study is published as it is, so this one is not"),
+            file=out,
+        )
+        return 1
     if found.findings:
         print(style.red("nothing was published: remove or --exclude those files"), file=out)
         return 1
@@ -250,6 +257,10 @@ def _list(found: Offer, where: str, out: TextIO, style: Style) -> None:
     if found.readiness is not None:
         for gap in found.readiness.public_gaps:
             _line(out, style, "warning:", style.yellow(printable(gap)))
+    for where, path in found.paths:
+        _line(out, style, "warning:", style.yellow(printable(said_of_path(where, path))))
+    for withheld in found.withheld:
+        _line(out, style, "withheld", style.yellow(printable(said_of_withheld(withheld))))
     if found.findings:
         for finding in found.findings:
             _line(

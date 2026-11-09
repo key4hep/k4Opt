@@ -25,6 +25,7 @@ from k4opt.problem.candidate import check_fixed, replicate_seed
 from k4opt.problem.models import ProblemSpec
 from k4opt.problem.names import Names, names
 from k4opt.problem.plan import Kind, level_costs, level_plan
+from k4opt.problem.stages import executors
 from k4opt.terminal import Style, printable
 
 
@@ -96,6 +97,26 @@ def _resimulated(spec: ProblemSpec, called: Names) -> list[str]:
     return warnings
 
 
+def _unseeded(spec: ProblemSpec, called: Names) -> list[str]:
+    """A warning for each stage of a nested problem that could take a seed and has none (a
+    reconstruction): the best of an inner study is evaluated again on new events, on which it
+    draws, event by event, the random numbers it drew before."""
+    if not spec.depth:
+        return []
+    warnings = []
+    for name, sample in spec.samples.items():
+        for stage_name, stage in sample.stages.items():
+            if stage.executor is None or stage.seed is not None:
+                continue
+            if executors(stage_name)[stage.executor].seed:
+                warnings.append(
+                    f"the {stage_name} of {called.sample(name)} has no seed: on the new events "
+                    "it draws the random numbers of the old, event by event (smearing, overlay); "
+                    f"give it one (samples.{name}.{stage_name}.seed)"
+                )
+    return warnings
+
+
 def outline(
     spec: ProblemSpec, trials: int, fixed: Mapping[str, Scalar] | None = None
 ) -> tuple[list[str], list[str]]:
@@ -122,7 +143,7 @@ def outline(
         costs[task.name] += count
     counted = " · ".join(f"{name} {count}" for name, count in costs.items())
     lines.append(f"at most, if every stage succeeds: {counted}")
-    return lines, _resimulated(spec, called)
+    return lines, [*_resimulated(spec, called), *_unseeded(spec, called)]
 
 
 def render_outline(

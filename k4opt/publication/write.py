@@ -1,7 +1,8 @@
 """Publishing a study: its snapshot and what its author approved first, then its catalog entry.
 
 :func:`publish` writes the JSON form of a study that :func:`~k4opt.optimization.load_study` has
-read and checked into a publication directory: the snapshot, under the name its content gives,
+read and checked into a publication directory: the snapshot
+(:func:`~k4opt.publication.exposure.public_snapshot`), under the name its content gives,
 written whole and never over another file, the files its author approved
 (:class:`~k4opt.publication.Release`), its software sheet, then the study's entry in
 ``catalog.json``, replaced whole under ``.catalog.lock``. A reader of the directory sees the catalog
@@ -13,9 +14,9 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
-import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,15 +35,10 @@ from k4opt.publication.catalog import (
     snapshot_path,
 )
 from k4opt.publication.errors import PublicationError
+from k4opt.publication.exposure import exposed, public_snapshot, said_of_path, said_of_withheld
 from k4opt.publication.sheet import PublishedArtifact, SoftwareSheet
 
 LOCK_NAME = ".catalog.lock"
-PUBLIC_PREFIXES = ("/cvmfs/",)
-"""Absolute paths that are public by nature, which :func:`local_paths` does not report."""
-
-# an absolute path in text: a / that starts the text or follows a space, a quote, = or (, then
-# what a path holds; "1/mm", "GeV/c" and "${K4GEO}/x" are no absolute paths
-_ABSOLUTE = re.compile(r"(?:^|(?<=[\s\"'=(]))/[\w.+-][^\s\"',;)]*")
 
 
 def publish(
@@ -54,14 +50,18 @@ def publish(
 ) -> CatalogEntry:
     """Publish ``results`` in the publication directory ``root``; its catalog entry.
 
-    ``root`` is made if it does not exist, and must not be inside the study directory. ``warn``
-    is told, before anything is written, of each absolute path (outside ``/cvmfs``) that the
-    snapshot carries in the problem's definition or a trial's message (:func:`local_paths`):
-    what of the machine it was made on leaves with it. ``release`` is what its author approved of
-    an :func:`~k4opt.publication.offer` of this study; without one, nothing but the snapshot and the
-    software sheet is published. Publishing the same state of a study again checks what a rerun
-    needs again and adds no snapshot: its software sheet says when it was last checked. Raises
-    :class:`PublicationError` if the catalog is malformed, another publication holds its lock, or
+    ``root`` is made if it does not exist, and must not be inside the study directory.
+    ``release`` is what its author approved of an :func:`~k4opt.publication.offer` of this study,
+    which lists what the author reviews: what looks like a secret (which blocks it), the messages
+    withheld and the local paths the snapshot carries. Without one, nothing but the snapshot and the
+    software sheet is published, as an offer made now allows, and ``warn`` is told, before anything
+    is written, of what such an offer lists: each local path the snapshot carries and each message
+    withheld. With a release, its offer said so to the author, and is not said again. ``warn`` is
+    always told of what an earlier publication made public and stays so. Publishing the same state
+    of a study again checks what a
+    rerun needs again and adds no snapshot: its software sheet says when it was last checked. Raises
+    :class:`PublicationError` if what would be published looks like it holds a secret (the
+    software sheet included), the catalog is malformed, another publication holds its lock, or
     the catalog's entry of this study is further along (more
     trials, or more of them ended): a publisher that read the study earlier never takes it back
     to that state.
@@ -75,10 +75,8 @@ def publish(
             f"{directory} is in the study directory {study}; publishing adds nothing to a study, "
             "so publish somewhere else"
         )
-    for where, path in local_paths(results):
-        (warn or (lambda message: None))(f"{where} holds the local path {path}; it is published")
-    text = results.to_json()
-    data = text.encode()
+    public = public_snapshot(results)
+    data = public.data
     if len(data) > MAX_SNAPSHOT_BYTES:  # a reader refuses it: none is written
         raise PublicationError(
             f"the snapshot of study {results.name} would be {len(data)} bytes, more than the "
@@ -96,6 +94,11 @@ def publish(
             f"study {results.name} is in another state than when this release was made: review "
             "what it offers again"
         )
+    if release is None:  # no offer was reviewed: what one lists is told
+        for where, path in public.paths:
+            (warn or (lambda message: None))(said_of_path(where, path))
+        for withheld in public.withheld:
+            (warn or (lambda message: None))(said_of_withheld(withheld))
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -215,6 +218,12 @@ def _sheet(
             "taken back"
         )
     text = public_form(results, release, snapshot, first, [*artifacts, *kept], earlier).to_json()
+    found = exposed(json.loads(text), "the software sheet's")
+    if found:
+        raise PublicationError(
+            f"the software sheet of study {results.name} would hold what looks like "
+            f"{found[0].what} ({found[0].label}); nothing was published"
+        )
     data = text.encode()
     if len(data) > MAX_SHEET_BYTES:  # a reader refuses it: none is written
         raise PublicationError(
@@ -223,35 +232,6 @@ def _sheet(
         )
     digest = hashlib.sha256(data).hexdigest()
     return Snapshot(sheet_path(results.id, digest), digest, len(data)), data
-
-
-def local_paths(results: StudyResults) -> list[tuple[str, str]]:
-    """Each absolute path, outside :data:`PUBLIC_PREFIXES`, that the JSON form of ``results``
-    carries where a person writes text: in the problem's definition (a stage's ``file``, an
-    evaluator setting) and in the trials' messages and diagnostics, with where it is."""
-    found: list[tuple[str, str]] = []
-
-    def scan(value: object, where: str) -> None:
-        if isinstance(value, str):
-            found.extend(
-                (where, path)
-                for path in _ABSOLUTE.findall(value)
-                if not path.startswith(PUBLIC_PREFIXES)
-            )
-        elif isinstance(value, Mapping):
-            for key, item in value.items():
-                scan(key, where)
-                scan(item, f"{where}.{key}")
-        elif isinstance(value, (list, tuple)):
-            for index, item in enumerate(value):
-                scan(item, f"{where}[{index}]")
-
-    scan(results.problem.to_dict(), "the problem's definition")
-    for trial in results.trials:
-        scan(trial.message, f"trial {trial.number}'s message")
-        for diagnostic in trial.diagnostics:
-            scan(diagnostic["message"], f"trial {trial.number}'s diagnostic {diagnostic['task']}")
-    return found
 
 
 def _write_once(path: Path, data: bytes, written: list[Path] | None = None) -> None:

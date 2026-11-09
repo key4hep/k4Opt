@@ -15,7 +15,8 @@ import yaml
 from k4opt.evaluation import EvaluationContractError, edm4hep
 from k4opt.execution import EvaluationSession, ProvenanceError, Rejected, RunError
 from k4opt.k4run import properties
-from k4opt.record import SUMMARY_NAME
+from k4opt.problem.candidate import replicate_seed
+from k4opt.record import SUMMARY_NAME, Assessment
 from tests.support import simulation, stack
 from tests.support.evaluators import implementations, reco_cells
 from tests.support.simulation import COLLECTION, events_with
@@ -112,6 +113,25 @@ def test_the_reconstruction_runs_on_the_candidate_s_geometry_and_simulation(
     assert programs["ddsim"]["path"] == simulation.DDSIM
     (metric,) = summary["metrics"]
     assert metric["label"] == "gamma/test.reco_cells/reconstruction/ecal_barrel.mean_hit_cells"
+
+
+def test_a_seeded_reconstruction_draws_new_random_numbers_for_a_replicate(
+    tmp_path: Path, reco_file: Path, fake: simulation.FakeDdsim
+) -> None:
+    doc = yaml.safe_load(reco_file.read_text())
+    doc["samples"]["gamma"]["reconstruction"]["seed"] = 7
+    reco_file.write_text(yaml.safe_dump(doc))
+    with EvaluationSession.open(reco_file, [reco_cells()]) as session:
+        for name, replicate in (("a", 0), ("b", 1)):
+            outcome = session.evaluate({RADIUS: 450.0}, tmp_path / name, replicate=replicate)
+            assert outcome.candidate.status == "valid"
+            Assessment.from_summary(session.spec, outcome.summary)  # its seed checked
+    for name, seed in (("a", 7), ("b", replicate_seed(7, 1))):
+        stage = tmp_path / name / "samples" / "gamma" / "reconstruction"
+        assert f"UniqueIDGenSvc().Seed = {seed}" in (stage / "k4opt.opts.py").read_text()
+        assert properties((stage / "joboptions.txt").read_text())["UniqueIDGenSvc.Seed"] == seed
+        record = json.loads((tmp_path / name / SUMMARY_NAME).read_text())
+        assert record["samples"]["gamma"]["stages"]["reconstruction"]["definition"]["seed"] == seed
 
 
 def test_the_session_identifies_every_file_of_the_job_s_directory(

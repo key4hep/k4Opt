@@ -356,8 +356,8 @@ def task_trials(results: StudyResults, node: GraphNode) -> list[Row]:
         if trial.record is None:
             continue
         row: Row = {"Trial": trial.number, "Outcome": trial.outcome}
-        if node.seconds:
-            row["Time [s]"] = node.seconds.get(trial.number)
+        if node.seconds:  # the trial's own run, not those of the study it stands for
+            row["Time [s]"] = node.seconds.get((trial.number,))
         if not node.required:
             ended = next((d for d in trial.diagnostics if d.get("task") == node.id), None)
             row["Did not succeed"] = None if ended is None else ended.get("status")

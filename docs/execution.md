@@ -38,7 +38,8 @@ and the record lists it under `supplied`. Only a record with `supplied: []` is d
 problem, the candidate and the identified files alone, which is why a study supplies none.
 
 `--replicate N` evaluates the candidate on other events: every seed of the problem (each ddsim
-stage's `seed`) is replaced by one derived from it and `N` (`k4opt.problem.candidate.replicate_seed`:
+stage's `seed`, and each reconstruction's, which seeds its random numbers:
+[k4run](k4run.md#random-numbers)) is replaced by one derived from it and `N` (`k4opt.problem.candidate.replicate_seed`:
 the same on every machine; `N = 0`, the default, keeps the problem's seeds). `N` runs from 0 to
 2³¹ − 1, and no two replicates of a seed share their seed (`seed + N·K` modulo 2³¹, `K` odd). The record holds
 `replicate: N`, and its stages the seeds they ran with, which a reader checks against `N`. Only a
@@ -46,7 +47,9 @@ problem whose samples make their events from their seeds has replicates: a sampl
 generation or simulation is given as a `file` (a HepMC file, say) would see the same collisions
 again with another seed, so it is refused, as is a replicate with `--input` and one of a problem
 that makes no events from a seed (one that measures the geometry alone). The stages of two
-replicates never reuse each other's outputs (their seeds differ); those of one replicate do.
+replicates never reuse each other's outputs (their seeds differ); those of one replicate do. A
+reconstruction without a `seed` reconstructs the new events with the random numbers it drew for the
+old, event by event.
 
 `--dry-run`, instead of `--output`, checks the candidate as an evaluation checks it before it
 simulates (its values, the options of every stage it runs and its files, every evaluator's

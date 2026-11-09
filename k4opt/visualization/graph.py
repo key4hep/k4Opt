@@ -70,8 +70,10 @@ class GraphNode:
     is in every sample alike (``stage:simulation``, ``evaluator:calo.photon``), ``samples`` the
     samples a node of a stack stands for (empty for any other). ``required`` is ``False`` for a
     diagnostic, ``given`` ``True`` for a stage given as a file. Of a study, ``seconds`` holds the
-    recorded times of a stage, by trial number (of a stack, each trial's mean over its samples),
-    and ``failed`` the numbers of the trials a diagnostic did not succeed in. ``loop`` is, of a
+    recorded time of each run of a stage, by the trial it ran for: ``(3,)`` for trial 3 and, at
+    every level below of a nested study, ``(3, 12)`` for trial 12 of the study trial 3 stands for
+    (of a stack, each trial's mean over its samples); a stage that reused an output did not run.
+    ``failed`` holds the numbers of the trials a diagnostic did not succeed in. ``loop`` is, of a
     study with levels below its own, the innermost level whose trials it runs once for: the deepest
     level whose searched parameters reach it (a parameter: its own level), ``None`` outside every
     loop.
@@ -86,7 +88,7 @@ class GraphNode:
     group: str | None = None
     required: bool = True
     given: bool = False
-    seconds: Mapping[int, float] | None = None
+    seconds: Mapping[tuple[int, ...], float] | None = None
     failed: tuple[int, ...] = ()
     samples: tuple[str, ...] = ()
     loop: int | None = None
@@ -171,11 +173,9 @@ def task_graph(
     level = 0 if results is None else results.scope.level
     fixed = {} if results is None else results.scope.fixed
     plan = level_plan(spec, level)
-    times: dict[str, dict[int, float]] = {}
-    failures: dict[str, list[int]] = {}
+    times = {} if results is None else _times(results)
+    failures: dict[str, list[int]] = {}  # a level below runs no diagnostic
     for trial in results.trials if results is not None else ():
-        for label, seconds in trial.stage_seconds.items():
-            times.setdefault(label, {})[trial.number] = seconds
         for label in dict.fromkeys(str(entry["task"]) for entry in trial.diagnostics):
             failures.setdefault(label, []).append(trial.number)
     called = names(spec)
@@ -229,6 +229,23 @@ def task_graph(
         )
     graph = TaskGraph(tuple(nodes), tuple(edges), samples, recorded, loops)
     return _stacked(graph, expanded) if stack else graph
+
+
+def _times(
+    results: StudyResults, above: tuple[int, ...] = ()
+) -> dict[str, dict[tuple[int, ...], float]]:
+    """The recorded time of each run of each stage of ``results``, by its label and the trial it ran
+    for, at every level (:attr:`GraphNode.seconds`): a nested study runs its stages for its inner
+    studies' trials too, which its own records do not say."""
+    times: dict[str, dict[tuple[int, ...], float]] = {}
+    for trial in results.trials:
+        at = (*above, trial.number)
+        for label, seconds in trial.stage_seconds.items():
+            times.setdefault(label, {})[at] = seconds
+        if trial.inner is not None:
+            for label, runs in _times(trial.inner, at).items():
+                times.setdefault(label, {}).update(runs)
+    return times
 
 
 def _parameter(parameter: Parameter, called: Names, value: Scalar | None = None) -> GraphNode:
@@ -390,7 +407,7 @@ def _task(
     task: Task,
     sets: Sequence[tuple[str, str]],
     called: Names,
-    seconds: Mapping[int, float] | None,
+    seconds: Mapping[tuple[int, ...], float] | None,
     failures: Mapping[str, list[int]],
 ) -> GraphNode:
     """One task: what it is, how it is made and what parameters set of it (``sets``: what, and
@@ -594,14 +611,20 @@ def _short(value: Json) -> str:
 
 
 def status_lines(node: GraphNode, recorded: int) -> list[str]:
-    """What a study says of ``node``: the median time of its stage and in how many trials it did
-    not succeed as a diagnostic, as lines a figure shows under its details."""
+    """What a study says of ``node``: the median time of its stage and how often it ran, at every
+    level of a nested study, and in how many trials it did not succeed as a diagnostic, as lines a
+    figure shows under its details."""
     lines = []
     median = node.median_seconds
     if median is not None:
         assert node.seconds is not None
         each = " per sample" if node.samples else ""
-        lines.append(f"median {duration(median)}{each} · {len(node.seconds)} trials")
+        runs = len(node.seconds)
+        if node.samples:  # a stack: the trials any of its samples ran it in
+            ran = f"ran in {runs} trial" if runs == 1 else f"ran in {runs} trials"
+        else:
+            ran = "ran once" if runs == 1 else f"ran {runs} times"
+        lines.append(f"median {duration(median)}{each} · {ran}")
     if node.failed:
         lines.append(f"⚠ did not succeed in {len(node.failed)} of {recorded} trials")
     return lines
@@ -689,14 +712,16 @@ def _merge(
     node: GraphNode, group: Sequence[GraphNode], key: str, members: Sequence[str]
 ) -> GraphNode:
     """One node of a stack standing for ``group``, the node of each of its samples: the details
-    they share, each trial's mean time and every trial one of them did not succeed in."""
+    they share, each trial's mean time over the samples whose stage ran in it (another may have
+    reused an output) and every trial one of them did not succeed in."""
     details = tuple(d for d in node.details if all(d in other.details for other in group))
     kept = [(name, value) for name, value in node.facts if name not in ("task", "directory")]
     facts = (("samples", ", ".join(members)), *kept)
-    seconds = None
-    if all(member.seconds for member in group):
-        trials = set.intersection(*(set(member.seconds or {}) for member in group))
-        seconds = {t: statistics.fmean((m.seconds or {})[t] for m in group) for t in sorted(trials)}
+    ran = [member.seconds for member in group if member.seconds]
+    seconds = {
+        trial: statistics.fmean(times[trial] for times in ran if trial in times)
+        for trial in sorted({trial for times in ran for trial in times})
+    }
     failed = tuple(sorted({number for member in group for number in member.failed}))
     measured = node.kind in _MEASURED
     if measured:
@@ -780,7 +805,7 @@ def collapsed(graph: TaskGraph, keys: Collection[str]) -> TaskGraph:
         key = target.removeprefix(COLLAPSED)
         box = folded[key]
         members = [n for n in graph.nodes if into.get(n.id) == target]
-        seconds: dict[int, float] = {}
+        seconds: dict[tuple[int, ...], float] = {}
         for member in members:
             for number, each in (member.seconds or {}).items():
                 seconds[number] = seconds.get(number, 0.0) + each

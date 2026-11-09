@@ -3,8 +3,9 @@
 geometry, the input and the output k4opt gave it.
 
 Each line of the dump is ``<component>.<property> = <value>;``, the value written as Python
-writes it (``[ '/path/CLD_o2_v09.xml' ]``, ``'events.edm4hep.root'``, ``-1``). Pure: the text is
-read by the caller.
+writes it (``[ '/path/CLD_o2_v09.xml' ]``, ``'events.edm4hep.root'``, ``-1``), followed by
+``// unused`` for a property that no component of the job read (``UniqueIDGenSvc.Seed`` of a job
+that draws no random numbers through it). Pure: the text is read by the caller.
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-_LINE = re.compile(r"(?P<key>[^\s=]+)\s*=\s*(?P<value>.*?);?\s*")
+# a comment after the value has no quote, so the // of a URL in a text is never one
+_LINE = re.compile(r"(?P<key>[^\s=]+)\s*=\s*(?P<value>.*?);?(?:\s*//\s[^'\"]*)?\s*")
 
 
 def properties(text: str) -> dict[str, object]:
@@ -64,11 +66,13 @@ def verify(
     geometry: str | None = None,
     input_argument: str | None = None,
     keys: Mapping[tuple[str, str], Sequence[str]] | None = None,
+    seed: int | None = None,
 ) -> str | None:
     """Why the job whose resolved options are ``text`` did not read the candidate's geometry
     ``compact`` (``GeoSvc.detectors``), the events ``input_file`` (``IOSvc.Input``), write
-    ``output`` (``IOSvc.Output``) or hold what ``keys`` sets each key of a map property to
-    (:func:`~k4opt.k4run.command.map_keys`); ``None`` if it did. ``geometry`` and
+    ``output`` (``IOSvc.Output``), hold what ``keys`` sets each key of a map property to
+    (:func:`~k4opt.k4run.command.map_keys`) or draw its random numbers from ``seed``
+    (``RndmGenSvc.Engine.Seeds`` and ``UniqueIDGenSvc.Seed``); ``None`` if it did. ``geometry`` and
     ``input_argument`` name the job's own arguments k4opt gave them to, for the message."""
     found = properties(text)
     problems = []
@@ -100,6 +104,11 @@ def verify(
         value = held.get(key) if isinstance(held, dict) else None
         if value is None or _texts(value) != list(values):
             problems.append(f"{name}[{key}] is {_shown(value)}, not {list(values)!r}")
+    if seed is not None:
+        for name, expected in (("RndmGenSvc.Engine.Seeds", [seed]), ("UniqueIDGenSvc.Seed", seed)):
+            held = found.get(name)
+            if (list(held) if isinstance(held, (list, tuple)) else held) != expected:
+                problems.append(f"{name} is {_shown(held)}, not the stage's seed {expected!r}")
     if not problems:
         return None
     return "the job did not run on what k4opt gave it: " + "; ".join(problems)
