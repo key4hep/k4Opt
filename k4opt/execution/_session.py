@@ -195,7 +195,7 @@ class Evaluations:
 
 def _study_inputs(
     runs: Iterable[Path], local: Sequence[Local]
-) -> tuple[dict[str, Json], dict[str, str], set[str]]:
+) -> tuple[dict[str, Json], set[tuple[str, str]], set[str]]:
     """The undeclared inputs the records in ``runs`` read, by path, each as it is now, the paths
     their stages looked for in vain outside the stack and the software (``local``), with how
     (:meth:`~k4opt.software.Footprint.looked`), and the paths they made. Raises
@@ -204,7 +204,7 @@ def _study_inputs(
     study made it (its footprint): a resume must not add trials made from other inputs."""
     held: dict[str, tuple[str, str]] = {}
     looked: list[tuple[str, list[str]]] = []  # what each stage would find now, by it
-    unfound: dict[str, str] = {}  # what the stages looked for in vain outside the stack
+    unfound: set[tuple[str, str]] = set()  # what the stages looked for in vain, and how
     made: set[str] = set()
     checked: set[Path] = set()  # a footprint many trials reused is read once
     for run in runs:

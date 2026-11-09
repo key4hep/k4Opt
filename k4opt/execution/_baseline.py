@@ -101,8 +101,8 @@ class Baseline:
         self._variables = compared_variables()
         # what each undeclared input the records name was, by its path
         self._inputs: dict[str, Json] = {}
-        # what their stages looked for in vain (path: how), and what the study's stages made
-        self._looked: dict[str, str] = {}
+        # what their stages looked for in vain (path and how), and what the study's stages made
+        self._looked: set[tuple[str, str]] = set()
         self._made: set[str] = set()
 
     @property
@@ -287,9 +287,9 @@ class Baseline:
             )
         self.check_looked(self._looked, made)
 
-    def check_looked(self, looked: Mapping[str, str], made: Collection[str] = ()) -> None:
+    def check_looked(self, looked: Iterable[tuple[str, str]], made: Collection[str] = ()) -> None:
         """Raise :class:`ProvenanceError` if a stage would now find one of the paths ``looked`` for
-        in vain (path: how, :meth:`k4opt.software.Footprint.looked`) that neither a stage of the
+        in vain (path and how, :meth:`k4opt.software.Footprint.looked`) that neither a stage of the
         study (:meth:`remember_looked`) nor one in ``made`` made: a candidate evaluated now would
         not be evaluated as the one that looked for it."""
         appeared = [p for p in findable(looked) if p not in self._made and p not in made]
@@ -299,10 +299,11 @@ class Baseline:
                 "find, can be found now; the candidates of a session read the same files"
             )
 
-    def remember_looked(self, looked: Mapping[str, str], made: Iterable[str]) -> None:
-        """The paths ``looked`` for in vain by a recorded candidate's stages, and those they
-        ``made``: no later candidate may find one of the first that the study did not make."""
-        self._looked |= looked
+    def remember_looked(self, looked: Iterable[tuple[str, str]], made: Iterable[str]) -> None:
+        """The paths ``looked`` for in vain by a recorded candidate's stages (path and how), and
+        those they ``made``: no later candidate may find one of the first that the study did not
+        make, however it failed to."""
+        self._looked.update(looked)
         self._made.update(made)
 
     def check_observed(self, inputs: Mapping[str, Json]) -> None:

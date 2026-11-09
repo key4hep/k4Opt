@@ -92,13 +92,14 @@ def observed_inputs(results: Iterable[TaskResult]) -> dict[str, Json]:
 
 def looked_for(
     results: Iterable[TaskResult], local_entries: Sequence[Local], run_dir: Path
-) -> tuple[dict[str, str], set[str]]:
+) -> tuple[set[tuple[str, str]], set[str]]:
     """The paths the stages looked for in vain outside the stack and the software
-    (``local_entries``), with how (:meth:`k4opt.software.Footprint.looked`), and the paths they
-    made, as the footprint each depends on says: its own, kept in the run directory ``run_dir``, or
-    that of the stage whose output it reused. Raises :class:`ProvenanceError` if one is not there
-    as its stage's provenance says: what the stage looked for could not be checked."""
-    looked: dict[str, str] = {}
+    (``local_entries``), each with every way it failed (:meth:`k4opt.software.Footprint.looked`),
+    and the paths they made, as the footprint each depends on says: its own, kept in the run
+    directory ``run_dir``, or that of the stage whose output it reused. Raises
+    :class:`ProvenanceError` if one is not there as its stage's provenance says: what the stage
+    looked for could not be checked."""
+    looked: set[tuple[str, str]] = set()
     made: set[str] = set()
     for result in results:
         observed, reused = result.provenance.get("observed"), result.provenance.get(REUSED)

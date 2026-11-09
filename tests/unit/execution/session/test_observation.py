@@ -176,6 +176,29 @@ def test_a_file_a_reused_stage_looked_for_that_appears_stops_the_session(
             session.evaluate({RADIUS: 450.0}, tmp_path / "B" / "t1")
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root may write any file")
+def test_a_file_a_stage_may_read_but_was_refused_writing_stops_nothing(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a cache the stages try to append to, read-only for them all along
+    cache = tmp_path / "cache"
+    cache.write_text("{}")
+    cache.chmod(0o444)
+    stack.install(monkeypatch, **{"*": {"append": [str(cache)]}})
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+        session.evaluate({RADIUS: 460.0}, tmp_path / "b")
+    assert load(tmp_path / "b" / simulated(tmp_path / "b")["logs"]["footprint"]).denied == {
+        str(cache): ("write",)
+    }
+    cache.chmod(0o644)  # now it may write it: a later candidate would not be refused
+    with (
+        EvaluationSession.open(problem_file, [cell_count()]) as session,
+        pytest.raises(ProvenanceError, match=f"{cache}, which a/gamma/simulation looked for"),
+    ):
+        session.reuse([tmp_path], resumed=True)
+
+
 def test_a_file_that_appears_while_its_candidate_runs_leaves_it_unrecorded(
     tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
