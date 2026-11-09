@@ -241,7 +241,9 @@ code to approve, `k4opt publish` refuses. A study with a local geometry always h
 
 **The secret scan** looks through everything that would be published for private keys, access
 tokens, passwords in URLs and in assignments (`password = "..."`, `"api_key": "..."`), and files
-named like credentials: the files listed, the snapshot and the software sheet, each text as a reader
+named like credentials (`.netrc`, `id_rsa`, `*.pem`, an environment file `.env`, `.env.local` or
+`.envrc`; not a template meant to be shared, `.env.example`, whose content is scanned as any
+file's): the files listed, the snapshot and the software sheet, each text as a reader
 reads it. In the snapshot and the sheet, a value under a key whose last word names a credential
 (`db_password`, `githubToken`, `client_secret`, `api_key`) is one as well, if it is a single word of
 at least 8 characters and no path or variable (`/run/secrets/db`, `${API_KEY}`). Where it finds one

@@ -81,8 +81,12 @@ _SECRETS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
         ),
     ),
 )
+# files named as what holds credentials: an environment file (.env, .env.local, .env.production;
+# not a template meant to be shared, .env.example, whose content is scanned as any file's), direnv's
+# .envrc, a key or a certificate store
 _CREDENTIAL_NAMES = re.compile(
-    r"(?:^|/)(?:\.netrc|\.pgpass|\.htpasswd|\.env|id_(?:rsa|dsa|ecdsa|ed25519)|credentials)$"
+    r"(?:^|/)(?:\.netrc|\.pgpass|\.htpasswd|\.envrc|id_(?:rsa|dsa|ecdsa|ed25519)|credentials"
+    r"|\.env(?:\.(?!(?:example|sample|template|dist)$)[^/]+)?)$"
     r"|\.(?:pem|p12|pfx|key)$"
 )
 

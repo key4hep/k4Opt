@@ -186,6 +186,33 @@ def test_a_file_named_as_credentials_blocks() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("name", "found"),
+    [
+        (".env", True),
+        (".env.local", True),
+        (".env.production", True),
+        ("deploy/.env.prod", True),
+        (".envrc", True),  # direnv's
+        (".env.example", False),  # a template, meant to be shared: its content is scanned
+        ("deploy/.env.sample", False),
+        (".env.template", False),
+        ("env.py", False),
+    ],
+)
+def test_an_environment_file_holds_credentials_by_its_name_and_a_template_does_not(
+    name: str, found: bool
+) -> None:
+    named = "a file of credentials, by its name"
+    plain = scan([Piece("code", "o", name, b"A=1\n", (), ())])
+    patch = f"diff --git a/{name} b/{name}\n@@ -0,0 +1 @@\n+A=1\n".encode()
+    patched = scan([Piece("code", "o", "checkout.patch", patch, (), (), base="abc")])
+    for findings in (plain, patched):
+        assert (named in [finding.what for finding in findings]) is found
+    if found:  # a file a patch changes is named as such
+        assert [finding.label for finding in patched] == [f"o/{name}"]
+
+
 def test_what_passes_the_budget_is_published_only_if_asked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
