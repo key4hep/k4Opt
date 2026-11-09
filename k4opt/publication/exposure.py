@@ -3,7 +3,8 @@
 :func:`secrets_in` finds what looks like a secret in some bytes, best effort: enough to stop an
 accident, no substitute for looking. :func:`k4opt.publication.scan` looks through the files offered
 beside a snapshot with it, :func:`public_snapshot` through the snapshot, and :func:`exposed`
-through any JSON, such as a software sheet.
+through any JSON, such as a software sheet. In JSON, a value under a key that names a credential
+is one as well (``db_password: <the password>``, written in YAML), which neither text says alone.
 
 :func:`public_snapshot` is a study's snapshot as it is published: its JSON form, but that each
 message of a trial (its own, and those of its diagnostics, at every level of a nested study) that
@@ -63,7 +64,9 @@ _SECRETS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
         "a secret assigned in the open",
         re.compile(
             rb"(?i)(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)"
-            rb"\b\s*[:=]\s*(?:[\"'](?!/)[^\"'\s]{8,256}[\"']"
+            # the name may be quoted, as JSON and a dict write it; a quoted value that starts like
+            # a path or a variable (${API_KEY}) refers to one
+            rb"\b[\"']?\s*[:=]\s*(?:[\"'](?![/$~])[^\"'\s]{8,256}[\"']"
             # unquoted: what a token looks like, not a name, a call or a path
             rb"|(?=[\w+=-]{0,255}\d)[\w+=-]{8,256}(?![\w+=(.\[/-]))"
         ),
@@ -73,6 +76,16 @@ _CREDENTIAL_NAMES = re.compile(
     r"(?:^|/)(?:\.netrc|\.pgpass|\.htpasswd|\.env|id_(?:rsa|dsa|ecdsa|ed25519)|credentials)$"
     r"|\.(?:pem|p12|pfx|key)$"
 )
+
+# a key whose last word names a credential (db_password, githubToken, client-secret, api_key), and
+# what such a key's value is when it is one: a word of 8 to 256 characters, not a path or a variable
+_CREDENTIAL_KEY = re.compile(
+    r"(?:^|[_.-])(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key"
+    r"|private[_-]?key|credentials?)$"
+)
+_CREDENTIAL_VALUE = re.compile(r"(?![/$~])\S{8,256}")
+KEYED = "a secret, by the key it is under"
+"""What a value under a key that names a credential is found as (:func:`exposed`)."""
 
 WITHHELD = "[withheld by k4opt publish: it looks like it holds {what}]"
 """What a message that looks like it holds a secret is published as."""
@@ -107,18 +120,44 @@ def _texts(value: object, path: str = "") -> Iterator[tuple[str, str]]:
             yield from _texts(item, f"{path}[{index}]")
 
 
+def _entries(value: object, path: str = "") -> Iterator[tuple[str, str, object]]:
+    """Each entry of every mapping in the JSON-like ``value``: where its value is, its key and its
+    value."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            at = f"{path}.{key}" if path else str(key)
+            yield at, str(key), item
+            yield from _entries(item, at)
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            yield from _entries(item, f"{path}[{index}]")
+
+
+def _keyed(key: str, item: object) -> bool:
+    """Whether ``item`` is a credential by the ``key`` it is under: a key that names one, as its
+    last word in any case or spelling, and a value that is one (:data:`_CREDENTIAL_VALUE`)."""
+    if isinstance(item, bool) or not isinstance(item, (str, int)):
+        return False
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower()  # githubToken: github_token
+    return bool(_CREDENTIAL_KEY.search(words)) and bool(_CREDENTIAL_VALUE.fullmatch(str(item)))
+
+
 def _line(text: bytes, offset: int) -> int:
     return text.count(b"\n", 0, offset) + 1
 
 
 def _found(value: object, owner: str, snapshot: bool) -> Iterator[tuple[Finding, bytes]]:
     """What of ``value`` looks like a secret, labeled by ``owner`` and the field
-    (``the study's problem.definition.x``), with what matched."""
+    (``the study's problem.definition.x``), with what matched: in each text, and each value whose
+    key names a credential, which no text of it says alone."""
     for path, text in _texts(value):
         data = text.encode()
         for what, offset, matched in secrets_in(data):
             label = f"{owner} {path}" if path else owner
             yield Finding(label, _line(data, offset), what, snapshot), matched
+    for path, key, item in _entries(value):
+        if _keyed(key, item):
+            yield Finding(f"{owner} {path}", 1, KEYED, snapshot), str(item).encode()
 
 
 def exposed(value: object, owner: str) -> list[Finding]:

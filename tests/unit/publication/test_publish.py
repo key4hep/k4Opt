@@ -25,7 +25,7 @@ from k4opt.publication import (
     open_publication,
     publish,
 )
-from k4opt.publication.exposure import WITHHELD, public_snapshot
+from k4opt.publication.exposure import KEYED, WITHHELD, exposed, public_snapshot, secrets_in
 from tests.support.common import tree_digest
 from tests.support.evaluators import trade_off
 from tests.support.software import LABEL
@@ -294,6 +294,66 @@ def test_a_secret_in_the_study_itself_blocks_publishing_it(tmp_path: Path) -> No
     # a study read from its JSON form offers nothing beside its snapshot, which is checked alike
     form = StudyResults.from_dict(json.loads(results.to_json()))
     assert offer(form).findings == found.findings
+
+
+def test_a_credential_under_a_key_that_names_one_blocks_publishing_too(tmp_path: Path) -> None:
+    probe = evaluator_from(
+        tmp_path / "evaluators", "probe", PROBE.replace('"calibration": str', '"db_password": str')
+    )
+    plain = "correct" + "horsebattery"  # no token of any provider: only its key says what it is
+    output = study(
+        tmp_path / "s",
+        2,
+        implementations=[probe],
+        evaluators=[TRADE | {"settings": {"db_password": plain}}],
+    )
+    results = load_study(output)
+    assert plain in results.to_json() and not secrets_in(plain.encode())
+    (finding,) = offer(results).findings
+    assert (finding.what, finding.snapshot) == (KEYED, True)
+    assert finding.label.startswith("the study's problem.definition.evaluators[0].settings")
+    assert finding.label.endswith(".db_password")
+    with pytest.raises(PublicationError, match="in the study itself"):
+        publish(results, tmp_path / "pub")
+
+
+SECRET = "correct" + "horsebattery"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"password": SECRET},
+        {"db_password": SECRET},
+        {"githubToken": SECRET},
+        {"client-secret": SECRET},
+        {"auth": {"api_key": SECRET}},
+        [{"token": SECRET}],
+        {"credentials": 123456789012},
+    ],
+)
+def test_a_value_is_a_credential_by_the_key_it_is_under(value: object) -> None:
+    assert [finding.what for finding in exposed(value, "the software sheet's")] == [KEYED]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"password": "/run/secrets/db"},  # where it is, not what it is
+        {"api_key": "${API_KEY}"},
+        {"token": "short"},
+        {"token": "a sentence, no credential"},
+        {"password": True},
+        {"author": SECRET},
+        {"tokenizer": SECRET},
+        {"secret_level": SECRET},
+        {"candidate_key": SECRET},
+    ],
+)
+def test_a_key_that_names_no_credential_or_a_value_that_is_none_is_left_alone(
+    value: object,
+) -> None:
+    assert exposed(value, "the software sheet's") == []
 
 
 def test_the_messages_of_the_studies_of_a_nested_study_are_checked_too(tmp_path: Path) -> None:

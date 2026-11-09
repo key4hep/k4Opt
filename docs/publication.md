@@ -237,9 +237,12 @@ script never publishes data it does not name. Without a terminal and without `--
 code to approve, `k4opt publish` refuses. A study with a local geometry always has code to approve.
 
 **The secret scan** looks through everything that would be published for private keys, access
-tokens, passwords in URLs and in assignments, and files named like credentials: the files listed,
-the snapshot and the software sheet, each text as a reader reads it. Where it finds one decides
-what happens:
+tokens, passwords in URLs and in assignments (`password = "..."`, `"api_key": "..."`), and files
+named like credentials: the files listed, the snapshot and the software sheet, each text as a reader
+reads it. In the snapshot and the sheet, a value under a key whose last word names a credential
+(`db_password`, `githubToken`, `client_secret`, `api_key`) is one as well, if it is a single word of
+at least 8 characters and no path or variable (`/run/secrets/db`, `${API_KEY}`). Where it finds one
+decides what happens:
 
 - **in a file listed**, it **blocks** with the file and line, nothing is written, and only removing
   or `--exclude`-ing the file lifts it;

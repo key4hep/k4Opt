@@ -825,7 +825,12 @@ def test_the_scan_sees_unquoted_and_prefixed_secrets(text: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "text", ["password = getpass()", "secret = load_the_secret_now", "api_key: ${API_KEY}"]
+    "text",
+    [
+        "password = getpass()",
+        "secret = load_the_secret_now",
+        "api_key: ${API_KEY}",
+    ],
 )
 def test_the_scan_leaves_a_secret_that_is_only_referred_to_alone(text: str) -> None:
     assert not scan([Piece("code", "o", "x", text.encode(), (), ())])
@@ -1798,3 +1803,16 @@ def test_an_environment_with_distributions_not_from_an_index_is_on_request(
     assert artifacts._access(readiness, found.release(code=True), published)[used.id] == (
         "on request"
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [  # put together here, so that no line of this file holds one
+        ('{"pass' + 'word": "correct-horse"}', True),  # a quoted name, as JSON writes it
+        ("{'api_" + "key': 'abc12345678'}", True),  # and a dict
+        ('{"api_key": "${API_KEY}"}', False),  # a variable it is read from
+        ('{"password": "~/.secrets/db"}', False),  # a file it is read from
+    ],
+)
+def test_the_scan_reads_a_name_that_is_quoted_as_one_that_is_not(text: str, found: bool) -> None:
+    assert bool(scan([Piece("code", "o", "x", text.encode(), (), ())])) is found
