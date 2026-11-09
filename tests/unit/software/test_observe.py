@@ -15,9 +15,15 @@ import pytest
 from k4opt import program
 from k4opt.software import Footprint, Local, SoftwareError
 from k4opt.software.observe import (
+    EXECUTE,
     FOOTPRINT,
+    MISSING,
+    READ,
+    READ_WRITE,
+    WRITE,
     changed_inputs,
     covered,
+    findable,
     footprint,
     identity,
     load,
@@ -45,8 +51,10 @@ def opened(path: Path | str, flags: str = "O_RDONLY|O_CLOEXEC", cwd: str = "/wor
     return f'openat(AT_FDCWD<{cwd}>, "{path}", {flags}) = 3<{path}>'
 
 
-def failed(path: Path | str, error: str = "ENOENT (No such file or directory)") -> str:
-    return f'openat(AT_FDCWD</work>, "{path}", O_RDONLY) = -1 {error}'
+def failed(
+    path: Path | str, error: str = "ENOENT (No such file or directory)", flags: str = "O_RDONLY"
+) -> str:
+    return f'openat(AT_FDCWD</work>, "{path}", {flags}) = -1 {error}'
 
 
 def test_what_a_run_read_found_missing_and_started_is_its_footprint(tmp_path: Path) -> None:
@@ -73,7 +81,7 @@ def test_what_a_run_read_found_missing_and_started_is_its_footprint(tmp_path: Pa
     assert found.read[str(calibration)] == f"sha256:{digest}"
     assert str(found.read[str(listed)]).startswith("names:")
     assert found.missing == (str(tmp_path / "absent"),)
-    assert found.denied == (str(tmp_path / "secret"),)
+    assert found.denied == {str(tmp_path / "secret"): (READ,)}
     assert found.ran == ("/usr/bin/true",)
     assert "/usr/bin/true" in found.read  # what a program is, as any file it read
 
@@ -550,7 +558,7 @@ def test_what_could_not_be_identified_never_holds(tmp_path: Path) -> None:
 def test_a_refused_file_that_can_be_read_now_no_longer_holds(tmp_path: Path) -> None:
     file = tmp_path / "file"
     file.touch()
-    assert Footprint("files", denied=(str(file),)).changes() == [f"{file} can be read now"]
+    assert Footprint("files", denied={str(file): (READ,)}).changes() == [f"{file} can be read now"]
 
 
 def test_a_file_of_a_local_build_that_nothing_else_identifies_is_watched_as_any(
@@ -734,6 +742,9 @@ def test_a_missing_footprint_is_refused(tmp_path: Path) -> None:
         ("read", {"/a": 1}),
         ("missing", "/a"),
         ("ran", [1]),
+        ("denied", ["/a"]),
+        ("denied", {"/a": []}),
+        ("denied", {"/a": ["sideways"]}),
         ("unread", -1),
         ("unread", True),
     ],
@@ -746,7 +757,13 @@ def test_a_footprint_that_is_not_what_one_holds_is_refused(key: str, value: obje
 
 def test_a_footprint_comes_back_as_it_was_written() -> None:
     found = Footprint(
-        "files", {"/a": "sha256:a", "/b": None}, ("/c",), ("/d",), ("/e",), ("f:1",), 2
+        "files",
+        {"/a": "sha256:a", "/b": None},
+        ("/c",),
+        {"/d": (READ, EXECUTE)},
+        ("/e",),
+        ("f:1",),
+        2,
     )
     assert Footprint.from_dict(found.to_dict()) == found
 
@@ -805,6 +822,69 @@ def test_what_appeared_of_what_a_run_looked_for_is_what_a_resume_refuses(tmp_pat
     override.touch()
     cache.touch()
     assert found.appeared([], made={str(cache)}) == [str(override)]  # the study made the cache
+
+
+def test_what_a_run_looked_for_in_vain_is_found_as_it_failed(tmp_path: Path) -> None:
+    absent, refused = tmp_path / "absent", tmp_path / "refused"
+    refused.touch()
+    found = Footprint(
+        "files", missing=(str(absent), "/usr/share/absent"), denied={str(refused): (READ,)}
+    )
+    looked = found.looked([])
+    assert looked == {(str(absent), MISSING), (str(refused), READ)}
+    refused.chmod(0)
+    absent.symlink_to(tmp_path / "nowhere")  # it exists, though nothing can be read through it
+    assert findable(looked) == [str(absent)] + ([str(refused)] if os.geteuid() == 0 else [])
+    refused.chmod(0o644)
+    assert findable(looked) == [str(absent), str(refused)]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root is refused nothing")
+def test_a_refused_call_holds_while_what_it_asked_is_still_refused(tmp_path: Path) -> None:
+    # a cache it may not write, a database it may not update, a program it may not run: each can
+    # be read, which none of the calls asked for alone
+    cache, database, program = tmp_path / "cache", tmp_path / "db.sqlite", tmp_path / "tool"
+    for path in (cache, database, program):
+        path.write_text("x")
+        path.chmod(0o444)
+    denied = "EACCES (Permission denied)"
+    found = footprint(
+        traces(
+            tmp_path / "raw",
+            STARTED,
+            failed(cache, denied, "O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC"),
+            failed(database, denied, "O_RDWR|O_CLOEXEC"),
+            f'execve("{program}", ["tool"], 0x7ffc /* 1 vars */) = -1 {denied}',
+        ),
+        "files",
+        [],
+    )
+    assert found.denied == {
+        str(cache): (WRITE,),
+        str(database): (READ_WRITE,),
+        str(program): (EXECUTE,),
+    }
+    assert found.changes() == [] and findable(found.looked([])) == []
+    cache.chmod(0o644)
+    database.chmod(0o644)
+    program.chmod(0o555)
+    assert findable(found.looked([])) == sorted(map(str, (cache, database, program)))
+    assert found.changes() == [
+        f"{cache} can be written now",
+        f"{database} can be read and written now",
+        f"{program} can be run now",
+    ]
+
+
+def test_every_way_a_path_was_looked_for_in_vain_is_kept(tmp_path: Path) -> None:
+    # one stage did not find an override; it appeared, unreadable, before another was refused it
+    override = tmp_path / "override.json"
+    first = Footprint("files", missing=(str(override),))
+    second = Footprint("files", denied={str(override): (READ,)})
+    looked = first.looked([]) | second.looked([])
+    assert looked == {(str(override), MISSING), (str(override), READ)}
+    override.touch(mode=0)
+    assert findable(looked) == [str(override)]  # it exists, though it cannot be read
 
 
 def test_inputs_that_changed_are_named(tmp_path: Path) -> None:

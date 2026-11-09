@@ -13,13 +13,13 @@ constraints (:mod:`k4opt.record.assess`), its record assembled from its task res
 from __future__ import annotations
 
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from k4opt.execution._baseline import Baseline, candidate_reads, plain
+from k4opt.execution._baseline import Baseline, candidate_reads, plain, recorded_footprint
 from k4opt.execution._drive import _finish_plan, _Run
-from k4opt.execution._files import changed_files
+from k4opt.execution._files import changed_files, local
 from k4opt.execution._reuse import REUSED
 from k4opt.execution._work import candidate_externals
 from k4opt.execution.errors import ProvenanceError, RunError
@@ -30,6 +30,7 @@ from k4opt.program import TRACE
 from k4opt.record.assess import Assessment, assess
 from k4opt.record.results import CandidateRecord, TaskResult
 from k4opt.record.write import SUMMARY_NAME, assemble
+from k4opt.software import Local
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,14 +90,45 @@ def observed_inputs(results: Iterable[TaskResult]) -> dict[str, Json]:
     return {path: then for path, (then, _) in found.items()}
 
 
+def looked_for(
+    results: Iterable[TaskResult], local_entries: Sequence[Local], run_dir: Path
+) -> tuple[set[tuple[str, str]], set[str]]:
+    """The paths the stages looked for in vain outside the stack and the software
+    (``local_entries``), each with every way it failed (:meth:`k4opt.software.Footprint.looked`),
+    and the paths they made, as the footprint each depends on says: its own, kept in the run
+    directory ``run_dir``, or that of the stage whose output it reused. Raises
+    :class:`ProvenanceError` if one is not there as its stage's provenance says: what the stage
+    looked for could not be checked."""
+    looked: set[tuple[str, str]] = set()
+    made: set[str] = set()
+    for result in results:
+        observed, reused = result.provenance.get("observed"), result.provenance.get(REUSED)
+        source = reused.get("footprint") if isinstance(reused, Mapping) else None
+        if "footprint" in result.artifacts and isinstance(observed, Mapping):
+            held = observed.get("footprint")
+            at = local(result.artifacts["footprint"], run_dir)
+            sha256 = held.get("sha256") if isinstance(held, Mapping) else None
+        elif isinstance(source, Mapping):
+            at, sha256 = Path(str(source.get("path"))), source.get("sha256")
+        else:
+            continue  # not observed at the files level, or its output reused from none
+        found = recorded_footprint(
+            at, sha256, result.id.label, "the record could not say what the stage looked for"
+        )
+        looked |= found.looked(local_entries)
+        made.update(found.made)
+    return looked, made
+
+
 def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> RunOutcome:
     """The record of the candidate ``run`` of a session that evaluates with ``baseline``,
     checked and written into its run directory; ``execution`` says how its tasks ran.
 
     Nothing is published, and nothing is remembered of the candidate, if what the session
     verifies changed while it ran, a file a task made is no longer what its record says, or a
-    reference only its geometry names reads other files than for a candidate recorded meanwhile:
-    that raises :class:`ProvenanceError`."""
+    reference only its geometry names reads other files than for a candidate recorded meanwhile, or
+    a stage would now find a path one of its stages, or of a candidate recorded before, looked for
+    in vain, which no stage of the study made: that raises :class:`ProvenanceError`."""
     spec, source = baseline.spec, baseline.problem.source
     run_dir = run.workspace.root
     assert run_dir is not None
@@ -108,7 +140,8 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
     geometry = record.results[GEOMETRY]
     externals = candidate_reads(geometry)
     try:
-        baseline.verify()  # the record names what the stages and evaluators read
+        looked, made = looked_for(record.results.values(), baseline.software.local, run_dir)
+        baseline.verify(made=made)  # the record names what the stages and evaluators read
         # in plan order, what is watched of the files each task that ran made
         watched = {t.id: run.observed[t.id] for t in record.plan.tasks if t.id in run.observed}
         changed = changed_files(watched)
@@ -131,6 +164,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
         baseline.check_read(externals)
         inputs = observed_inputs(record.results.values())
         baseline.check_observed(inputs)
+        baseline.check_looked(looked, made)
     except RunError as exc:  # of the kind it is: a ProvenanceError stays one
         raise type(exc)(
             f"{exc} (while the candidate in {run_dir} ran, which has no {SUMMARY_NAME})"
@@ -159,6 +193,7 @@ def publish(run: _Run, baseline: Baseline, execution: Mapping[str, Json]) -> Run
         raise RunError(f"cannot write summary in {run_dir}: {exc}") from exc
     baseline.remember(externals)
     baseline.remember_observed(inputs)
+    baseline.remember_looked(looked, made)
     fingerprint = geometry.provenance.get("fingerprint")  # none for a geometry not made
     assert fingerprint is None or isinstance(fingerprint, str)
     return RunOutcome(record, summary, run_dir, fingerprint, assessment)

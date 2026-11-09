@@ -136,6 +136,19 @@ _UNIX = re.compile(
 )
 _SOCKET = re.compile(rb"^(?P<family>AF_INET6?)\b")
 _LOADED = re.compile(rb"^\s*\d+:\s+calling init: (?P<path>.+?)\s*$")
+MISSING = "missing"
+"""How a stage failed to open a path that was not there."""
+READ, WRITE, READ_WRITE, EXECUTE = "read", "write", "read-write", "execute"
+"""How a stage was refused a path: what the call that failed asked of it."""
+_ACCESS = {
+    READ: (os.R_OK, "read"),
+    WRITE: (os.W_OK, "written"),
+    READ_WRITE: (os.R_OK | os.W_OK, "read and written"),
+    EXECUTE: (os.X_OK, "run"),
+}
+"""What :func:`os.access` asks for each way a path was refused, and what it says once granted."""
+_RDWR = re.compile(rb"\bO_RDWR\b")
+_WRONLY = re.compile(rb"\bO_WRONLY\b")
 _MISSING = (b"ENOENT", b"ENOTDIR")
 _DENIED = (b"EACCES", b"EPERM")
 _SPECIAL = "special"
@@ -205,10 +218,11 @@ class Footprint:
 
     ``level`` is how it was observed. ``read`` holds each file and directory it opened, by its
     path, with its :func:`identity`; ``missing`` each path it failed to find, ``denied`` each it was
-    refused, ``ran`` each program it started and ``connected`` what it reached outside this
-    machine's own services: each network address it connected to, each network socket it made
-    (``AF_INET socket``: a datagram needs no connection) and each other local socket it connected
-    to (``unix:<path>``), whose answers may come from anywhere.
+    refused, with what each call refused asked of it (:data:`READ`, :data:`WRITE`,
+    :data:`READ_WRITE`, :data:`EXECUTE`), ``ran`` each program it started and ``connected`` what
+    it reached outside this machine's own services: each network address it connected to, each
+    network socket it made (``AF_INET socket``: a datagram needs no connection) and each other
+    local socket it connected to (``unix:<path>``), whose answers may come from anywhere.
     ``unread`` counts the lines of its traces that could not be read, of which ``unreadable``
     holds the first few, or why it is incomplete: a footprint with any is incomplete, and so is
     one at another level than ``files``. ``made`` holds the paths it wrote or made outside what
@@ -218,7 +232,7 @@ class Footprint:
     level: Observation
     read: Mapping[str, str | None] = field(default_factory=dict)
     missing: tuple[str, ...] = ()
-    denied: tuple[str, ...] = ()
+    denied: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     ran: tuple[str, ...] = ()
     connected: tuple[str, ...] = ()
     unread: int = 0
@@ -236,7 +250,7 @@ class Footprint:
             "level": self.level,
             "read": dict(sorted(self.read.items())),
             "missing": list(self.missing),
-            "denied": list(self.denied),
+            "denied": {path: list(asked) for path, asked in sorted(self.denied.items())},
             "ran": list(self.ran),
             "connected": list(self.connected),
             "unread": self.unread,
@@ -251,30 +265,35 @@ class Footprint:
         keys |= {"unreadable", "made"}
         if not isinstance(data, Mapping) or set(data) != keys or data["schema"] != SCHEMA:
             raise SoftwareError(f"no footprint of {SCHEMA}")
-        read, unread = data["read"], data["unread"]
+        read, unread, denied = data["read"], data["unread"], data["denied"]
         if data["level"] not in ("files", "libraries") or not isinstance(read, Mapping):
             raise SoftwareError("a footprint's level or files are not what a footprint holds")
         if not all(isinstance(v, str) or v is None for v in read.values()):
             raise SoftwareError("a footprint's files are not identities by path")
-        names = ("missing", "denied", "ran", "connected", "unreadable", "made")
+        names = ("missing", "ran", "connected", "unreadable", "made")
         lists = [data[key] for key in names]
         if not all(isinstance(x, list) and all(isinstance(i, str) for i in x) for x in lists):
             raise SoftwareError("a footprint's paths are not lists of paths")
+        if not isinstance(denied, Mapping) or not all(
+            isinstance(asked, list) and asked and all(how in _ACCESS for how in asked)
+            for asked in denied.values()
+        ):
+            raise SoftwareError("a footprint's refused paths are not what each call asked")
         if isinstance(unread, bool) or not isinstance(unread, int) or unread < 0:
             raise SoftwareError(f"a footprint's unread lines are {unread!r}, no count")
-        missing, denied, ran, connected, unreadable, made = (
-            tuple(cast(list[str], x)) for x in lists
-        )
+        missing, ran, connected, unreadable, made = (tuple(cast(list[str], x)) for x in lists)
+        refused = {str(path): tuple(cast(list[str], asked)) for path, asked in denied.items()}
         return cls(
-            data["level"], dict(read), missing, denied, ran, connected, unread, unreadable, made
+            data["level"], dict(read), missing, refused, ran, connected, unread, unreadable, made
         )
 
     def changes(self, at_most: int = 3) -> list[str]:
         """What no longer holds of it, each said for a person (the first ``at_most`` found);
         empty if every file it read is the same, every directory holds the same names, nothing
-        it failed to find exists and nothing it was refused can be read now. A file that could
-        not be identified when the stage ended, or changed while it ran, does not hold: what it
-        read is not known."""
+        it failed to find exists and nothing it was refused grants now what the call asked (a
+        file refused for writing may be read: it holds while it cannot be written). A file that
+        could not be identified when the stage ended, or changed while it ran, does not hold:
+        what it read is not known."""
         found: list[str] = []
         for path, then in self.read.items():
             if then is None or then == _SPECIAL:  # a pipe gives what it is sent, each time
@@ -288,25 +307,30 @@ class Footprint:
                 found.append(f"{path} appeared")
                 if len(found) >= at_most:
                     return found
-        for path in self.denied:
-            if os.access(path, os.R_OK):
-                found.append(f"{path} can be read now")
+        for path, asked in self.denied.items():
+            granted = [_ACCESS[how][1] for how in asked if os.access(path, _ACCESS[how][0])]
+            if granted:
+                found.append(f"{path} can be {granted[0]} now")
                 if len(found) >= at_most:
                     return found
         return found
 
+    def looked(self, local: Sequence[Local]) -> set[tuple[str, str]]:
+        """The paths it looked for in vain, of those outside the stack, the system and what the
+        software identifies (:func:`covered`), each with how, once for each way it failed:
+        :data:`MISSING`, or what a call it was refused asked (:attr:`denied`). What a session and
+        a resume watch, as inputs (:func:`findable`); those of many footprints are their union."""
+        failed = {(path, MISSING) for path in self.missing}
+        failed |= {(path, how) for path, asked in self.denied.items() for how in asked}
+        return {
+            (path, how) for path, how in failed if _undeclared(path) and not covered(path, local)
+        }
+
     def appeared(self, local: Sequence[Local], made: Collection[str] = ()) -> list[str]:
-        """The paths it looked for in vain that exist now, of those outside the stack, the system
-        and what the software identifies (:func:`covered`), and but those in ``made``: what the
-        stages of a study made themselves. What a resume refuses, as an input that changed."""
-        return [
-            path
-            for path in self.missing
-            if _undeclared(path)
-            and path not in made
-            and not covered(path, local)
-            and os.path.lexists(path)
-        ]
+        """The paths it looked for in vain that a stage would find now (:meth:`looked`,
+        :func:`findable`), but those in ``made``: what the stages of a study made themselves. What a
+        resume refuses, as an input that changed."""
+        return [path for path in findable(self.looked(local)) if path not in made]
 
     def summary(self, local: Sequence[Local]) -> dict[str, Json]:
         """What a stage's record keeps of it: how it was observed (``level``), whether that is
@@ -387,7 +411,7 @@ def _roots(local: Sequence[Local]) -> dict[str, str]:
 class _Seen:
     read: dict[str, None] = field(default_factory=dict)
     missing: dict[str, None] = field(default_factory=dict)
-    denied: dict[str, None] = field(default_factory=dict)
+    denied: dict[str, dict[str, None]] = field(default_factory=dict)  # path: what each call asked
     ran: dict[str, None] = field(default_factory=dict)
     connected: dict[str, None] = field(default_factory=dict)
     written: set[str] = field(default_factory=set)
@@ -445,8 +469,9 @@ def _opened(seen: _Seen, call: bytes, args: bytes, match: re.Match[bytes]) -> No
     path = found_at
     if match["errno"] in _MISSING:
         seen.missing[path] = None
-    elif match["errno"] in _DENIED:
-        seen.denied[path] = None
+    elif match["errno"] in _DENIED:  # what the open asked decides what would let it through
+        asked = READ_WRITE if _RDWR.search(flags) else WRITE if _WRONLY.search(flags) else READ
+        seen.denied.setdefault(path, {})[asked] = None
     elif match["errno"] == b"EEXIST":  # a probe that found it there: what is there decides
         seen.read[path] = None
 
@@ -468,7 +493,7 @@ def _started(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
     elif match["errno"] in _MISSING:
         seen.missing[path] = None
     elif match["errno"] in _DENIED:
-        seen.denied[path] = None
+        seen.denied.setdefault(path, {})[EXECUTE] = None
 
 
 def _connected(seen: _Seen, args: bytes, match: re.Match[bytes]) -> None:
@@ -622,7 +647,7 @@ def footprint(
         level,
         read,
         tuple(sorted(absent)),
-        tuple(sorted(kept(seen.denied))),
+        {path: tuple(seen.denied[path]) for path in sorted(kept(seen.denied))},
         tuple(sorted(kept(seen.ran))),
         tuple(sorted(seen.connected)),
         seen.unread,
@@ -698,6 +723,19 @@ def load(path: Path) -> Footprint:
     return Footprint.from_dict(data)
 
 
+def findable(looked: Iterable[tuple[str, str]]) -> list[str]:
+    """Each of the paths ``looked`` for in vain (path and how, :meth:`Footprint.looked`) that a
+    stage would find now, in order: one that was missing exists, one that was refused grants what
+    the call asked (to read it, write it, both, or run it)."""
+    return sorted(
+        {
+            path
+            for path, how in looked
+            if (os.path.lexists(path) if how == MISSING else os.access(path, _ACCESS[how][0]))
+        }
+    )
+
+
 def changed_inputs(undeclared: Mapping[str, Json]) -> list[str]:
     """Each of ``undeclared`` (path: identity, as :meth:`Footprint.summary` keeps them) that is
     not what it was, by its path."""
@@ -705,15 +743,21 @@ def changed_inputs(undeclared: Mapping[str, Json]) -> list[str]:
 
 
 __all__ = [
+    "EXECUTE",
     "FOOTPRINT",
     "IGNORED",
+    "MISSING",
+    "READ",
+    "READ_WRITE",
     "SCHEMA",
     "SERVICES",
     "STACK",
     "SYSTEM",
+    "WRITE",
     "Footprint",
     "changed_inputs",
     "covered",
+    "findable",
     "footprint",
     "identity",
     "load",

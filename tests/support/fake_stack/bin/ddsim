@@ -10,7 +10,8 @@ What it does for a run and sample comes from the keys ``"*"``, ``"<sample>"`` an
 ``"<run>.<sample>"`` (the later ones win):
 ``await`` waits until that many simulations started, or until each file of a list exists (a path
 relative to ``dir``, or absolute); ``write`` then writes the text of each file it maps; ``read``
-reads each file of a list, if it is there; ``connect`` tries to connect to that port of this host;
+reads each file of a list, if it is there; ``append`` opens each file of a list to append to it, if
+it may; ``connect`` tries to connect to that port of this host;
 ``kill`` sends SIGKILL to ``"self"`` or to its ``"parent"`` (the worker that started it);
 ``sleep`` sleeps that many seconds; ``burn`` keeps a processor busy that many seconds of its
 time; ``allocate`` holds that many MiB for a moment; ``hits``
@@ -53,6 +54,9 @@ for name, text in told.get("write", {}).items():
 for name in told.get("read", ()):
     with contextlib.suppress(OSError):
         Path(name).read_bytes()
+for name in told.get("append", ()):
+    with contextlib.suppress(OSError), Path(name).open("a"):
+        pass
 if "connect" in told:
     with socket.socket() as connection:
         connection.connect_ex(("127.0.0.1", told["connect"]))

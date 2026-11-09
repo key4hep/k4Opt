@@ -146,6 +146,78 @@ def test_an_input_that_changes_while_a_reusing_candidate_runs_leaves_it_unrecord
     assert not (tmp_path / "b" / SUMMARY_NAME).exists()
 
 
+def test_a_file_a_recorded_stage_looked_for_that_appears_stops_the_session(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # trial a takes the defaults without an optional override; b would read it
+    override = tmp_path / "override.json"
+    stack.install(monkeypatch, **{"*": {"read": [str(override)]}})
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+        override.write_text("{}")
+        with pytest.raises(ProvenanceError, match=f"{override}, which a stage of this session"):
+            session.evaluate({RADIUS: 460.0}, tmp_path / "b")
+    assert not (tmp_path / "b" / SUMMARY_NAME).exists()
+
+
+def test_a_file_a_reused_stage_looked_for_that_appears_stops_the_session(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # study A simulates without the override; B reuses that, then the override appears
+    override = tmp_path / "override.json"
+    stack.install(monkeypatch, **{"*": {"read": [str(override)]}})
+    evaluated(problem_file, tmp_path / "A" / "t0")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path / "A"])
+        session.evaluate({RADIUS: 450.0}, tmp_path / "B" / "t0")
+        assert "reused" in simulated(tmp_path / "B" / "t0")
+        override.write_text("{}")
+        with pytest.raises(ProvenanceError, match=str(override)):
+            session.evaluate({RADIUS: 450.0}, tmp_path / "B" / "t1")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root may write any file")
+def test_a_file_a_stage_may_read_but_was_refused_writing_stops_nothing(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a cache the stages try to append to, read-only for them all along
+    cache = tmp_path / "cache"
+    cache.write_text("{}")
+    cache.chmod(0o444)
+    stack.install(monkeypatch, **{"*": {"append": [str(cache)]}})
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+        session.evaluate({RADIUS: 460.0}, tmp_path / "b")
+    assert load(tmp_path / "b" / simulated(tmp_path / "b")["logs"]["footprint"]).denied == {
+        str(cache): ("write",)
+    }
+    cache.chmod(0o644)  # now it may write it: a later candidate would not be refused
+    with (
+        EvaluationSession.open(problem_file, [cell_count()]) as session,
+        pytest.raises(ProvenanceError, match=f"{cache}, which a/gamma/simulation looked for"),
+    ):
+        session.reuse([tmp_path], resumed=True)
+
+
+def test_a_file_that_appears_while_its_candidate_runs_leaves_it_unrecorded(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    override = tmp_path / "override.json"
+
+    class Appearing(cell_count()):  # type: ignore[misc]
+        def evaluate(self, request: Any) -> Any:
+            override.write_text("{}")
+            return super().evaluate(request)
+
+    stack.install(monkeypatch, **{"*": {"read": [str(override)]}})
+    with (
+        EvaluationSession.open(problem_file, [Appearing]) as session,
+        pytest.raises(ProvenanceError, match=str(override)),
+    ):
+        session.evaluate({RADIUS: 450.0}, tmp_path / "a")
+    assert not (tmp_path / "a" / SUMMARY_NAME).exists()
+
+
 def test_a_stage_whose_input_changed_while_it_ran_fails(
     tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -352,6 +424,36 @@ def test_a_resumed_study_one_of_whose_trials_missed_a_file_that_is_there_now_is_
         pytest.raises(ProvenanceError, match=f"{override}, which a/gamma/simulation looked for"),
     ):
         session.reuse([tmp_path], resumed=True)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_a_resumed_study_one_of_whose_trials_was_refused_a_file_it_can_read_now_is_refused(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    override = tmp_path / "override.json"
+    override.write_text("{}")
+    override.chmod(0)
+    stack.install(monkeypatch, **{"*": {"read": [str(override)]}})
+    evaluated(problem_file, tmp_path / "a")
+    override.chmod(0o644)
+    with (
+        EvaluationSession.open(problem_file, [cell_count()]) as session,
+        pytest.raises(ProvenanceError, match=f"{override}, which a/gamma/simulation looked for"),
+    ):
+        session.reuse([tmp_path], resumed=True)
+
+
+def test_a_resumed_study_watches_what_its_trials_looked_for(
+    tmp_path: Path, problem_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    override = tmp_path / "override.json"
+    stack.install(monkeypatch, **{"*": {"read": [str(override)]}})
+    evaluated(problem_file, tmp_path / "a")
+    with EvaluationSession.open(problem_file, [cell_count()]) as session:
+        session.reuse([tmp_path], resumed=True)
+        override.write_text("{}")
+        with pytest.raises(ProvenanceError, match=str(override)):
+            session.evaluate({RADIUS: 460.0}, tmp_path / "b")
 
 
 def test_what_a_stage_of_the_study_made_keeps_its_resume(
