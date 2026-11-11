@@ -39,7 +39,6 @@ alone.
 from __future__ import annotations
 
 import contextlib
-import json
 import uuid
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
@@ -52,6 +51,7 @@ from optuna.storages import BaseStorage
 from optuna.trial import Trial, TrialState
 
 from k4opt.execution import WAIT, EvaluationSession, Rejected, RunOutcome, RunRequest, Wait
+from k4opt.frozen import same_json
 from k4opt.optimization._optuna import marks
 from k4opt.optimization._optuna.optimizer import (
     CONSTANT_LIAR,
@@ -325,7 +325,7 @@ class Tree:
         }
         if stored is None:
             trial.set_user_attr(marks.SELECTED, selected)
-        elif json.dumps(stored, sort_keys=True) != json.dumps(selected, sort_keys=True):
+        elif not same_json(stored, selected):
             raise OptimizationError(
                 f"trial {trial.number} selected {stored!r}, but the best trial of its inner study "
                 f"is now {selected!r}: the study changed"

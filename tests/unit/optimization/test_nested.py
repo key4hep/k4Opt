@@ -163,6 +163,47 @@ def test_the_json_form_holds_the_inner_studies_and_checks_their_links(
             StudyResults.from_dict(edited)
 
 
+def reordered(value: Any, keep: bool = False, definition: bool = False) -> Any:
+    """``value`` with the keys of each JSON object in reverse order: the same study, but for the
+    order of a problem definition's ``parameters`` and ``samples``, which the problem defines."""
+    if isinstance(value, dict):
+        return {
+            key: reordered(
+                value[key],
+                keep=definition and key in ("parameters", "samples"),
+                definition=key == "definition",
+            )
+            for key in (value if keep else reversed(value))
+        }
+    if isinstance(value, list):
+        return [reordered(item) for item in value]
+    return value
+
+
+def test_the_json_form_reads_back_whatever_the_order_of_its_keys(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulation.install(monkeypatch)
+    document = yaml.safe_load(nested.read_text())
+    document["parameters"]["r"] = {  # never x, so never rejected: a second inner value
+        "type": "continuous",
+        "bounds": [10.0, 20.0],
+        "targets": {"evaluators": {"test.candidate_check": "reject"}},
+    }
+    document["optimization"]["inner"]["parameters"] = ["x", "r"]
+    nested.write_text(yaml.safe_dump(document))
+    study = run(nested, tmp_path / "s", 1)
+    data = json.loads(study.to_json())
+    assert len(data["trials"][0]["selected"]["values"]) == 2
+    assert StudyResults.from_dict(reordered(data)).to_dict() == data
+    studies = sorted((tmp_path / "s").rglob("study.json"))  # a JSON tool may rewrite those too
+    assert len(studies) == 2  # the top study's, and its inner study's, which searches x and r
+    for study_json in studies:
+        study_json.write_text(json.dumps(reordered(json.loads(study_json.read_text()))))
+    assert load_study(tmp_path / "s").to_dict() == data
+    assert run(nested, tmp_path / "s", 2, resume=True).to_dict()["trials"][0] == data["trials"][0]
+
+
 def test_a_study_of_a_level_below_is_not_resumed_on_its_own(
     tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

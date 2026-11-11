@@ -13,13 +13,12 @@ complete candidate (:meth:`StudyScope.candidate`).
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from k4opt.evaluation import Scalar
-from k4opt.frozen import FrozenMap, Json, freeze, thaw
+from k4opt.frozen import FrozenMap, Json, freeze, same_json, thaw
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import CandidateError, Criteria, ProblemSpec
 from k4opt.problem.candidate import check_fixed
@@ -77,7 +76,10 @@ class StudyScope:
     @property
     def searched(self) -> tuple[str, ...]:
         """The parameters the optimizer proposes, in problem order."""
-        return tuple(n for n in self.spec.parameters_of(self.level) if n not in self.fixed)
+        own = self.spec.parameters_of(self.level)
+        return tuple(
+            p.name for p in self.spec.parameters if p.name in own and p.name not in self.fixed
+        )
 
     @property
     def nested(self) -> bool:
@@ -142,7 +144,7 @@ class StudyScope:
         if not isinstance(fixed, Mapping) or not (parent is None or isinstance(parent, Mapping)):
             raise OptimizationError(f"study.json records no scope k4opt reads: {recorded!r}")
         scope = cls.of(spec, fixed, level=recorded.get("level"), parent=parent)  # type: ignore[arg-type]
-        if json.dumps(thaw(recorded)) != json.dumps(scope.to_dict()):  # type and value
+        if not same_json(recorded, scope.to_dict()):
             raise OptimizationError(
                 f"study.json records the scope {thaw(recorded)!r}, but its problem makes it "
                 f"{scope.to_dict()!r}"
