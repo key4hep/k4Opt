@@ -181,12 +181,17 @@ def open_optuna(
 
 
 def study_attributes(document: Mapping[str, Any]) -> dict[str, Any]:
-    """The ``k4opt.*`` attributes of the Optuna study ``document`` describes."""
+    """The ``k4opt.*`` attributes of the Optuna study ``document`` describes: the parameters it
+    searches in problem order, which its identity holds, whatever the order of the keys of the
+    distributions it records."""
     optimizer = document["optimizer"]
+    searched = optimizer["parameters"]
     return {
         "k4opt.study": document["id"],
         "k4opt.identity": document["identity"],
-        "k4opt.parameters": list(optimizer["parameters"]),
+        "k4opt.parameters": [
+            name for name in document["problem"]["definition"]["parameters"] if name in searched
+        ],
         "k4opt.objectives": list(optimizer["objectives"]),
         "k4opt.constraints": list(optimizer["constraints"]),
     }

@@ -196,8 +196,10 @@ def test_the_json_form_reads_back_whatever_the_order_of_its_keys(
     data = json.loads(study.to_json())
     assert len(data["trials"][0]["selected"]["values"]) == 2
     assert StudyResults.from_dict(reordered(data)).to_dict() == data
-    study_json = tmp_path / "s" / "study.json"  # a JSON tool may rewrite the study's own too
-    study_json.write_text(json.dumps(reordered(json.loads(study_json.read_text()))))
+    studies = sorted((tmp_path / "s").rglob("study.json"))  # a JSON tool may rewrite those too
+    assert len(studies) == 2  # the top study's, and its inner study's, which searches x and r
+    for study_json in studies:
+        study_json.write_text(json.dumps(reordered(json.loads(study_json.read_text()))))
     assert load_study(tmp_path / "s").to_dict() == data
     assert run(nested, tmp_path / "s", 2, resume=True).to_dict()["trials"][0] == data["trials"][0]
 
