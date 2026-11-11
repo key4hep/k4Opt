@@ -9,6 +9,7 @@ state, and :func:`thaw` hands out a plain mutable copy. Each component says whic
 
 from __future__ import annotations
 
+import json
 import math
 import numbers
 from collections.abc import Callable, Iterator, Mapping
@@ -127,6 +128,23 @@ def _freeze(value: object, path: str, walk: _Walk, depth: int) -> _Frozen:
         f"{path}: unsupported value of type {type(value).__name__}; "
         "allowed: null, booleans, numbers, strings, lists and mappings with string keys"
     )
+
+
+def same_json(a: object, b: object) -> bool:
+    """Whether ``a`` and ``b``, plain or frozen, are the same JSON: type and value (``300`` is not
+    ``300.0``, nor ``1`` ``true``), whatever the order of an object's keys, which JSON leaves
+    without meaning."""
+    return _canonical(a) == _canonical(b)
+
+
+def _canonical(value: object) -> str:
+    return json.dumps(value, sort_keys=True, default=_plain)
+
+
+def _plain(value: object) -> object:
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(f"{type(value).__name__} is no JSON value")
 
 
 def thaw(value: Json) -> object:

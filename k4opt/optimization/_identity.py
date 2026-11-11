@@ -128,9 +128,9 @@ def differences(study: Mapping[str, Any], current: Mapping[str, Any]) -> list[st
             path = current["inputs"][label]["path"]
             found.append(f"{label}: {path} is not the file the study read (other bytes)")
     old_implementations, new_implementations = then["implementations"], now_["implementations"]
-    named = [(name, e["version"]) for name, e in old_implementations.items()]
-    if named != [(name, e["version"]) for name, e in new_implementations.items()]:
-        found.append(f"the evaluators are not {named}")
+    named = {name: e["version"] for name, e in old_implementations.items()}
+    if named != {name: e["version"] for name, e in new_implementations.items()}:
+        found.append(f"the evaluators are not {list(named.items())}")
     else:
         for name, old in old_implementations.items():
             new, entry = new_implementations[name], current["implementations"][name]

@@ -265,7 +265,7 @@ def check_record(
     if summary.get("represents_candidate") is not True or summary.get("supplied") != []:
         raise OptimizationError(f"{where} was not made from its candidate alone (a supplied stage)")
     implementations = summary.get("implementations")
-    if not isinstance(implementations, Mapping) or list(implementations) != list(
+    if not isinstance(implementations, Mapping) or set(implementations) != set(
         study["implementations"]
     ):
         raise OptimizationError(f"{where} does not hold the study's evaluators")

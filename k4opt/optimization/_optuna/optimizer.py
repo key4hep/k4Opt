@@ -18,6 +18,7 @@ import optuna
 from optuna.distributions import BaseDistribution, distribution_to_json
 from optuna.storages import BaseStorage
 
+from k4opt.frozen import same_json
 from k4opt.optimization._identity import (
     differences,
     digest,
@@ -110,8 +111,7 @@ def check_resume(
     one whose recorded optimizer is not the one this k4opt would run it with."""
     optimizer = document["optimizer"]
     found = differences(document, identity) + program_differences(document, identity)
-    # as JSON text: type and value, as a record's candidate is compared (300 is not 300.0)
-    if json.dumps(document.get("scope")) != json.dumps(scope.to_dict()):
+    if not same_json(document.get("scope"), scope.to_dict()):
         found.append(
             f"it searches with {document.get('scope')!r}, not {scope.to_dict()!r} (give the same "
             "--fix as when it was made)"
@@ -200,7 +200,7 @@ def check_distributions(document: Mapping[str, Any], scope: StudyScope) -> None:
         for key, distribution in search_space(scope.spec, scope.searched).items()
     }
     recorded = document["optimizer"].get("parameters")
-    if json.dumps(recorded) != json.dumps(expected):
+    if not same_json(recorded, expected):
         raise OptimizationError(
             f"{STUDY_NAME} records the distributions {recorded!r}, but its problem gives "
             f"{expected!r}"

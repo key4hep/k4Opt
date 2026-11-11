@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Literal, NoReturn
 
 from k4opt.evaluation import EvaluationContractError, Measurement, Scalar
-from k4opt.frozen import FrozenMap, Json, freeze, thaw
+from k4opt.frozen import FrozenMap, Json, freeze, same_json, thaw
 from k4opt.optimization._identity import digest
 from k4opt.optimization._scope import StudyScope, limit_names
 from k4opt.optimization._study import (
@@ -292,7 +292,7 @@ def recorded_scope(document: Mapping[str, Any]) -> StudyScope:
             f"study's are {labels!r}"
         )
     searched = optimizer.get("parameters")
-    if not isinstance(searched, Mapping) or list(searched) != list(scope.searched):
+    if not isinstance(searched, Mapping) or set(searched) != set(scope.searched):
         raise OptimizationError(
             f"{STUDY_NAME} records the distributions of "
             f"{list(searched) if isinstance(searched, Mapping) else searched!r}, but the study "
@@ -484,7 +484,7 @@ def check_inner(document: Mapping[str, Any], scope: StudyScope, trial: TrialResu
             "identity differs)"
         )
     theirs, ours = inner.document.get("programs"), document.get("programs")
-    if json.dumps(thaw(theirs), sort_keys=True) != json.dumps(thaw(ours), sort_keys=True):
+    if not same_json(theirs, ours):
         raise OptimizationError(f"{where}: its inner study ran other programs than the study")
     for name, value in below.fixed.items():
         given = trial.candidate.get(name, _MISSING)
@@ -517,14 +517,14 @@ def check_inner(document: Mapping[str, Any], scope: StudyScope, trial: TrialResu
         )
     values = selected.get("values")
     added = {k: v for k, v in best.candidate.items() if k not in below.fixed}
-    if not isinstance(values, Mapping) or json.dumps(thaw(values)) != json.dumps(added):
+    if not isinstance(values, Mapping) or not same_json(values, added):
         raise OptimizationError(
             f"{where} selected the values {values!r}, but its inner study's best trial has "
             f"{added!r}"
         )
     complete = {**below.fixed, **added}
     given = dict(trial.candidate)
-    if json.dumps(given, sort_keys=True) != json.dumps(complete, sort_keys=True):
+    if not same_json(given, complete):
         raise OptimizationError(
             f"{where} gives the candidate {given!r}, but its inner study's fixed values and "
             f"selected trial make it {complete!r}"
@@ -759,16 +759,17 @@ def _diagnostics(value: object, where: str) -> tuple[Mapping[str, str | None], .
 
 
 def _candidate(value: object, scope: StudyScope, held: bool, where: str) -> dict[str, Scalar]:
-    """The candidate of a trial: with a record, a value of every parameter, in the problem's
-    order; without one (running, rejected, interrupted, an error), the values the study fixes
-    and what the optimizer proposed so far, in that order; always with the study's fixed values,
-    type and value."""
+    """The candidate of a trial, in the problem's order whatever the order of its keys: with a
+    record, a value of every parameter; without one (running, rejected, interrupted, an error),
+    the values the study fixes and what the optimizer proposed so far; always with the study's
+    fixed values, type and value."""
     spec = scope.spec
-    candidate = _mapping(value, f"{where}'s candidate", None)
+    named = _mapping(value, f"{where}'s candidate", None)
     names = [parameter.name for parameter in spec.parameters]
-    expected = names if held else [name for name in names if name in candidate]
-    if list(candidate) != expected:
-        _refuse(f"{where}'s candidate", f"names {list(candidate)}, not the parameters {expected}")
+    expected = names if held else [name for name in names if name in named]
+    if sorted(named) != sorted(expected):
+        _refuse(f"{where}'s candidate", f"names {list(named)}, not the parameters {expected}")
+    candidate = {name: named[name] for name in expected}
     parameters = {parameter.name: parameter for parameter in spec.parameters}
     for name, item in candidate.items():
         try:  # its type and domain, as a live evaluation checks them
@@ -783,7 +784,7 @@ def _candidate(value: object, scope: StudyScope, held: bool, where: str) -> dict
                 f"{where}'s candidate",
                 f"gives {name} {shown}, but the study fixes it at {fixed!r}",
             )
-    return dict(candidate)  # type: ignore[arg-type]  # scalars, checked above
+    return candidate  # type: ignore[return-value]  # scalars, checked above
 
 
 def _assessment(value: object, criteria: Criteria, status: str, where: str) -> Assessment | None:
