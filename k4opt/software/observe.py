@@ -92,10 +92,12 @@ variables that name them (``G4LEDATA``) identify. Any other repository holds dat
 filesystem: what a stage reads there is an undeclared input."""
 
 _PACKAGE = re.compile(
-    r"^/cvmfs/[^/]+/lcg/(?:nightlies/[^/]+/[^/]+|releases)/(?:[^/]+/)*?"
+    r"^/cvmfs/[^/]+/lcg/(?:nightlies/[^/]+/[^/]+|releases|latest)/(?:[^/]+/)*?"
     r"(?P<name>[^/]+)/(?P<version>[^/]+)/(?:x86_64|aarch64)-[^/]+/"
 )
-"""A file of an LCG package, in a nightly or a release: the package's name and version."""
+"""A file of an LCG package, in a nightly, a release or ``latest`` (where a nightly's package
+directory links to when the build is shared, ``ROOT/6.40.04-edf55``): the package's name and
+version."""
 
 _REGISTRY = (".rootmap", ".components")
 """Files every package on the library path has read, whether its code runs or not: the registries

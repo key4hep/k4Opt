@@ -576,6 +576,7 @@ def test_a_file_of_a_local_build_that_nothing_else_identifies_is_watched_as_any(
 def test_the_summary_says_what_was_used_and_what_nothing_else_identifies(tmp_path: Path) -> None:
     release = "/cvmfs/sft.cern.ch/lcg/releases"
     nightly = "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Sat"
+    latest = "/cvmfs/sft-nightlies.cern.ch/lcg/latest"  # where a nightly's packages link to
     platform = "x86_64-el9-gcc16-opt"
     local = Local("LD_LIBRARY_PATH", str(tmp_path / "install/lib"), "0" * 64, 1, 1)
     unread = Local("PYTHONPATH", str(tmp_path / "helpers"), "0" * 64, 1, 1)
@@ -584,6 +585,7 @@ def test_the_summary_says_what_was_used_and_what_nothing_else_identifies(tmp_pat
         {
             f"{release}/Geant4/11.4.3-abcde/{platform}/lib/libG4run.so": "cvmfs:a",
             f"{nightly}/MCGenerators/sherpa/3.0.5/{platform}/lib/libSherpa.so": "cvmfs:b",
+            f"{latest}/ROOT/6.40.04-edf55/{platform}/lib/libCore.so": "cvmfs:l",
             f"{nightly}/k4fwcore/HEAD/{platform}/lib/libk4FWCore.rootmap": "cvmfs:c",
             f"{nightly}/marlin/HEAD/{platform}/lib/libMarlin.components": "cvmfs:d",
             "/cvmfs/geant4.cern.ch/share/data/G4EMLOW/file": "cvmfs:e",
@@ -599,7 +601,11 @@ def test_the_summary_says_what_was_used_and_what_nothing_else_identifies(tmp_pat
     assert found.summary([local, unread]) == {
         "level": "files",
         "complete": True,
-        "packages": {"Geant4": "11.4.3-abcde", "sherpa": "3.0.5"},  # no package by a registry
+        "packages": {  # no package by a registry
+            "Geant4": "11.4.3-abcde",
+            "ROOT": "6.40.04-edf55",
+            "sherpa": "3.0.5",
+        },
         "local": [local.path],
         "undeclared": {
             "/cvmfs/experiment.cern.ch/data/calibration.root": "cvmfs:k",
