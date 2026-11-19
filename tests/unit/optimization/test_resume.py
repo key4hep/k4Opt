@@ -21,14 +21,9 @@ import yaml
 
 pytest.importorskip("optuna")
 
-import optuna
-from optuna.trial import TrialState
-
 from k4opt.evaluation import evaluator_source, load_evaluator
-from k4opt.optimization import OptimizationError, load_study, optimize
-from k4opt.optimization._optuna import tell as adapter
-from k4opt.optimization._optuna.space import search_space
-from k4opt.problem import load_problem
+from k4opt.optimization import OptimizationError, _trials, load_study, optimize
+from k4opt.optimization._ledger import LEDGER_NAME, LedgerWriter
 from tests.support import simulation
 from tests.support.common import git, git_checkout, requires_git, tree_digest
 from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, trade_off, yields
@@ -40,9 +35,11 @@ from tests.unit.optimization.conftest import (
     RADIUS,
     TRADE,
     Log,
+    Told,
+    endings,
     evaluator_from,
+    ledger,
     left_running,
-    optuna_study,
     problem_document,
     summary,
 )
@@ -64,7 +61,7 @@ def test_a_resumed_study_continues_with_new_proposals_and_keeps_its_trials(
     assert {p.name: tree_digest(p) for p in output.glob("trial-*") if p.name in before} == before
     # the resumed session does not replay the first one's proposals
     assert resumed.trials[3].candidate != first.trials[0].candidate
-    seeds = [t.user_attrs["k4opt.sampler_seed"] for t in optuna_study(output).trials]
+    seeds = [entry.proposal["seed"] for entry in ledger(output).entries]
     assert seeds[0] == seeds[1] == seeds[2] != seeds[3] == seeds[4]
     assert resumed.id == first.id and resumed.name == first.name
 
@@ -257,7 +254,7 @@ def test_a_file_only_candidates_name_reads_alike_in_every_trial_of_a_study(
     message = r"trial 2 stops the study.*\$\{CAD\}/b\.stl reads other files than for trial 0"
     with pytest.raises(OptimizationError, match=message):
         run(problem, output, 1, resume=True)
-    assert optuna_study(output).trials[2].state == TrialState.FAIL
+    assert endings(output)[2] == "error"
     model.write_text("solid b")  # the file the study read is back
     assert len(run(problem, output, 1, resume=True).trials) == 4
 
@@ -690,24 +687,24 @@ def _edit_study(output: Path, change: Callable[[dict[str, Any]], None]) -> None:
     ("change", "message"),
     [
         (
-            lambda d: d["optimizer"].update(version="4.9.0"),
+            lambda d: d["strategy"].update(version="4.9.0"),
             r"made with Optuna 4\.9\.0, this is Optuna 5\.0\.0: install optuna==4\.9\.0",
         ),
         (lambda d: d["k4opt"].update(sha256="0" * 64), "k4opt's code changed"),
         (lambda d: d.update(identity="0" * 64), "does not hold together"),
         (
-            lambda d: d["optimizer"]["sampler"].update(n_startup_trials=5),
-            "its recorded optimizer sampler is",
-        ),
-        (lambda d: d["optimizer"]["sampler"].update(seed="7"), "its sampler seed '7' is no seed"),
-        (
-            lambda d: d["optimizer"].update(constraint_values="scaled"),
-            "its recorded optimizer constraint_values is 'scaled'",
+            lambda d: d["strategy"]["sampler"].update(n_startup_trials=5),
+            "its recorded sampler is",
         ),
         (
-            lambda d: d["optimizer"]["parameters"][RADIUS]["attributes"].update(low=50.0),
-            "its recorded optimizer parameters is",
+            lambda d: d["strategy"]["sampler"].update(seed="7"),
+            "the recorded sampler seed '7' is no seed",
         ),
+        (
+            lambda d: d["strategy"]["distributions"][RADIUS]["attributes"].update(low=50.0),
+            "its recorded distributions is",
+        ),
+        (lambda d: d["strategy"].update(name="annealing"), "records no strategy k4opt runs"),
     ],
 )
 def test_other_software_than_the_study_was_made_with_refuses(
@@ -731,8 +728,6 @@ def test_resume_needs_a_study_and_a_study_needs_resume(
     run(problem, output, 1, seed=1)
     with pytest.raises(OptimizationError, match="is in use; resume the study in it with --resume"):
         run(problem, output, 1, seed=1)
-    with pytest.raises(OptimizationError, match=r"give the same --storage"):
-        run(problem, output, 1, resume=True, storage="sqlite:///elsewhere.db")
 
 
 @requires_git
@@ -776,44 +771,44 @@ def test_a_trial_left_running_without_a_record_is_closed_as_failed(
     assert reported == [(number, "interrupted", True), (3, "valid", False)]  # recovered first
     recovered = report.trials[number]
     assert (recovered.status, recovered.recovered) == ("interrupted", True)
-    assert optuna_study(output).trials[number].state == TrialState.FAIL
+    assert endings(output)[number] == "interrupted"
     if directory:  # left as it is, and never reused
         assert tree_digest(output / f"trial-{number:06d}") == left
     assert report.trials[3].status == "valid"
 
 
 class Crash(BaseException):
-    """A process killed between publishing a record and telling the optimizer."""
+    """A process killed between publishing a record and keeping it in the ledger."""
 
 
-def test_a_trial_left_running_with_its_record_is_told_that_record(
-    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+def test_a_trial_left_running_with_its_record_is_kept_with_it(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, told: Told
 ) -> None:
     constraints = [{"stage": "analysis", "metric": "a", "max": 350, "unit": "mm"}]
     problem, output = write_problem(constraints=constraints), tmp_path / "s"
-    tell = optuna.Study.tell
 
-    def crashing(self: optuna.Study, *args: Any, **kwargs: Any) -> Any:
+    def crashing(*args: Any, **kwargs: Any) -> Any:
         raise Crash
 
-    monkeypatch.setattr(optuna.Study, "tell", crashing)
-    with pytest.raises(Crash):
-        run(problem, output, 1, seed=1)
-    monkeypatch.setattr(optuna.Study, "tell", tell)
-    (left,) = optuna_study(output).trials
-    assert left.state == TrialState.RUNNING and left.constraints  # set just before the crash
+    with monkeypatch.context() as patched:
+        patched.setattr(LedgerWriter, "recorded", crashing)
+        with pytest.raises(Crash):
+            run(problem, output, 1, seed=1)
+    assert endings(output) == [None]  # its record is published, the ledger does not hold it
     log = Log()
     report = run(problem, output, 1, resume=True, **log.kwargs())
     reported = [(t.number, t.status, t.recovered) for t in log.trials]
     assert reported == [(0, "valid", True), (1, "valid", False)]
     assert log.trials[0] == report.trials[0]  # reported as the study reports it
-    recovered = optuna_study(output).trials[0]
     record = summary(output, 0)
     metrics = {m["metric"]: m["value"] for m in record["metrics"]}
-    assert recovered.state == TrialState.COMPLETE
-    assert recovered.values == [metrics["a"], metrics["b"]]  # what a live trial is told
-    assert recovered.constraints == {"test.trade_off/analysis/a:max": metrics["a"] - 350}
-    assert recovered.user_attrs["k4opt.record"]["id"] == record["id"]
+    (entry, _) = ledger(output).entries
+    assert entry.ending.kind == "recorded" and entry.ending.record["id"] == record["id"]
+    # the strategy of the resumed session was made with it as a live trial is told it
+    (_, _, history) = told.opened[-1]
+    (past,) = history
+    assert past.feedback.values == (metrics["a"], metrics["b"])
+    assert past.feedback.constraints == {"test.trade_off/analysis/a:max": metrics["a"] - 350}
     assert report.trials[0].recovered and report.trials[0].status == "valid"
 
 
@@ -821,26 +816,24 @@ def test_a_left_record_that_does_not_hold_up_refuses_the_resume(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     problem, output = write_problem(), tmp_path / "s"
-    monkeypatch.setattr(adapter, "_report", lambda *args, **kwargs: (_ for _ in ()).throw(Crash))
-    with pytest.raises(Crash):
-        run(problem, output, 1, seed=1)
-    monkeypatch.undo()
-    monkeypatch.setenv("K4GEO", str(MINI_GEO))
-    monkeypatch.setenv("KEY4HEP_STACK", str(VIEW))
+    with monkeypatch.context() as patched:
+        patched.setattr(_trials, "report", lambda *args, **kwargs: (_ for _ in ()).throw(Crash))
+        with pytest.raises(Crash):
+            run(problem, output, 1, seed=1)
     path = output / "trial-000000" / "summary.json"
     data = json.loads(path.read_text())
     data["assessment"]["feasible"] = False  # what its measurements do not give
     path.write_text(json.dumps(data))
     with pytest.raises(OptimizationError, match="its assessment is not the one its measurements"):
         run(problem, output, 1, resume=True)
-    assert optuna_study(output).trials[0].state == TrialState.RUNNING  # left for a person
+    assert endings(output) == [None]  # left for a person
 
 
 @pytest.mark.parametrize(
     ("change", "state"),
-    [("remove", "cannot be read"), ("edit", "is not the record the optimizer was told")],
+    [("remove", "cannot be read"), ("edit", "is not the record the ledger names")],
 )
-def test_a_finished_trial_keeps_the_record_the_optimizer_was_told(
+def test_a_finished_trial_keeps_the_record_its_ledger_names(
     tmp_path: Path, write_problem: Callable[..., Path], change: str, state: str
 ) -> None:
     settings = {"failed_below": 300}  # failed trials keep their records too
@@ -860,12 +853,23 @@ def test_a_finished_trial_keeps_the_record_the_optimizer_was_told(
     assert tree_digest(output) == before
 
 
+def _events(output: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in (output / LEDGER_NAME).read_text().splitlines()]
+
+
+def _write_events(output: Path, events: list[dict[str, Any]]) -> None:
+    (output / LEDGER_NAME).write_text("".join(json.dumps(e) + "\n" for e in events))
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ("values", r"trial 0: the optimizer holds the values \[1500\.0, 2000\.0\]"),
-        ("state", "trial 0 is FAIL, but its record is 'valid'"),
-        ("params", r"trial 0: trial-000000/summary\.json holds candidate"),
+        ("status", "trial 0: the ledger holds the status 'failed', but its record is 'valid'"),
+        ("values", r"trial 0: trial-000000/summary\.json holds candidate"),
+        ("sha256", r"trial 0: trial-000000/summary\.json is not the record the ledger names"),
+        ("added", r"trial 2: trial-000002/summary\.json cannot be read \(it is gone\)"),
+        ("twice", r"trials\.jsonl line \d+: trial 0 has ended already"),
+        ("order", r"trials\.jsonl line \d+ is not event \d+ of the ledger"),
     ],
 )
 def test_a_finished_trial_holds_what_its_record_gives_or_the_resume_refuses(
@@ -873,75 +877,57 @@ def test_a_finished_trial_holds_what_its_record_gives_or_the_resume_refuses(
 ) -> None:
     problem, output = write_problem(), tmp_path / "s"
     run(problem, output, 2, seed=1)
-    journal = output / "study.journal"
-    operations = [json.loads(line) for line in journal.read_text().splitlines()]
-    (told,) = [op for op in operations if op.get("trial_id") == 0 and op.get("values")]
-    if change == "values":  # what TPE would learn from, with the record left as it is
-        told["values"] = [1500.0, 2000.0]
-    elif change == "state":
-        told["state"], told["values"] = TrialState.FAIL.value, None
+    events = _events(output)
+    (proposed,) = [e for e in events if e["event"] == "proposed" and e["trial"] == 0]
+    (recorded,) = [e for e in events if e["event"] == "recorded" and e["trial"] == 0]
+    if change == "status":
+        recorded["status"] = "failed"
+    elif change == "values":  # what the strategy would learn from, its record left as it is
+        proposed["values"][RADIUS] += 1.0
+    elif change == "sha256":
+        recorded["record"]["sha256"] = "0" * 64
+    elif change == "added":  # values without any evaluation behind them
+        made = {"id": "made-up", "sha256": "0" * 64}
+        events.append(proposed | {"seq": len(events), "trial": 2})
+        events.append(recorded | {"seq": len(events), "trial": 2, "record": made})
+    elif change == "twice":
+        events.append(recorded | {"seq": len(events), "status": "invalid"})
     else:
-        (asked,) = [op for op in operations if op.get("trial_id") == 0 and "param_name" in op]
-        asked["param_value_internal"] += 1.0
-    journal.write_text("".join(json.dumps(op) + "\n" for op in operations))
+        events[2], events[3] = events[3], events[2]
+    _write_events(output, events)
     before = tree_digest(output)
     with pytest.raises(OptimizationError, match=message):
         run(problem, output, 1, resume=True)
     assert tree_digest(output) == before
+    with pytest.raises(OptimizationError, match=message):  # read back alike
+        load_study(output)
 
 
 def test_a_study_whose_setup_was_cut_short_resumes(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     problem, output = write_problem(), tmp_path / "s"
-    set_user_attr, written = optuna.Study.set_user_attr, []
-
-    def killed_after_two(self: optuna.Study, key: str, value: Any) -> None:
-        if len(written) == 2:  # the study is made, two of its attributes are written
-            raise Crash
-        written.append(key)
-        set_user_attr(self, key, value)
-
-    monkeypatch.setattr(optuna.Study, "set_user_attr", killed_after_two)
-    with pytest.raises(Crash):
-        run(problem, output, 1, seed=1)
-    monkeypatch.setattr(optuna.Study, "set_user_attr", set_user_attr)
-    assert optuna_study(output).trials == []
+    with monkeypatch.context() as patched:  # killed once study.json is written
+        patched.setattr(LedgerWriter, "create", lambda *args: (_ for _ in ()).throw(Crash))
+        with pytest.raises(Crash):
+            run(problem, output, 1, seed=1)
+    (output / ".lock").unlink(missing_ok=True)  # a kill leaves it
+    assert (output / "study.json").is_file() and not (output / LEDGER_NAME).exists()
     report = run(problem, output, 1, resume=True)
     assert [t.status for t in report.trials] == ["valid"]
-    assert set(optuna_study(output).user_attrs) >= {"k4opt.study", "k4opt.constraints"}
+    assert endings(output) == ["recorded"]
 
 
-def test_a_trial_another_client_added_to_the_storage_refuses_the_resume(
+def test_a_study_whose_ledger_is_gone_does_not_resume(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
     problem, output = write_problem(), tmp_path / "s"
-    run(problem, output, 2, seed=1)
-    study = optuna_study(output)  # values without any evaluation behind them
-    trial = optuna.trial.create_trial(
-        params={RADIUS: 300.0}, distributions=search_space(load_problem(problem)), values=[1, 2]
-    )
-    study.add_trial(trial)
+    run(problem, output, 1, seed=1)
+    (output / LEDGER_NAME).unlink()
     before = tree_digest(output)
-    with pytest.raises(OptimizationError, match="trial 2 is COMPLETE without the record k4opt"):
+    with pytest.raises(OptimizationError, match="has trials, but no ledger that holds them"):
         run(problem, output, 1, resume=True)
     assert tree_digest(output) == before
-
-
-def test_a_failed_trial_another_client_added_refuses_the_resume(
-    tmp_path: Path, write_problem: Callable[..., Path]
-) -> None:
-    problem, output = write_problem(), tmp_path / "s"
-    run(problem, output, 2, seed=1)
-    study = optuna_study(output)  # no values, but one more trial: another seed for the next session
-    trial = optuna.trial.create_trial(
-        params={RADIUS: 300.0},
-        distributions=search_space(load_problem(problem)),
-        state=TrialState.FAIL,
-    )
-    study.add_trial(trial)
-    with pytest.raises(OptimizationError, match=r"trial 2 is FAIL without .* any mark of k4opt"):
-        run(problem, output, 1, resume=True)
 
 
 def test_a_trial_directory_of_no_trial_refuses_the_resume(
@@ -952,7 +938,7 @@ def test_a_trial_directory_of_no_trial_refuses_the_resume(
     (output / "trial-000099").mkdir()
     with pytest.raises(OptimizationError, match=r"trial-000099 in .* belong.* to no trial"):
         run(problem, output, 1, resume=True)
-    assert len(optuna_study(output).trials) == 1
+    assert len(ledger(output).entries) == 1
 
 
 # --- files the problem names -----------------------------------------------------------------
@@ -1007,8 +993,7 @@ def test_a_file_the_problem_names_that_changes_during_a_study_stops_it(
         OptimizationError, match=r"trial 1 stops the study.*changed after the session"
     ):
         run(file_problem, tmp_path / "s", 3, seed=1, evaluators=[sizes], progress=change)
-    first, stopped = optuna_study(tmp_path / "s").trials
-    assert first.state == TrialState.COMPLETE and stopped.state == TrialState.FAIL
+    assert endings(tmp_path / "s") == ["recorded", "error"]
     assert not (tmp_path / "s" / "trial-000001").exists()
 
 
@@ -1191,45 +1176,33 @@ def test_a_resumed_study_keeps_its_rejected_trials_rejected(
 
 
 @pytest.mark.parametrize(
-    ("forge", "message"),
+    ("by", "message"),
     [
-        ({"k4opt.rejected_by": "nothing"}, "which is neither a required evaluation of the problem"),
+        ("nothing", "which is neither a required evaluation of the problem"),
         # a diagnostic's check() rejecting the candidate only keeps that diagnostic from running
-        ({"k4opt.rejected_by": "spare"}, "'spare', which is neither a required evaluation"),
-        ({"k4opt.feasible": True}, "not what k4opt tells a rejected trial"),
-        ({"k4opt.record": {"id": "x"}}, "not what k4opt tells a rejected trial"),
-        ({"k4opt.message": 3}, "its message is 3"),
-        ({}, "trial-000000 exists, though nothing of a rejected candidate is created"),
+        ("spare", "'spare', which is neither a required evaluation"),
+        ("test.candidate_check", "trial-000000 exists, though nothing of its candidate is created"),
     ],
 )
 def test_a_rejected_trial_is_read_strictly(
-    tmp_path: Path, write_problem: Callable[..., Path], forge: dict[str, Any], message: str
+    tmp_path: Path, write_problem: Callable[..., Path], by: str, message: str
 ) -> None:
-    from k4opt.optimization._optuna.read import trial_result
+    from k4opt.frozen import FrozenMap
+    from k4opt.optimization._ledger import Ending, Entry
+    from k4opt.optimization._read import trial_result
     from k4opt.optimization._results import recorded_scope
     from k4opt.optimization._study import read_study
 
     problem, output = rejecting(write_problem, diagnostic="spare"), tmp_path / "s"
     run(problem, output, 1, seed=1, evaluators=[_checking()])
     document = read_study(output)
-    attrs = {
-        "k4opt.dir": "trial-000000",
-        "k4opt.status": "rejected",
-        "k4opt.rejected_by": "test.candidate_check",
-        "k4opt.message": "cannot measure 250",
-    }
-    frozen = optuna.trial.create_trial(
-        state=TrialState.FAIL,
-        params={RADIUS: 250},
-        distributions=search_space(load_problem(problem)),
-        user_attrs=attrs | forge,
-    )
-    frozen.number = 0  # the study's first trial
+    ending = Ending("rejected", 0, by=by, message="cannot measure 250")
+    entry = Entry(0, 0, FrozenMap({RADIUS: 250}), FrozenMap({}), None, ending)
     shutil.rmtree(output / "trial-000000", ignore_errors=True)
-    if not forge:  # all as k4opt tells it, but a directory: a rejected trial has none
+    if by == "test.candidate_check":  # all as k4opt keeps it, but a directory: it has none
         (output / "trial-000000").mkdir()
     with pytest.raises(OptimizationError, match=message):
-        trial_result(output, document, recorded_scope(document), frozen, {})
+        trial_result(output, document, recorded_scope(document), entry, {})
 
 
 def _checking() -> Any:

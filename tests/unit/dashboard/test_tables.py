@@ -10,8 +10,6 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("optuna")
-
 from k4opt.frozen import FrozenMap
 from k4opt.optimization import Rule, load_study, trade_offs
 from k4opt.publication import PublishedArtifact, PublishedRequirement, SoftwareSheet
@@ -182,7 +180,6 @@ def test_a_heading_still_alike_after_its_whole_name_is_numbered() -> None:
 def test_a_study_of_a_level_below_is_tabled_by_the_objective_it_is_judged_by(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pytest.importorskip("optuna")
     from tests.support.studies import nested_study
 
     import tables

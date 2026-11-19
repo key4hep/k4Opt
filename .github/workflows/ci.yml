@@ -118,9 +118,9 @@ jobs:
         run: |
           python -m pip install -r dashboard/requirements.txt
           python -m pip install --no-deps .
-          # Optuna makes the studies the tests publish; the dashboard itself never imports it
+          # no Optuna: the tests make grid studies, and nothing that reads a study needs it
           python -m pip install pytest==9.2.0 pytest-xdist==3.8.0 execnet==2.1.2 pytest-cov==7.1.0 \
-            coverage==7.17.0 optuna==5.0.0 colorlog tqdm mypy==2.4.0
+            coverage==7.17.0 mypy==2.4.0
 
       - name: Run the tests of what reads studies (on every available core)
         run: |

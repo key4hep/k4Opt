@@ -26,7 +26,7 @@ import labels
 
 type Row = dict[str, object]
 
-WITHOUT_RESULT = ("invalid", "failed", "rejected", "unscored", "interrupted", "error")
+WITHOUT_RESULT = ("invalid", "failed", "rejected", "malformed", "unscored", "interrupted", "error")
 """The outcomes of trials without objective values, but for the running ones."""
 
 
@@ -295,11 +295,10 @@ def bests(results: StudyResults) -> list[Best]:
 
 def provenance(results: StudyResults) -> list[Row]:
     """What the study was made with, as its ``study.json`` records it: k4opt, the Key4hep stack,
-    the geometry and the optimizer."""
+    the geometry and the strategy that proposed its candidates."""
     document = results.document
     k4opt = _get(document, "k4opt")
-    geometry, optimizer = _get(document, "geometry"), _get(document, "optimizer")
-    sampler = _get(optimizer, "sampler")
+    geometry, strategy = _get(document, "geometry"), _get(document, "strategy")
     rows = [
         ("Study id", results.id),
         ("Created", results.created),
@@ -309,11 +308,22 @@ def provenance(results: StudyResults) -> list[Row]:
         ("Software id", _get(_get(document, "software"), "id")),
         ("Geometry", _get(geometry, "compact")),
         ("Geometry fingerprint", _get(geometry, "fingerprint")),
-        ("Optimizer", f"{_get(optimizer, 'backend')} {_get(optimizer, 'version')}"),
-        ("Sampler", f"{_get(sampler, 'name')}, seed {_get(sampler, 'seed')}"),
+        ("Strategy", _strategy(strategy)),
         ("Identity digest", _get(document, "identity")),
     ]
     return [{"": key, "Value": value} for key, value in rows]
+
+
+def _strategy(strategy: object) -> str:
+    """The strategy a study records, for a person: Optuna's version, sampler and seed, or how
+    many points its grid has."""
+    if _get(strategy, "name") == "grid":
+        return f"grid of {_get(strategy, 'points')} points"
+    sampler = _get(strategy, "sampler")
+    return (
+        f"{_get(strategy, 'name')} {_get(strategy, 'version')}, {_get(sampler, 'name')}, "
+        f"seed {_get(sampler, 'seed')}"
+    )
 
 
 def evaluators(results: StudyResults) -> list[Row]:

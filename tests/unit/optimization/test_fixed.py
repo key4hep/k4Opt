@@ -82,7 +82,7 @@ def test_a_study_with_the_geometry_fixed_searches_the_rest_and_simulates_once(
         "replicate": 0,
         "parent": None,
     }
-    assert list(document["optimizer"]["parameters"]) == ["x"]  # what the optimizer searches
+    assert list(document["strategy"]["distributions"]) == ["x"]  # what the sampler searches
     read = load_study(output)
     assert read.scope.fixed == {RADIUS: 300.0} and read.scope.searched == ("x",)
     assert [t.candidate for t in read.trials] == [t.candidate for t in study.trials]

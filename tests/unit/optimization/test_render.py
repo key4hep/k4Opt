@@ -321,7 +321,7 @@ def test_a_study_read_back_cannot_send_the_terminal_a_control_sequence() -> None
     metric = FrozenMap({"stage": "analysis", "metric": f"a{esc}", "unit": f"mm{esc}"})
     document = FrozenMap(
         {
-            "optimizer": FrozenMap({"storage": FrozenMap({"journal": f"study{esc}.journal"})}),
+            "strategy": FrozenMap({"name": f"optuna{esc}"}),
             "implementations": FrozenMap({evaluator: FrozenMap({"metrics": (metric,)})}),
         }
     )

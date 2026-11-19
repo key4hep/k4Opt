@@ -16,15 +16,11 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("optuna")
-
-from optuna.trial import TrialState
-
 from k4opt.optimization import OptimizationError, optimize
 from k4opt.optimization._lock import Lock
 from tests.support.common import tree_digest
 from tests.support.evaluators import trade_off
-from tests.unit.optimization.conftest import evaluator_from, optuna_study
+from tests.unit.optimization.conftest import GRID, endings, evaluator_from, ledger
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 
@@ -70,7 +66,7 @@ def test_a_second_process_is_refused_while_one_works_on_the_study(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
     problem, output = write_problem(), tmp_path / "s"
-    optimize(problem, [trade_off()], output, trials=1, seed=1)
+    optimize(problem, [trade_off()], output, trials=1, strategy="grid", grid=GRID)
     with Lock(output):
         before = tree_digest(output)
         message = rf"in use: .*\.lock names process {os.getpid()} on .*, which is still running"
@@ -101,7 +97,7 @@ def test_a_lock_left_behind_is_never_taken_over(
     tmp_path: Path, write_problem: Callable[..., Path], content: str | None, message: str
 ) -> None:
     problem, output = write_problem(), tmp_path / "s"
-    optimize(problem, [trade_off()], output, trials=1, seed=1)
+    optimize(problem, [trade_off()], output, trials=1, strategy="grid", grid=GRID)
     if content is None:  # what a killed process leaves
         owner = {"host": socket.gethostname(), "pid": _dead_pid(), "started": "2026-10-31T09:00:00"}
         content = json.dumps(owner)
@@ -150,7 +146,8 @@ def test_of_processes_starting_one_study_at_once_exactly_one_runs_it(
     from tests.support.evaluators import TRADE_OFF
 
     problem, output = write_problem(), tmp_path / "s"
-    command = _optimize_command(problem, output, TRADE_OFF, "--trials", "2", "--seed", "1")
+    grid = ("--strategy", "grid", "--grid", "radius=200,300")
+    command = _optimize_command(problem, output, TRADE_OFF, "--trials", "2", *grid)
     processes = [
         subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         for _ in range(4)
@@ -161,7 +158,7 @@ def test_of_processes_starting_one_study_at_once_exactly_one_runs_it(
     for code, (_, err) in results:
         if code:
             assert b"in use" in err
-    assert len(optuna_study(output).trials) == 2
+    assert endings(output) == ["recorded", "recorded"]
 
 
 @pytest.mark.parametrize("how", ["sigterm", "ctrl-c"])
@@ -174,36 +171,36 @@ def test_an_interrupted_trial_is_closed_and_the_lock_removed(
     interrupting = evaluator_from(tmp_path / "evaluators", f"interrupting_{how}", INTERRUPTING)
     handler = signal.getsignal(signal.SIGTERM)
     with pytest.raises(KeyboardInterrupt):
-        optimize(problem, [interrupting], tmp_path / "s", trials=3, seed=1)
+        optimize(problem, [interrupting], tmp_path / "s", trials=3, strategy="grid", grid=GRID)
     assert signal.getsignal(signal.SIGTERM) is handler  # put back
     assert not (tmp_path / "s" / ".lock").exists()
-    (trial,) = optuna_study(tmp_path / "s").trials
-    assert trial.state == TrialState.FAIL and "k4opt.error" not in trial.user_attrs
+    assert endings(tmp_path / "s") == ["interrupted"]
     assert (tmp_path / "s" / "trial-000000").is_dir()  # what it had made, kept as it is
 
 
-def test_an_interruption_while_the_optimizer_is_told_keeps_the_record(
+def test_an_interruption_while_the_strategy_is_told_keeps_the_record(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import optuna
+    from k4opt.optimization import _trials
 
     constraints = [{"stage": "analysis", "metric": "a", "max": 450, "unit": "mm"}]
     problem, output = write_problem(constraints=constraints), tmp_path / "s"
-    tell, calls = optuna.Study.tell, []
 
-    def interrupted_once(self: optuna.Study, *args: Any, **kwargs: Any) -> Any:
-        calls.append(kwargs.get("state"))
-        if len(calls) == 1:  # the constraints are set, and then Ctrl-C comes
-            raise KeyboardInterrupt
-        return tell(self, *args, **kwargs)
+    def interrupted(*args: Any) -> None:
+        raise KeyboardInterrupt  # the ledger holds the record, and then Ctrl-C comes
 
-    monkeypatch.setattr(optuna.Study, "tell", interrupted_once)
+    real = _trials._tell
+    monkeypatch.setattr(_trials, "_tell", interrupted)
     with pytest.raises(KeyboardInterrupt):
-        optimize(problem, [trade_off()], output, trials=2, seed=1)
-    (trial,) = optuna_study(output).trials
-    assert trial.state == TrialState.COMPLETE and set(trial.constraints) == {
-        "test.trade_off/analysis/a:max"
-    }
+        optimize(problem, [trade_off()], output, trials=2, strategy="grid", grid=GRID)
+    ((trial,),) = [ledger(output).entries]
+    assert trial.ending.kind == "recorded" and trial.ending.status == "valid"
+    monkeypatch.setattr(_trials, "_tell", real)
+    resumed = optimize(problem, [trade_off()], output, trials=1, resume=True)
+    assert [(t.number, t.status, t.recovered) for t in resumed.trials] == [
+        (0, "valid", False),  # told once, never again
+        (1, "valid", False),
+    ]
 
 
 def _wait_for(path: Path, timeout: float = 60) -> None:
@@ -229,7 +226,8 @@ def blocked(tmp_path: Path, write_problem: Callable[..., Path]) -> Callable[[], 
     reference = f"{tmp_path / 'evaluators' / 'blocking.py'}:Probe"
 
     def start() -> Blocked:
-        command = _optimize_command(problem, output, reference, "--trials", "2", "--seed", "1")
+        grid = ("--strategy", "grid", "--grid", "radius=200,300")
+        command = _optimize_command(problem, output, reference, "--trials", "2", *grid)
         process = subprocess.Popen(
             command,
             cwd=REPOSITORY,

@@ -1,17 +1,18 @@
 """Command-line interface of the optimization component: ``k4opt optimize`` and ``k4opt study``.
 
     k4opt optimize PROBLEM --evaluator FILE.py:Class [--evaluator ...] --trials N --output DIR
-        [--seed S] [--resume] [--storage URL] [--workers N|auto|inline]
-        [--observe files|libraries|none]
-    k4opt study show DIR [--storage URL]
-    k4opt study trial DIR NUMBER [--storage URL]
-    k4opt study export DIR --format {csv,json} [--output FILE] [--storage URL]
+        [--strategy optuna|grid] [--grid NAME=V1,V2,...] [--seed S] [--resume] [--fix NAME=VALUE]
+        [--reuse DIR] [--workers N|auto|inline] [--observe files|libraries|none]
+    k4opt study show DIR
+    k4opt study trial DIR NUMBER
+    k4opt study export DIR --format {csv,json} [--output FILE]
 
 Thin wrappers over :func:`k4opt.optimization.optimize` and :func:`k4opt.optimization.load_study`;
 :func:`register` plugs them into the top-level ``k4opt`` command (:mod:`k4opt.cli`). ``optimize``
 exits 0 when every trial asked for has ended, whatever its candidate's status, and 1 when the
 study cannot start or resume, a trial stops it, or it is interrupted; a new study first prints
-what it will do, as ``k4opt problem explain`` does. ``study`` exits 0 once it
+what it will do, as ``k4opt problem explain`` does, and the grid of a grid study. ``study`` exits
+0 once it
 has printed or exported the study, and 1 when the study cannot be read; it changes nothing in the
 study, and an export writes only the data to its output, any warning to stderr.
 """
@@ -19,16 +20,18 @@ study, and an export writes only the data to its output, any warning to stderr.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping, Sequence
 from typing import TextIO
 
-from k4opt.evaluation import load_evaluator
+from k4opt.evaluation import Scalar, load_evaluator
 from k4opt.execution.cli import workers
-from k4opt.optimization import StudyResults, load_study, optimize
+from k4opt.optimization import STRATEGIES, StudyResults, load_study, optimize
 from k4opt.optimization._export import FORMATS, export
+from k4opt.optimization._grid import grid_values, size
 from k4opt.optimization._render import Progress, render_study
-from k4opt.optimization._scope import check_trials
+from k4opt.optimization._scope import StudyScope, check_trials
 from k4opt.optimization._show import render_results, render_trial
-from k4opt.problem import load_problem
+from k4opt.problem import CandidateError, ProblemSpec, load_problem
 from k4opt.problem.candidate import parse_candidate
 from k4opt.problem.outline import render_outline
 from k4opt.program import OBSERVATIONS
@@ -41,9 +44,9 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "optimize",
         help="search the parameters of a problem for its best candidates",
         description=(
-            "Run a study of a problem: the optimizer (Optuna's TPE sampler) proposes candidates, "
-            "and each is evaluated as k4opt evaluate evaluates one, into a trial directory of "
-            "the study. Needs Optuna and the Key4hep environment."
+            "Run a study of a problem: a strategy (Optuna's TPE sampler, or a grid) proposes "
+            "candidates, and each is evaluated as k4opt evaluate evaluates one, into a trial "
+            "directory of the study. Needs the Key4hep environment, and Optuna for its strategy."
         ),
     )
     parser.add_argument("problem", help="path to a k4opt problem YAML file")
@@ -68,10 +71,29 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         help="the study directory: new or empty for a new study, the study's own with --resume",
     )
     parser.add_argument(
+        "--strategy",
+        choices=STRATEGIES,
+        help=(
+            "what proposes the candidates: 'optuna' (default), Optuna's TPE sampler; 'grid', every "
+            "combination of the values --grid gives (each choice of a categorical parameter and "
+            "each integer of an integer one without), in order. A resume keeps the study's"
+        ),
+    )
+    parser.add_argument(
+        "--grid",
+        action="append",
+        default=[],
+        metavar="NAME=V1,V2,...",
+        help=(
+            "the values the grid takes for a parameter, e.g. ecal_cell_size=2.5,5,10 "
+            "(repeatable); a continuous parameter needs them. With --strategy grid"
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         metavar="S",
-        help="seed of the sampler, in [0, 2**32); drawn and recorded without it",
+        help="seed of Optuna's sampler, in [0, 2**32); drawn and recorded without it",
     )
     parser.add_argument(
         "--resume",
@@ -99,11 +121,6 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
             "same things (the same signature) and its output is still there, unchanged "
             "(repeatable); a study reuses its own trials' stages anyway. Not part of the study"
         ),
-    )
-    parser.add_argument(
-        "--storage",
-        metavar="URL",
-        help="an Optuna database URL in place of DIR/study.journal (needs SQLAlchemy)",
     )
     parser.add_argument(
         "--workers",
@@ -140,10 +157,9 @@ def _register_study(commands: argparse._SubParsersAction[argparse.ArgumentParser
         "study",
         help="inspect or export the results of a study, without changing it",
         description=(
-            "Read a study that k4opt optimize made, as its records hold it: nothing is evaluated "
-            "or written, and the problem, geometry and evaluators need not exist any more. Each "
-            "record is checked against the study and against what the optimizer was told. Needs "
-            "Optuna."
+            "Read a study that k4opt optimize made, as its ledger and records hold it: nothing is "
+            "evaluated or written, and the problem, geometry, evaluators and strategy need not "
+            "exist any more. Each record is checked against the study and its ledger."
         ),
     )
     actions = group.add_subparsers(dest="action", required=True, metavar="ACTION")
@@ -152,14 +168,6 @@ def _register_study(commands: argparse._SubParsersAction[argparse.ArgumentParser
         parser = actions.add_parser(name, help=help, description=description)
         parser.add_argument(
             "study", metavar="DIR", help="the study directory (--output of optimize)"
-        )
-        parser.add_argument(
-            "--storage",
-            metavar="URL",
-            help=(
-                "the database URL of a study made with --storage; study.json names it without its "
-                "password. A SQLite or PostgreSQL database is opened read only"
-            ),
         )
         return parser
 
@@ -197,19 +205,24 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     implementations = [load_evaluator(reference) for reference in args.evaluator]
     spec = load_problem(args.problem)
     fixed = parse_candidate(spec, args.fix, "--fix") if args.fix else None
+    grid = _grid(spec, args.grid) if args.grid else None
+    expected = args.trials  # the trials the progress bar counts toward
     if not args.resume:
         check_trials(args.trials)
         render_outline(spec, args.trials, out, fixed=fixed, color=color(out))
+        if args.strategy == "grid":
+            expected = min(expected, _preview(spec, fixed, grid, out))
     try:
-        with Progress(args.trials, out, err, bar=interactive(out), color=color(out)) as progress:
+        with Progress(expected, out, err, bar=interactive(out), color=color(out)) as progress:
             report = optimize(
                 args.problem,
                 implementations,
                 args.output,
                 trials=args.trials,
+                strategy=args.strategy,
+                grid=grid,
                 seed=args.seed,
                 resume=args.resume,
-                storage=args.storage,
                 workers=args.workers,
                 reuse=args.reuse,
                 observe=args.observe,
@@ -227,8 +240,39 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     return 0
 
 
+def _grid(spec: ProblemSpec, assignments: list[str]) -> dict[str, list[Scalar]]:
+    """The values ``--grid NAME=V1,V2,...`` gives, each read as its parameter's kind."""
+    grid: dict[str, list[Scalar]] = {}
+    for assignment in assignments:
+        name, equals, text = assignment.partition("=")
+        if not equals or not text:
+            raise CandidateError(f"--grid {assignment!r}: expected NAME=V1,V2,...")
+        if name in grid:
+            raise CandidateError(f"--grid {name} is given more than once")
+        items = [parse_candidate(spec, [f"{name}={item}"], "--grid") for item in text.split(",")]
+        grid[name] = [item[name] for item in items]
+    return grid
+
+
+def _preview(
+    spec: ProblemSpec,
+    fixed: Mapping[str, Scalar] | None,
+    grid: Mapping[str, Sequence[Scalar]] | None,
+    out: TextIO,
+) -> int:
+    """Print the grid of each level, before anything is made: how many points, of which values;
+    refuse one that is not a grid of the study. How many points the top level has."""
+    values = grid_values(StudyScope.of(spec, fixed), grid)
+    for level in range(spec.depth + 1):
+        own = [name for name in spec.parameters_of(level) if name in values]
+        axes = "; ".join(f"{name} {', '.join(map(repr, values[name]))}" for name in own)
+        where = "grid" if spec.depth == 0 else f"grid of level {level}"
+        print(printable(f"{where}: {size(spec, values, level)} points: {axes}"), file=out)
+    return size(spec, values, 0)
+
+
 def _load(args: argparse.Namespace, err: TextIO) -> StudyResults:
-    results = load_study(args.study, storage=args.storage)
+    results = load_study(args.study)
     for warning in results.warnings:  # it can name a path or what a record holds
         print(f"k4opt: warning: {printable(warning)}", file=err)
     return results

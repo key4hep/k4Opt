@@ -1,5 +1,5 @@
-"""What the optimizer is asked to search and what it is told: distributions, objective values and
-constraint values, and the declarations it refuses before a study starts."""
+"""What Optuna's sampler is asked to search and what a strategy is told: distributions, objective
+values and constraint values, and the declarations it refuses before a study starts."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ from optuna.distributions import (
 )
 
 from k4opt.optimization import OptimizationError, optimize
-from k4opt.optimization._optuna.space import constraint_values, objective_values, search_space
+from k4opt.optimization._optuna import search_space
 from k4opt.optimization._scope import limit_names
+from k4opt.optimization._trials import constraint_values, objective_values
 from k4opt.problem import parse_problem
 from k4opt.record import Assessment, Limit, ObjectiveValue
-from tests.support.evaluators import candidate_check, trade_off
-from tests.support.geometry import MINI_GEO
+from tests.support.evaluators import candidate_check
 from tests.unit.optimization.conftest import Log, problem_document, summary
 
 CHECK = [{"name": "test.candidate_check", "version": "1"}]
@@ -147,74 +147,11 @@ def test_a_margin_that_fits_no_float_in_units_of_its_scale_cannot_be_told() -> N
 
 def test_objective_values_are_floats_in_the_problems_order() -> None:
     measured = (objective("b", 3), objective("a", 0.5))
-    assert objective_values(assessment(objectives=measured)) == [3.0, 0.5]
+    assert objective_values(assessment(objectives=measured)) == (3.0, 0.5)
     for value in (10**400, 2**53 + 1):  # too large for a float, or told as another value
         with pytest.raises(OptimizationError, match=r"e/analysis/a: no float holds .* exactly"):
             objective_values(assessment(objectives=(objective("a", value),)))
-    assert objective_values(assessment(objectives=(objective("a", 2**53),))) == [2.0**53]
-
-
-def test_a_storage_url_is_recorded_and_shown_without_its_secrets(
-    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from k4opt.optimization._optuna import storage
-
-    url = "postgresql://k4opt:s3cr%2Bt@db.cern.ch:6600/studies?sslmode=require&password=hush#x"
-    assert storage.redacted(url) == (
-        "postgresql://k4opt:***@db.cern.ch:6600/studies?sslmode=***&password=***"
-    )
-    for plain in ("sqlite:///studies.db", "sqlite:////abs/studies.db", "postgresql://h/db"):
-        assert storage.redacted(plain) == plain
-    assert storage.redacted("sqlite:///s.db?timeout=20") == "sqlite:///s.db?timeout=***"
-
-    def refusing(given: str) -> None:  # what a database driver may say
-        raise ValueError(f"could not connect to {given} (password 'hush', secret s3cr+t)")
-
-    monkeypatch.setattr(storage, "RDBStorage", refusing)
-    with pytest.raises(OptimizationError) as info:
-        optimize(write_problem(), [trade_off()], tmp_path / "s", trials=1, storage=url)
-    message = str(info.value)
-    assert "hush" not in message and "s3cr" not in message and "sslmode=require" not in message
-    assert "postgresql://k4opt:***@db.cern.ch:6600/studies" in message
-    assert not (tmp_path / "s").exists()
-
-    # an error of the database later on, once the storage was made
-    import optuna
-
-    def failing(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError(f"lost the connection {url} (password=hush)")
-
-    monkeypatch.setattr(storage, "RDBStorage", lambda given: optuna.storages.InMemoryStorage())
-    monkeypatch.setattr(optuna, "create_study", failing)
-    with pytest.raises(OptimizationError) as info:
-        optimize(write_problem(), [trade_off()], tmp_path / "t", trials=1, storage=url)
-    message = str(info.value)
-    assert "hush" not in message and "s3cr" not in message and "lost the connection" in message
-    assert info.value.__cause__ is None and info.value.__suppress_context__  # nor in a traceback
-
-    # a secret only in what an error was raised from, which a traceback shows too
-    monkeypatch.undo()
-    monkeypatch.setenv("K4GEO", str(MINI_GEO))
-    made: list[str] = []
-
-    def database(given: str) -> Any:
-        made.append(given)
-        return optuna.storages.InMemoryStorage()
-
-    def asking(self: Any, *args: Any, **kwargs: Any) -> None:
-        try:
-            raise RuntimeError(f"driver: {url}")
-        except RuntimeError as cause:
-            raise optuna.exceptions.StorageInternalError("lost the database") from cause
-
-    monkeypatch.setattr(storage, "RDBStorage", database)
-    monkeypatch.setattr(optuna.Study, "ask", asking)
-    with pytest.raises(
-        OptimizationError, match="the study cannot go on: StorageInternalError"
-    ) as info:
-        optimize(write_problem(), [trade_off()], tmp_path / "u", trials=1, storage=url)
-    assert info.value.__cause__ is None and info.value.__suppress_context__
-    assert len(made) == 1  # the database is set up once, before the directory is made
+    assert objective_values(assessment(objectives=(objective("a", 2**53),))) == (2.0**53,)
 
 
 def test_each_bound_of_a_constraint_is_a_limit_of_its_own() -> None:

@@ -54,11 +54,12 @@ pre-commit run --all-files          # ruff, mypy (strict), codespell, shellcheck
 python -m pytest -p xdist -n auto tests/unit   # every core; add tests/integration with $K4GEO
 ```
 
-The visualization and dashboard tests need Plotly and Streamlit (and Optuna, to make the studies
-they show), which the Key4hep stack lacks, and are skipped without them; CI runs them in its `dashboard` job, which
+The visualization and dashboard tests need Plotly and Streamlit, which the Key4hep stack lacks, and
+are skipped without them (the studies they show are grid studies, which need no Optuna); CI runs
+them in its `dashboard` job, which
 also type-checks `dashboard/` and builds and probes its container (see `docs/dashboard.md`):
 
 ```bash
-pip install -r dashboard/requirements.txt && pip install --no-deps -e . && pip install optuna
+pip install -r dashboard/requirements.txt && pip install --no-deps -e .
 python -m pytest -p xdist -n auto tests/unit/publication tests/unit/visualization tests/unit/dashboard
 ```

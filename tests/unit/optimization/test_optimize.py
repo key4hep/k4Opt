@@ -13,12 +13,6 @@ from typing import Any
 import pytest
 import yaml
 
-pytest.importorskip("optuna")
-
-from optuna.exceptions import StorageInternalError
-from optuna.study import StudyDirection
-from optuna.trial import TrialState
-
 from k4opt.evaluation import EvaluationContractError
 from k4opt.execution import Evaluations, RunError
 from k4opt.optimization import STUDY_NAME, OptimizationError, load_study, optimize
@@ -39,9 +33,12 @@ from tests.support.simulation import COLLECTION
 from tests.unit.optimization.conftest import (
     GUN,
     RADIUS,
+    STRATEGY_KWARGS,
     Log,
+    Told,
+    endings,
     evaluator_from,
-    optuna_study,
+    ledger,
     summary,
 )
 
@@ -49,26 +46,33 @@ TRADE = {"name": "test.trade_off", "version": "1"}
 
 
 def study(
-    problem: Path, output: Path, trials: int = 3, evaluators: list[Any] | None = None, **kwargs: Any
+    problem: Path,
+    output: Path,
+    trials: int = 3,
+    evaluators: list[Any] | None = None,
+    strategy: str = "optuna",
+    **kwargs: Any,
 ) -> Any:
-    kwargs.setdefault("seed", 1)
+    """A study with ``strategy``, as :data:`STRATEGY_KWARGS` runs it, unless ``kwargs`` say how."""
+    if strategy == "optuna":
+        pytest.importorskip("optuna")
+        kwargs.setdefault("seed", 1)
+    elif "strategy" not in kwargs:
+        kwargs = STRATEGY_KWARGS[strategy] | kwargs
     return optimize(problem, evaluators or [trade_off()], output, trials=trials, **kwargs)
 
 
 def test_two_objectives_are_told_in_the_problems_order_and_directions(
-    tmp_path: Path, write_problem: Callable[..., Path]
+    tmp_path: Path, write_problem: Callable[..., Path], strategy: str, told: Told
 ) -> None:
     problem = write_problem(
         objectives=[("analysis", "b", "maximize"), ("analysis", "a", "minimize")]
     )
-    report = study(problem, tmp_path / "s")
-    optimizer = optuna_study(tmp_path / "s")
-    assert optimizer.directions == [StudyDirection.MAXIMIZE, StudyDirection.MINIMIZE]
-    for trial in optimizer.trials:
-        metrics = {
-            m["metric"]: m["value"] for m in summary(tmp_path / "s", trial.number)["metrics"]
-        }
-        assert trial.values == [metrics["b"], metrics["a"]]
+    report = study(problem, tmp_path / "s", strategy=strategy)
+    for number, feedback in told.feedback().items():
+        metrics = {m["metric"]: m["value"] for m in summary(tmp_path / "s", number)["metrics"]}
+        assert feedback.values == (metrics["b"], metrics["a"])
+        assert feedback.record == tmp_path / "s" / f"trial-{number:06d}" / "summary.json"
     assert tuple(o.label for o in report.problem.objectives) == (
         "test.trade_off/analysis/b",
         "test.trade_off/analysis/a",
@@ -78,13 +82,12 @@ def test_two_objectives_are_told_in_the_problems_order_and_directions(
 
 
 def test_one_objective_takes_the_same_path(
-    tmp_path: Path, write_problem: Callable[..., Path]
+    tmp_path: Path, write_problem: Callable[..., Path], strategy: str, told: Told
 ) -> None:
-    report = study(write_problem(objectives=[("analysis", "a", "minimize")]), tmp_path / "s")
-    optimizer = optuna_study(tmp_path / "s")
-    assert optimizer.directions == [StudyDirection.MINIMIZE]
-    assert [t.values for t in optimizer.trials] == [
-        [t.objectives["test.trade_off/analysis/a"]] for t in report.trials
+    problem = write_problem(objectives=[("analysis", "a", "minimize")])
+    report = study(problem, tmp_path / "s", strategy=strategy)
+    assert [f.values for f in told.feedback().values()] == [
+        (t.objectives["test.trade_off/analysis/a"],) for t in report.trials
     ]
     # every candidate is feasible without constraints, and the best one is the front
     assert report.pareto == (
@@ -93,39 +96,40 @@ def test_one_objective_takes_the_same_path(
 
 
 def test_every_trial_has_a_directory_with_its_complete_record(
-    tmp_path: Path, write_problem: Callable[..., Path]
+    tmp_path: Path, write_problem: Callable[..., Path], strategy: str
 ) -> None:
     output = tmp_path / "s"
-    report = study(write_problem(), output, trials=4)
+    report = study(write_problem(), output, trials=4, strategy=strategy)
     assert sorted(p.name for p in output.iterdir()) == sorted(
-        [STUDY_NAME, "software", "study.journal", *[f"trial-{n:06d}" for n in range(4)]]
+        [STUDY_NAME, "software", "trials.jsonl", *[f"trial-{n:06d}" for n in range(4)]]
     )
     document = json.loads((output / STUDY_NAME).read_text())
-    optimizer = optuna_study(output)
-    assert optimizer.user_attrs["k4opt.study"] == document["id"] == report.id
-    assert optimizer.user_attrs["k4opt.identity"] == document["identity"]
-    for trial, reported in zip(optimizer.trials, report.trials, strict=True):
-        name = f"trial-{trial.number:06d}"
+    assert document["id"] == report.id and document["strategy"]["name"] == strategy
+    held = ledger(output)
+    assert held.study == document["id"] and len(held.sessions) == 1
+    for entry, reported in zip(held.entries, report.trials, strict=True):
+        name = f"trial-{entry.number:06d}"
         data = (output / name / "summary.json").read_bytes()
         record = json.loads(data)
-        assert record["run"] == {"study": document["id"], "trial": trial.number}
+        assert record["run"] == {"study": document["id"], "trial": entry.number}
         assert record["assessment"]["feasible"] is True
-        assert trial.user_attrs["k4opt.dir"] == name
-        assert trial.user_attrs["k4opt.record"] == {
+        assert entry.ending is not None and entry.ending.kind == "recorded"
+        assert entry.ending.status == "valid"
+        assert entry.ending.record == {
             "id": record["id"],
             "sha256": hashlib.sha256(data).hexdigest(),
-            "path": f"{name}/summary.json",
         }
-        assert isinstance(trial.user_attrs["k4opt.sampler_seed"], int)
+        # what the strategy noted of its proposal: Optuna its session's seed, the grid the point
+        assert set(entry.proposal) == ({"seed"} if strategy == "optuna" else {"point"})
         assert (reported.record, report.record_path(reported)) == (
             record["id"],
             output / name / "summary.json",
         )
-        assert trial.params == record["candidate"]
+        assert dict(entry.values) == record["candidate"]
 
 
-def test_invalid_and_failed_candidates_are_fail_trials_and_the_study_goes_on(
-    tmp_path: Path, write_problem: Callable[..., Path]
+def test_invalid_and_failed_candidates_are_told_without_values_and_the_study_goes_on(
+    tmp_path: Path, write_problem: Callable[..., Path], strategy: str, told: Told
 ) -> None:
     settings = {"invalid_below": 350, "failed_below": 200}
     problem = write_problem(
@@ -136,20 +140,22 @@ def test_invalid_and_failed_candidates_are_fail_trials_and_the_study_goes_on(
         },
         evaluators=[TRADE | {"settings": settings}],
     )
-    report = study(problem, tmp_path / "s", trials=12)
-    assert len(report.trials) == 12  # nothing stopped it
-    optimizer = optuna_study(tmp_path / "s")
-    for trial, reported in zip(optimizer.trials, report.trials, strict=True):
-        (x,) = trial.params.values()
+    trials = 12 if strategy == "optuna" else 3  # the grid has three points
+    report = study(problem, tmp_path / "s", trials=trials, strategy=strategy, grid=None)
+    assert len(report.trials) == trials  # nothing stopped it
+    feedback = told.feedback()
+    for reported in report.trials:
+        x = reported.candidate[RADIUS]
         expected = "failed" if x < 200 else "invalid" if x < 350 else "valid"
-        assert reported.status == trial.user_attrs["k4opt.status"] == expected
+        told_now = feedback[reported.number]
+        assert reported.status == told_now.status == expected
         if expected == "valid":
-            assert trial.state == TrialState.COMPLETE and reported.feasible is True
+            assert told_now.values is not None and reported.feasible is True
         else:
-            assert trial.state == TrialState.FAIL and trial.values is None
+            assert told_now.values is None and told_now.feasible is None
             assert reported.objectives is None and reported.feasible is None
-            assert f"x = {x} is below" in trial.user_attrs["k4opt.message"]
-            assert trial.constraints == {}  # never a made-up 0 or inf
+            assert f"x = {x} is below" in (told_now.message or "")
+            assert told_now.constraints == {}  # never a made-up 0 or inf
     assert {t.status for t in report.trials} == {"valid", "invalid", "failed"}
 
 
@@ -163,43 +169,44 @@ def test_a_study_of_nothing_but_failures_runs_to_its_end_with_an_empty_front(
 
 
 def test_without_a_feasible_candidate_the_front_is_empty(
-    tmp_path: Path, write_problem: Callable[..., Path]
+    tmp_path: Path, write_problem: Callable[..., Path], strategy: str, told: Told
 ) -> None:
     constraints = [{"stage": "analysis", "metric": "a", "max": 50, "unit": "mm"}]
-    report = study(write_problem(constraints=constraints), tmp_path / "s", trials=4)
+    report = study(write_problem(constraints=constraints), tmp_path / "s", 4, strategy=strategy)
     assert [(t.status, t.feasible) for t in report.trials] == [("valid", False)] * 4
     assert report.pareto == ()
-    for trial in optuna_study(tmp_path / "s").trials:  # complete, with their real objectives
-        assert trial.state == TrialState.COMPLETE
-        (x,) = trial.params.values()
-        assert trial.constraints == {"test.trade_off/analysis/a:max": x - 50}
+    for trial in report.trials:  # told with their real objectives, infeasible
+        feedback = told.feedback()[trial.number]
+        assert feedback.status == "valid" and feedback.feasible is False
+        assert feedback.values == tuple(trial.objectives.values())  # type: ignore[union-attr]
+        x = trial.candidate[RADIUS]
+        assert feedback.constraints == {"test.trade_off/analysis/a:max": x - 50}
 
 
 def test_limits_on_several_metrics_are_told_in_units_of_their_scales(
-    tmp_path: Path, write_problem: Callable[..., Path]
+    tmp_path: Path, write_problem: Callable[..., Path], strategy: str, told: Told
 ) -> None:
     # a in mm and b in 1/mm: the optimizer adds dimensionless violations, never mm and 1/mm
     constraints = [
         {"stage": "analysis", "metric": "a", "max": 300, "unit": "mm", "scale": 100},
         {"stage": "analysis", "metric": "b", "min": 0.0025, "scale": 0.001},
     ]
-    report = study(write_problem(constraints=constraints), tmp_path / "s", trials=4)
-    for trial, frozen in zip(report.trials, optuna_study(tmp_path / "s").trials, strict=True):
+    report = study(write_problem(constraints=constraints), tmp_path / "s", 4, strategy=strategy)
+    for trial in report.trials:
         assert trial.assessment is not None
-        (x,) = frozen.params.values()
+        x = trial.candidate[RADIUS]
         margins = {limit.name: limit.margin for limit in trial.assessment.limits}
         assert margins == {  # the physical margins stay in the record
             "test.trade_off/analysis/a:max": x - 300,
             "test.trade_off/analysis/b:min": pytest.approx(0.0025 - 1 / x),
         }
-        assert frozen.constraints == {
+        assert told.feedback()[trial.number].constraints == {
             "test.trade_off/analysis/a:max": pytest.approx((x - 300) / 100),
             "test.trade_off/analysis/b:min": pytest.approx((0.0025 - 1 / x) / 0.001),
         }
         # the verdict is the physical one, whatever the scale
         assert trial.feasible is (x <= 300 and 1 / x >= 0.0025)
     study_json = json.loads((tmp_path / "s" / STUDY_NAME).read_text())
-    assert study_json["optimizer"]["constraint_values"] == "margin / scale"
     scales = [c.get("scale") for c in study_json["problem"]["definition"]["constraints"]]
     assert scales == [100, 0.001]  # part of the study's identity
 
@@ -207,6 +214,7 @@ def test_limits_on_several_metrics_are_told_in_units_of_their_scales(
 def test_the_same_seed_proposes_the_same_candidates(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
+    pytest.importorskip("optuna")
     problem = write_problem()
     first = study(problem, tmp_path / "a", trials=4, seed=5)
     second = study(problem, tmp_path / "b", trials=4, seed=5)
@@ -216,7 +224,7 @@ def test_the_same_seed_proposes_the_same_candidates(
 
 
 def test_check_and_evaluate_see_each_trials_own_candidate(
-    tmp_path: Path, write_problem: Callable[..., Path]
+    tmp_path: Path, write_problem: Callable[..., Path], strategy: str
 ) -> None:
     problem = write_problem(
         evaluators=[{"name": "test.candidate_check", "version": "1"}],
@@ -225,7 +233,7 @@ def test_check_and_evaluate_see_each_trials_own_candidate(
     checking = candidate_check()
     checking.instances.clear()  # type: ignore[attr-defined]  # those of earlier tests
     checking.checked.clear()  # type: ignore[attr-defined]
-    report = study(problem, tmp_path / "s", trials=4, evaluators=[checking])
+    report = study(problem, tmp_path / "s", trials=4, evaluators=[checking], strategy=strategy)
     proposed = [dict(t.candidate) for t in report.trials]
     # no instance binds the class: its check() is asked once per trial, about that trial alone,
     # and each trial creates one new instance, which evaluates that trial's values only
@@ -249,17 +257,21 @@ def checked_problem(write_problem: Callable[..., Path], **settings: float) -> Pa
 
 
 def test_a_candidate_an_evaluator_rejects_is_rejected_and_the_study_goes_on(
-    tmp_path: Path, write_problem: Callable[..., Path]
+    tmp_path: Path, write_problem: Callable[..., Path], strategy: str, told: Told
 ) -> None:
     problem = checked_problem(write_problem, reject=250)
-    report = study(problem, tmp_path / "s", trials=8, evaluators=[candidate_check()])
+    trials = 8 if strategy == "optuna" else 2
+    evaluators = [candidate_check()]
+    report = study(problem, tmp_path / "s", trials, evaluators, strategy=strategy, grid=None)
     statuses = {t.candidate[RADIUS]: t.status for t in report.trials}
     assert statuses == {150: "valid", 250: "rejected"}  # both proposed, and the study ran on
-    for trial, frozen in zip(report.trials, optuna_study(tmp_path / "s").trials, strict=True):
+    for trial in report.trials:
         if trial.status != "rejected":
             continue
         # no values, no constraint values, no record and nothing created: never an evaluation
-        assert frozen.state == TrialState.FAIL and frozen.values is None and not frozen.constraints
+        feedback = told.feedback()[trial.number]
+        assert (feedback.status, feedback.values, feedback.record) == ("rejected", None, None)
+        assert not feedback.constraints
         assert trial.assessment is None and trial.record is None and trial.objectives is None
         assert trial.message == "test.candidate_check: this evaluator cannot measure 250"
         assert not (tmp_path / "s" / f"trial-{trial.number:06d}").exists()
@@ -276,10 +288,11 @@ def test_a_check_that_ends_otherwise_than_rejecting_stops_the_study_at_it(
     problem = checked_problem(write_problem, refuse=250)
     with pytest.raises(OptimizationError, match=r"trial (\d+) stops the study .*work with 250"):
         study(problem, tmp_path / "s", trials=20, evaluators=[candidate_check()])
-    *before, stopped = optuna_study(tmp_path / "s").trials
-    assert all(t.params[RADIUS] == 150 and t.state == TrialState.COMPLETE for t in before)
-    assert stopped.state == TrialState.FAIL and stopped.params[RADIUS] == 250
-    assert "EvaluationContractError" in stopped.user_attrs["k4opt.error"]
+    *before, stopped = ledger(tmp_path / "s").entries
+    assert all(t.values[RADIUS] == 150 and t.ending.kind == "recorded" for t in before)
+    assert stopped.ending.kind == "error" and stopped.values[RADIUS] == 250
+    assert "EvaluationContractError" in stopped.ending.message
+    assert load_study(tmp_path / "s").trial(stopped.number).status == "error"
     assert not (tmp_path / "s" / f"trial-{stopped.number:06d}").exists()  # nothing was created
     assert not (tmp_path / "s" / ".lock").exists()
 
@@ -349,8 +362,8 @@ def test_an_evaluator_that_breaks_the_contract_stops_the_study(
     with pytest.raises(OptimizationError, match="trial 0 stops the study") as info:
         study(write_problem(), tmp_path / "s", evaluators=[broken])
     assert error in str(info.value)
-    (trial,) = optuna_study(tmp_path / "s").trials
-    assert trial.state == TrialState.FAIL and trial.user_attrs["k4opt.error"].startswith(error)
+    ((trial,),) = [ledger(tmp_path / "s").entries]
+    assert trial.ending.kind == "error" and trial.ending.message.startswith(error)
     assert not (tmp_path / "s" / "trial-000000" / "summary.json").exists()
 
 
@@ -380,8 +393,8 @@ def test_a_record_that_does_not_hold_up_stops_the_study(
         OptimizationError, match=r"trial 0 stops the study.*metric test\.trade_off/analysis/a"
     ):
         study(write_problem(), tmp_path / "s")
-    (trial,) = optuna_study(tmp_path / "s").trials
-    assert trial.state == TrialState.FAIL and "k4opt.status" not in trial.user_attrs
+    assert endings(tmp_path / "s") == ["error"]  # its record is on disk, but not kept
+    assert load_study(tmp_path / "s").trials[0].record is None
 
 
 def test_a_record_of_other_external_geometry_files_stops_the_study(
@@ -397,60 +410,47 @@ def test_a_record_of_other_external_geometry_files_stops_the_study(
         study(write_problem(), tmp_path / "s")
 
 
-def test_the_optimizer_is_told_what_the_record_on_disk_holds(
-    tmp_path: Path, write_problem: Callable[..., Path]
+def test_the_strategy_is_told_what_the_record_on_disk_holds(
+    tmp_path: Path, write_problem: Callable[..., Path], strategy: str, told: Told
 ) -> None:
     constraints = [{"stage": "analysis", "metric": "a", "min": 150, "max": 450, "unit": "mm"}]
     problem = write_problem(constraints=constraints)
-    study(problem, tmp_path / "s", trials=6)
+    study(problem, tmp_path / "s", trials=6, strategy=strategy)
     spec = load_problem(problem)
-    for trial in optuna_study(tmp_path / "s").trials:
-        assessment = Assessment.from_summary(spec, summary(tmp_path / "s", trial.number))
-        assert trial.values == [float(m.value) for m in assessment.objectives or ()]
-        assert trial.constraints == {limit.name: limit.margin for limit in assessment.limits}
-        assert trial.user_attrs["k4opt.feasible"] is assessment.feasible
+    assert sorted(told.feedback()) == list(range(6))
+    for number, feedback in told.feedback().items():
+        assessment = Assessment.from_summary(spec, summary(tmp_path / "s", number))
+        assert feedback.values == tuple(float(m.value) for m in assessment.objectives or ())
+        assert feedback.constraints == {limit.name: limit.margin for limit in assessment.limits}
+        assert feedback.feasible is assessment.feasible
 
 
-@pytest.mark.parametrize(
-    ("failure", "message"),
-    [
-        (
-            lambda: StorageInternalError("the database is gone"),
-            "StorageInternalError: the database",
-        ),
-        (lambda: OSError(5, "Input/output error"), "OSError: [Errno 5] Input/output error"),
-    ],
-)
-def test_a_failure_of_the_optimizer_or_its_storage_stops_the_study_as_an_error(
-    tmp_path: Path,
-    write_problem: Callable[..., Path],
-    monkeypatch: pytest.MonkeyPatch,
-    failure: Callable[[], Exception],
-    message: str,
+def test_a_strategy_that_fails_to_propose_stops_the_study_as_an_error(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import optuna
+    from k4opt.optimization import _grid
 
-    def failing(self: optuna.Study, *args: Any, **kwargs: Any) -> Any:
-        raise failure()
+    def failing(self: Any, number: int) -> Any:
+        raise OSError(5, "Input/output error")
 
-    monkeypatch.setattr(optuna.Study, "ask", failing)  # outside any trial
-    with pytest.raises(OptimizationError, match="the study cannot go on: ") as info:
-        study(write_problem(), tmp_path / "s")
-    assert message in str(info.value)
-    assert not (tmp_path / "s" / ".lock").exists()
+    monkeypatch.setattr(_grid.Grid, "propose", failing)  # outside any trial
+    with pytest.raises(OptimizationError, match="the strategy could not propose trial 0: ") as info:
+        study(write_problem(), tmp_path / "s", strategy="grid")
+    assert "OSError: [Errno 5] Input/output error" in str(info.value)
+    assert not (tmp_path / "s" / ".lock").exists() and endings(tmp_path / "s") == []
 
 
 def test_a_bug_of_k4opt_is_not_dressed_up_as_a_study_error(
     tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from k4opt.optimization._optuna import run
+    from k4opt.optimization import _run
 
     def buggy(*args: Any, **kwargs: Any) -> Any:
         return 1 / 0
 
-    monkeypatch.setattr(run, "results_of", buggy)
+    monkeypatch.setattr(_run, "results_of", buggy)
     with pytest.raises(ZeroDivisionError):
-        study(write_problem(), tmp_path / "s")
+        study(write_problem(), tmp_path / "s", strategy="grid")
 
 
 @pytest.mark.parametrize(
@@ -461,7 +461,16 @@ def test_a_bug_of_k4opt_is_not_dressed_up_as_a_study_error(
         ({"seed": -1}, r"seed must be in \[0, 2\*\*32\)"),
         ({"seed": 2**32}, r"seed must be in \[0, 2\*\*32\)"),
         ({"seed": "1"}, "seed must be an integer"),
-        ({"resume": True, "seed": 3}, "a resumed study keeps the seed"),
+        ({"resume": True, "seed": 3}, "a resumed study keeps the strategy it was made with"),
+        ({"resume": True, "strategy": "grid"}, "leave out --strategy, --grid and --seed"),
+        ({"strategy": "annealing"}, "strategy 'annealing' is none of optuna, grid"),
+        ({"strategy": "grid", "seed": 3}, "the grid draws nothing at random"),
+        ({"grid": {RADIUS: [200.0]}}, "--grid gives the values of the grid strategy"),
+        ({"strategy": "grid"}, "radius is continuous, so the grid needs the values"),
+        ({"strategy": "grid", "grid": {"x": [1.0]}}, "x is no parameter the study searches"),
+        ({"strategy": "grid", "grid": {RADIUS: [50.0]}}, r"50\.0 is outside the bounds"),
+        ({"strategy": "grid", "grid": {RADIUS: [200, 200.0]}}, "takes 200.0 more than once"),
+        ({"strategy": "grid", "grid": {RADIUS: []}}, "needs a list of one value or more"),
     ],
 )
 def test_unusable_arguments_are_refused_before_anything_is_created(
@@ -626,8 +635,8 @@ def test_a_trial_whose_sample_fails_is_failed_and_keeps_the_other_samples_values
         "gamma/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
         "pion/test.cell_count/simulation/ecal_barrel.mean_hit_cells",
     )
-    states = [trial.state for trial in optuna_study(tmp_path / "s").trials]
-    assert states == [TrialState.COMPLETE, TrialState.FAIL, TrialState.COMPLETE]
+    statuses = [entry.ending.status for entry in ledger(tmp_path / "s").entries]
+    assert statuses == ["valid", "failed", "valid"]
     record = summary(tmp_path / "s", 1)
     assert record["message"].startswith("pion/simulation failed")
     assert [m["value"] for m in record["metrics"]] == [1.5, None]  # gamma's is kept
@@ -653,8 +662,8 @@ def test_a_combined_evaluator_is_optimized_and_a_trial_without_its_background_fa
         "significance/analysis/expected_significance",
     )
     assert [t.status for t in report.trials] == ["valid", "failed", "valid"]
-    states = [trial.state for trial in optuna_study(tmp_path / "s").trials]
-    assert states == [TrialState.COMPLETE, TrialState.FAIL, TrialState.COMPLETE]
+    statuses = [entry.ending.status for entry in ledger(tmp_path / "s").entries]
+    assert statuses == ["valid", "failed", "valid"]
     # 2 fb and 30 fb over 1 ab^-1 = 1000 fb^-1, every event selected
     s, b = 2000.0, 30000.0
     expected = math.sqrt(2 * ((s + b) * math.log1p(s / b) - s))
@@ -668,21 +677,21 @@ def test_a_combined_evaluator_is_optimized_and_a_trial_without_its_background_fa
 
 
 def test_a_diagnostic_that_fails_leaves_its_trial_complete_and_is_counted(
-    tmp_path: Path, diagnosed_problem: Path
+    tmp_path: Path, diagnosed_problem: Path, strategy: str, told: Told
 ) -> None:
     log = Log()
-    report = study(diagnosed_problem, tmp_path / "s", trials=6, **log.kwargs())
+    report = study(diagnosed_problem, tmp_path / "s", trials=6, strategy=strategy, **log.kwargs())
     assert (
         "diagnostics (recorded, do not affect the result): check; mark an evaluator "
         "required: true if its result must count"
     ) in log.warnings
     failing = 0
-    for trial, frozen in zip(report.trials, optuna_study(tmp_path / "s").trials, strict=True):
+    for trial in report.trials:
         record = summary(tmp_path / "s", trial.number)
-        below = frozen.params[RADIUS] < 350
+        below = trial.candidate[RADIUS] < 350
         failing += below
-        assert (frozen.state, record["status"]) == (TrialState.COMPLETE, "valid")
-        assert frozen.user_attrs["k4opt.diagnostics"] == len(trial.diagnostics) == int(below)
+        assert (told.feedback()[trial.number].status, record["status"]) == ("valid", "valid")
+        assert len(trial.diagnostics) == int(below)
         assert record["diagnostics"] == (
             [{"task": "check", "status": "failed", "message": record["diagnostics"][0]["message"]}]
             if below

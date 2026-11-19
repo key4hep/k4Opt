@@ -2,9 +2,9 @@
 
 :func:`k4opt.optimization.load_study` returns a :class:`StudyResults`: the problem as
 ``study.json`` records it, and every trial of the study with what its ``summary.json`` holds,
-once that record has been checked against the study and against what the optimizer was told. The
-optimizer's adapter says which trials there are and in which state; how a record is read, the
-Pareto front and the JSON form are decided here, the same for any optimizer. The JSON form
+once that record has been checked against the study and against the record its ledger names. The
+ledger says which trials there are and how each ended; how a record is read, the Pareto front and
+the JSON form are decided here, the same whatever proposed the candidates. The JSON form
 (:meth:`StudyResults.to_dict`) holds no location, so it can leave the machine (an export, a
 publication), and :meth:`StudyResults.from_dict` reads it back, checked, without Optuna.
 """
@@ -53,6 +53,7 @@ OUTCOMES = (
     "invalid",
     "failed",
     "rejected",
+    "malformed",
     "unscored",
     "interrupted",
     "error",
@@ -68,15 +69,16 @@ class TrialResult:
     ``status`` is the candidate's (``valid``, ``invalid``, ``failed``) as its record says, or
     ``rejected`` for one whose candidate an evaluator's ``check`` rejected before anything of it
     was created (no record, no directory; ``message`` names the evaluation and says why),
+    ``malformed`` for a proposal of the strategy that is no candidate of the study (nothing of it
+    was evaluated; ``message`` says why, and ``candidate`` holds the values the study fixes),
     ``interrupted`` for a trial that ended without a record, ``error`` for one that stopped the
-    study (``message`` says why), and ``running`` for one the optimizer still holds as running:
+    study (``message`` says why), and ``running`` for one the study's ledger holds as running:
     being evaluated, or left by a session that was killed, until a resume closes it. A running
-    trial is not checked and has no measurements; its ``candidate`` holds the values the
-    optimizer has proposed so far.
+    trial is not checked and has no measurements.
 
     ``assessment`` (objectives with value, unit and uncertainty; limits with margin and whether
-    each is satisfied; feasibility) is that of the record, ``None`` without one, and also for an
-    ``error`` trial whose record the optimizer never took. ``record`` and ``sha256`` identify the
+    each is satisfied; feasibility) is that of the record, ``None`` without one. ``record`` and
+    ``sha256`` identify the
     ``summary.json`` read, which is ``trial-NNNNNN/summary.json`` in the study directory
     (:meth:`StudyResults.record_path`); ``elapsed_seconds`` (the whole evaluation) and
     ``stage_seconds`` (each stage that ran, by label: ``gamma/simulation``; not one that reused
@@ -155,14 +157,15 @@ class StudyResults:
 
     ``problem`` is the problem as ``study.json`` records it (parameters with their domains and
     units, objectives with their directions, constraints), ``document`` ``study.json`` as a
-    read-only mapping (what the study is made with, and its optimizer; a database URL in it has
-    no password), all of it when read from the directory, without its locations when read from
-    the JSON form. ``trials`` holds every trial of the study, from all its sessions, by number;
-    ``pareto`` the numbers of the trials on the Pareto front of the feasible ``valid`` ones.
+    read-only mapping (what the study is made with, and its strategy), all of it when read from
+    the directory, without its locations when read from the JSON form. ``trials`` holds every
+    trial of the study, from all its sessions, by number; ``pareto`` the numbers of the trials on
+    the Pareto front of the feasible ``valid`` ones; ``exhausted`` whether its strategy had
+    nothing more to propose (a grid all of whose points were proposed).
     ``directory`` is the study directory it was read from, ``None`` for a study read from its JSON
     form; ``warnings`` says what the records leave open (evaluator checkouts at another revision)
     and what the study directory holds besides its trials. Nothing in it is mutable or shared
-    with the study's storage.
+    with the study's ledger.
     """
 
     name: str
@@ -174,6 +177,7 @@ class StudyResults:
     pareto: tuple[int, ...]
     directory: Path | None = None
     warnings: tuple[str, ...] = ()
+    exhausted: bool = False
     _numbered: Mapping[int, TrialResult] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -232,6 +236,7 @@ class StudyResults:
             "format": RESULTS_FORMAT,
             "study": portable(self.document),
             "outcomes": dict(self.outcomes),
+            "exhausted": self.exhausted,
             "pareto": list(self.pareto),
             "trials": [t.to_dict() | {"pareto": t.number in front} for t in self.trials],
         }
@@ -261,8 +266,8 @@ class StudyResults:
 def recorded_scope(document: Mapping[str, Any]) -> StudyScope:
     """The scope of the study ``study.json`` records (:class:`StudyScope`, with its problem),
     once the document holds together: its identity digest is that of its parts, it says which
-    build it ran on, and the optimizer it records has the scope's directions and limits.
-    No geometry, file or evaluator the problem names is needed."""
+    build it ran on, and it names the study and its strategy. No geometry, file or evaluator the
+    problem names is needed."""
     if digest(document) != document.get("identity"):
         raise OptimizationError(
             f"{STUDY_NAME} does not hold together: its identity digest is not that of its parts"
@@ -277,37 +282,13 @@ def recorded_scope(document: Mapping[str, Any]) -> StudyScope:
         raise OptimizationError(
             f"{STUDY_NAME}: its problem is no problem k4opt reads: {exc}"
         ) from None
-    optimizer = document.get("optimizer")
-    optimizer = optimizer if isinstance(optimizer, Mapping) else {}
-    named = [document.get("id"), document.get("created"), optimizer.get("study")]
+    named = [document.get("id"), document.get("created"), document.get("name")]
     if not all(isinstance(value, str) for value in named):
-        raise OptimizationError(
-            f"{STUDY_NAME} lacks the study's id, its creation time or the optimizer's study name"
-        )
+        raise OptimizationError(f"{STUDY_NAME} lacks the study's id, its creation time or its name")
+    strategy = document.get("strategy")
+    if not isinstance(strategy, Mapping) or not isinstance(strategy.get("name"), str):
+        raise OptimizationError(f"{STUDY_NAME} records no strategy of the study: {strategy!r}")
     scope = StudyScope.recorded(spec, document)
-    labels = [objective.label for objective in scope.criteria.objectives]
-    if optimizer.get("objectives") != labels:
-        raise OptimizationError(
-            f"{STUDY_NAME} records the objectives {optimizer.get('objectives')!r}, but the "
-            f"study's are {labels!r}"
-        )
-    searched = optimizer.get("parameters")
-    if not isinstance(searched, Mapping) or set(searched) != set(scope.searched):
-        raise OptimizationError(
-            f"{STUDY_NAME} records the distributions of "
-            f"{list(searched) if isinstance(searched, Mapping) else searched!r}, but the study "
-            f"searches {list(scope.searched)}"
-        )
-    if optimizer.get("directions") != scope.directions:
-        raise OptimizationError(
-            f"{STUDY_NAME} records the directions {optimizer.get('directions')!r}, but its "
-            f"objectives are {scope.directions!r}"
-        )
-    if optimizer.get("constraints") != scope.limit_names:
-        raise OptimizationError(
-            f"{STUDY_NAME} records the limits {optimizer.get('constraints')!r}, but its problem's "
-            f"are {scope.limit_names!r}"
-        )
     return scope
 
 
@@ -324,14 +305,14 @@ def record_of(
     holds it, checked before anything trusts it, with the warnings of
     :func:`~k4opt.optimization._study.check_record`.
 
-    ``params`` is what the optimizer proposed (the candidate, with the study's fixed values, and
+    ``params`` is what the strategy proposed (the candidate, with the study's fixed values, and
     the values of the trial ``selected`` of its study of the level below, if it has one),
     and ``read`` what the external references
     only candidates name read for the earlier trials
     (:func:`~k4opt.optimization._study.check_candidate_files`). The record must be made for this
     trial of this study with its evaluators, stack and code, and its assessment must recompute
     from its measurements; otherwise :class:`OptimizationError`. The one reading of a trial's
-    record, live (before the optimizer is told it) and when a study is read back
+    record, live (before the ledger holds it) and when a study is read back
     (:func:`recorded`)."""
     name = trial_directory(number)
     where = f"trial {number}: {name}/{SUMMARY_NAME}"
@@ -389,9 +370,9 @@ def recorded(
     read: dict[str, tuple[int, object]],
     selected: Mapping[str, Any] | None = None,
 ) -> tuple[TrialResult, list[str]]:
-    """Trial ``number`` as the record the optimizer was told holds it (:func:`record_of`).
+    """Trial ``number`` as the record its ledger names holds it (:func:`record_of`).
 
-    ``told`` is the reference the optimizer holds (``id``, ``sha256``, and ``path`` in the
+    ``told`` is the reference the ledger holds (``id``, ``sha256``, and ``path`` in the
     study): the record must be ``trial-NNNNNN/summary.json`` with exactly those bytes and that
     id; otherwise :class:`OptimizationError`.
     """
@@ -400,20 +381,20 @@ def recorded(
     reference = told if isinstance(told, Mapping) else {}
     if reference.get("path") != relative:
         raise OptimizationError(
-            f"trial {number}: the optimizer was told a record at {reference.get('path')!r}, not "
+            f"trial {number}: the ledger names a record at {reference.get('path')!r}, not "
             f"at {relative}"
         )
     if not (directory / relative).is_file():
         raise OptimizationError(
-            f"{where} cannot be read (it is gone), though the optimizer was told it: nothing "
+            f"{where} cannot be read (it is gone), though the ledger names it: nothing "
             "shows what the trial's values rest on"
         )
     result, warnings = record_of(directory, document, scope, number, params, read, selected)
     if result.sha256 != reference.get("sha256"):
-        raise OptimizationError(f"{where} is not the record the optimizer was told (other bytes)")
+        raise OptimizationError(f"{where} is not the record the ledger names (other bytes)")
     if result.record != reference.get("id"):
         raise OptimizationError(
-            f"{where} has the id {result.record!r}, but the optimizer was told record "
+            f"{where} has the id {result.record!r}, but the ledger names record "
             f"{reference.get('id')!r}"
         )
     return result, warnings
@@ -465,7 +446,8 @@ def check_inner(document: Mapping[str, Any], scope: StudyScope, trial: TrialResu
     below does not hold: that study must be the one started for this trial, of the same problem
     with the same files, code and stack (its identity digest) and programs, with its values. Once
     the trial selected, or is ``unscored``, that study must have ended: every one of its trials
-    run (those an interruption stopped not counted), none running; the selected trial must be the
+    run (those an interruption stopped not counted), or its strategy exhausted, and none running;
+    the selected trial must be the
     best of it by its records, and the trial's candidate its values with those of that trial."""
     where = f"trial {trial.number}"
     inner = trial.inner
@@ -496,10 +478,11 @@ def check_inner(document: Mapping[str, Any], scope: StudyScope, trial: TrialResu
     if trial.status == "unscored" or trial.selected is not None:
         ran = sum(t.status not in ("interrupted", "running") for t in inner.trials)
         running = [t.number for t in inner.trials if t.status == "running"]
-        if running or ran != scope.child_trials:
+        if running or (ran != scope.child_trials and not inner.exhausted):
             raise OptimizationError(
                 f"{where} rests on its inner study, which ran {ran} of its "
-                f"{scope.child_trials} trials and has {len(running)} still running"
+                f"{scope.child_trials} trials, its strategy not exhausted, and has "
+                f"{len(running)} still running"
             )
     if trial.status == "unscored":
         if best is not None:
@@ -566,7 +549,7 @@ def pareto_front(trials: Sequence[TrialResult], criteria: Criteria) -> tuple[int
 
 # --- the JSON form, read back ----------------------------------------------------------------
 
-_KEYS = ("format", "study", "outcomes", "pareto", "trials")
+_KEYS = ("format", "study", "outcomes", "exhausted", "pareto", "trials")
 _TRIAL = (
     "number",
     "status",
@@ -584,7 +567,7 @@ _TRIAL = (
     "pareto",
 )
 _RECORDED = ("valid", "invalid", "failed")  # with a record, always; an error trial may have one
-_UNRECORDED = ("rejected", "unscored", "interrupted", "running")  # never
+_UNRECORDED = ("rejected", "malformed", "unscored", "interrupted", "running")  # never
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _OBJECTIVE = tuple(f.name for f in fields(ObjectiveValue))
 _LIMIT = tuple(f.name for f in fields(Limit))
@@ -612,6 +595,12 @@ def _number(value: object, where: str, *, optional: bool = False) -> int | float
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         _refuse(where, f"is {value!r}, not a number")
+    return value
+
+
+def _flag(value: object, where: str) -> bool:
+    if not isinstance(value, bool):
+        _refuse(where, f"is {value!r}, not true or false")
     return value
 
 
@@ -651,13 +640,14 @@ def _from_dict(data: object) -> StudyResults:
         trials.append(trial)
         flags.append(flag)
     results = StudyResults(
-        name=document["optimizer"]["study"],  # checked by recorded_scope
+        name=document["name"],  # checked by recorded_scope
         id=document["id"],
         created=document["created"],
         problem=scope.spec,
         document=study,
         trials=tuple(trials),
         pareto=pareto_front(trials, scope.criteria),
+        exhausted=_flag(form["exhausted"], "exhausted"),
     )
     if form["pareto"] != results.pareto:
         _refuse("pareto", f"is {form['pareto']!r}, but the front of its trials is {results.pareto}")
@@ -671,7 +661,7 @@ def _from_dict(data: object) -> StudyResults:
 
 
 def _trial(entry: object, scope: StudyScope, where: str) -> tuple[TrialResult, object]:
-    """One trial of the JSON form, as :func:`record_of` and the optimizer's adapter make it, and
+    """One trial of the JSON form, as :func:`record_of` and the ledger make it, and
     its ``pareto`` flag."""
     data = _mapping(entry, where, _TRIAL)
     number, status = data["number"], data["status"]
@@ -695,8 +685,6 @@ def _trial(entry: object, scope: StudyScope, where: str) -> tuple[TrialResult, o
     elapsed = _seconds(data["elapsed_seconds"], f"{where}'s elapsed_seconds")
     if not held and (elapsed is not None or stage_seconds or diagnostics):
         _refuse(where, "has times or diagnostics of a record, without a record")
-    if not isinstance(data["recovered"], bool):
-        _refuse(f"{where}'s recovered", f"is {data['recovered']!r}, not true or false")
     trial = TrialResult(
         number=number,
         status=status,
@@ -707,7 +695,7 @@ def _trial(entry: object, scope: StudyScope, where: str) -> tuple[TrialResult, o
         message=_text(data["message"], f"{where}'s message", optional=True),
         elapsed_seconds=elapsed,
         stage_seconds=stage_seconds,
-        recovered=data["recovered"],
+        recovered=_flag(data["recovered"], f"{where}'s recovered"),
         diagnostics=diagnostics,
         selected=_selected(data["selected"], where),
         inner=None if data["inner"] is None else _from_dict(data["inner"]),
@@ -761,7 +749,7 @@ def _diagnostics(value: object, where: str) -> tuple[Mapping[str, str | None], .
 def _candidate(value: object, scope: StudyScope, held: bool, where: str) -> dict[str, Scalar]:
     """The candidate of a trial, in the problem's order whatever the order of its keys: with a
     record, a value of every parameter; without one (running, rejected, interrupted, an error),
-    the values the study fixes and what the optimizer proposed so far; always with the study's
+    the values the study fixes and what the strategy proposed; always with the study's
     fixed values, type and value."""
     spec = scope.spec
     named = _mapping(value, f"{where}'s candidate", None)

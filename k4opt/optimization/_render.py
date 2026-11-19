@@ -98,6 +98,12 @@ def render_study(results: StudyResults, out: TextIO, *, color: bool = False) -> 
     print(f"{style.dim('trials:')}   {_counts(results, style)}", file=out)
     pareto = ", ".join(map(str, results.pareto)) if results.pareto else "none feasible yet"
     print(f"{style.dim('pareto:')}   {style.green(pareto) if results.pareto else pareto}", file=out)
+    if results.exhausted:
+        print(
+            f"{style.dim('strategy:')} exhausted: it has nothing more to propose (a grid all of "
+            "whose points were proposed)",
+            file=out,
+        )
 
 
 def _duration(seconds: float) -> str:

@@ -1,10 +1,11 @@
 """Internal: the directory of a study, its ``study.json`` and the records of its trials; nothing of
-Optuna.
+any strategy.
 
-A study directory holds ``study.json``, written once with what the study is made with, the
-optimizer's storage, a ``.lock`` while a process works on the study (:mod:`._lock`), and a
-``trial-NNNNNN`` directory for each trial that got as far as its evaluation, laid out as
-``k4opt evaluate`` lays out its output; a trial whose candidate an evaluator rejected has none.
+A study directory holds ``study.json``, written once with what the study is made with
+(:func:`new_document`), its ledger ``trials.jsonl`` (:mod:`._ledger`), a ``.lock`` while a process
+works on the study (:mod:`._lock`), and a ``trial-NNNNNN`` directory for each trial that got as
+far as its evaluation, laid out as ``k4opt evaluate`` lays out its output; a trial whose
+candidate an evaluator rejected, or a malformed proposal, has none.
 :func:`check_record` refuses the record of a trial that is not its study's, by the comparison of
 :mod:`._identity`. A file that only candidates name (a ``ref`` parameter) is not known before they
 do: each record must read it as every earlier record of the study did
@@ -13,9 +14,9 @@ do: each record must read it as every earlier record of the study did
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
+import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,17 +27,17 @@ from k4opt.jsonio import write_json
 from k4opt.optimization._identity import (
     _contents,
     compared,
+    digest,
     program_differences,
     revision_warnings,
 )
+from k4opt.optimization._scope import StudyScope
 from k4opt.optimization.errors import OptimizationError
 
 STUDY_NAME = "study.json"
 STUDY_SCHEMA = "k4opt.study/1"
 LOCK_NAME = ".lock"
-JOURNAL_NAME = "study.journal"
 INNER_NAME = "inner"
-CONSTRAINT_VALUES = "margin / scale"  # how a limit's margin becomes the optimizer's value
 
 _TRIAL = re.compile(r"trial-[0-9]{6,}")
 
@@ -61,16 +62,6 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def session_seed(study_seed: int, trials: int) -> int:
-    """The sampler's seed for a session that starts when the study has ``trials`` trials.
-
-    Derived, so that a resumed session does not replay the proposals the first session started
-    with; the same history and seed give the same proposals again.
-    """
-    digest = hashlib.sha256(f"{study_seed}:{trials}".encode()).digest()
-    return int.from_bytes(digest[:4], "big")
-
-
 # --- study.json ------------------------------------------------------------------------------
 
 
@@ -88,6 +79,7 @@ PORTABLE: Mapping[str, _Kept] = {
     "id": True,
     "created": True,
     "identity": True,
+    "name": True,
     "problem": {"definition": True},
     "inputs": {"*": {"bytes": True, "sha256": True}},
     "implementations": {
@@ -115,25 +107,15 @@ PORTABLE: Mapping[str, _Kept] = {
     "k4opt": {"version": True, "sha256": True, "git": True},
     # what the study searches and fixes, and the level and replicate of its trials
     "scope": {"level": True, "searched": True, "fixed": True, "replicate": True, "parent": True},
-    "optimizer": {
-        "backend": True,
-        "version": True,
-        "study": True,
-        "sampler": True,
-        "objectives": True,
-        "directions": True,
-        "parameters": True,
-        "constraints": True,
-        "constraint_values": True,
-    },
+    # how the candidates were proposed: a strategy's settings, which name no location
+    "strategy": True,
 }
 """What of ``study.json`` leaves the study directory (:func:`portable`), key by key; ``*`` stands
 for every key of a mapping keyed by name. Left out: every location (the problem file, the files
 the problem names, the evaluators' files, the geometry's source root and the files its external
 references resolve to, ``K4GEO``, ``KEY4HEP_STACK``, which the software's build identifies,
 the programs of the stack and their interpreters, which are kept by size and SHA-256), the
-software's variables, whose names can be private, the optimizer's storage (a journal name, or a
-database URL with its host and user), and any key not named here."""
+software's variables, whose names can be private, and any key not named here."""
 
 
 def portable(document: Mapping[str, Any]) -> dict[str, Any]:
@@ -159,6 +141,31 @@ def _portable(value: object, kept: _Kept, where: str) -> object:
         for key, rule in kept.items()
         if rule and key in value
     }
+
+
+def new_document(
+    scope: StudyScope,
+    identity: Mapping[str, Any],
+    strategy: Mapping[str, Any],
+    study_id: str | None = None,
+) -> dict[str, Any]:
+    """``study.json`` of a new study of ``scope``, run in a session of ``identity`` with the
+    ``strategy`` it records; ``study_id`` is its id if it has one already (a study of a level
+    below the top, whose id its parent trial decides). Its name is the problem's with the start
+    of its id, or its whole id below the top, where the studies are many."""
+    study_id = study_id or str(uuid.uuid4())
+    name = f"{scope.spec.name}-{study_id if scope.parent else study_id[:8]}"
+    document: dict[str, Any] = {
+        "schema": STUDY_SCHEMA,
+        "id": study_id,
+        "created": now(),
+        "name": name,
+    }
+    document |= dict(identity)
+    document["identity"] = digest(identity)
+    document["scope"] = scope.to_dict()
+    document["strategy"] = dict(strategy)
+    return document
 
 
 def write_study(directory: Path, document: Mapping[str, object]) -> None:

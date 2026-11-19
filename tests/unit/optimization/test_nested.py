@@ -13,18 +13,17 @@ from typing import Any
 import pytest
 import yaml
 
-pytest.importorskip("optuna")
-
 from k4opt.evaluation import edm4hep
 from k4opt.execution import _session
 from k4opt.optimization import OptimizationError, StudyResults, load_study, optimize
-from k4opt.optimization._optuna import marks, tree
+from k4opt.optimization import _tree as tree
+from k4opt.optimization._ledger import LEDGER_NAME
 from k4opt.optimization._show import render_results
 from k4opt.optimization._study import trial_directory
 from k4opt.problem.candidate import replicate_seed
 from tests.support import simulation, stack
 from tests.support.evaluators import candidate_check, cell_count, trade_off
-from tests.unit.optimization.conftest import GUN, RADIUS, optuna_study, summary
+from tests.unit.optimization.conftest import GUN, RADIUS, Told, ledger, summary
 
 SEED = 1  # the simulation's
 CELLS = ("test.cell_count", "simulation", "ecal_barrel.mean_hit_cells", "minimize")
@@ -74,8 +73,25 @@ def nested(write_problem: Callable[..., Path]) -> Path:
     return path
 
 
-def run(problem: Path, output: Path, trials: int, **kwargs: Any) -> Any:
-    kwargs.setdefault("seed", None if kwargs.get("resume") else 1)
+GRID = {RADIUS: [200.0, 300.0, 400.0], "x": [1.5, 1.0, 2.0], "z": [1.0, 2.0]}
+"""The values a grid takes, at every level of the problems here."""
+
+
+def chosen(strategy: str, resume: bool = False) -> dict[str, Any]:
+    """How a new study of ``strategy`` is made: Optuna's seeded, or the grid of :data:`GRID`."""
+    if resume:
+        return {}
+    if strategy == "grid":
+        return {"strategy": "grid", "grid": GRID}
+    pytest.importorskip("optuna")
+    return {"seed": 1}
+
+
+def run(problem: Path, output: Path, trials: int, strategy: str = "optuna", **kwargs: Any) -> Any:
+    document = yaml.safe_load(problem.read_text())
+    kwargs = chosen(strategy, kwargs.get("resume", False)) | kwargs
+    if "grid" in kwargs:  # the values of the parameters the problem has
+        kwargs["grid"] = {k: v for k, v in kwargs["grid"].items() if k in document["parameters"]}
     return optimize(problem, [cell_count(), candidate_check()], output, trials=trials, **kwargs)
 
 
@@ -94,11 +110,11 @@ def seeds(fake: simulation.FakeDdsim) -> list[int]:
 
 
 def test_each_top_trial_is_its_inner_studys_best_trial_on_new_events(
-    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, strategy: str
 ) -> None:
     fake = simulation.install(monkeypatch)
     output = tmp_path / "s"
-    study = run(nested, output, 2)
+    study = run(nested, output, 2, strategy)
     assert [t.status for t in study.trials] == ["valid", "valid"]
     # the inner trials read no stage: only the records of the top trials simulate, on new events
     assert seeds(fake) == [replicate_seed(SEED, 1)] * 2
@@ -221,13 +237,13 @@ def constrained(problem: Path, **constraint: Any) -> Path:
 
 
 def test_a_top_trial_without_a_feasible_inner_trial_is_unscored_and_says_why(
-    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, strategy: str
 ) -> None:
     fake = simulation.install(monkeypatch)
     limited = constrained(
         nested, evaluator="test.candidate_check", stage="analysis", metric="seen", max=0.5
     )
-    study = run(limited, tmp_path / "s", 2)
+    study = run(limited, tmp_path / "s", 2, strategy)
     assert [t.status for t in study.trials] == ["unscored", "unscored"]
     assert study.trials[0].message == "no feasible trial among 3: 3 infeasible"
     assert study.trials[0].record is None and study.trials[0].assessment is None
@@ -238,7 +254,7 @@ def test_a_top_trial_without_a_feasible_inner_trial_is_unscored_and_says_why(
 
 
 def test_a_selection_infeasible_on_new_events_makes_its_top_trial_infeasible(
-    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, strategy: str
 ) -> None:
     fake = simulation.install(monkeypatch)
 
@@ -255,7 +271,7 @@ def test_a_selection_infeasible_on_new_events_makes_its_top_trial_infeasible(
         metric="ecal_barrel.mean_hit_cells",
         max=2,
     )
-    study = run(limited, tmp_path / "s", 1)
+    study = run(limited, tmp_path / "s", 1, strategy)
     (trial,) = study.trials
     assert {t.outcome for t in trial.inner.trials} == {"feasible"}
     assert trial.status == "valid" and trial.outcome == "infeasible"
@@ -288,12 +304,13 @@ def three_levels(nested: Path) -> Path:
 
 
 def test_three_levels_each_select_on_events_the_level_below_did_not_tune_on(
-    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, strategy: str
 ) -> None:
     simulation.install(monkeypatch)
     output = tmp_path / "s"
     implementations = [cell_count(), candidate_check(), trade_off()]
-    study = optimize(three_levels(nested), implementations, output, trials=1, seed=1)
+    kwargs = chosen(strategy)
+    study = optimize(three_levels(nested), implementations, output, trials=1, **kwargs)
     (top,) = study.trials
     assert top.status == "valid" and set(top.candidate) == {RADIUS, "x", "z"}
     middle = top.inner
@@ -311,12 +328,10 @@ def test_three_levels_each_select_on_events_the_level_below_did_not_tune_on(
 
 
 def test_with_workers_the_inner_studies_run_side_by_side(
-    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, strategy: str
 ) -> None:
     stack.install(monkeypatch)
-    study = optimize(
-        nested, [cell_count(), candidate_check()], tmp_path / "s", trials=3, seed=1, workers=2
-    )
+    study = run(nested, tmp_path / "s", 3, strategy, workers=2)
     assert [t.status for t in study.trials] == ["valid"] * 3
     assert all(len(t.inner.trials) == 3 for t in study.trials)
     assert load_study(tmp_path / "s").to_dict() == study.to_dict()
@@ -372,18 +387,6 @@ def test_study_show_lists_the_inner_studies(
     assert "inner/trial-000000" in out.getvalue()
 
 
-def test_a_shared_database_holds_the_studies_of_the_tree(
-    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("sqlalchemy")
-    simulation.install(monkeypatch)
-    url = f"sqlite:///{tmp_path / 'db.sqlite'}"
-    study = run(nested, tmp_path / "s", 2, storage=url)
-    assert [t.status for t in study.trials] == ["valid", "valid"]
-    assert not list((tmp_path / "s").rglob("study.journal"))
-    assert load_study(tmp_path / "s", storage=url).to_dict() == study.to_dict()
-
-
 # --- a run stopped anywhere goes on from where it was ------------------------------------------
 
 
@@ -395,16 +398,16 @@ def stop_at_settle(level: int, nth: int = 1) -> Callable[[pytest.MonkeyPatch], N
     """Stop when a trial of ``level`` ended, before it is told: its record is written."""
 
     def install(monkeypatch: pytest.MonkeyPatch) -> None:
-        settle, seen = tree._settle, []
+        settle, seen = tree.settle, []
 
-        def stopping(run: Any, *args: Any) -> Any:
-            if run.scope.level == level:
+        def stopping(study: Any, *args: Any) -> Any:
+            if study.scope.level == level:
                 seen.append(1)
                 if len(seen) == nth:
                     raise Stop
-            return settle(run, *args)
+            return settle(study, *args)
 
-        monkeypatch.setattr(tree, "_settle", stopping)
+        monkeypatch.setattr(tree, "settle", stopping)
 
     return install
 
@@ -447,23 +450,29 @@ def test_a_run_stopped_anywhere_goes_on_from_where_it_was(
     nested: Path,
     monkeypatch: pytest.MonkeyPatch,
     stop: Callable[[pytest.MonkeyPatch], None],
+    strategy: str,
 ) -> None:
     fake = simulation.install(monkeypatch)
     output = tmp_path / "s"
     with monkeypatch.context() as patched:
         stop(patched)
         with pytest.raises(Stop):
-            run(nested, output, 1)
+            run(nested, output, 1, strategy)
     (output / ".lock").unlink(missing_ok=True)  # a kill leaves it
     told: list[Any] = []
     # no new trial: it goes on with the one it has
-    study = run(nested, output, 0, resume=True, progress=told.append)
+    study = run(nested, output, 0, strategy, resume=True, progress=told.append)
     (trial,) = study.trials
     assert trial.status == "valid" and trial.selected is not None
     assert trial.recovered and [(t.number, t.recovered) for t in told] == [(0, True)]
     assert len([t for t in trial.inner.trials if t.status == "valid"]) == 3
     assert len(fake.calls) == 1  # the new events, once
     assert load_study(output).to_dict() == study.to_dict()
+    # each inner trial proposed once, whatever the strategy: none twice, none lost
+    proposed = [e.values["x"] for e in ledger(output / "inner" / "trial-000000").entries]
+    assert len(proposed) == 3 and len(set(proposed)) == 3
+    if strategy == "grid":
+        assert proposed == GRID["x"]  # in the grid's order
     again = run(nested, output, 0, resume=True)  # nothing is left to do, and nothing changes
     assert again.to_dict() == study.to_dict() and len(fake.calls) == 1
 
@@ -496,29 +505,35 @@ def test_a_selection_that_later_differs_stops_the_run(
         with pytest.raises(Stop):
             run(nested, output, 1)
     (output / ".lock").unlink(missing_ok=True)
-    trial = optuna_study(output).trials[0]
-    selected = dict(trial.user_attrs[marks.SELECTED]) | {"trial": 99}
-    storage = optuna_study(output)._storage
-    storage.set_trial_user_attr(trial._trial_id, marks.SELECTED, selected)
+    held = output / LEDGER_NAME
+    events = [json.loads(line) for line in held.read_text().splitlines()]
+    for event in events:
+        if event["event"] == "selected":
+            event["selected"]["trial"] = 99
+    held.write_text("".join(json.dumps(event) + "\n" for event in events))
     with pytest.raises(OptimizationError, match="but the best trial of its inner study"):
         run(nested, output, 0, resume=True)
 
 
-def test_a_trial_stopped_while_it_was_proposed_takes_no_part_of_a_studys_budget(
-    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+def test_an_interrupted_inner_trial_takes_no_part_of_its_studys_budget(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, strategy: str
 ) -> None:
     simulation.install(monkeypatch)
-    problem, output = three_levels(nested), tmp_path / "s"
-    implementations = [cell_count(), candidate_check(), trade_off()]
+    output = tmp_path / "s"
     with monkeypatch.context() as patched:
-        stop_at_settle(1)(patched)  # the first middle trial has its record, not yet told
+        stop_at_settle(1, 2)(patched)  # the second inner trial has its record, not yet kept
         with pytest.raises(Stop):
-            optimize(problem, implementations, output, trials=1, seed=1)
+            run(nested, output, 1, strategy)
     (output / ".lock").unlink(missing_ok=True)
-    optuna_study(output / "inner" / "trial-000000").ask()  # a proposal cut short: no parameters
-    study = optimize(problem, implementations, output, trials=0, resume=True)
-    middle = study.trials[0].inner
-    assert [t.status for t in middle.trials] == ["valid", "interrupted", "valid"]
+    (output / "inner" / "trial-000000" / "trial-000001" / "summary.json").unlink()
+    study = run(nested, output, 0, strategy, resume=True)
+    inner = study.trials[0].inner
+    if strategy == "grid":  # an interrupted point is not proposed again: the grid ends earlier
+        assert [t.status for t in inner.trials] == ["valid", "interrupted", "valid"]
+        assert inner.exhausted
+    else:  # three trials that ran, and the one an interruption stopped
+        assert [t.status for t in inner.trials] == ["valid", "interrupted", "valid", "valid"]
+        assert not inner.exhausted
     assert study.trials[0].status == "valid"
     assert load_study(output).to_dict() == study.to_dict()
 
@@ -540,7 +555,7 @@ def test_a_resume_refuses_a_tree_that_does_not_hold_up_before_anything_new_runs(
     calls = len(fake.calls)
     with pytest.raises(OptimizationError, match="trial 1"):
         run(nested, output, 1, resume=True)
-    assert len(optuna_study(output).trials) == 1 and len(fake.calls) == calls
+    assert len(ledger(output).entries) == 1 and len(fake.calls) == calls
     assert not (output / "inner" / "trial-000001").exists()
 
 
@@ -557,7 +572,7 @@ def test_a_running_trial_does_not_hide_an_inner_study_that_does_not_hold_up(
     assert load_study(output).trials[0].inner is not None  # as it stands, it reads back
     path = output / "inner" / "trial-000000" / "trial-000000" / "summary.json"
     path.write_text(path.read_text() + " ")
-    with pytest.raises(OptimizationError, match="is not the record the optimizer was told"):
+    with pytest.raises(OptimizationError, match="is not the record the ledger names"):
         load_study(output)
 
 
@@ -571,7 +586,7 @@ def test_an_inner_study_whose_making_was_cut_short_is_no_error_and_is_made_on_re
         raise Stop
 
     with monkeypatch.context() as patched:
-        patched.setattr(tree, "open_optuna", stopping)  # its study.json written, no storage
+        patched.setattr(tree, "open_ledger", stopping)  # its study.json written, no ledger
         with pytest.raises(Stop):
             run(nested, output, 1)
     (output / ".lock").unlink(missing_ok=True)
@@ -611,7 +626,7 @@ def test_a_run_keeps_only_its_open_studies(
     close = tree.Tree.close
 
     def closing(self: Any) -> None:
-        held.append(len(self._nodes) + len(self._journals))
+        held.append(len(self._nodes))
         close(self)
 
     monkeypatch.setattr(tree.Tree, "close", closing)
@@ -619,7 +634,7 @@ def test_a_run_keeps_only_its_open_studies(
     assert held == [1]  # the top study: those of its three trials were let go as they ended
 
 
-@pytest.mark.parametrize("lost", ["study.json", "study.journal"])
+@pytest.mark.parametrize("lost", ["study.json", LEDGER_NAME])
 def test_a_selection_needs_its_inner_study_though_its_trial_still_runs(
     tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, lost: str
 ) -> None:
@@ -638,7 +653,7 @@ def test_a_selection_needs_its_inner_study_though_its_trial_still_runs(
         run(nested, output, 0, resume=True)
 
 
-def test_a_lost_journal_is_no_study_never_set_up_once_trials_ran(
+def test_a_lost_ledger_is_no_study_never_set_up_once_trials_ran(
     tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     simulation.install(monkeypatch)
@@ -648,9 +663,11 @@ def test_a_lost_journal_is_no_study_never_set_up_once_trials_ran(
         with pytest.raises(Stop):
             run(nested, output, 1)
     (output / ".lock").unlink(missing_ok=True)
-    (output / "inner" / "trial-000000" / "study.journal").unlink()  # its trials' records stay
-    with pytest.raises(OptimizationError, match=r"study\.journal does not exist"):
+    (output / "inner" / "trial-000000" / LEDGER_NAME).unlink()  # its trials' records stay
+    with pytest.raises(OptimizationError, match=r"trials\.jsonl does not exist"):
         load_study(output)
+    with pytest.raises(OptimizationError, match=r"trials\.jsonl does not exist"):
+        run(nested, output, 0, resume=True)  # refused as the tree is read, before anything runs
 
 
 def test_the_json_form_of_a_running_trial_that_selected_needs_its_inner_study(
@@ -680,7 +697,7 @@ def test_a_running_trial_does_not_hide_an_inner_study_that_lost_its_study_json(
         with pytest.raises(Stop):
             run(nested, output, 1)
     (output / ".lock").unlink(missing_ok=True)
-    (output / "inner" / "trial-000000" / "study.json").unlink()  # its journal and records stay
+    (output / "inner" / "trial-000000" / "study.json").unlink()  # its ledger and records stay
     with pytest.raises(OptimizationError, match=r"holds a study's files, but no study\.json"):
         load_study(output)
     with pytest.raises(OptimizationError, match=r"holds a study's files, but no study\.json"):
@@ -715,20 +732,21 @@ def shared(nested: Path) -> Path:
     return nested
 
 
-def asked(study: Path) -> list[tuple[Any, Any]]:
-    """When each trial of ``study`` was asked for and told, in number order."""
-    trials = sorted(optuna_study(study).trials, key=lambda t: t.number)
-    return [(t.datetime_start, t.datetime_complete) for t in trials]
+def asked(told: Told, output: Path, number: int) -> list[tuple[int, int]]:
+    """When each trial of the study top trial ``number`` stands for was proposed and told, in
+    number order, as positions in the order of everything proposed and told."""
+    study = json.loads((output / "study.json").read_text())["id"]
+    return told.order(f"{study}:{number}")
 
 
 def test_a_slot_goes_to_another_study_before_one_whose_trials_wait_for_what_they_share(
-    tmp_path: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, shared: Path, monkeypatch: pytest.MonkeyPatch, strategy: str, told: Told
 ) -> None:
     stack.install(monkeypatch, **{"*": {"sleep": 1}})
     output = tmp_path / "s"
-    study = run(shared, output, 2, workers=2)
+    study = run(shared, output, 2, strategy, workers=2)
     assert [t.status for t in study.trials] == ["valid", "valid"]
-    first, second = (asked(output / "inner" / trial_directory(n)) for n in (0, 1))
+    first, second = (asked(told, output, n) for n in (0, 1))
     # while the first study's first trial made what its trials share, the other study began
     assert second[0][0] < first[1][0]
     # one simulation for each inner study, which its other trials reused, and one on new events
@@ -744,17 +762,17 @@ def test_a_slot_goes_to_another_study_before_one_whose_trials_wait_for_what_they
 
 
 def test_a_slot_no_other_study_would_use_goes_to_a_study_held_back(
-    tmp_path: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, shared: Path, monkeypatch: pytest.MonkeyPatch, told: Told
 ) -> None:
     stack.install(monkeypatch, **{"*": {"sleep": 1}})
     output = tmp_path / "s"
     run(shared, output, 1, workers=2)  # one study below: nothing else to run
-    (_, told), (start, _), _ = asked(output / "inner" / trial_directory(0))
-    assert start < told
+    (_, ended), (start, _), _ = asked(told, output, 0)
+    assert start < ended
 
 
 def test_an_inner_study_that_shares_no_stage_asks_for_its_trials_at_once(
-    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, told: Told
 ) -> None:
     document = yaml.safe_load(nested.read_text())
     document["parameters"]["x"] = {  # the energy of the gun: each trial simulates its own
@@ -770,9 +788,10 @@ def test_an_inner_study_that_shares_no_stage_asks_for_its_trials_at_once(
     nested.write_text(yaml.safe_dump(document))
     stack.install(monkeypatch, **{"*": {"sleep": 1}})
     output = tmp_path / "s"
-    optimize(nested, [cell_count()], output, trials=1, seed=1, workers=2)
-    (_, told), (start, _), _ = asked(output / "inner" / trial_directory(0))
-    assert start < told  # nothing to wait for: the second ran beside the first
+    grid = {"strategy": "grid", "grid": {RADIUS: [300.0], "x": [5.0, 7.5, 10.0]}}
+    optimize(nested, [cell_count()], output, trials=1, workers=2, **grid)
+    (_, ended), (start, _), _ = asked(told, output, 0)
+    assert start < ended  # nothing to wait for: the second ran beside the first
 
 
 # --- what a resume reuses, at every level --------------------------------------------------------
@@ -933,9 +952,9 @@ def test_a_resumed_inner_study_that_shares_a_stage_is_held_back_again(
     (output / ".lock").unlink(missing_ok=True)
     made, held = tree.Tree._node, []
 
-    def watched(self: tree.Tree, run: Any, *args: Any, **kwargs: Any) -> Any:
-        node = made(self, run, *args, **kwargs)
-        held.append((run.scope.level, len(run.study.trials), node.held))
+    def watched(self: tree.Tree, study: Any, *args: Any, **kwargs: Any) -> Any:
+        node = made(self, study, *args, **kwargs)
+        held.append((study.scope.level, len(study.ledger.ledger.entries), node.held))
         return node
 
     monkeypatch.setattr(tree.Tree, "_node", watched)

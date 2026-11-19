@@ -66,7 +66,6 @@ def test_text_never_formats_as_markdown() -> None:
 
 
 def test_a_choice_of_axis_is_said_by_what_the_figures_call_it(tmp_path: Path) -> None:
-    pytest.importorskip("optuna")
     from k4opt.optimization import load_study
     from tests.support.studies import mixed_study
 
