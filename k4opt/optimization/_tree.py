@@ -10,8 +10,9 @@ trials (:mod:`._proposal`), and each trial ends as any trial does (:mod:`._trial
 study's ledger first, its strategy told after.
 
 A strategy may answer that it waits for a trial under way to end, which holds no slot, or that it
-is exhausted (a grid all of whose points were proposed): its study then asks for no more trials,
-and is done once those under way ended. A proposal that is no candidate of the study is a
+is exhausted, or say so itself after its last proposal (a grid all of whose points were
+proposed): its study keeps that in its ledger, asks for no more trials, and is done once those
+under way ended. A proposal that is no candidate of the study is a
 ``malformed`` trial, and the study asks again.
 
 A study below the top whose trials share a stage (:func:`_shares`) asks for one trial, then
@@ -59,7 +60,7 @@ from k4opt.optimization._proposal import EXHAUSTED, WAITING, MalformedError, Pas
 from k4opt.optimization._read import inner_id, results_of, trial_result
 from k4opt.optimization._results import TrialResult, best_trial, no_best_trial
 from k4opt.optimization._scope import StudyScope
-from k4opt.optimization._strategy import child, open_strategy
+from k4opt.optimization._strategy import child, derived, open_strategy
 from k4opt.optimization._study import (
     INNER_NAME,
     STUDY_NAME,
@@ -67,6 +68,7 @@ from k4opt.optimization._study import (
     new_document,
     now,
     read_study,
+    strategy_digest,
     trial_directories,
     trial_directory,
     write_study,
@@ -128,14 +130,18 @@ def _shares(scope: StudyScope) -> bool:
     )
 
 
-def open_ledger(directory: Path, study: str, resume: bool) -> tuple[LedgerWriter, bool]:
-    """The ledger of the study ``study`` in ``directory`` to write: made for a new study; for a
-    resumed one opened, a line a killed process cut short removed (then ``True``), or made if the
-    process that made the study stopped before it made its ledger (nothing ran in it)."""
+def open_ledger(
+    directory: Path, document: Mapping[str, Any], resume: bool
+) -> tuple[LedgerWriter, bool]:
+    """The ledger of the study ``document`` describes in ``directory`` to write, committed to its
+    strategy: made for a new study; for a resumed one opened, a line a killed process cut short
+    removed (then ``True``), or made if the process that made the study stopped before it made
+    its ledger (nothing ran in it)."""
+    study, strategy = document["id"], strategy_digest(document["strategy"])
     if not resume:
-        return LedgerWriter.create(directory, study), False
+        return LedgerWriter.create(directory, study, strategy), False
     try:
-        return LedgerWriter.open(directory, study)
+        return LedgerWriter.open(directory, study, strategy)
     except NotSetUpError:
         if trial_directories(directory) or (directory / INNER_NAME).exists():
             raise OptimizationError(
@@ -143,7 +149,7 @@ def open_ledger(directory: Path, study: str, resume: bool) -> tuple[LedgerWriter
                 "without it"
             ) from None
     (directory / "trials.jsonl").unlink(missing_ok=True)  # not one line of it was written
-    return LedgerWriter.create(directory, study), False
+    return LedgerWriter.create(directory, study, strategy), False
 
 
 class Tree:
@@ -205,7 +211,9 @@ class Tree:
         study.strategy = open_strategy(study.document["strategy"], study.scope, history)
         # resumed too: what its trials share may never have been made, or be gone since
         held = study.scope.level > 0 and _shares(study.scope)
-        node = _Node(study, budget, held=held, exhausted=study.ledger.exhausted)
+        node = _Node(study, budget, held=held)
+        # a strategy whose last proposal an interrupted session kept, but not that it was the last
+        _exhausted(node)
         self._nodes[study.document["id"]] = node
         for result in results:
             if result.status == "running":  # it stands for a study of the level below
@@ -239,6 +247,11 @@ class Tree:
                     f"trial {number} stands for"
                 )
             self._check(document, self._identity, scope)
+            problems = derived(parent.document["strategy"], document["strategy"], scope, number)
+            if problems:
+                raise OptimizationError(
+                    f"{directory}: the study trial {number} stands for: {'; '.join(problems)}"
+                )
         else:
             strategy = child(parent.document["strategy"], scope, number)
             document = new_document(scope, self._identity, strategy, study_id)
@@ -247,7 +260,7 @@ class Tree:
             except OSError as exc:
                 raise OptimizationError(f"cannot create {directory}: {exc}") from exc
             write_study(directory, document)
-        ledger, cut = open_ledger(directory, study_id, resume)
+        ledger, cut = open_ledger(directory, document, resume)
         try:
             if cut:
                 self._warn(f"{ledger.path}: a line a killed process cut short was removed")
@@ -310,8 +323,7 @@ class Tree:
                 f"{type(exc).__name__}: {exc}"
             ) from exc
         if answer is EXHAUSTED:
-            study.ledger.exhaust()
-            node.exhausted = True
+            _exhausted(node, asked=True)
             return None
         if answer is WAITING:
             if not node.in_flight and not node.open:
@@ -325,10 +337,12 @@ class Tree:
             values, note = checked(study.scope, answer)
         except MalformedError as exc:
             result = malform(study, number, _note(answer), str(exc))
+            _exhausted(node)
             if node is self._root:
                 self._progress(result)
             return None
         study.ledger.proposed(number, values, note)
+        _exhausted(node)  # its last proposal: kept as such at once, whatever the budget
         if study.scope.nested:
             self._open(node, number)
             return self._next(node)
@@ -423,6 +437,19 @@ class Tree:
         for node in self._nodes.values():
             if node is not self._root:
                 node.study.ledger.close()
+
+
+def _exhausted(node: _Node, asked: bool = False) -> None:
+    """Keep that the strategy of ``node`` has nothing more to propose, once it says so: it
+    answered so when ``asked``, or tells it after its last proposal; once only."""
+    study = node.study
+    assert study.strategy is not None
+    if not (asked or study.strategy.exhausted):
+        node.exhausted = study.ledger.exhausted
+        return
+    if not study.ledger.exhausted:
+        study.ledger.exhaust()
+    node.exhausted = True
 
 
 def _quiet(result: TrialResult) -> None:

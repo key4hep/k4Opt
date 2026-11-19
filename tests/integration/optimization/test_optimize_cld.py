@@ -59,6 +59,7 @@ def test_a_study_of_the_example_runs_resumes_and_keeps_its_records(
 ) -> None:
     from k4opt.optimization import load_study
     from k4opt.optimization._ledger import read_ledger
+    from k4opt.optimization._study import strategy_digest
 
     pytest.importorskip("optuna")
     output = tmp_path / "study"
@@ -68,7 +69,7 @@ def test_a_study_of_the_example_runs_resumes_and_keeps_its_records(
     assert resumed.startswith("trial 2:") and "trials:   3: 3 valid" in resumed
 
     document = json.loads((output / "study.json").read_text())
-    entries = read_ledger(output, document["id"]).entries
+    entries = read_ledger(output, document["id"], strategy_digest(document["strategy"])).entries
     read = load_study(output)
     spec = load_problem(problem)
     sizes = []

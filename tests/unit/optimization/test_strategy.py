@@ -28,6 +28,7 @@ class Scripted:
         self.script, self.history = iter(script), history
         self.told: list[tuple[int, Feedback]] = []
         self.proposed: list[tuple[int, int]] = []  # each number, with how many were told then
+        self.exhausted = False  # it says so by answering EXHAUSTED
 
     def propose(self, number: int) -> Proposal | Answer:
         answer = next(self.script, EXHAUSTED)

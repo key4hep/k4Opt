@@ -19,12 +19,13 @@ from k4opt.optimization._ledger import (
 )
 
 STUDY = "2b9a6f0e-7c55-4d3e-9a0f-0d6b1f1e2c3a"
+STRATEGY = "5" * 64  # the digest of the strategy the study was made with
 RECORD = {"id": "r0", "sha256": "a" * 64}
 
 
 def written(directory: Path) -> LedgerWriter:
     """A ledger with a session, two trials (one recorded, one running) and a third rejected."""
-    writer = LedgerWriter.create(directory, STUDY)
+    writer = LedgerWriter.create(directory, STUDY, STRATEGY)
     writer.session("2026-11-19T10:00:00+00:00")
     writer.proposed(0, {"radius": 300.0}, {"point": 0})
     writer.recorded(0, "valid", RECORD)
@@ -45,7 +46,7 @@ def rewrite(directory: Path, lines: list[dict[str, Any]]) -> None:
 def test_a_ledger_reads_back_as_it_was_written(tmp_path: Path) -> None:
     writer = written(tmp_path)
     writer.close()
-    ledger = read_ledger(tmp_path, STUDY)
+    ledger = read_ledger(tmp_path, STUDY, STRATEGY)
     assert ledger == writer.ledger
     assert ledger.study == STUDY and ledger.sessions == ("2026-11-19T10:00:00+00:00",)
     first, second, third = ledger.entries
@@ -59,17 +60,18 @@ def test_a_ledger_reads_back_as_it_was_written(tmp_path: Path) -> None:
     assert not ledger.exhausted and not any(e.recovered for e in ledger.entries)
     # one line per event, numbered, compact: what a person reads with any tool
     assert [e["seq"] for e in events(tmp_path)] == list(range(7))
-    assert events(tmp_path)[0] == {"seq": 0, "event": "study", "study": STUDY}
+    head = {"seq": 0, "event": "study", "study": STUDY, "strategy": STRATEGY}
+    assert events(tmp_path)[0] == head  # the study, and the strategy it was made with
 
 
 def test_a_trial_a_later_session_ends_is_recovered(tmp_path: Path) -> None:
     written(tmp_path).close()
-    writer, cut = LedgerWriter.open(tmp_path, STUDY)
+    writer, cut = LedgerWriter.open(tmp_path, STUDY, STRATEGY)
     assert not cut
     writer.session("2026-11-19T11:00:00+00:00")
     writer.interrupted(1)
     writer.close()
-    entries = read_ledger(tmp_path, STUDY).entries
+    entries = read_ledger(tmp_path, STUDY, STRATEGY).entries
     assert [e.recovered for e in entries] == [False, True, False]
 
 
@@ -78,21 +80,21 @@ def test_a_line_cut_short_is_not_read_and_the_next_writer_removes_it(tmp_path: P
     path = tmp_path / LEDGER_NAME
     whole = path.read_bytes()
     path.write_bytes(whole + b'{"seq":7,"event":"recor')  # a process killed as it wrote it
-    assert read_ledger(tmp_path, STUDY).entries[1].running  # as if never written
+    assert read_ledger(tmp_path, STUDY, STRATEGY).entries[1].running  # as if never written
     assert path.read_bytes().endswith(b'"event":"recor')  # reading changes nothing
-    writer, cut = LedgerWriter.open(tmp_path, STUDY)
+    writer, cut = LedgerWriter.open(tmp_path, STUDY, STRATEGY)
     assert cut and path.read_bytes() == whole
     writer.session("2026-11-19T11:00:00+00:00")
     writer.close()
-    assert len(read_ledger(tmp_path, STUDY).sessions) == 2
+    assert len(read_ledger(tmp_path, STUDY, STRATEGY).sessions) == 2
 
 
 def test_a_ledger_without_its_first_line_is_a_study_never_set_up(tmp_path: Path) -> None:
     with pytest.raises(NotSetUpError, match="does not exist"):
-        read_ledger(tmp_path, STUDY)
+        read_ledger(tmp_path, STUDY, STRATEGY)
     (tmp_path / LEDGER_NAME).write_bytes(b'{"seq":0,"ev')
     with pytest.raises(NotSetUpError, match="holds no event"):
-        read_ledger(tmp_path, STUDY)
+        read_ledger(tmp_path, STUDY, STRATEGY)
 
 
 def _edit(index: int, **changes: Any) -> Any:
@@ -104,6 +106,10 @@ def _edit(index: int, **changes: Any) -> Any:
 
 BROKEN = {
     "another study": (_edit(0, study="other"), "is the ledger of the study 'other'"),
+    "another strategy": (
+        _edit(0, strategy="6" * 64),
+        "study.json records another strategy than the one the study was made with",
+    ),
     "no study first": (lambda lines: lines.pop(0), "line 1 is not event 0 of the ledger"),
     "a gap": (lambda lines: lines.pop(3), "line 4 is not event 3"),
     "an unknown event": (_edit(4, event="told"), "is no event of a study's ledger"),
@@ -147,9 +153,9 @@ def test_a_ledger_that_does_not_hold_up_is_refused_and_left_as_it_is(
         rewrite(tmp_path, lines)
     before = (tmp_path / LEDGER_NAME).read_bytes()
     with pytest.raises(OptimizationError, match=message):
-        read_ledger(tmp_path, STUDY)
+        read_ledger(tmp_path, STUDY, STRATEGY)
     with pytest.raises(OptimizationError, match=message):  # a writer opens none such either
-        LedgerWriter.open(tmp_path, STUDY)
+        LedgerWriter.open(tmp_path, STUDY, STRATEGY)
     assert (tmp_path / LEDGER_NAME).read_bytes() == before
 
 
@@ -171,7 +177,7 @@ def test_a_writer_never_writes_what_a_reader_would_refuse(tmp_path: Path) -> Non
     with pytest.raises(OptimizationError, match="after the strategy was exhausted"):
         writer.proposed(3, {"radius": 1.0}, {})
     writer.close()
-    assert read_ledger(tmp_path, STUDY).exhausted
+    assert read_ledger(tmp_path, STUDY, STRATEGY).exhausted
 
 
 def test_after_a_write_fails_nothing_more_is_written(
@@ -195,12 +201,12 @@ def test_after_a_write_fails_nothing_more_is_written(
     with pytest.raises(OptimizationError, match="is not written any more after a write failed"):
         writer.interrupted(1)
     writer.close()
-    assert read_ledger(tmp_path, STUDY).entries[1].running  # settled by the next session
+    assert read_ledger(tmp_path, STUDY, STRATEGY).entries[1].running  # settled by the next session
 
 
 def test_a_new_ledger_is_never_made_over_another(tmp_path: Path) -> None:
     written(tmp_path).close()
     before = (tmp_path / LEDGER_NAME).read_bytes()
     with pytest.raises(OptimizationError, match="cannot create"):
-        LedgerWriter.create(tmp_path, STUDY)
+        LedgerWriter.create(tmp_path, STUDY, STRATEGY)
     assert (tmp_path / LEDGER_NAME).read_bytes() == before

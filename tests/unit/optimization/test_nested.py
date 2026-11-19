@@ -597,6 +597,55 @@ def test_an_inner_study_whose_making_was_cut_short_is_no_error_and_is_made_on_re
     assert study.trials[0].status == "valid" and len(study.trials[0].inner.trials) == 3
 
 
+def _restrategize(directory: Path, change: Callable[[dict[str, Any]], None]) -> None:
+    """Change the strategy the study in ``directory`` records, in its ``study.json`` and the
+    commitment its ledger holds alike: a change that holds together within the study."""
+    from k4opt.optimization._study import strategy_digest
+
+    path = directory / "study.json"
+    document = json.loads(path.read_text())
+    change(document["strategy"])
+    path.write_text(json.dumps(document))
+    lines = (directory / LEDGER_NAME).read_text().splitlines()
+    head = json.loads(lines[0]) | {"strategy": strategy_digest(document["strategy"])}
+    (directory / LEDGER_NAME).write_text("\n".join([json.dumps(head), *lines[1:]]) + "\n")
+
+
+def test_an_inner_study_runs_the_strategy_its_parent_derives_or_is_refused(
+    tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch, strategy: str
+) -> None:
+    simulation.install(monkeypatch)
+    output = tmp_path / "s"
+    with monkeypatch.context() as patched:
+        stop_at_settle(1, 2)(patched)  # the inner study under way
+        with pytest.raises(Stop):
+            run(nested, output, 1, strategy)
+    (output / ".lock").unlink(missing_ok=True)
+    inner = output / "inner" / "trial-000000"
+
+    def change(recorded: dict[str, Any]) -> None:
+        if strategy == "grid":  # still a grid of its parameters, but not its parent's
+            recorded["values"]["x"] = [1.5, 1.0, 1.9]
+        else:  # still a sampler of its parameters, but not seeded from its parent's
+            recorded["sampler"]["seed"] = 7
+
+    _restrategize(inner, change)
+    load_study(inner)  # on its own, it holds together
+    message = "is not the strategy its parent's gives it"
+    with pytest.raises(OptimizationError, match=message):
+        run(nested, output, 0, strategy, resume=True)
+    # a tree that ended reads back, and its JSON form, only with each inner study's own
+    finished = tmp_path / "f"
+    run(nested, finished, 1, strategy)
+    data = json.loads(load_study(finished).to_json())
+    change(data["trials"][0]["inner"]["study"]["strategy"])
+    with pytest.raises(OptimizationError, match=message):
+        StudyResults.from_dict(data)
+    _restrategize(finished / "inner" / "trial-000000", change)
+    with pytest.raises(OptimizationError, match=message):
+        load_study(finished)
+
+
 def test_an_inner_study_of_another_problem_or_other_programs_is_refused(
     tmp_path: Path, nested: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -288,7 +288,7 @@ def test_study_show_trial_and_export_read_a_study_and_change_nothing(
     assert lines[0].startswith("study:      trade-")
     assert lines[1].startswith("id:         ")
     assert lines[2] == f"directory:  {output}"
-    assert lines[3] == "strategy:   grid of 6 points"  # never asked for a seventh
+    assert lines[3] == "strategy:   grid of 6 points, exhausted: it has nothing more to propose"
     assert lines[4] == (
         f"parameters: {RADIUS}  continuous [100.0, 600.0]  "
         "(geometry constants.InnerTracker_Barrel_radius_1, evaluator test.trade_off: x)"

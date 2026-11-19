@@ -240,3 +240,49 @@ assert not [m for m, held in sys.modules.items() if m.startswith("optuna") and h
     run = _python(code, tmp_path)
     assert run.returncode == 0, run.stderr
     assert "strategy:   grid of 4 points, exhausted" in run.stdout
+
+
+def test_a_grid_changed_after_the_study_began_neither_reads_back_nor_resumes(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    from tests.support.common import tree_digest
+
+    problem, output = write_problem(), tmp_path / "s"
+    grid = {RADIUS: [150.0, 250.0, 350.0]}
+    optimize(problem, [trade_off()], output, trials=1, strategy="grid", grid=grid)
+    path = output / "study.json"
+    document = json.loads(path.read_text())
+    # still a grid of the problem, and its first point is the trial's: only its ledger tells
+    document["strategy"]["values"][RADIUS] = [150.0, 250.0, 450.0]
+    path.write_text(json.dumps(document))
+    before = tree_digest(output)
+    message = "records another strategy than the one the study was made with"
+    with pytest.raises(OptimizationError, match=message):
+        load_study(output)
+    with pytest.raises(OptimizationError, match=message):
+        optimize(problem, [trade_off()], output, trials=2, resume=True)
+    assert tree_digest(output) == before
+
+
+def test_a_grid_run_to_its_last_point_is_exhausted_at_once(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    grid = {RADIUS: [150.0, 250.0]}
+    report = optimize(problem, [trade_off()], output, trials=2, strategy="grid", grid=grid)
+    assert report.exhausted and ledger(output).exhausted  # whether asked for more or not
+    again = optimize(problem, [trade_off()], output, trials=1, resume=True)
+    assert again.to_dict() == report.to_dict()  # nothing new, and nothing reads otherwise
+
+
+def test_a_grid_exhausted_by_a_session_that_was_killed_is_marked_so_on_resume(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    grid = {RADIUS: [150.0, 250.0]}
+    optimize(problem, [trade_off()], output, trials=1, strategy="grid", grid=grid)
+    # killed after it kept the proposal of the last point, before it kept that it was the last
+    left_running(output, problem, values={RADIUS: 250.0}, note={"point": 1})
+    assert not ledger(output).exhausted
+    resumed = optimize(problem, [trade_off()], output, trials=1, resume=True)
+    assert resumed.exhausted and [t.status for t in resumed.trials] == ["valid", "interrupted"]

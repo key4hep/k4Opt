@@ -705,6 +705,11 @@ def _edit_study(output: Path, change: Callable[[dict[str, Any]], None]) -> None:
             "its recorded distributions is",
         ),
         (lambda d: d["strategy"].update(name="annealing"), "records no strategy k4opt runs"),
+        # a seed of its own, which the sampler would take: only the ledger tells
+        (
+            lambda d: d["strategy"]["sampler"].update(seed=7),
+            "records another strategy than the one the study was made with",
+        ),
     ],
 )
 def test_other_software_than_the_study_was_made_with_refuses(

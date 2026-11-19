@@ -196,6 +196,11 @@ class Grid:
             values[name] = axis[position]
         return {name: values[name] for name in self._names}
 
+    @property
+    def exhausted(self) -> bool:
+        """Whether every point was proposed."""
+        return self._next >= self._points
+
     def propose(self, number: int) -> Proposal | Answer:
         if self._next >= self._points:
             return EXHAUSTED

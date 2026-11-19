@@ -217,7 +217,7 @@ def _run_study(
         else:
             _refuse_used(directory, LOCK_NAME)  # again, now that no one else can start here
             write_study(directory, document)
-        ledger, cut = open_ledger(directory, document["id"], resume)
+        ledger, cut = open_ledger(directory, document, resume)
         try:
             if cut:
                 warn(f"{ledger.path}: a line a killed process cut short was removed")

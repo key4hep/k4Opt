@@ -18,7 +18,6 @@ values (invalid, failed, rejected, ...) is FAIL, which TPE ignores.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from typing import Any, Literal, cast
@@ -36,6 +35,7 @@ from optuna.trial import Trial, TrialState, create_trial
 from k4opt.frozen import same_json
 from k4opt.optimization._proposal import Answer, Feedback, Past, Proposal
 from k4opt.optimization._scope import StudyScope
+from k4opt.optimization._strategy import session_seed
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import ProblemSpec
 
@@ -45,16 +45,6 @@ CONSTANT_LIAR = True  # trials still running count as bad ones, so trials at onc
 SEEDING = "per session, from the seed and the number of trials"
 
 _EXACT_INTEGERS = 2**53  # TPE samples integers through floats, exact up to here
-
-
-def session_seed(study_seed: int, trials: int) -> int:
-    """The sampler's seed for a session that starts when the study has ``trials`` trials.
-
-    Derived, so that a resumed session does not replay the proposals the first session started
-    with; the same history and seed give the same proposals again.
-    """
-    digest = hashlib.sha256(f"{study_seed}:{trials}".encode()).digest()
-    return int.from_bytes(digest[:4], "big")
 
 
 def _float_bound(name: str, value: int | float) -> float:
@@ -220,6 +210,11 @@ class TPE:
                 f"Optuna's trial {trial.number} is not trial {number} of the study"
             )
         return trial
+
+    @property
+    def exhausted(self) -> bool:
+        """TPE proposes as long as it is asked."""
+        return False
 
     def propose(self, number: int) -> Proposal | Answer:
         with _quiet():

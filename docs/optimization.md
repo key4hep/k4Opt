@@ -121,15 +121,16 @@ Python API takes the same as `optimize(..., strategy="grid", grid={"ecal_cell_si
 10.0, 20.0]})`.
 
 `--trials N` runs the next N points: a resume goes on from the next point, never proposes one
-twice, and a point whose trial was interrupted is spent, not proposed again. Once the strategy
-answers that it has nothing more to propose, the study is *exhausted*: the run ends, however
-many trials were asked for, `k4opt study show` says so, and the JSON form holds `"exhausted":
-true`. At an inner level of a nested problem, each study runs the level's `trials` points of its
+twice, and a point whose trial was interrupted is spent, not proposed again. Once its last point
+is proposed, the study is *exhausted*, whether or not more trials were asked for: the run ends
+once its trials ended, `k4opt study show` says so, and the JSON form holds `"exhausted": true`. At an inner level of a nested problem, each study runs the level's `trials` points of its
 grid at most, and ends when it is exhausted, with fewer.
 
 `study.json` records the grid as `{"name": "grid", "values": {...}, "points": N}`: the values of
 every parameter the study and the levels below it search, and how many points the study's own
-grid has; a resume takes it from there, and refuses one that is not a grid of the study.
+grid has; a resume takes it from there, and refuses one that is not a grid of the study, or not
+the one the study was made with: the study's ledger commits to it
+([below](#how-a-study-is-kept-the-ledger-and-its-strategy)).
 
 ### Optuna's TPE sampler
 
@@ -473,7 +474,9 @@ runs/nested/
   through its top study alone, whose lock covers the tree.
 - `load_study` reads the tree: `trial.inner` is the study of the level below, `trial.selected` the
   trial chosen and the values it adds, each link checked (the study was started for this trial,
-  with its values, it ran all its trials or its strategy was exhausted, the selected trial is its
+  with its values and the strategy the trial's study gives it: the grid values of its
+  parameters, or the same sampler seeded from the trial; it ran all its trials or its strategy
+  was exhausted, the selected trial is its
   best by its records, and the
   trial's candidate is those values with that trial's). The JSON form holds the
   inner studies. `k4opt study show` lists them; `k4opt study show DIR/inner/trial-000002` shows one.
@@ -499,7 +502,7 @@ directory itself is fine: a trial's record names the files of its run directory 
 | software | its `id` (the build of the stack, the system and every variable not known to be irrelevant: [software](software.md)), its build and its system; every trial's record must have run on the same | `KEY4HEP_STACK` |
 | programs | each program the stages run (`ddsim`, `k4run`): the path of its executable, where its links lead (a release of the stack is told apart by its path), its size and SHA-256, and its interpreter; every trial's record must have run the same | |
 | k4opt | the SHA-256 of its code | version, git commit |
-| strategy | its name; for Optuna, its exact version, the sampler and its settings and seed, and the distributions; for the grid, its values and points | |
+| strategy | its name; for Optuna, its exact version, the sampler and its settings and seed, and the distributions; for the grid, its values and points; and that it is the one the study's ledger committed to when the study was made | |
 
 The `identity` digest covers the compared column only, but for the programs, which are compared
 apart, so that a refusal names the program that differs. Both
@@ -582,13 +585,15 @@ A study owns its trials; its strategy only proposes.
 | the outputs a trial's stages made, and where reused ones come from | the evaluation | the trial's directory and record |
 
 **The ledger** is `trials.jsonl` in the study directory, one JSON object per line, each an
-*event* numbered by `seq`: `study` (the first line, naming the study), `session` (a session
+*event* numbered by `seq`: `study` (the first line, naming the study and committing to the
+strategy it was made with by the SHA-256 of what `study.json` records under `strategy`; a study
+whose `study.json` records another one is refused, read back or resumed), `session` (a session
 opened the study), `proposed` (trial `N` with the values its strategy proposed, checked, and
 what the strategy noted of them), `malformed` (a proposal that is no candidate, with why),
 `selected` (the trial of the study below that a trial selected), one ending of a trial
 (`recorded` with the status, id and SHA-256 of its record; `rejected`, by what and why;
 `unscored`; `interrupted`; `error`, why) and `exhausted` (the strategy has nothing more to
-propose). Only the process that holds the lock writes it, only by appending a whole line, synced
+propose, kept as soon as it says so: right after its last proposal, or when asked for one). Only the process that holds the lock writes it, only by appending a whole line, synced
 to disk before anything else happens, and every event is checked as a reader checks it before it
 is written. A line is written once it ends in a newline: a line a killed process cut short is
 the last one and was never written, so a reader leaves it out and the next session removes it.
@@ -620,7 +625,7 @@ resume.
 **The strategy boundary.** A strategy is asked for a proposal for trial `N` when the study has a
 slot for it and answers with values for the parameters the study searches (and a small note,
 recorded with the trial), with *waiting* (nothing until a trial under way ended) or with
-*exhausted*. It is told each trial's status, and for a valid one its objective values, the
+*exhausted*, and says after each proposal whether it is exhausted. It is told each trial's status, and for a valid one its objective values, the
 normalized margin of each limit and its feasibility, all from the checked record, and where the
 record is. When a study opens, it is made from the study's trials so far, by number, each with
 its proposal and how it ended. It executes nothing, changes no objective or limit, and keeps no

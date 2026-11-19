@@ -209,8 +209,10 @@ def document(study: Path) -> dict[str, Any]:
 def ledger(study: Path) -> Any:
     """The ledger of a study directory, read as ``load_study`` reads it."""
     from k4opt.optimization._ledger import read_ledger
+    from k4opt.optimization._study import strategy_digest
 
-    return read_ledger(study, document(study)["id"])
+    held = document(study)
+    return read_ledger(study, held["id"], strategy_digest(held["strategy"]))
 
 
 def endings(study: Path) -> list[str | None]:
@@ -245,8 +247,10 @@ def left_running(
     with ``values`` (those of :func:`proposal` by default) and what the strategy noted of them,
     its directory partly made if ``directory``."""
     from k4opt.optimization._ledger import LedgerWriter
+    from k4opt.optimization._study import strategy_digest
 
-    writer, _ = LedgerWriter.open(output, document(output)["id"])
+    held = document(output)
+    writer, _ = LedgerWriter.open(output, held["id"], strategy_digest(held["strategy"]))
     try:
         number = writer.next_number
         searched = document(output)["scope"]["searched"]
@@ -331,6 +335,10 @@ def told(monkeypatch: pytest.MonkeyPatch) -> Told:
             log.told.append((self.level, self.study, number, feedback))
             log.events.append(("told", self.level, self.study, number))
             self.inner.tell(number, feedback)
+
+        @property
+        def exhausted(self) -> bool:
+            return bool(self.inner.exhausted)
 
     def opening(recorded: Any, scope: Any, history: Any) -> Any:
         parent = scope.parent

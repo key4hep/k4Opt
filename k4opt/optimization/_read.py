@@ -31,6 +31,7 @@ from k4opt.optimization._study import (
     STUDY_NAME,
     inner_directory,
     read_study,
+    strategy_digest,
     trial_directories,
     trial_directory,
 )
@@ -236,5 +237,5 @@ def load(directory: str | os.PathLike[str]) -> StudyResults:
         raise OptimizationError(f"{path} is not a study directory: it holds no {STUDY_NAME}")
     document = read_study(path)
     scope = recorded_scope(document)
-    ledger = read_ledger(path, document["id"])
+    ledger = read_ledger(path, document["id"], strategy_digest(document["strategy"]))
     return results_of(path, document, scope, ledger)

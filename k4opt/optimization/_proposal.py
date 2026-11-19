@@ -98,6 +98,13 @@ class Strategy(Protocol):
         ended as ``feedback`` says."""
         ...
 
+    @property
+    def exhausted(self) -> bool:
+        """Whether it will never propose again (a grid whose last point it proposed): asked
+        after each proposal, so that a study knows it at once, whether or not it asks for
+        more."""
+        ...
+
 
 class MalformedError(Exception):
     """A proposal that is no candidate of the study; the message says why."""

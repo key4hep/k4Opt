@@ -11,10 +11,12 @@ Reading a study back needs no strategy.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import secrets
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
+from k4opt.frozen import same_json, thaw
 from k4opt.optimization import _grid
 from k4opt.optimization._proposal import Past, Strategy
 from k4opt.optimization._scope import StudyScope
@@ -22,6 +24,17 @@ from k4opt.optimization.errors import OptimizationError
 
 STRATEGIES = ("optuna", "grid")
 """The names of the strategies a study can be run with, the default first."""
+
+
+def session_seed(study_seed: int, trials: int) -> int:
+    """The seed of Optuna's sampler for a session that starts when the study has ``trials``
+    trials, and of the study of the level below that trial ``trials`` stands for.
+
+    Derived, so that a resumed session does not replay the proposals the first session started
+    with; the same history and seed give the same proposals again.
+    """
+    digest = hashlib.sha256(f"{study_seed}:{trials}".encode()).digest()
+    return int.from_bytes(digest[:4], "big")
 
 
 @contextlib.contextmanager
@@ -92,6 +105,48 @@ def child(recorded: Mapping[str, Any], scope: StudyScope, number: int) -> dict[s
     from k4opt.optimization import _optuna  # imported to run the study the child belongs to
 
     return _optuna.child(recorded, scope, number)
+
+
+def derived(parent: object, child: object, scope: StudyScope, number: int) -> list[str]:
+    """Why the strategy a study of the level below records (``child``, of ``scope``) is not the
+    one the strategy of the study above (``parent``) gives the study that trial ``number``
+    stands for: the parent's grid values of its parameters, or the parent's sampler, version
+    and settings with the seed derived from the parent's and the trial's number. Each said for a
+    person; none if it is. Needs no strategy, so that reading a study back checks it too; the
+    distributions of Optuna's sampler are checked as a resume checks them."""
+    try:
+        name, theirs = _name(parent), _name(child)
+    except OptimizationError as exc:
+        return [str(exc)]
+    assert isinstance(parent, Mapping)
+    assert isinstance(child, Mapping)
+    given: dict[str, Any] = {key: thaw(value) for key, value in child.items()}
+    if theirs != name:
+        return [f"its strategy {theirs!r} is not the strategy its parent's gives it ({name!r})"]
+    if name == _grid.NAME:
+        try:
+            expected: Any = _grid.child(parent, scope)
+        except (KeyError, TypeError, OptimizationError) as exc:
+            return [f"the grid of the study above gives it none: {exc}"]
+        if not same_json(given, expected):
+            return [f"its grid {given!r} is not the strategy its parent's gives it ({expected!r})"]
+        return []
+    sampler = parent.get("sampler")
+    seed = sampler.get("seed") if isinstance(sampler, Mapping) else None
+    if not isinstance(sampler, Mapping) or isinstance(seed, bool) or not isinstance(seed, int):
+        return [f"the sampler of the study above has no seed: {sampler!r}"]
+    settings = {key: thaw(value) for key, value in sampler.items()}
+    expected = {
+        "version": parent.get("version"),
+        "sampler": settings | {"seed": session_seed(seed, number)},
+    }
+    found = {"version": given.get("version"), "sampler": given.get("sampler")}
+    if not same_json(found, expected):
+        return [f"its sampler {found!r} is not the strategy its parent's gives it ({expected!r})"]
+    searched = sorted(given.get("distributions") or {})
+    if searched != sorted(scope.searched):
+        return [f"its sampler searches {searched}, not {list(scope.searched)}"]
+    return []
 
 
 def open_strategy(

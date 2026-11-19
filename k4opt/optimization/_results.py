@@ -23,6 +23,7 @@ from k4opt.evaluation import EvaluationContractError, Measurement, Scalar
 from k4opt.frozen import FrozenMap, Json, freeze, same_json, thaw
 from k4opt.optimization._identity import digest
 from k4opt.optimization._scope import StudyScope, limit_names
+from k4opt.optimization._strategy import derived
 from k4opt.optimization._study import (
     STUDY_NAME,
     check_candidate_files,
@@ -460,6 +461,11 @@ def check_inner(document: Mapping[str, Any], scope: StudyScope, trial: TrialResu
             f"{where}: its inner study was started for {below.parent!r} at level {below.level}, "
             "not for this trial"
         )
+    problems = derived(
+        document.get("strategy"), inner.document.get("strategy"), below, trial.number
+    )
+    if problems:
+        raise OptimizationError(f"{where}: its inner study's strategy: {'; '.join(problems)}")
     if inner.document.get("identity") != document.get("identity"):
         raise OptimizationError(
             f"{where}: its inner study is not of the study's problem, files, code and stack (its "

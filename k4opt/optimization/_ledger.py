@@ -9,7 +9,9 @@ removes it before it appends. :func:`read_ledger` reads it, strictly and without
 
 The events, each with exactly these keys besides ``seq`` and ``event``:
 
-- ``study`` (``study``): the first line, naming the study the ledger belongs to;
+- ``study`` (``study``, ``strategy``): the first line, naming the study the ledger belongs to
+  and committing to the strategy it was made with (the SHA-256 of what ``study.json`` records
+  of it), so that a strategy changed afterwards is refused, not run or read as the study's;
 - ``session`` (``started``): a session opened the study to run trials; the trials a later
   session ends are ``recovered``;
 - ``proposed`` (``trial``, ``values``, ``proposal``): trial ``trial`` (numbered from 0, in
@@ -52,7 +54,7 @@ ENDINGS = ("recorded", "rejected", "unscored", "interrupted", "error")
 """How a running trial ends, as an event."""
 
 _KEYS: Mapping[str, tuple[str, ...]] = {
-    "study": ("study",),
+    "study": ("study", "strategy"),
     "session": ("started",),
     "proposed": ("trial", "values", "proposal"),
     "malformed": ("trial", "proposal", "message"),
@@ -237,19 +239,27 @@ def _parse(line: bytes, index: int, path: Path) -> dict[str, Any]:
     return event
 
 
-def _replay(data: bytes, path: Path, study: str) -> tuple[_State, int]:
+def _replay(data: bytes, path: Path, study: str, strategy: str) -> tuple[_State, int]:
     """The state the complete lines of ``data`` make, and how many bytes they take: a last line
-    without its newline was cut short as it was written, so it was never written."""
+    without its newline was cut short as it was written, so it was never written. The first
+    line must name the study ``study`` and commit to the strategy whose digest is
+    ``strategy``."""
     end = data.rfind(b"\n") + 1
     lines = data[:end].split(b"\n")[:-1]
     if not lines:
         raise NotSetUpError(f"{path} holds no event: the study was never set up completely")
     head = _parse(lines[0], 0, path)
-    if set(head) != {"seq", "event", "study"} or head["event"] != "study":
+    if set(head) != {"seq", "event", "study", "strategy"} or head["event"] != "study":
         raise OptimizationError(f"{path.name} line 1 does not name the ledger's study")
     if head["study"] != study:
         raise OptimizationError(
             f"{path} is the ledger of the study {head['study']!r}, not of {study!r}"
+        )
+    if head["strategy"] != strategy:
+        raise OptimizationError(
+            f"study.json records another strategy than the one the study was made with: "
+            f"{path.name} commits to the strategy {str(head['strategy'])[:12]}..., study.json "
+            f"records {strategy[:12]}...; a study runs and reads with the strategy it began with"
         )
     state = _State(study)
     for index, line in enumerate(lines[1:], start=1):
@@ -257,13 +267,15 @@ def _replay(data: bytes, path: Path, study: str) -> tuple[_State, int]:
     return state, end
 
 
-def read_ledger(directory: Path, study: str) -> Ledger:
-    """The ledger of the study ``study`` in ``directory``, read without writing anything.
+def read_ledger(directory: Path, study: str, strategy: str) -> Ledger:
+    """The ledger of the study ``study`` in ``directory``, made with the strategy whose digest is
+    ``strategy`` (:func:`~k4opt.optimization._study.strategy_digest`), read without writing
+    anything.
 
     Raises :class:`NotSetUpError` if there is none (or it names no study yet) and
     :class:`OptimizationError` for one that does not hold up: a line that is not the next event,
     an event a ledger cannot hold where it is (a trial ended twice, proposed out of order), or
-    the ledger of another study."""
+    the ledger of another study, or of a study made with another strategy."""
     path = directory / LEDGER_NAME
     try:
         data = path.read_bytes()
@@ -273,7 +285,7 @@ def read_ledger(directory: Path, study: str) -> Ledger:
         ) from None
     except OSError as exc:
         raise OptimizationError(f"cannot read {path}: {exc.strerror or exc}") from None
-    state, _ = _replay(data, path, study)
+    state, _ = _replay(data, path, study, strategy)
     return state.snapshot()
 
 
@@ -296,22 +308,24 @@ class LedgerWriter:
         self._broken: str | None = None
 
     @classmethod
-    def create(cls, directory: Path, study: str) -> LedgerWriter:
-        """The ledger of a new study, made with its first line."""
+    def create(cls, directory: Path, study: str, strategy: str) -> LedgerWriter:
+        """The ledger of a new study, made with its first line, which commits to the strategy
+        whose digest is ``strategy``."""
         path = directory / LEDGER_NAME
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL, 0o644)
         except OSError as exc:
             raise OptimizationError(f"cannot create {path}: {exc.strerror or exc}") from None
         writer = cls(path, descriptor, _State(study), 0)
-        writer._write({"seq": 0, "event": "study", "study": study})
+        writer._write({"seq": 0, "event": "study", "study": study, "strategy": strategy})
         _sync_directory(directory)
         return writer
 
     @classmethod
-    def open(cls, directory: Path, study: str) -> tuple[LedgerWriter, bool]:
-        """The ledger of a study that has one, to append to, and whether a line cut short was
-        removed from its end first (what a process killed as it wrote it left)."""
+    def open(cls, directory: Path, study: str, strategy: str) -> tuple[LedgerWriter, bool]:
+        """The ledger of a study that has one, made with the strategy whose digest is
+        ``strategy``, to append to, and whether a line cut short was removed from its end first
+        (what a process killed as it wrote it left)."""
         path = directory / LEDGER_NAME
         try:
             descriptor = os.open(path, os.O_RDWR | os.O_APPEND)
@@ -322,7 +336,7 @@ class LedgerWriter:
         try:
             with open(descriptor, "rb", closefd=False) as handle:
                 data = handle.read()
-            state, end = _replay(data, path, study)
+            state, end = _replay(data, path, study, strategy)
             cut = end < len(data)
             if cut:
                 os.ftruncate(descriptor, end)

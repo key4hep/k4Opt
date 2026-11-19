@@ -14,6 +14,7 @@ do: each record must read it as every earlier record of the study did
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -166,6 +167,14 @@ def new_document(
     document["scope"] = scope.to_dict()
     document["strategy"] = dict(strategy)
     return document
+
+
+def strategy_digest(strategy: object) -> str:
+    """SHA-256 of the strategy a ``study.json`` records, as its ledger commits to it when the
+    study is made: whatever the order of its keys, plain or read-only."""
+    plain = thaw(freeze(strategy, "strategy", OptimizationError))
+    text = json.dumps(plain, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def write_study(directory: Path, document: Mapping[str, object]) -> None:
