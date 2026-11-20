@@ -137,8 +137,8 @@ class StudyContext:
 class Strategy(Protocol):
     """A strategy of one study, made for it whenever it opens, then told every proposal and
     ending its ledger holds, in order. It may say ``exhausted`` (a ``bool`` attribute or property,
-    asked after each proposal kept and once it was told the ledger) when it will never propose
-    again, so that the study knows at once; without it, it says so by answering
+    asked after each proposal kept, each ending told and once it was told the ledger) when it will
+    never propose again, so that the study knows at once; without it, it says so by answering
     :data:`EXHAUSTED`."""
 
     def propose(self, trial: int) -> Proposal | Answer:

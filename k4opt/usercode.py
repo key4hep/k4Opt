@@ -48,6 +48,11 @@ _HELPER_FILES: WeakKeyDictionary[type, FrozenMap[str, tuple[str, Path]]] = WeakK
 # the module each class's reference names, whose globals its methods read, and the spec it had
 # then: importlib.reload() executes the module again in place, under a new spec
 _ENTRIES: WeakKeyDictionary[type, tuple[ModuleType, object]] = WeakKeyDictionary()
+# each module a reference named that this process imported by it (package.module:Class): the
+# modules imported before, the module and its spec then. Another class of it is identified as the
+# first was, unless it was reloaded since (a new spec), never one of a module something else
+# imported before k4opt examined it
+_IMPORTED: dict[str, tuple[frozenset[str], ModuleType, object]] = {}
 
 
 def source_of(cls: type) -> dict[str, Json]:
@@ -69,11 +74,12 @@ def source_of(cls: type) -> dict[str, Json]:
     by the bytes executed. One imported later (inside a function) is identified by its file when the
     class is loaded (:func:`changed_code` sees later edits). ``revision`` is the commit and dirty
     flag of the git checkout that tracks the file, taken at the same time, ``None`` if no checkout
-    tracks it; it labels what the hashes do not cover, such as data files. For a class whose module
-    was imported before, or reloaded since, only the path is known: the current file cannot
-    establish which bytes Python executed. ``reference`` is what loads the class again
-    (``/abs/path/file.py:Class`` or ``package.module:Class``), ``None`` for a class
-    :func:`load_class` did not load.
+    tracks it; it labels what the hashes do not cover, such as data files. A class of a module
+    :func:`load_class` imported by its reference for another class is identified as that one was.
+    For a class whose module something else imported before, or that was reloaded since, only the
+    path is known: the current file cannot establish which bytes Python executed. ``reference`` is
+    what loads the class again (``/abs/path/file.py:Class`` or ``package.module:Class``), ``None``
+    for a class :func:`load_class` did not load.
     """
     identity = _SOURCES.get(cls)
     source: dict[str, Json]
@@ -378,6 +384,11 @@ def _load_file(path: Path, before: Collection[str], what: str) -> ModuleType:
     return module
 
 
+def _same_module(known: tuple[frozenset[str], ModuleType, object], module: ModuleType) -> bool:
+    """Whether ``module`` is the one k4opt imported (``known``), not reloaded since."""
+    return known[1] is module and known[2] is module.__spec__
+
+
 def load_class(reference: str, what: str, methods: Sequence[str] = ()) -> type:
     """The class that ``reference`` names, ``FILE.py:Class`` or ``package.module:Class``, of the
     kind ``what`` says (``evaluator``, ``strategy``), with each of ``methods``.
@@ -420,6 +431,9 @@ def load_class(reference: str, what: str, methods: Sequence[str] = ()) -> type:
         identity, local = _EXECUTED[module.__name__]
         _identified(cls, identity, path.parent, local, module)
     elif where not in imported_before:  # else, which of its code runs is not known
+        _IMPORTED[where] = frozenset(imported_before), module, module.__spec__
         _identify_import(cls, where, imported_before)
+    elif (known := _IMPORTED.get(where)) is not None and _same_module(known, module):
+        _identify_import(cls, where, known[0])  # imported for another class, and not reloaded
     _REFERENCES[cls] = canonical
     return cls

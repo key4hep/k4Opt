@@ -6,6 +6,8 @@ needs. Loading in all its detail is tested through ``load_evaluator``
 from __future__ import annotations
 
 import hashlib
+import importlib
+import sys
 import textwrap
 from pathlib import Path
 
@@ -57,3 +59,46 @@ def test_a_class_without_the_methods_of_its_kind_is_refused_naming_them(both: Pa
         load_class("Search", "strategy")
     with pytest.raises(CodeLoadError, match=r"evaluator .*missing\.py does not exist"):
         load_class(f"{both.parent / 'missing.py'}:Search", "evaluator")
+
+
+@pytest.mark.parametrize("first", ["evaluator", "strategy"])
+def test_the_classes_of_one_module_are_identified_alike_whichever_is_loaded_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    package = f"campaign_{first}_first"
+    (tmp_path / package).mkdir()
+    (tmp_path / package / "__init__.py").write_text("")
+    (tmp_path / package / "algorithms.py").write_text(textwrap.dedent(BOTH), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    where = f"{package}.algorithms"
+    load = {
+        "evaluator": lambda: load_evaluator(f"{where}:Measure"),
+        "strategy": lambda: load_class(f"{where}:Search", "strategy", ("propose", "tell")),
+    }
+    try:
+        # the second finds the module imported, by k4opt itself for the first: identified alike
+        sources = [source_of(load[kind]()) for kind in (first, *(set(load) - {first}))]
+        digest = hashlib.sha256((tmp_path / package / "algorithms.py").read_bytes()).hexdigest()
+        assert [s["sha256"] for s in sources] == [digest, digest]
+        assert [s["executed"] for s in sources] == [True, True]
+        assert sources[0]["helpers"] == sources[1]["helpers"]
+    finally:
+        for name in [n for n in sys.modules if n.partition(".")[0] == package]:
+            del sys.modules[name]
+
+
+def test_a_class_of_a_module_imported_before_k4opt_examined_it_is_not_identified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = "campaign_imported_before"
+    (tmp_path / package).mkdir()
+    (tmp_path / package / "__init__.py").write_text("")
+    (tmp_path / package / "algorithms.py").write_text(textwrap.dedent(BOTH), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        importlib.import_module(f"{package}.algorithms")  # which of its code runs is not known
+        source = source_of(load_class(f"{package}.algorithms:Search", "strategy"))
+        assert source.get("sha256") is None and source["reference"]
+    finally:
+        for name in [n for n in sys.modules if n.partition(".")[0] == package]:
+            del sys.modules[name]

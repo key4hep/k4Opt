@@ -7,9 +7,10 @@ code is (:func:`load_strategy`, :mod:`k4opt.usercode`): it must have ``propose``
 
 What it is given has three roles (:class:`Custom`): its *settings*, plain JSON passed as keyword
 arguments and recorded as they are; the *files* some of them name, those the class lists in its
-``files`` attribute (a prompt, say), identified by their bytes and SHA-256 and given to it as
-absolute paths; and *credentials*, which it reads where it runs and which a study records nowhere:
-settings that look like they hold one are refused (:mod:`k4opt.credentials`). ``study.json``
+``files`` attribute (a prompt, say), which must each be given (``None`` for no file), identified
+by their bytes and SHA-256 and given to it as absolute paths; and *credentials*, which it reads
+where it runs and which a study records nowhere: settings that look like they hold one are refused
+(:mod:`k4opt.credentials`). ``study.json``
 records the strategy (:meth:`Custom.record`) by the name of its class, its source as an
 evaluator's is identified (without where it is), its settings but files and its files by content;
 a resume is given the same class and settings again, and refused if anything of them differs
@@ -19,7 +20,6 @@ a resume is given the same class and settings again, and refused if anything of 
 
 from __future__ import annotations
 
-import inspect
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -109,9 +109,9 @@ class Custom:
         """``strategy``, which :func:`load_strategy` loaded, with ``settings`` (a JSON object; a
         relative path of a file setting is relative to ``base``). Raises
         :class:`OptimizationError` for a class whose source is not known to be the code that
-        runs, settings that are no JSON object or look like they hold a credential, a file
-        setting that names no readable file, and one not given whose default in the class names
-        one, which the study would not identify."""
+        runs, settings that are no JSON object or look like they hold a credential, and a file
+        setting that is not given (``None`` for no file: what a default would read is identified
+        by nothing) or names no readable file."""
         source = source_of(strategy)
         name = _name(strategy)
         if not source.get("reference") or not source.get("sha256"):
@@ -143,13 +143,12 @@ class Custom:
         for key, path in files.items():
             if not path.is_file():
                 raise OptimizationError(f"strategy setting {key}: {path} is no file")
-        for key in names:
-            default = None if key in plain else _default(strategy, key)
-            if default is not None:
-                raise OptimizationError(
-                    f"strategy {name}: its file setting {key} is not given, so the file it reads "
-                    f"by default ({default!r}) would not be identified; give it in its settings"
-                )
+        missing = [key for key in names if key not in plain]
+        if missing:  # a default, or a wrapper's own, would read a file nothing identifies
+            raise OptimizationError(
+                f"strategy {name}: give its file settings {', '.join(missing)} in its settings: "
+                "the file each names, or null for none, so that the study identifies what it reads"
+            )
         identities = FrozenMap(
             {key: FrozenMap(_identity(key, path)) for key, path in files.items()}
         )
@@ -220,19 +219,6 @@ class Custom:
                 "beside it that it does not import are not identified"
             ]
         return []
-
-
-def _default(strategy: type, key: str) -> object:
-    """What the class ``strategy`` makes the setting ``key`` without it: its default, ``None`` for
-    none (a setting it must be given is refused as it is made, one it does not take reads
-    nothing); something, if its signature cannot be read."""
-    try:
-        parameter = inspect.signature(strategy).parameters.get(key)
-    except (TypeError, ValueError):
-        return "not known: its signature cannot be read"
-    if parameter is None or parameter.default is inspect.Parameter.empty:
-        return None
-    return parameter.default
 
 
 def _name(strategy: type) -> str:

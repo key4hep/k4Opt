@@ -408,6 +408,7 @@ class Tree:
                 )
             told = unscore(parent, number, no_best_trial(results))
             self._release(node, number)
+            _exhausted(node)
             if node is self._root:
                 self._progress(told)
             return None
@@ -449,6 +450,7 @@ class Tree:
             above.held, above = False, above.parent
         told = settle(node.study, number, output, result)
         self._release(node, number)
+        _exhausted(node)  # what it was told may end its search: kept, whether or not it is asked
         if node is self._root:
             self._progress(told)
 
@@ -476,7 +478,8 @@ class Tree:
 
 def _exhausted(node: _Node, asked: bool = False) -> None:
     """Keep that the strategy of ``node`` has nothing more to propose, once it says so: it
-    answered so when ``asked``, or tells it after its last proposal; once only."""
+    answered so when ``asked``, or says it after a proposal or an ending it was told (its last
+    proposal, or a result that ends its search), whether or not it is asked again; once only."""
     study = node.study
     assert study.strategy is not None
     try:

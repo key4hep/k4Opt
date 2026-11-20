@@ -417,33 +417,55 @@ DEFAULTED = """
 """
 
 
-def test_a_file_a_strategy_reads_by_default_must_be_given_to_be_identified(
-    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+KEYWORDS = """
+    from pathlib import Path
+
+    from k4opt.optimization import EXHAUSTED, Proposal
+
+
+    class Keywords:
+        files = ("prompt",)
+
+        def __init__(self, study, **settings):  # as a wrapper of another optimizer may
+            self.text = Path(settings.get("prompt", "prompt.md")).read_text()
+
+        def propose(self, trial):
+            return EXHAUSTED
+
+        def proposed(self, trial, proposal): ...
+
+        def tell(self, trial, feedback): ...
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        (DEFAULTED.replace("PROMPT", repr("prompt.md")), "Defaulted"),  # a default reads a file
+        (DEFAULTED.replace("PROMPT", "None"), "Defaulted"),  # a default reads none
+        (KEYWORDS, "Keywords"),  # no parameter of its own: it reads one all the same
+    ],
+)
+def test_a_file_setting_must_be_given_for_the_study_to_identify_what_it_reads(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    name: str,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "prompt.md").write_text("propose wisely")
-    source = DEFAULTED.replace("PROMPT", repr("prompt.md"))
-    defaulted = load_strategy(f"{strategy_file(tmp_path / 'code', source)}:Defaulted")
+    strategy = load_strategy(f"{strategy_file(tmp_path / 'code', source)}:{name}")
     problem, output = write_problem(), tmp_path / "s"
-    message = r"its file setting prompt is not given, so the file it reads by default \('prompt"
+    message = r"give its file settings prompt in its settings: the file each names, or null"
     with pytest.raises(OptimizationError, match=message):
-        optimize(problem, [trade_off()], output, trials=1, strategy=defaulted)
+        optimize(problem, [trade_off()], output, trials=1, strategy=strategy)
     assert not output.exists()
-    # given, it is identified; given as null, or none by default, there is no file to identify
-    report = optimize(
-        problem,
-        [trade_off()],
-        output,
-        trials=1,
-        strategy=defaulted,
-        strategy_settings={"prompt": "prompt.md"},
-    )
-    assert report.trials[0].status == "valid"
-    assert list(json.loads((output / "study.json").read_text())["strategy"]["files"]) == ["prompt"]
-    optional = strategy_file(tmp_path / "optional", DEFAULTED.replace("PROMPT", "None"), "opt")
-    loaded = load_strategy(f"{optional}:Defaulted")
-    assert Custom.of(loaded, None).files == {}
-    assert Custom.of(defaulted, {"prompt": None}).files == {}
+    # given, it is identified; given as null, there is no file to identify
+    assert Custom.of(strategy, {"prompt": None}).files == {}
+    given = Custom.of(strategy, {"prompt": "prompt.md"})
+    assert list(given.record()["files"]) == ["prompt"]
+    assert given.files == {"prompt": tmp_path / "prompt.md"}
 
 
 def test_settings_that_look_like_a_credential_are_refused_before_anything_is_created(
@@ -745,6 +767,46 @@ def test_a_strategy_that_cannot_say_whether_it_is_exhausted_stops_the_study(
             strategy=failing,
             strategy_settings={"error": error},
         )
+
+
+STOPPING = """
+    from k4opt.optimization import EXHAUSTED, Proposal
+
+
+    class Stopping:
+        \"\"\"Proposes one radius, and is done once it learnt how that trial ended.\"\"\"
+
+        def __init__(self, study):
+            self.exhausted = False
+            self.asked = False
+
+        def propose(self, trial):
+            if self.asked:
+                return EXHAUSTED
+            return Proposal({"radius": 300.0})
+
+        def proposed(self, trial, proposal):
+            self.asked = True
+
+        def tell(self, trial, feedback):
+            self.exhausted = feedback.status == "valid"  # good enough: the search ends
+"""
+
+
+def test_a_search_that_ends_with_its_last_result_is_kept_exhausted(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    stopping = load_strategy(f"{strategy_file(tmp_path / 'code', STOPPING)}:Stopping")
+    problem, output = write_problem(), tmp_path / "s"
+    # its one trial is all the session asks for: it is never asked again, yet ended its search
+    report = optimize(problem, [trade_off()], output, trials=1, strategy=stopping)
+    assert report.exhausted and load_study(output).exhausted
+    events = [
+        json.loads(line)["event"] for line in (output / "trials.jsonl").read_text().splitlines()
+    ]
+    assert events[-2:] == ["recorded", "exhausted"]
+    resumed = optimize(problem, [trade_off()], output, trials=1, resume=True, strategy=stopping)
+    assert resumed.exhausted and len(resumed.trials) == 1  # nothing more is proposed
 
 
 # --- reading back ------------------------------------------------------------------------------

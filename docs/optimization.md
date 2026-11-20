@@ -264,8 +264,10 @@ class MyStrategy:
 [an evaluator is loaded](evaluation.md#loading-an-evaluator): the file is executed as ordinary
 Python, so name only code you trust. It is made for the study as `Class(study, **settings)` and
 must say what it needs of the settings by its keyword arguments: one it does not take refuses the
-study before anything is created. An optional `exhausted` attribute says, after each proposal, that
-it will never propose again; answering `EXHAUSTED` says the same when it is asked.
+study before anything is created. An optional `exhausted` attribute says, after each proposal and
+each trial it was told, that it will never propose again (a search that ended with its last
+result is kept so, whether or not more trials were asked for); answering `EXHAUSTED` says the same
+when it is asked.
 
 What it is given, `StudyContext`, read-only:
 
@@ -330,7 +332,7 @@ What a strategy is given has three roles, which a study records differently:
 | | Example | Recorded |
 | --- | --- | --- |
 | settings | a model's name, a temperature, a batch size, a step, a seed | as they are, under `strategy.settings` in `study.json`, published with the study |
-| files | a prompt template the settings name | by bytes and SHA-256 under `strategy.files`; the class names those settings in a `files` attribute (`files = ("prompt",)`) and is given each as an absolute path |
+| files | a prompt template the settings name | by bytes and SHA-256 under `strategy.files`; the class names those settings in a `files` attribute (`files = ("prompt",)`), each must be given (`null` for no file: a file a default would read is identified by nothing), and the class is given each as an absolute path |
 | credentials | an API key | nowhere |
 
 `--strategy-settings FILE` is a YAML mapping, read strictly (a key given twice is refused), and a
