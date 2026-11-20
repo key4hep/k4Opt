@@ -55,7 +55,7 @@ from typing import Any
 
 from k4opt.execution import WAIT, EvaluationSession, Rejected, RunOutcome, RunRequest, Wait
 from k4opt.frozen import FrozenMap, Json, freeze, same_json
-from k4opt.optimization._ledger import LedgerWriter, NotSetUpError
+from k4opt.optimization._ledger import LEDGER_NAME, LedgerWriter, NotSetUpError
 from k4opt.optimization._proposal import EXHAUSTED, WAITING, MalformedError, Past, checked
 from k4opt.optimization._read import inner_id, results_of, trial_result
 from k4opt.optimization._results import TrialResult, best_trial, no_best_trial
@@ -148,7 +148,7 @@ def open_ledger(
                 f"{directory} has trials, but no ledger that holds them; the study cannot go on "
                 "without it"
             ) from None
-    (directory / "trials.jsonl").unlink(missing_ok=True)  # not one line of it was written
+    (directory / LEDGER_NAME).unlink(missing_ok=True)  # not one line of it was written
     return LedgerWriter.create(directory, study, strategy), False
 
 

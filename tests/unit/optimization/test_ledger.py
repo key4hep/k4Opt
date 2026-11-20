@@ -198,10 +198,57 @@ def test_after_a_write_fails_nothing_more_is_written(
         writer.interrupted(1)
     monkeypatch.setattr(_ledger.os, "write", write)
     assert not writer.writable
-    with pytest.raises(OptimizationError, match="is not written any more after a write failed"):
+    with pytest.raises(OptimizationError, match="after a write that did not complete \\(No space"):
         writer.interrupted(1)
     writer.close()
     assert read_ledger(tmp_path, STUDY, STRATEGY).entries[1].running  # settled by the next session
+
+
+@pytest.mark.parametrize("where", ["synced", "half written"])
+def test_after_an_interrupted_write_nothing_more_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """Ctrl-C or SIGTERM as a line is written: as it is synced (the line is on disk), or after
+    half of it was written. Whether it reached the disk is not known, so the writer writes
+    nothing more, not even the endings of the trials still running; what is on disk reads back,
+    and the next session goes on from it."""
+    import os
+
+    from k4opt.optimization import _ledger
+
+    writer = written(tmp_path)  # trial 1 runs
+    writer.proposed(3, {"radius": 600.0}, {"point": 3})  # and trial 3
+    write, sync = os.write, os.fsync
+
+    def synced(descriptor: int) -> None:
+        sync(descriptor)
+        raise KeyboardInterrupt("signal 15")  # as the handler raises once the sync returns
+
+    def half(descriptor: int, data: Any) -> int:
+        write(descriptor, bytes(data)[: len(data) // 2])
+        raise KeyboardInterrupt("signal 15")
+
+    with monkeypatch.context() as patch:
+        if where == "synced":
+            patch.setattr(_ledger.os, "fsync", synced)
+        else:
+            patch.setattr(_ledger.os, "write", half)
+        with pytest.raises(KeyboardInterrupt):
+            writer.recorded(1, "valid", RECORD)
+    assert not writer.writable
+    with pytest.raises(OptimizationError, match="after a write that did not complete"):
+        writer.interrupted(3)  # as k4opt ends the trials still running
+    writer.close()
+    on_disk = where == "synced"
+    ledger = read_ledger(tmp_path, STUDY, STRATEGY)
+    assert ledger.entries[1].running is not on_disk and ledger.entries[3].running
+    reopened, cut = LedgerWriter.open(tmp_path, STUDY, STRATEGY)
+    assert cut is not on_disk  # the half line removed
+    reopened.session("2026-11-20T10:00:00+00:00")
+    reopened.interrupted(3)
+    reopened.close()
+    assert [event["seq"] for event in events(tmp_path)] == list(range(len(events(tmp_path))))
+    assert not read_ledger(tmp_path, STUDY, STRATEGY).entries[3].running
 
 
 def test_a_new_ledger_is_never_made_over_another(tmp_path: Path) -> None:

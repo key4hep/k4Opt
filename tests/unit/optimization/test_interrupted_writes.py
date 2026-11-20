@@ -3,7 +3,8 @@ repeats no trial.
 
 The ledger is written one line per event: the study, each session, each proposal, each ending.
 The tests run a study once to count the lines, then once for each line, interrupted there: by
-Ctrl-C or SIGTERM (a ``KeyboardInterrupt``, after which k4opt ends the trials still running), by
+Ctrl-C or SIGTERM (a ``KeyboardInterrupt``, after which k4opt ends the trials still running
+unless that write began; ``synced``: it came as the line was synced, so the line is on disk), by
 a SIGKILL (nothing more is written, so the trial is left as far as it got; ``torn``: with half of
 the line on disk), or by an ordinary error of that one write (a disk that fills up, after which
 nothing more is written and k4opt stops the study). Every such study must then be read by
@@ -13,6 +14,7 @@ trial proposed once and ended once, and a grid's points proposed in order, none 
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -72,25 +74,36 @@ def _writes(at: int | None, how: str) -> Iterator[list[str]]:
     real = LedgerWriter._write
     dead = False
 
-    def write(self: LedgerWriter, event: Any) -> None:
+    def write(self: LedgerWriter, line: str) -> None:
         nonlocal dead
         if dead:
             raise Killed
-        what = str(event["event"])
+        what = str(json.loads(line)["event"])
         if at is None or len(seen) != at:
             seen.append(what)
-            real(self, event)
+            real(self, line)
             return
         seen.append(what)
         if how == "sigterm":
             raise KeyboardInterrupt(f"interrupted at write {at}: {what}")
+        if how == "synced":  # it came as the line was synced: the line is on disk
+            sync = os.fsync
+
+            def synced(descriptor: int) -> None:
+                sync(descriptor)
+                raise KeyboardInterrupt(f"interrupted at write {at}: {what}")
+
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(os, "fsync", synced)
+                real(self, line)
+            raise AssertionError("the sync raises")
         if how == "error":  # the write fails as a disk that fills up fails it
             self._broken = "No space left on device"
             raise OptimizationError(f"cannot write {self.path}: No space left on device")
         dead = True
         if how == "torn":  # half of the line reached the disk
             assert self._descriptor is not None
-            os.write(self._descriptor, b'{"seq":' + str(self._seq).encode() + b',"event":"')
+            os.write(self._descriptor, line.encode()[: len(line) // 2])
         raise Killed
 
     patch = pytest.MonkeyPatch()
@@ -128,13 +141,14 @@ def _accounted(output: Path, strategy: str, name: str, before: int, where: str) 
         assert len(entries) == before + TRIALS, where
 
 
-@pytest.mark.parametrize("how", ["sigterm", "sigkill", "torn", "error"])
+@pytest.mark.parametrize("how", ["sigterm", "synced", "sigkill", "torn", "error"])
 @pytest.mark.parametrize("name", list(PROBLEMS))
 def test_an_interrupt_at_any_write_leaves_a_readable_and_resumable_study(
     tmp_path: Path, write_problem: Callable[..., Path], name: str, how: str, strategy: str
 ) -> None:
     # an ordinary error stops the study with an error of its own (OptimizationError)
-    stops = {"sigterm": KeyboardInterrupt, "error": Exception}.get(how, Killed)
+    interrupt = {"sigterm": KeyboardInterrupt, "synced": KeyboardInterrupt, "error": Exception}
+    stops = interrupt.get(how, Killed)
     make, kind = PROBLEMS[name]
     problem = make(write_problem)
     with _writes(None, how) as writes:
@@ -148,7 +162,7 @@ def test_an_interrupt_at_any_write_leaves_a_readable_and_resumable_study(
             _study(problem, output, kind, name, strategy)
         where = f"interrupted at write {at} ({what})"
         (output / ".lock").unlink(missing_ok=True)  # a kill leaves it
-        if at == 0:  # its ledger names no study yet: nothing ran, and a resume sets it up
+        if at == 0 and how != "synced":  # its ledger names no study: a resume sets it up
             with pytest.raises(OptimizationError, match="never set up"):
                 load_study(output)
             before = 0

@@ -127,16 +127,22 @@ class Ledger:
 @dataclass(slots=True)
 class _State:
     """The ledger as its events so far make it, checked event by event: what a reader replays
-    and a writer keeps, so that a writer never appends what a reader would refuse."""
+    and a writer keeps, so that a writer never appends what a reader would refuse. ``seq`` is
+    the number of the next event: the lines so far, the study's own first one among them."""
 
     study: str
     sessions: list[str] = field(default_factory=list)
     entries: list[Entry] = field(default_factory=list)
     exhausted: bool = False
+    seq: int = 1
 
     def apply(self, event: Mapping[str, Any], where: str) -> None:
-        """Add ``event``; raise :class:`OptimizationError` (``where`` names the line), changing
-        nothing, for one that is not the next a ledger can hold."""
+        """Add ``event`` as the next; raise :class:`OptimizationError` (``where`` names the
+        line), changing nothing, for one that is not the next a ledger can hold."""
+        self._add(event, where)
+        self.seq += 1
+
+    def _add(self, event: Mapping[str, Any], where: str) -> None:
         kind = event.get("event")
         keys = _KEYS.get(kind) if isinstance(kind, str) else None
         if keys is None or set(event) != {"seq", "event", *keys}:
@@ -294,17 +300,17 @@ class LedgerWriter:
     lock, each a complete line synced to disk; keeps the state they make
     (:attr:`ledger`).
 
-    Every event is checked as a reader checks it before it is written. A write that fails
-    (:class:`OptimizationError`) may or may not have reached the disk, so the writer writes
-    nothing more (:attr:`writable`), and the state it keeps is no longer what the disk holds:
-    what it was writing is settled by the next session, from what is on disk.
+    Every event is checked as a reader checks it before it is written. A write that does not
+    complete, because it fails (:class:`OptimizationError`) or Ctrl-C or SIGTERM stops it
+    (:class:`KeyboardInterrupt`), may or may not have reached the disk, whole or in part, so the
+    writer writes nothing more (:attr:`writable`), and the state it keeps is no longer what the
+    disk holds: what it was writing is settled by the next session, from what is on disk.
     """
 
-    def __init__(self, path: Path, descriptor: int, state: _State, seq: int) -> None:
+    def __init__(self, path: Path, descriptor: int, state: _State) -> None:
         self.path = path
         self._descriptor: int | None = descriptor
         self._state = state
-        self._seq = seq
         self._broken: str | None = None
 
     @classmethod
@@ -316,8 +322,12 @@ class LedgerWriter:
             descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL, 0o644)
         except OSError as exc:
             raise OptimizationError(f"cannot create {path}: {exc.strerror or exc}") from None
-        writer = cls(path, descriptor, _State(study), 0)
-        writer._write({"seq": 0, "event": "study", "study": study, "strategy": strategy})
+        writer = cls(path, descriptor, _State(study))
+        try:
+            writer._write(_line({"seq": 0, "event": "study", "study": study, "strategy": strategy}))
+        except BaseException:  # a resume goes on from what reached the disk, if anything did
+            writer.close()
+            raise
         _sync_directory(directory)
         return writer
 
@@ -346,7 +356,7 @@ class LedgerWriter:
             if isinstance(exc, OSError):
                 raise OptimizationError(f"cannot read {path}: {exc.strerror or exc}") from None
             raise
-        return cls(path, descriptor, state, len(_lines(data[:end]))), cut
+        return cls(path, descriptor, state), cut
 
     @property
     def ledger(self) -> Ledger:
@@ -368,7 +378,7 @@ class LedgerWriter:
 
     @property
     def writable(self) -> bool:
-        """Whether the writer still writes: it is open, and no write failed."""
+        """Whether the writer still writes: it is open, and every write it began completed."""
         return self._descriptor is not None and self._broken is None
 
     def entry(self, number: int) -> Entry:
@@ -411,26 +421,35 @@ class LedgerWriter:
     def _append(self, event: dict[str, Any]) -> None:
         if self._broken is not None:
             raise OptimizationError(
-                f"{self.path} is not written any more after a write failed ({self._broken})"
+                f"{self.path} is not written any more after a write that did not complete "
+                f"({self._broken})"
             )
-        event = {"seq": self._seq, **event}
-        plain = json.loads(json.dumps(event, default=_plain, allow_nan=False))  # as read back
-        self._state.apply(plain, f"{self.path.name} line {self._seq + 1}")
-        self._write(plain)
+        seq = self._state.seq
+        line = _line({"seq": seq, **event})
+        # checked as read back; from here until the line is on disk, whatever stops this leaves
+        # the state ahead of the disk, or the line half written: nothing may be written after it
+        self._broken = _UNSETTLED
+        try:
+            self._state.apply(json.loads(line), f"{self.path.name} line {seq + 1}")
+        except OptimizationError:  # refused, before anything changed
+            self._broken = None
+            raise
+        self._write(line)
 
-    def _write(self, event: Mapping[str, Any]) -> None:
-        text = json.dumps(event, separators=(",", ":"), allow_nan=False) + "\n"
-        line = memoryview(text.encode())
+    def _write(self, line: str) -> None:
+        """Append ``line`` and sync it; the writer writes again only once it is on disk."""
+        self._broken = _UNSETTLED
+        data = memoryview(line.encode())
         try:
             if self._descriptor is None:
                 raise OSError("the ledger is closed")
-            while line:
-                line = line[os.write(self._descriptor, line) :]
+            while data:
+                data = data[os.write(self._descriptor, data) :]
             os.fsync(self._descriptor)
         except OSError as exc:
             self._broken = str(exc.strerror or exc)
             raise OptimizationError(f"cannot write {self.path}: {self._broken}") from exc
-        self._seq += 1
+        self._broken = None
 
     def close(self) -> None:
         if self._descriptor is not None:
@@ -438,15 +457,21 @@ class LedgerWriter:
             os.close(descriptor)
 
 
+_UNSETTLED = "interrupted"
+"""Why a writer writes nothing more after a write that stopped without an error of its own
+(Ctrl-C, SIGTERM)."""
+
+
+def _line(event: Mapping[str, Any]) -> str:
+    """The line of the ledger that holds ``event``: compact JSON, without NaN or infinity."""
+    return json.dumps(event, default=_plain, separators=(",", ":"), allow_nan=False) + "\n"
+
+
 def _plain(value: object) -> object:
     """A read-only mapping (:class:`~k4opt.frozen.FrozenMap`) as the JSON object it is."""
     if isinstance(value, Mapping):
         return dict(value)
     raise TypeError(f"{type(value).__name__} is not JSON")
-
-
-def _lines(data: bytes) -> list[bytes]:
-    return data.split(b"\n")[:-1]
 
 
 def _sync_directory(directory: Path) -> None:

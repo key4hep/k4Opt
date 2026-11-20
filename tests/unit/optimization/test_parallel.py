@@ -351,6 +351,52 @@ def test_a_ledger_that_cannot_be_written_leaves_the_trials_to_the_resume(
     ]
 
 
+def test_an_interrupt_as_a_record_is_synced_leaves_the_trials_still_running_to_the_resume(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    marks: Path,
+    gated: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SIGTERM comes as the line that keeps trial 0's record is synced, while trials 1 and 2
+    run: the line is on disk, but the ledger is written no more, so the other two are not ended
+    in it twice or out of turn; the resume ends them."""
+    from k4opt.optimization import _ledger
+
+    gate(monkeypatch, marks, gate=3, **{"await": held(marks, "trial-000001", "trial-000002")})
+    write, sync = os.write, os.fsync
+    armed: list[int] = []
+
+    def watched(descriptor: int, data: Any) -> int:
+        if b'"event":"recorded","trial":0,' in bytes(data):
+            armed.append(descriptor)
+        return write(descriptor, data)
+
+    def synced(descriptor: int) -> None:
+        sync(descriptor)
+        if descriptor in armed:
+            armed.clear()
+            raise KeyboardInterrupt("signal 15")  # as the handler raises once the sync returns
+
+    monkeypatch.setattr(_ledger.os, "write", watched)
+    monkeypatch.setattr(_ledger.os, "fsync", synced)
+    output, problem = tmp_path / "s", write_problem()
+    with pytest.raises(KeyboardInterrupt):
+        optimize(problem, [gated], output, trials=5, workers=3, **GRID)
+    monkeypatch.setattr(_ledger.os, "write", write)
+    monkeypatch.setattr(_ledger.os, "fsync", sync)
+    assert states(output) == {0: "recorded", 1: None, 2: None}
+    stopped(output, marks)
+    gate(monkeypatch, marks)
+    report = optimize(problem, [gated], output, trials=1, resume=True, workers=2)
+    assert [(t.number, t.status, t.recovered) for t in report.trials] == [
+        (0, "valid", False),
+        (1, "interrupted", True),
+        (2, "interrupted", True),
+        (3, "valid", False),
+    ]
+
+
 def _optimize(problem: Path, output: Path, evaluator: str, *extra: str) -> list[str]:
     return [
         sys.executable,
