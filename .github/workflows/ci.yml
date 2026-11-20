@@ -107,9 +107,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # the Python of the image's FROM line: when dependabot bumps the image, the tests follow
+      - name: Read the Python the image runs
+        id: image
+        run: |
+          python=$(sed -nE 's|^FROM [^ ]+/python:(3\.[0-9]+)-slim@sha256:[0-9a-f]{64}$|\1|p' \
+            dashboard/Dockerfile)
+          test -n "${python}"
+          echo "python=${python}" >> "${GITHUB_OUTPUT}"
+
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ steps.image.outputs.python }}
 
       - name: Install Graphviz, which lays out the graph of a study's tasks
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends graphviz

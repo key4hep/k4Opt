@@ -141,7 +141,7 @@ docker build -f dashboard/Dockerfile -t k4opt-dashboard .     # from the reposit
 docker run -p 8080:8080 -e K4OPT_DASHBOARD_DATA=https://... k4opt-dashboard
 ```
 
-`python:3.13-slim` (pinned by digest), Graphviz from Debian with Liberation Sans (its `dot` lays
+`python:3.15-slim` (pinned by digest), Graphviz from Debian with Liberation Sans (its `dot` lays
 out and draws the graph of a study's tasks, measuring text as wide as a browser's Helvetica or
 Arial), the packages of `dashboard/requirements.txt` (every one pinned; Streamlit, Plotly, lxml,
 PyYAML and what they need, no Optuna), k4opt without its optional dependencies, and
@@ -239,7 +239,8 @@ The tests make real studies of the mini geometry with the test evaluator `test.t
 (problem `trade`, clearly not a scientific study), publish them, and run the app with Streamlit's
 `AppTest`, from a directory and from a local HTTP server that also answers with the faults a real
 one shows (a missing file, a server error, a redirect, an answer cut short or late). They need
-Streamlit, Plotly and Optuna, which the Key4hep stack lacks: CI runs them in its `dashboard` job.
+Streamlit, Plotly and Optuna, which the Key4hep stack lacks: CI runs them in its `dashboard` job,
+on the Python the image's `FROM` line names, so a bump of the image moves the tests with it.
 `dashboard/` holds plain modules Streamlit imports from its directory: `app.py` (the page
 configuration, the sidebar, the navigation), `data.py` (where the studies are read, and the
 caches), `studies.py` and `study.py` (the pages), `views/` (the Study page's tabs, a module
