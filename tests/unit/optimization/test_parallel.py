@@ -276,6 +276,31 @@ def test_a_trial_that_cannot_be_kept_settles_with_the_trials_still_running(
     stopped(output, marks)
 
 
+def test_a_reopened_strategy_is_told_what_ended_in_the_order_it_ended(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    marks: Path,
+    gated: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    scripted: Any,
+) -> None:
+    from k4opt.optimization._proposal import Proposal
+
+    # trial 0 ends only once trial 2 started: trial 1 ended first, and 2 was proposed then
+    gate(monkeypatch, marks, **{"await": {"trial-000000": str(marks / "trial-000002.started")}})
+    made = scripted([Proposal({RADIUS: r}) for r in (150.0, 200.0, 250.0)])
+    output, problem = tmp_path / "s", write_problem()
+    optimize(problem, [gated], output, trials=3, workers=2, **GRID)
+    optimize(problem, [gated], output, trials=0, resume=True)
+    live, reopened = made
+    calls = [(kind, number) for kind, number, _ in live.calls]
+    assert calls[:4] == [("proposed", 0), ("proposed", 1), ("told", 1), ("proposed", 2)]
+    # made again from the ledger, it is told what it was told live, in the same order: not the
+    # order of the trials' numbers
+    assert reopened.calls == live.calls
+    stopped(output, marks)
+
+
 def test_a_strategy_that_fails_once_it_is_told_is_not_told_again(
     tmp_path: Path,
     write_problem: Callable[..., Path],
@@ -308,9 +333,9 @@ def test_a_strategy_that_fails_once_it_is_told_is_not_told_again(
     stopped(output, marks)
     gate(monkeypatch, marks)
     report = optimize(problem, [gated], output, trials=1, resume=True, workers=2)
-    # the resumed strategy was made from the ledger, the trial among its history: never told
+    # the resumed strategy was made from the ledger, told the trial as the live one was, once
     assert (
-        calls.count(0) == 1
+        calls.count(0) == 2
         and calls[-1] == 3
         and [t.status for t in report.trials]
         == [
@@ -320,8 +345,9 @@ def test_a_strategy_that_fails_once_it_is_told_is_not_told_again(
             "valid",
         ]
     )
-    (_, _, history) = told.opened[-1]
-    assert [past.feedback.status for past in history] == ["valid", "interrupted", "interrupted"]
+    (_, _, replayed) = told.opened[-1]
+    endings = [feedback.status for kind, _, feedback in replayed if kind == "told"]
+    assert endings == ["valid", "interrupted", "interrupted"]
 
 
 def test_a_ledger_that_cannot_be_written_leaves_the_trials_to_the_resume(

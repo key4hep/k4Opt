@@ -64,6 +64,31 @@ def test_a_ledger_reads_back_as_it_was_written(tmp_path: Path) -> None:
     assert events(tmp_path)[0] == head  # the study, and the strategy it was made with
 
 
+def test_a_ledger_says_in_which_order_trials_were_proposed_and_ended(tmp_path: Path) -> None:
+    # two at once, the second ending first, then a proposal that is no candidate
+    writer = LedgerWriter.create(tmp_path, STUDY, STRATEGY)
+    writer.session("2026-11-19T10:00:00+00:00")
+    writer.proposed(0, {"radius": 300.0}, {})
+    writer.proposed(1, {"radius": 400.0}, {})
+    writer.recorded(1, "valid", RECORD)
+    writer.recorded(0, "valid", RECORD)
+    writer.malformed(2, {"radius": 700.0, "depth": [1]}, {"why": "far"}, "outside the bounds")
+    writer.close()
+    first, second, third = read_ledger(tmp_path, STUDY, STRATEGY).entries
+    assert [(e.seq, e.ending.seq) for e in (first, second, third)] == [(2, 5), (3, 4), (6, 6)]
+    # what a proposal that is no candidate gave is kept as given, plain JSON
+    assert dict(third.values) == {"radius": 700.0, "depth": (1,)}
+    assert (third.ending.kind, third.ending.message) == ("malformed", "outside the bounds")
+    assert events(tmp_path)[6] == {
+        "seq": 6,
+        "event": "malformed",
+        "trial": 2,
+        "values": {"radius": 700.0, "depth": [1]},
+        "proposal": {"why": "far"},
+        "message": "outside the bounds",
+    }
+
+
 def test_a_trial_a_later_session_ends_is_recovered(tmp_path: Path) -> None:
     written(tmp_path).close()
     writer, cut = LedgerWriter.open(tmp_path, STUDY, STRATEGY)

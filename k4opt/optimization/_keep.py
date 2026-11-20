@@ -31,12 +31,13 @@ class Keeper:
         self._roots: list[str] = []
         self._snapshot: str | None = None  # the state of the software this session kept
 
-    def open(self, identity: Mapping[str, Any]) -> None:
-        """Keep what a session with ``identity`` runs on (:func:`~k4opt.software.keep.take`)."""
+    def open(self, identity: Mapping[str, Any], strategy: Mapping[str, Any] | None = None) -> None:
+        """Keep what a session with ``identity`` runs on, and the code and files of ``strategy``,
+        a strategy of one's own (:func:`~k4opt.software.keep.take`)."""
         try:
             software = Software.from_dict(identity["software"])
             self._roots = [entry.path for entry in software.local]
-            taken = take(self.directory, software, identity)
+            taken = take(self.directory, software, identity, strategy=strategy)
         except (SoftwareError, OSError, KeyError) as exc:
             self._warn(f"the study keeps nothing of what it runs with: {exc}")
             return

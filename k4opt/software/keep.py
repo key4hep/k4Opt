@@ -214,11 +214,14 @@ def take(
     software: Software,
     identity: Mapping[str, Any],
     environment: Mapping[str, str] | None = None,
+    strategy: Mapping[str, Any] | None = None,
 ) -> Taken:
     """Keep in ``directory`` (a study's :data:`DIRECTORY`) what a session that runs on
     ``software``, with the session ``identity``
     (:meth:`k4opt.execution.EvaluationSession.identity`), needs beyond what is public: see the
-    module. ``environment`` is where ``KEY4HEP_STACK`` is read (``os.environ`` if ``None``). Never
+    module; and of ``strategy``, a strategy of one's own (``name``, ``source`` and the ``files``
+    its settings name), its code and those files. ``environment`` is where ``KEY4HEP_STACK`` is
+    read (``os.environ`` if ``None``). Never
     raises for what cannot be read or kept: it is recorded in ``problems``. Raises
     :class:`OSError` if ``directory`` cannot be written."""
     variables = os.environ if environment is None else environment
@@ -236,6 +239,7 @@ def take(
         "steering": [],
         "geometry": None,
         "evaluators": {},
+        "strategy": None,
         "k4opt": None,
     }
     if release is not None:
@@ -257,6 +261,8 @@ def take(
     document["steering"] = _steering(store, problems, identity, release)
     document["geometry"] = _geometry(store, problems, identity)
     document["evaluators"] = _evaluators(store, problems, identity)
+    if strategy is not None:
+        document["strategy"] = _strategy(store, problems, strategy)
     _declared(directory, identity, problems)
     document["problems"] = problems
     text = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
@@ -516,22 +522,49 @@ def _evaluators(store: Store, problems: list[str], identity: Mapping[str, Any]) 
         source = entry.get("source") if isinstance(entry, Mapping) else None
         if not isinstance(source, Mapping) or not isinstance(source.get("path"), str):
             continue
-        path, sha256 = source["path"], source.get("sha256")
-        expected = {os.path.basename(path): (path, sha256)}
-        for helper, digest in (source.get("helpers") or {}).items():
-            expected[helper] = (_helper(path, helper, digest), digest)
-        files: dict[str, Any] = {}
-        for file, (located, digest) in expected.items():
-            kept = None
-            if located is None:
-                problems.append(f"evaluator {name!r}: its module {file} not found to keep")
-            else:
-                try:
-                    kept = store.put_file(located, digest if isinstance(digest, str) else None)
-                except (SoftwareError, OSError) as exc:
-                    problems.append(f"evaluator {name!r}: {located} not kept: {exc}")
-            files[file] = {"sha256": digest, "kept": kept}
-        found[name] = {"path": path, "sha256": sha256, "files": files}
+        found[name] = _code(store, problems, f"evaluator {name!r}", source)
+    return found
+
+
+def _code(
+    store: Store, problems: list[str], what: str, source: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The file of a class of the user's code, ``what`` names, and every local module it imports,
+    as its ``source`` (:func:`k4opt.usercode.source_of`) lists them, each with its SHA-256 and
+    what it is kept as (``None`` if it could not be kept): a module missing is said."""
+    path, sha256 = source["path"], source.get("sha256")
+    expected = {os.path.basename(path): (path, sha256)}
+    for helper, digest in (source.get("helpers") or {}).items():
+        expected[helper] = (_helper(path, helper, digest), digest)
+    files: dict[str, Any] = {}
+    for file, (located, digest) in expected.items():
+        kept = None
+        if located is None:
+            problems.append(f"{what}: its module {file} not found to keep")
+        else:
+            try:
+                kept = store.put_file(located, digest if isinstance(digest, str) else None)
+            except (SoftwareError, OSError) as exc:
+                problems.append(f"{what}: {located} not kept: {exc}")
+        files[file] = {"sha256": digest, "kept": kept}
+    return {"path": path, "sha256": sha256, "files": files}
+
+
+def _strategy(store: Store, problems: list[str], strategy: Mapping[str, Any]) -> dict[str, Any]:
+    """A strategy of one's own (``name``, ``source`` and the ``files`` its settings name, as paths
+    by setting): its code as an evaluator's, and each file, with its SHA-256 and what it is kept
+    as (``None`` if it could not be kept)."""
+    what = f"strategy {strategy['name']}"
+    found = {"name": strategy["name"], **_code(store, problems, what, strategy["source"])}
+    settings: dict[str, Any] = {}
+    for key, path in (strategy.get("files") or {}).items():
+        kept = None
+        try:
+            kept = store.put_file(path)
+        except (SoftwareError, OSError) as exc:
+            problems.append(f"{what}: its {key} {path} not kept: {exc}")
+        settings[key] = {"path": path, "kept": kept}
+    found["settings"] = settings
     return found
 
 

@@ -15,3 +15,8 @@ class K4OptError(Exception):
 
 class ConfigError(K4OptError):
     """A YAML configuration file is malformed or references missing paths."""
+
+
+class CodeLoadError(K4OptError):
+    """A class of the user's code named as ``FILE.py:Class`` or ``package.module:Class`` cannot be
+    loaded, or is not known to run the source it is identified by (:mod:`k4opt.usercode`)."""

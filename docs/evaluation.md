@@ -541,9 +541,10 @@ better, packages of their own (`package.module:Class`). A file is executed once 
 loading it again gives the same class, and raises `EvaluatorLoadError` if the file or a helper
 it imports changed since; load it in a new process then. It is not a
 registry; the `name` of each entry of `evaluators` stays a label that must equal the `name` of
-an evaluator that is loaded.
+an evaluator that is loaded. Loading and identifying are those of any class of the user's code
+(`k4opt.usercode`), which a strategy of one's own shares.
 
-`evaluator_source(cls)` reports the path, size and SHA-256 of the file that defines an
+`k4opt.usercode.source_of(cls)` reports the path, size and SHA-256 of the file that defines an
 evaluator class (for `FILE.py:Class`, that file, also when it imports the class from a helper
 and perhaps changes it: the helper is among its `helpers`), taken when `load_evaluator` imports
 it, and whether those are the bytes Python
@@ -579,7 +580,7 @@ import hook's module) refuses the load, one imported by another hook from the sa
 the identity `executed: false`, and a session stops if one is imported from another file
 later. Loading is refused for a helper that
 Python imported before and whose file changed since (it keeps running the old module), for one
-that something imported before `load_evaluator` read it, and for one that evaluator code loaded
+that something imported before `load_evaluator` read it, and for one that code loaded
 before imports by the same name from elsewhere, also only inside a method. A session checks
 before and after each candidate that every helper still holds what it did when the evaluator
 was loaded, so that one imported inside a method cannot run other code than the record says,

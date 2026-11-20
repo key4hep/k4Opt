@@ -4,9 +4,13 @@
 ``k4opt evaluate`` evaluates one, into a trial directory of the study, and the study keeps each
 trial in its ledger as the trial's ``summary.json`` holds it, then tells the strategy. The
 strategy is Optuna's TPE sampler by default (``strategy="optuna"``, imported only when a study
-runs with it), or a grid of given values (``strategy="grid"``), which needs nothing besides
-k4opt. A study keeps everything it is made with in ``study.json``, its trials in its own ledger
-whatever the strategy, and can be resumed with exactly that. :func:`load_study` reads a study
+runs with it), a grid of given values (``strategy="grid"``), which needs nothing besides k4opt,
+or a strategy of one's own: a class with ``propose``, ``proposed`` and ``tell``
+(:class:`Strategy`), loaded by :func:`load_strategy` and made for the study with a
+:class:`StudyContext` and its settings, which proposes :class:`Proposal` values (or answers
+:data:`WAITING` or :data:`EXHAUSTED`) and is told each trial's :class:`Feedback`. A study keeps
+everything it is made with in ``study.json``, its trials in its own ledger whatever the strategy,
+and can be resumed with exactly that. :func:`load_study` reads a study
 back, checked and without changing it, for inspection and export, and needs no strategy;
 :func:`trade_offs` asks it which feasible trials give up at most so much of some objectives
 against a reference trial for at least so much of others. See ``docs/optimization.md``.
@@ -39,6 +43,16 @@ from typing import Literal
 from k4opt.evaluation import EvaluatorProtocol, Scalar
 from k4opt.execution import Activity
 from k4opt.optimization import _run
+from k4opt.optimization._custom import load_strategy
+from k4opt.optimization._proposal import (
+    EXHAUSTED,
+    WAITING,
+    Answer,
+    Feedback,
+    Proposal,
+    Strategy,
+    StudyContext,
+)
 from k4opt.optimization._read import load
 from k4opt.optimization._results import OUTCOMES, StudyResults, TrialResult
 from k4opt.optimization._strategy import STRATEGIES
@@ -48,15 +62,23 @@ from k4opt.optimization.errors import OptimizationError
 from k4opt.program import Observation
 
 __all__ = [
+    "EXHAUSTED",
     "OUTCOMES",
     "RULE_KINDS",
     "STRATEGIES",
     "STUDY_NAME",
+    "WAITING",
+    "Answer",
+    "Feedback",
     "OptimizationError",
+    "Proposal",
     "Rule",
+    "Strategy",
+    "StudyContext",
     "StudyResults",
     "TradeOffs",
     "TrialResult",
+    "load_strategy",
     "load_study",
     "optimize",
     "trade_offs",
@@ -69,7 +91,8 @@ def optimize(
     output: str | os.PathLike[str],
     *,
     trials: int,
-    strategy: str | None = None,
+    strategy: str | type | None = None,
+    strategy_settings: Mapping[str, object] | None = None,
     grid: Mapping[str, Sequence[Scalar]] | None = None,
     seed: int | None = None,
     resume: bool = False,
@@ -91,8 +114,14 @@ def optimize(
     combination of the values ``grid`` gives each searched parameter (by name; a categorical
     parameter without them takes each choice, an integer one each integer), one after another,
     the last parameter varying fastest, at most ``trials`` of them; a study whose grid is
-    exhausted ends early. ``resume`` continues the study in ``output`` with the strategy it was
-    made with (give none of ``strategy``, ``grid`` and ``seed``): it must have been made with the
+    exhausted ends early; or a strategy of one's own, a class :func:`load_strategy` loaded, made as
+    ``Class(context, **strategy_settings)`` (a JSON object; a setting the class names in its
+    ``files`` is a file, a relative path relative to the current directory), for a problem without
+    inner levels: ``study.json`` records its class, the source it was loaded from, its settings and
+    the content of its files, and nothing of them may look like a credential. ``resume``
+    continues the study in ``output`` with the strategy it was made with (give none of
+    ``strategy``, ``grid`` and ``seed``, but the same strategy of one's own and
+    ``strategy_settings`` again, which are compared): it must have been made with the
     same problem, files, evaluators, geometry, Key4hep stack and k4opt code (and Optuna version,
     for its strategy), and is refused otherwise; trials an interrupted session left running are
     finished first and do not count among ``trials``, which may then be 0 (only those are
@@ -135,6 +164,7 @@ def optimize(
         output,
         trials=trials,
         strategy=strategy,
+        strategy_settings=strategy_settings,
         grid=grid,
         seed=seed,
         resume=resume,

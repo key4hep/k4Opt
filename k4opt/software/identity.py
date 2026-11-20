@@ -9,8 +9,11 @@ to are one build.
 
 Every environment variable a program would inherit may change what it does, and a value leaves no
 trace in any file. So every variable is compared unless :data:`IGNORED` lists it as known to be
-irrelevant, a user's own ``MY_SCALE`` as much as ``MARLIN_DLL``. Values are kept as digests: a
-difference names a variable, and cannot show its old value.
+irrelevant, a user's own ``MY_SCALE`` as much as ``MARLIN_DLL``, or its name names a credential
+(:func:`~k4opt.credentials.names_credential`: ``ANTHROPIC_API_KEY``, ``HF_TOKEN``): a credential
+decides whether a program may read something, never what it computes from what it reads, which is
+identified by its content. Values are kept as digests: a difference names a variable, and cannot
+show its old value.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from k4opt.credentials import names_credential
 from k4opt.frozen import FrozenMap
 from k4opt.software.errors import SoftwareError
 from k4opt.software.overlays import SITE, Local, Seen, identified, site_identified, sites
@@ -78,8 +82,8 @@ IGNORED = (
 )
 """The environment variables known to be irrelevant to what a program does, each justified in
 ``docs/software.md``; a name that ends in ``*`` stands for every name it starts. Every other
-variable is compared. A wrongly compared variable costs a refusal that names it, a wrongly ignored
-one could cost correctness, so the list stays short."""
+variable is compared, but one whose name names a credential. A wrongly compared variable costs a
+refusal that names it, a wrongly ignored one could cost correctness, so the list stays short."""
 
 _KINDS = ("lcg", "unrecognized")
 _NAMES = frozenset(name for name in IGNORED if not name.endswith("*"))
@@ -89,7 +93,7 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def _compared(name: str) -> bool:
-    return name not in _NAMES and not name.startswith(_PREFIXES)
+    return name not in _NAMES and not name.startswith(_PREFIXES) and not names_credential(name)
 
 
 def compared_variables(environment: Mapping[str, str] | None = None) -> dict[str, str]:

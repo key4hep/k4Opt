@@ -35,7 +35,6 @@ from k4opt.evaluation import (
     check_settings,
     collection_names,
     declared_collections,
-    evaluator_source,
     with_defaults,
 )
 from k4opt.execution._instances import _Bound, _Declared, _declared, _stage
@@ -69,6 +68,7 @@ from k4opt.problem.plan import (
     rejecting,
     stage_task,
 )
+from k4opt.usercode import source_of
 
 
 def _bind(
@@ -420,7 +420,7 @@ def _implementations(binding: _Binding) -> dict[str, Mapping[str, Json]]:
         declaration = bound.declared.declaration
         if declaration.name in taken:
             continue
-        data = {**declaration.to_dict(), "source": evaluator_source(bound.implementation)}
+        data = {**declaration.to_dict(), "source": source_of(bound.implementation)}
         frozen = freeze(data, f"evaluator {declaration.name}", RunError)
         assert isinstance(frozen, Mapping)
         taken[declaration.name] = frozen

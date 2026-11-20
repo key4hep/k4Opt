@@ -5,8 +5,9 @@ evaluated exactly as [`k4opt evaluate`](execution.md#k4opt-evaluate) evaluates o
 trial directory of the study. The study keeps each trial in its own *ledger*, as that trial's
 `summary.json` holds it, read back from disk and checked, and only then tells the strategy. The
 default strategy is [Optuna](https://optuna.org)'s TPE sampler; `--strategy grid` runs a grid of
-given values instead ([strategies](#strategies-optunas-tpe-and-the-grid)). k4opt is built around
-neither: the problem file, the evaluators, the run records, the ledger and everything that reads
+given values instead ([strategies](#strategies-optunas-tpe-and-the-grid)), and
+`--strategy FILE.py:Class` [a strategy of your own](#a-strategy-of-your-own). k4opt is built around
+none of them: the problem file, the evaluators, the run records, the ledger and everything that reads
 a study back know nothing of Optuna, and only one module of this component
 (`k4opt/optimization/_optuna.py`) imports it. A study keeps everything it was made with in
 `study.json`, and it resumes only with exactly that. `k4opt study` reads a study back, to
@@ -60,10 +61,11 @@ color off.
 | `--evaluator FILE.py:Class` | an evaluator of the problem, as for `k4opt evaluate` (repeatable) |
 | `--trials N` | how many *new* trials this invocation runs; each counts, whatever its outcome. A grid with fewer points left ends earlier |
 | `--output DIR` | the study directory: new or empty for a new study, the study's own with `--resume` |
-| `--strategy optuna\|grid` | what proposes the candidates: `optuna` (default), Optuna's TPE sampler; `grid`, every combination of given values, in order ([strategies](#strategies-optunas-tpe-and-the-grid)). A resume keeps the study's |
+| `--strategy optuna\|grid\|FILE.py:Class` | what proposes the candidates: `optuna` (default), Optuna's TPE sampler; `grid`, every combination of given values, in order ([strategies](#strategies-optunas-tpe-and-the-grid)); or a class of your own, `FILE.py:Class` or `package.module:Class`, for a problem without inner levels ([your own](#a-strategy-of-your-own)). A resume keeps the study's, and is given one of its own again |
+| `--strategy-settings FILE` | the settings of a strategy of your own, a YAML mapping, passed to it by name and recorded with the study; a resume is given the same |
 | `--grid NAME=V1,V2,...` | the values the grid takes for one parameter (repeatable), each read as the parameter's kind, as `--fix` reads one; a continuous parameter needs them, a categorical one takes every choice and an integer one every integer without |
 | `--seed S` | the seed of Optuna's sampler, in [0, 2**32); one is drawn and recorded without it. It is not the simulation's seed, which stays each sample's `simulation.seed`; the grid draws nothing and refuses it |
-| `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)), with its strategy, seed and grid: give none of `--strategy`, `--grid` and `--seed` |
+| `--resume` | continue the study in `DIR` (see [Resuming](#resuming-a-study)), with its strategy, seed and grid: give none of `--strategy`, `--grid` and `--seed`, but a strategy of its own and its settings again |
 | `--workers N\|auto\|inline` | run the tasks in N worker processes, up to N at once, of one trial and of several; a simulation on several threads holds as many; `auto`: as many as the processors this process may use ([Trials at once](#trials-at-once---workers)). Default 1: one trial after another, each task in turn in one worker, so that an evaluator that crashes or is killed for its memory fails only its trial; if it does so twice in a row (N + 1 worker deaths), the study stops ([execution](execution.md#execution-inline-or-in-worker-processes)), as it would for any task that cannot run. `inline`: in this process, to debug, where such a crash ends the study (`--resume` continues it). Not part of the study: a resume may give another one |
 | `--observe files\|libraries\|none` | how closely each stage's program is watched ([software](software.md#what-each-stage-used)). Default `files`: under `strace`, which another study needs to reuse an output. Not part of the study |
 
@@ -83,9 +85,10 @@ default of one worker provides; `--workers inline` refuses it before anything is
 
 A strategy proposes values for the parameters a study searches, and is told how each trial
 ended. It does nothing else: k4opt checks each proposal, evaluates it, keeps the trial and its
-record, decides when to ask for the next one, and reads the study back. Two strategies exist; a
-study records which one it runs with under `strategy` in `study.json`, and every study of a
-[nested optimization](#nested-studies) runs with the same one, for its own parameters.
+record, decides when to ask for the next one, and reads the study back. Two strategies come with
+k4opt, and you can write [your own](#a-strategy-of-your-own); a study records which one it runs
+with under `strategy` in `study.json`, and every study of a [nested
+optimization](#nested-studies) runs with the same one, for its own parameters.
 
 **`optuna`**, the default: Optuna's TPE sampler ([below](#optunas-tpe-sampler)). It learns from
 every trial that ended, so what it proposes depends on the results and, with several
@@ -198,6 +201,177 @@ running), then seeded for the session. TPE learns from the trials alone, so it p
 sampler that held the study all along would, and an interruption anywhere loses nothing of it.
 Samplers that also keep state of their own (CMA-ES, NSGA-II keep theirs in Optuna's trial
 attributes) would restart that state on a resume; none of them can be chosen yet.
+
+## A strategy of your own
+
+Any Python class with three methods can propose a study's candidates: a hand-written rule, a
+wrapper around SciPy or a Bayesian optimizer, or an agent that asks a language model. k4opt does
+all the rest as for its own strategies: it checks each proposal against the parameters' domains,
+evaluates it, keeps the trial, decides when to ask, resumes the study and reads it back. The
+strategy proposes candidates; it changes nothing of how they are judged, the problem's objectives
+and constraints.
+
+[`examples/strategies/compass.py`](../examples/strategies/compass.py) is a complete one, compass
+search: it measures the middle of the domain, then all its neighbors one step away at once,
+moves to the best of them if it improves, and halves the step otherwise.
+
+```bash
+k4opt optimize examples/problem/cld-ecal-granularity.yaml \
+  --evaluator examples/evaluators/calo_photon.py:CaloPhoton \
+  --strategy examples/strategies/compass.py:CompassSearch \
+  --strategy-settings examples/strategies/compass.yaml \
+  --trials 12 --workers 2 --output runs/cld-ecal-compass
+```
+
+or from Python:
+
+```python
+from k4opt.evaluation import load_evaluator
+from k4opt.optimization import load_strategy, optimize
+
+report = optimize(
+    "examples/problem/cld-ecal-granularity.yaml",
+    [load_evaluator("examples/evaluators/calo_photon.py:CaloPhoton")],
+    "runs/cld-ecal-compass",
+    trials=12,
+    workers=2,
+    strategy=load_strategy("examples/strategies/compass.py:CompassSearch"),
+    strategy_settings={"step": 0.25, "min_step": 0.02},
+)
+```
+
+### The class
+
+```python
+from k4opt.optimization import EXHAUSTED, WAITING, Answer, Feedback, Proposal, StudyContext
+
+
+class MyStrategy:
+    def __init__(self, study: StudyContext, *, step: float = 0.25):  # its settings, by name
+        ...
+
+    def propose(self, trial: int) -> Proposal | Answer:  # decide
+        return Proposal({"ecal_cell_size": 5.0}, {"why": "the middle"})  # or WAITING, EXHAUSTED
+
+    def proposed(self, trial: int, proposal: Proposal) -> None:  # remember what was kept
+        ...
+
+    def tell(self, trial: int, feedback: Feedback) -> None:  # learn how a trial ended
+        ...
+```
+
+`load_strategy("FILE.py:Class")` (or `"package.module:Class"`) loads and identifies it as
+[an evaluator is loaded](evaluation.md#loading-an-evaluator): the file is executed as ordinary
+Python, so name only code you trust. It is made for the study as `Class(study, **settings)` and
+must say what it needs of the settings by its keyword arguments: one it does not take refuses the
+study before anything is created. An optional `exhausted` attribute says, after each proposal and
+each trial it was told, that it will never propose again (a search that ended with its last
+result is kept so, whether or not more trials were asked for); answering `EXHAUSTED` says the same
+when it is asked.
+
+What it is given, `StudyContext`, read-only:
+
+| Field | |
+| --- | --- |
+| `study` | the study's id, the same whenever it opens: to name what the strategy keeps elsewhere, or to derive a seed |
+| `parameters` | the parameters it searches, in problem order, as the problem declares them: `name`, `kind` (`continuous`, `integer`, `categorical`), `bounds` or `choices`, `unit`, `title`, `targets` |
+| `fixed` | the values every trial has (`--fix`) |
+| `objectives` | the objectives, each with its `label`, `direction` and `title`, in the order of `Feedback.values` |
+| `constraints`, `limits` | the constraints, and the name of each of their limits (`label:min`, `label:max`), as `Feedback.constraints` names them |
+
+What it is told of each trial, `Feedback`:
+
+| Field | |
+| --- | --- |
+| `status` | `valid`, `invalid`, `failed`, `rejected`, `malformed`, `interrupted`, `error` or `unscored` ([Trials and their outcomes](#trials-and-their-outcomes)) |
+| `values` | the objective values of a valid trial, floats, in the order of `study.objectives`; `None` for any other |
+| `constraints`, `feasible` | the normalized margin of each limit (zero or below when satisfied) and whether all are satisfied, of a valid trial; nothing for any other |
+| `result` | the trial as `load_study` reads it back: its candidate, the assessment of its record (objectives with their unit and uncertainty, each limit with its margin), its diagnostics and times. An invalid or failed trial has a record, assessed without objectives; a rejected, malformed or interrupted one none |
+| `record`, `message` | the trial's `summary.json`, with every measurement, and why a trial without values ended as it did |
+
+No trial is ever told a value no evaluation produced.
+
+### Decide in `propose`, remember in `proposed` and `tell`
+
+A strategy is told every proposal the ledger kept (`proposed`, with the values as the ledger holds
+them) and how each trial ended (`tell`), in the order the ledger kept them: with several
+[workers](#trials-at-once---workers), trials end in another order than their numbers. Whenever a
+study opens, a resume included, the strategy is made anew and told every proposal and ending its
+ledger holds, in the order they were written: the very calls a strategy that ran all along got.
+`propose` is never called for a trial the ledger holds. So a strategy that decides in `propose`,
+and changes its state only in `proposed` and `tell`, goes on after an interruption exactly where it
+was.
+
+What it decides that it could not decide again from those calls (a random draw, a model's answer,
+a whole batch it asked for at once) belongs in the note of its proposal, a JSON object the ledger
+keeps with the trial and gives back to `proposed`. A strategy that draws at random can also derive
+a seed from its settings and the trial's number. The values and the note together may take 64 KiB
+of JSON; a transcript belongs in a file of the strategy's own, which the note names by its SHA-256.
+k4opt cannot check this rule: a strategy that decides in `tell`, or that asks a remote model again,
+proposes otherwise after a resume than an uninterrupted run would have, while the ledger and the
+records stay right. k4opt cannot make a remote model answer the same twice: what a study can
+reproduce is its recorded proposals.
+
+To propose a batch, propose several trials and answer `WAITING` until enough of them ended; k4opt
+asks only when a slot is idle, so a batch larger than `--workers` waits for slots. `propose` runs
+in k4opt's own process: a slow one (a model's answer) leaves slots idle meanwhile.
+
+A proposal of values that are no candidate of the study (a parameter it does not search, one
+missing, a value of another kind or outside its domain) is a `malformed` trial: nothing is
+evaluated, the ledger keeps the values as given, the strategy is told it proposed them, then that
+the trial is malformed, and the study goes on. A proposal the ledger cannot keep as given is no
+trial: not a `Proposal` (nor `WAITING` or `EXHAUSTED`), values or a note that are no plain JSON
+object (NaN, an object), more than 64 KiB of them, or something that looks like a credential. It
+stops the study, as an exception of the strategy does; trials under way end as interrupted, or
+kept with their record, and `--resume` goes on.
+
+### Settings, files and credentials
+
+What a strategy is given has three roles, which a study records differently:
+
+| | Example | Recorded |
+| --- | --- | --- |
+| settings | a model's name, a temperature, a batch size, a step, a seed | as they are, under `strategy.settings` in `study.json`, published with the study |
+| files | a prompt template the settings name | by bytes and SHA-256 under `strategy.files`; the class names those settings in a `files` attribute (`files = ("prompt",)`), each must be given (`null` for no file: a file a default would read is identified by nothing), and the class is given each as an absolute path |
+| credentials | an API key | nowhere |
+
+`--strategy-settings FILE` is a YAML mapping, read strictly (a key given twice is refused), and a
+file a setting names is relative to it; from Python, `strategy_settings` is a JSON object, and a
+relative file is relative to the current directory. The files and the strategy's code are checked
+again after each call whose outcome the study keeps: a proposal, a trial it was told (it may read
+its prompt then), an answer that it is exhausted. One that changed stops the study, and nothing
+the strategy decided from it is kept: neither the proposal nor that its search ended.
+
+A credential belongs where the strategy runs, not in its settings: read it from an environment
+variable, or from a file the strategy opens itself. Settings that look like they hold one (an
+`api_key: sk-...`, a token) are refused before anything is created, by the rule
+[`k4opt publish`](publication.md) applies, since a study whose `study.json` holds one could never
+be published; so is a note that looks like it holds one. An environment variable named as a
+credential (`ANTHROPIC_API_KEY`, `HF_TOKEN`) is no part of [what a study runs
+on](software.md#the-variables), so a key rotated between two sessions does not refuse a resume.
+
+### What a study records, and resuming it
+
+`study.json` records a strategy of one's own as
+
+```json
+{"name": "custom", "class": "CompassSearch",
+ "source": {"bytes": 5657, "sha256": "c7a2db40...", "helpers": {}, "executed": true, "revision": null},
+ "settings": {"step": 0.25, "min_step": 0.02}, "files": {}}
+```
+
+its class, the source it was loaded from as an evaluator's is identified (the file's bytes and the
+local modules it imports, and the commit of its checkout), its settings and its files, without
+where any of them is; the [ledger](#how-a-study-is-kept-the-ledger-and-its-strategy) commits to
+it. The study keeps a private copy of the code and the files, with where they were, in its
+[`software/`](software.md) directory. A resume is given the same strategy and settings again
+(`--strategy FILE.py:Class --strategy-settings FILE`): k4opt never runs code because a study file
+names it. It is refused, saying what differs, for another class, another file or module it
+imports, other settings or another file's content; the strategy's checkout at another commit only
+warns. `k4opt study`, `load_study`, the JSON form and the dashboard need none of it.
+
+A strategy of one's own runs a problem without inner levels for now; choosing a strategy per level
+(yours for the geometry, Optuna's below it, say) is still to come.
 
 ## What a study will do: `k4opt problem explain`
 
@@ -511,9 +685,10 @@ layered over the release) runs other code, so any difference in the software ref
 naming the variable or the build. **Resume a study the way it was started**: a login shell and a
 bare service unit differ in dozens of variables, and each refusal names them. A resume is refused,
 with what changed, for any difference in it. It is also refused for `--strategy`, `--grid` or
-`--seed` with `--resume` (a study keeps its strategy, grid and seed), for a recorded strategy
-(sampler, seed, startup trials, distributions; a grid's values) other than the one this k4opt
-would run the study with, and for a directory that holds no `study.json`; using a study
+`--seed` with `--resume` (a study keeps its strategy, grid and seed; one of its own is given again,
+with its settings, and compared), for a recorded strategy (sampler, seed, startup trials,
+distributions; a grid's values; the class, source, settings and files of one of its own) other
+than the one this k4opt would run the study with, and for a directory that holds no `study.json`; using a study
 directory without `--resume` is refused too. A changed Optuna version (for a study of its
 strategy) and changed k4opt code have no override: install the recorded Optuna version, and run
 a long campaign from a k4opt checkout of its own.
@@ -589,7 +764,8 @@ A study owns its trials; its strategy only proposes.
 strategy it was made with by the SHA-256 of what `study.json` records under `strategy`; a study
 whose `study.json` records another one is refused, read back or resumed), `session` (a session
 opened the study), `proposed` (trial `N` with the values its strategy proposed, checked, and
-what the strategy noted of them), `malformed` (a proposal that is no candidate, with why),
+what the strategy noted of them), `malformed` (a proposal that is no candidate, with the values
+it gave, as given, and why),
 `selected` (the trial of the study below that a trial selected), one ending of a trial
 (`recorded` with the status, id and SHA-256 of its record; `rejected`, by what and why;
 `unscored`; `interrupted`; `error`, why) and `exhausted` (the strategy has nothing more to
@@ -599,19 +775,20 @@ is written. A line is written once it ends in a newline: a line a killed process
 the last one and was never written, so a reader leaves it out and the next session removes it.
 A write that fails may or may not have reached the disk, so nothing more is written after it:
 the next session settles what was being written from what is on disk. A trial a later session
-ends is `recovered`. Trials are numbered from 0, in order; a trial is proposed once and ends
-once; a ledger that holds anything else (a line that is not the next event, a trial ended
+ends is `recovered`. Trials are numbered from 0, in order, and the `seq` of a trial's proposal
+and of its ending say in which order trials were proposed and ended, which their numbers do not
+when several run at once; a trial is proposed once and ends once; a ledger that holds anything else (a line that is not the next event, a trial ended
 twice, a gap, another study's first line) is refused, by `load_study` and by a resume alike.
 
 **The order of writes.** A trial goes through these steps, each of which an interruption can be
 the last:
 
 1. the strategy proposes (nothing is kept);
-2. the ledger keeps the proposal, checked: the trial is running;
+2. the ledger keeps the proposal, checked: the trial is running; the strategy is told it was kept;
 3. the candidate is evaluated into its directory;
 4. its `summary.json` is published, whole;
 5. the record is read back and checked, and the ledger keeps the trial with it;
-6. the strategy is told.
+6. the strategy is told how it ended.
 
 Stopped after 1, the next session proposes again; after 2 or 3, the trial is `interrupted`;
 after 4, the next session keeps it with its record as a live one would have been kept; after 5
@@ -625,13 +802,18 @@ resume.
 **The strategy boundary.** A strategy is asked for a proposal for trial `N` when the study has a
 slot for it and answers with values for the parameters the study searches (and a small note,
 recorded with the trial), with *waiting* (nothing until a trial under way ended) or with
-*exhausted*, and says after each proposal whether it is exhausted. It is told each trial's status, and for a valid one its objective values, the
-normalized margin of each limit and its feasibility, all from the checked record, and where the
-record is. When a study opens, it is made from the study's trials so far, by number, each with
-its proposal and how it ended. It executes nothing, changes no objective or limit, and keeps no
-trial; k4opt checks every proposal against the parameters' domains before anything is made of
-it. This contract is internal for now: Optuna's TPE and the grid are its two users, and a
-public interface for strategies of one's own will follow from them.
+*exhausted*, and may say after each proposal whether it is exhausted. It is told each proposal
+the ledger kept (*proposed*: the values as the ledger holds them, also those of a malformed one)
+and how each trial ended (*tell*): the trial's status, and for a valid one its objective values,
+the normalized margin of each limit and its feasibility, all from the checked record, the trial
+as `load_study` reads it back, and where the record is. When a study opens, the strategy is made
+anew and told every proposal and ending the ledger holds, in the order they were written (by
+`seq`): the very calls a strategy that ran all along got, also when trials ended in another order
+than their numbers. A proposal the ledger cannot keep as given (no proposal at all, values or a
+note that are no plain JSON object, more than 64 KiB of them, or something that looks like a
+credential) is no trial: it stops the study, and `--resume` goes on. A strategy executes nothing,
+changes no objective or limit, and keeps no trial; k4opt checks every proposal against the
+parameters' domains before anything is made of it.
 
 ## Inspecting and exporting a study
 
@@ -833,6 +1015,7 @@ report = optimize(
     "runs/cld-ecal-study",
     trials=30,
     seed=42,  # Optuna's; or strategy="grid", grid={"ecal_cell_size": [2.5, 5.0, 10.0]}
+    # or strategy=load_strategy("FILE.py:Class"), strategy_settings={...}: your own
     workers=4,  # worker processes, tasks at once; "inline" by default
     warn=print,  # each warning
     progress=print,  # each TrialResult as its trial ends, the recovered ones of a resume first
@@ -843,7 +1026,8 @@ report.trials  # each TrialResult, as load_study reads it back (below)
 
 `optimize` returns the study as [`load_study`](#inspecting-and-exporting-a-study) would read it once its
 trials ended, and gives `progress` each trial as that reads it: one interpretation of a trial,
-live and later. `resume=True` continues a study with the strategy it was made with.
+live and later. `resume=True` continues a study with the strategy it was made with (given again,
+with its settings, for [one of your own](#a-strategy-of-your-own)).
 
 `optimize` raises `OptimizationError` (a `K4OptError`) when a study cannot start, resume or go
 on, and `KeyboardInterrupt` after a clean stop on Ctrl-C or SIGTERM. Underneath it is an
@@ -925,9 +1109,10 @@ the [dashboard](dashboard.md) asks in its Trade-offs tab.
 
 Retrying interrupted trials, reusing the record of a candidate proposed twice, a warm start from
 `k4opt evaluate` records, other Optuna samplers and sampler options (those that keep state of
-their own, CMA-ES and NSGA-II, need a checkpoint of it in the ledger), a strategy of one's own
-(the contract above is internal), a strategy per level, grids of evenly spaced points or of
-physical units, a characteristic `scale` per constraint, treating invalid candidates as
+their own, CMA-ES and NSGA-II, need a checkpoint of it in the ledger), a strategy per level (a
+strategy of one's own runs a problem without inner levels), a checkpoint of a strategy's own
+state, letting the trials under way finish when a strategy fails, a typed view of a record's
+other measurements for a strategy, grids of evenly spaced points or of physical units, a characteristic `scale` per constraint, treating invalid candidates as
 infeasible, trials on other machines (a batch system), overrides for changed software, comparing
 studies, exporting an evaluator's other measurements (each row names its record, which holds
 them), and a memory limit of k4opt's own. None of them is blocked by the design: records have

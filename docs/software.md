@@ -56,7 +56,8 @@ of it or not. `LD_LIBRARY_PATH`, `PYTHONPATH`, `MARLIN_DLL`, `GAUDI_PLUGIN_PATH`
 `G4LEDATA`, `LC_ALL` and a user's own `MY_SCALE` are all compared. Values are kept as digests, so a
 difference names a variable and cannot show its old value.
 
-These are not compared (`IGNORED` in `k4opt/software/identity.py`; `*` stands for any ending):
+These are not compared (`IGNORED` in `k4opt/software/identity.py`, `*` standing for any ending,
+and the names of credentials):
 
 | Why | Names |
 | --- | --- |
@@ -66,6 +67,7 @@ These are not compared (`IGNORED` in `k4opt/software/identity.py`; `*` stands fo
 | Bookkeeping of other tools, or what only a person at a terminal sees | `MODULEPATH`, `CONDA_SHLVL`, `CONDA_BACKUP_*`, `VSCODE_*`, `GIT_PAGER`, `GIT_EDITOR`, `GIT_ASKPASS`, `PYTEST_*` |
 | Set by ROOT's Python in whatever process imports it, from the build: an evaluator that reads a file through `podio` sets them in the middle of a session | `CPPYY_API_PATH`, `CPPYY_NO_ROOT_FILTER` |
 | Identified by what they lead to: the geometry by its fingerprint, the stack by its build | `K4GEO`, `KEY4HEP_STACK` |
+| A credential, by its name, as publication recognizes one (`k4opt.credentials`): it decides whether a program may read something, never what it computes from what it reads, which is identified by its content; a key rotated between two sessions does not change the software | a name ending in `password`, `passwd`, `passphrase`, `pwd`, `secret`, `token`, `credential(s)`, or `api`, `access`, `private`, `secret`, `signing` or `encryption` followed by `key` (with `_` or `-` between, in any case): `ANTHROPIC_API_KEY`, `HF_TOKEN`, `DB_PASSWORD` |
 
 `PATH`, `BASH_FUNC_*`, `HOME`, `LANG`, `LC_*`, `TZ`, `CONDA_PREFIX`, `XDG_CONFIG_HOME` and `GIT_DIR`
 stay compared: ROOT runs `g++` through `PATH` and an evaluator may run any program, an exported
@@ -209,6 +211,7 @@ that with [`k4opt publish`](publication.md#what-else-is-published).
 | steering | a session opens | each reconstruction's job directory against the package of the stack it is a copy of (by its name, `CLDConfig`): its changed and added files are kept, with whether each is executable and where a link led, the removed ones named |
 | geometry | a session opens; a trial's record is accepted | every file reachable from the compact file, with the other names of those files, unless the stack holds it, and what its external references read; then what a candidate's `ref` parameters reach beyond those, as inputs |
 | evaluators | a session opens | each evaluator's file and every local module it imports, as its identity lists them; one that cannot be found is recorded as not kept |
+| strategy | a session opens | for a strategy of one's own, its file and every local module it imports, as an evaluator's, and each file its settings name (a prompt), with where they are, which `study.json` does not record |
 | inputs | a trial's record is accepted | each file the stages read that the stack, the system and the software do not identify (from the problem or the footprints), up to 100 MB (a compiled file is identified, never kept), with the variable that names it, the trials that read it and a salted commitment `sha256(salt ‖ sha256(file))` that a publication can show without letting anyone test a guess. A path read as another file is another entry, never merged with the first |
 | what ran | a trial's record is accepted | which files of local entries each observed stage read, where, and which kept state of the software each trial ran with |
 

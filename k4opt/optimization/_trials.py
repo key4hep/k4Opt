@@ -12,15 +12,16 @@ left running, before a resume asks for any.
 
 Each ending is written to the study's ledger first, once checked as a reader checks it, and only
 then is the strategy told (:func:`feedback`): a trial the ledger holds ended is never lost or
-told twice, since a strategy is made anew from the ledger whenever the study opens, and one the
-ledger does not hold ended is settled again by the next session, from its record. Each gives
-the trial as :func:`~k4opt.optimization.load_study` reads it back.
+told twice, since a strategy is made anew whenever the study opens and told every proposal and
+ending the ledger holds, in the order they were written (:func:`replay`), and one the ledger does
+not hold ended is settled again by the next session, from its record. Each gives the trial as
+:func:`~k4opt.optimization.load_study` reads it back.
 """
 
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ from k4opt.execution import Rejected, RunOutcome
 from k4opt.frozen import Json
 from k4opt.optimization._keep import Keeper
 from k4opt.optimization._ledger import Ending, Entry, LedgerWriter
-from k4opt.optimization._proposal import Feedback, Strategy
+from k4opt.optimization._proposal import Feedback, Proposal, Strategy
 from k4opt.optimization._read import trial_result
 from k4opt.optimization._results import TrialResult, record_of
 from k4opt.optimization._scope import StudyScope
@@ -69,12 +70,14 @@ def feedback(result: TrialResult, record: Path | None) -> Feedback:
     """What a strategy is told of the trial ``result`` reads back as, whose ``summary.json`` is
     ``record`` if it has one. Raises :class:`OptimizationError` for a valid trial a value of
     which no float holds exactly: told as another value, it would not be what was measured."""
+    result = replace(result, inner=None)
     if result.status != "valid":
-        return Feedback(result.status, record=record, message=result.message)
+        return Feedback(result.status, result, record=record, message=result.message)
     assessment = result.assessment
     assert assessment is not None
     return Feedback(
         "valid",
+        result,
         objective_values(assessment),
         constraint_values(assessment),
         assessment.feasible,
@@ -121,7 +124,7 @@ def constraint_values(assessment: Assessment) -> dict[str, float]:
 
 def _tell(study: OpenStudy, result: TrialResult) -> None:
     """Tell the study's strategy how trial ``result.number`` ended, once the ledger holds it."""
-    if study.strategy is None:  # recovered before the strategy is made: it is made from them
+    if study.strategy is None:  # recovered before the strategy is made: it is told them then
         return
     record = study.record(result.number) if result.record is not None else None
     told = feedback(result, record)
@@ -132,6 +135,55 @@ def _tell(study: OpenStudy, result: TrialResult) -> None:
             f"trial {result.number}: the strategy could not take how it ended: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
+
+
+def proposal(study: OpenStudy, number: int) -> Proposal:
+    """The proposal of trial ``number`` as the study's ledger holds it: what its strategy is told
+    it proposed, live and when a session replays it alike."""
+    entry = study.ledger.entry(number)
+    return Proposal(entry.values, entry.proposal)
+
+
+def told_proposed(study: OpenStudy, number: int) -> None:
+    """Tell the study's strategy the ledger kept its proposal of trial ``number``."""
+    assert study.strategy is not None
+    try:
+        study.strategy.proposed(number, proposal(study, number))
+    except Exception as exc:
+        raise OptimizationError(
+            f"trial {number}: the strategy could not take its proposal as kept: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def replay(study: OpenStudy, results: Sequence[TrialResult]) -> None:
+    """Tell the study's strategy, just made, every proposal and ending its ledger holds, in the
+    order they were written (by ``seq``), as a strategy that ran all along was told them: each
+    proposal (malformed ones too) with ``proposed``, each ending with ``tell``, how trial ``n``
+    ended being ``results[n]`` (:func:`check_trials`, after :func:`recover`). A malformed
+    proposal is proposed and ended at once. Raises :class:`OptimizationError` for a strategy
+    that cannot take them: it cannot go on with the study."""
+    assert study.strategy is not None
+    events: list[tuple[int, int, int]] = []  # seq, proposed (0) before ended (1), number
+    for entry in study.ledger.ledger.entries:
+        events.append((entry.seq, 0, entry.number))
+        if entry.ending is not None:
+            events.append((entry.ending.seq, 1, entry.number))
+    for _, ended, number in sorted(events):
+        try:
+            if not ended:
+                study.strategy.proposed(number, proposal(study, number))
+                continue
+            result = results[number]
+            record = study.record(number) if result.record is not None else None
+            study.strategy.tell(number, feedback(result, record))
+        except OptimizationError:
+            raise
+        except Exception as exc:
+            raise OptimizationError(
+                f"{study.document['name']}: the strategy could not be made from the study's "
+                f"trials: trial {number}: {type(exc).__name__}: {exc}"
+            ) from exc
 
 
 # --- the endings of a trial --------------------------------------------------------------------
@@ -178,8 +230,8 @@ def _end(study: OpenStudy, number: int, kind: str, **told: str) -> TrialResult:
     """End trial ``number`` without a record, as ``kind`` (an event of the ledger) with ``told``
     (``by``, ``message``), checked first as a reader reads it back."""
     entry = study.ledger.entry(number)
-    session = study.ledger.session_number
-    ending = Ending(kind, session, by=told.get("by"), message=told.get("message"))
+    session, seq = study.ledger.session_number, study.ledger.next_seq
+    ending = Ending(kind, session, seq, by=told.get("by"), message=told.get("message"))
     result, _ = trial_result(
         study.directory, study.document, study.scope, replace(entry, ending=ending), {}
     )
@@ -200,14 +252,21 @@ def unscore(study: OpenStudy, number: int, message: str) -> TrialResult:
 
 
 def malform(
-    study: OpenStudy, number: int, proposal: Mapping[str, Json], message: str
+    study: OpenStudy,
+    number: int,
+    values: Mapping[str, Json],
+    note: Mapping[str, Json],
+    message: str,
 ) -> TrialResult:
-    """Trial ``number`` is a proposal that is no candidate of the study (``message`` says why):
-    nothing of it is evaluated."""
-    ending = Ending("malformed", study.ledger.session_number, message=message)
-    entry = Entry(number, study.ledger.session_number, {}, proposal, None, ending)
+    """Trial ``number`` is a proposal of ``values`` that is no candidate of the study (``message``
+    says why): nothing of it is evaluated, and the ledger keeps the values as given; the strategy
+    is told it proposed them, then that the trial is malformed."""
+    session, seq = study.ledger.session_number, study.ledger.next_seq
+    ending = Ending("malformed", session, seq, message=message)
+    entry = Entry(number, session, values, note, seq, None, ending)  # type: ignore[arg-type]
     result, _ = trial_result(study.directory, study.document, study.scope, entry, {})
-    study.ledger.malformed(number, proposal, message)
+    study.ledger.malformed(number, values, note, message)
+    told_proposed(study, number)
     _tell(study, result)
     return result
 

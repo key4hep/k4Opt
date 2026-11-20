@@ -1,8 +1,9 @@
 """Command-line interface of the optimization component: ``k4opt optimize`` and ``k4opt study``.
 
     k4opt optimize PROBLEM --evaluator FILE.py:Class [--evaluator ...] --trials N --output DIR
-        [--strategy optuna|grid] [--grid NAME=V1,V2,...] [--seed S] [--resume] [--fix NAME=VALUE]
-        [--reuse DIR] [--workers N|auto|inline] [--observe files|libraries|none]
+        [--strategy optuna|grid|FILE.py:Class] [--strategy-settings FILE] [--grid NAME=V1,V2,...]
+        [--seed S] [--resume] [--fix NAME=VALUE] [--reuse DIR] [--workers N|auto|inline]
+        [--observe files|libraries|none]
     k4opt study show DIR
     k4opt study trial DIR NUMBER
     k4opt study export DIR --format {csv,json} [--output FILE]
@@ -21,11 +22,21 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
-from typing import TextIO
+from pathlib import Path
+from typing import Any, TextIO
+
+import yaml
 
 from k4opt.evaluation import Scalar, load_evaluator
 from k4opt.execution.cli import workers
-from k4opt.optimization import STRATEGIES, StudyResults, load_study, optimize
+from k4opt.optimization import (
+    OptimizationError,
+    StudyResults,
+    load_strategy,
+    load_study,
+    optimize,
+)
+from k4opt.optimization._custom import resolved
 from k4opt.optimization._export import FORMATS, export
 from k4opt.optimization._grid import grid_values, size
 from k4opt.optimization._render import Progress, render_study
@@ -36,6 +47,7 @@ from k4opt.problem.candidate import parse_candidate
 from k4opt.problem.outline import render_outline
 from k4opt.program import OBSERVATIONS
 from k4opt.terminal import color, interactive, printable
+from k4opt.yamlio import UniqueKeyLoader
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -44,9 +56,10 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "optimize",
         help="search the parameters of a problem for its best candidates",
         description=(
-            "Run a study of a problem: a strategy (Optuna's TPE sampler, or a grid) proposes "
-            "candidates, and each is evaluated as k4opt evaluate evaluates one, into a trial "
-            "directory of the study. Needs the Key4hep environment, and Optuna for its strategy."
+            "Run a study of a problem: a strategy (Optuna's TPE sampler, a grid, or one of your "
+            "own) proposes candidates, and each is evaluated as k4opt evaluate evaluates one, "
+            "into a trial directory of the study. Needs the Key4hep environment, and Optuna for "
+            "its strategy."
         ),
     )
     parser.add_argument("problem", help="path to a k4opt problem YAML file")
@@ -72,11 +85,23 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     )
     parser.add_argument(
         "--strategy",
-        choices=STRATEGIES,
+        metavar="optuna|grid|FILE.py:Class",
         help=(
             "what proposes the candidates: 'optuna' (default), Optuna's TPE sampler; 'grid', every "
             "combination of the values --grid gives (each choice of a categorical parameter and "
-            "each integer of an integer one without), in order. A resume keeps the study's"
+            "each integer of an integer one without), in order; or a strategy of your own, a "
+            "class with propose, proposed and tell, as FILE.py:Class or package.module:Class, "
+            "for a problem without inner levels. A resume keeps the study's, and is given a "
+            "strategy of its own again"
+        ),
+    )
+    parser.add_argument(
+        "--strategy-settings",
+        metavar="FILE",
+        help=(
+            "the settings of a strategy of your own, a YAML mapping, passed to it by name and "
+            "recorded with the study; a file a setting names, as the class says, is identified "
+            "by its content (a relative path is relative to FILE). A resume is given the same"
         ),
     )
     parser.add_argument(
@@ -203,6 +228,13 @@ def _register_study(commands: argparse._SubParsersAction[argparse.ArgumentParser
 
 def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     implementations = [load_evaluator(reference) for reference in args.evaluator]
+    named: str | None = args.strategy
+    strategy: str | type | None = named
+    if named is not None and ":" in named:  # a strategy of one's own
+        strategy = load_strategy(named)
+    settings = None
+    if args.strategy_settings is not None:
+        settings = _strategy_settings(args.strategy_settings, strategy)
     spec = load_problem(args.problem)
     fixed = parse_candidate(spec, args.fix, "--fix") if args.fix else None
     grid = _grid(spec, args.grid) if args.grid else None
@@ -219,7 +251,8 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 implementations,
                 args.output,
                 trials=args.trials,
-                strategy=args.strategy,
+                strategy=strategy,
+                strategy_settings=settings,
                 grid=grid,
                 seed=args.seed,
                 resume=args.resume,
@@ -238,6 +271,24 @@ def cmd_optimize(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         return 1
     render_study(report, out, color=color(out))
     return 0
+
+
+def _strategy_settings(path: str, strategy: str | type | None) -> dict[str, Any]:
+    """The settings ``--strategy-settings`` gives: a YAML mapping, read strictly, each setting the
+    strategy's class says names a file as an absolute path, relative to the file's directory."""
+    try:
+        text = Path(path).expanduser().read_text(encoding="utf-8")
+        settings = yaml.load(text, Loader=UniqueKeyLoader)  # a safe loader
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise OptimizationError(f"--strategy-settings {path}: {exc}") from exc
+    if settings is None:
+        settings = {}
+    if not isinstance(settings, dict) or not all(isinstance(key, str) for key in settings):
+        raise OptimizationError(f"--strategy-settings {path}: settings are a mapping by name")
+    if isinstance(strategy, type):
+        directory = Path(path).expanduser().resolve().parent
+        return resolved(strategy, settings, directory)
+    return settings
 
 
 def _grid(spec: ProblemSpec, assignments: list[str]) -> dict[str, list[Scalar]]:

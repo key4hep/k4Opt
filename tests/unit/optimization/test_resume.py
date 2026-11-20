@@ -21,9 +21,10 @@ import yaml
 
 pytest.importorskip("optuna")
 
-from k4opt.evaluation import evaluator_source, load_evaluator
+from k4opt.evaluation import load_evaluator
 from k4opt.optimization import OptimizationError, _trials, load_study, optimize
 from k4opt.optimization._ledger import LEDGER_NAME, LedgerWriter
+from k4opt.usercode import source_of
 from tests.support import simulation
 from tests.support.common import git, git_checkout, requires_git, tree_digest
 from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, trade_off, yields
@@ -425,7 +426,7 @@ def test_a_study_refuses_an_evaluator_whose_executed_code_is_not_known(
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setattr(sys, "meta_path", [FromFile(module, file), *sys.meta_path])
     evaluator = load_evaluator(f"{module}:TradeOff")
-    source = evaluator_source(evaluator)
+    source = source_of(evaluator)
     assert source["sha256"] is not None and source["executed"] is False
     with pytest.raises(OptimizationError, match="the code it runs is not known to be the source"):
         run(write_problem(), tmp_path / "s", 1, seed=1, evaluators=[evaluator])
@@ -810,10 +811,10 @@ def test_a_trial_left_running_with_its_record_is_kept_with_it(
     (entry, _) = ledger(output).entries
     assert entry.ending.kind == "recorded" and entry.ending.record["id"] == record["id"]
     # the strategy of the resumed session was made with it as a live trial is told it
-    (_, _, history) = told.opened[-1]
-    (past,) = history
-    assert past.feedback.values == (metrics["a"], metrics["b"])
-    assert past.feedback.constraints == {"test.trade_off/analysis/a:max": metrics["a"] - 350}
+    (_, _, replayed) = told.opened[-1]
+    (feedback,) = [feedback for kind, _, feedback in replayed if kind == "told"]
+    assert feedback.values == (metrics["a"], metrics["b"])
+    assert feedback.constraints == {"test.trade_off/analysis/a:max": metrics["a"] - 350}
     assert report.trials[0].recovered and report.trials[0].status == "valid"
 
 
@@ -1201,8 +1202,8 @@ def test_a_rejected_trial_is_read_strictly(
     problem, output = rejecting(write_problem, diagnostic="spare"), tmp_path / "s"
     run(problem, output, 1, seed=1, evaluators=[_checking()])
     document = read_study(output)
-    ending = Ending("rejected", 0, by=by, message="cannot measure 250")
-    entry = Entry(0, 0, FrozenMap({RADIUS: 250}), FrozenMap({}), None, ending)
+    ending = Ending("rejected", 0, 3, by=by, message="cannot measure 250")
+    entry = Entry(0, 0, FrozenMap({RADIUS: 250}), FrozenMap({}), 2, None, ending)
     shutil.rmtree(output / "trial-000000", ignore_errors=True)
     if by == "test.candidate_check":  # all as k4opt keeps it, but a directory: it has none
         (output / "trial-000000").mkdir()

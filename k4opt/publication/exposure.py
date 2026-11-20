@@ -1,10 +1,9 @@
 """What a publication would expose that its author may not mean to: secrets and local paths.
 
-:func:`secrets_in` finds what looks like a secret in some bytes, best effort: enough to stop an
-accident, no substitute for looking. :func:`k4opt.publication.scan` looks through the files offered
-beside a snapshot with it, :func:`public_snapshot` through the snapshot, and :func:`exposed`
-through any JSON, such as a software sheet. In JSON, a value under a key that names a credential
-is one as well (``db_password: <the password>``, written in YAML), which neither text says alone.
+What looks like a secret is found by the rules of :mod:`k4opt.credentials`:
+:func:`k4opt.publication.scan` looks through the files offered beside a snapshot with them,
+:func:`public_snapshot` through the snapshot, and :func:`exposed` through any JSON, such as a
+software sheet.
 
 :func:`public_snapshot` is a study's snapshot as it is published: its JSON form, but that each
 message of a trial (its own, and those of its diagnostics, at every level of a nested study) that
@@ -26,6 +25,7 @@ import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 
+from k4opt.credentials import line_of, secrets_in, suspected, texts
 from k4opt.optimization import StudyResults
 
 PUBLIC_PREFIXES = ("/cvmfs/",)
@@ -48,55 +48,6 @@ class Finding:
     snapshot: bool = False
 
 
-# what names a credential: a name or a key that ends in one of these, in any case (DB_PASSWORD,
-# githubToken, private_key, JWT_SECRET_KEY, client-secret, credentials), alike in text and in a
-# mapping; not tokenizer, candidate_key or public_key, whose last words name no secret
-_CREDENTIAL = (
-    r"(?:password|passwd|passphrase|pwd|secret|token|credentials?"
-    r"|(?:api|access|private|secret|signing|encryption)[_-]?key)"
-)
-
-# what is looked for, best effort: enough to stop an accident, no substitute for looking
-_SECRETS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
-    ("a private key", re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----")),
-    ("an AWS access key", re.compile(rb"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    ("a GitHub token", re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,})\b")),
-    ("a GitLab token", re.compile(rb"\bglpat-[\w-]{20,}\b")),
-    ("a Slack token", re.compile(rb"\bxox[abprs]-[\w-]{10,}\b")),
-    ("a Google API key", re.compile(rb"\bAIza[\w-]{35}\b")),
-    (
-        "a URL with a password",
-        re.compile(rb"\b[a-z][a-z0-9+.-]{0,31}://[^/\s:@'\"${}]{1,256}:[^/\s@'\"${}]{1,256}@"),
-    ),
-    (
-        "a secret assigned in the open",
-        re.compile(
-            rb"(?i)"
-            + _CREDENTIAL.encode()
-            # the name ends there, and may be quoted, as JSON and a dict write it; a quoted value
-            # that starts like a path or a variable (${API_KEY}) refers to one
-            + rb"[\"']?\s*[:=]\s*(?:[\"'](?![/$~])[^\"'\s]{8,256}[\"']"
-            # unquoted: what a token looks like, not a name, a call or a path
-            rb"|(?=[\w+=-]{0,255}\d)[\w+=-]{8,256}(?![\w+=(.\[/-]))"
-        ),
-    ),
-)
-# files named as what holds credentials: an environment file (.env, .env.local, .env.production;
-# not a template meant to be shared, .env.example, whose content is scanned as any file's), direnv's
-# .envrc, a key or a certificate store
-_CREDENTIAL_NAMES = re.compile(
-    r"(?:^|/)(?:\.netrc|\.pgpass|\.htpasswd|\.envrc|id_(?:rsa|dsa|ecdsa|ed25519)|credentials"
-    r"|\.env(?:\.(?!(?:example|sample|template|dist)$)[^/]+)?)$"
-    r"|\.(?:pem|p12|pfx|key)$"
-)
-
-# a key that names a credential, and what such a key's value is when it is one: a word of 8 to
-# 256 characters, not a path or a variable
-_CREDENTIAL_KEY = re.compile(_CREDENTIAL + "$", re.IGNORECASE)
-_CREDENTIAL_VALUE = re.compile(r"(?![/$~])\S{8,256}")
-KEYED = "a secret, by the key it is under"
-"""What a value under a key that names a credential is found as (:func:`exposed`)."""
-
 WITHHELD = "[withheld by k4opt publish: it looks like it holds {what}]"
 """What a message that looks like it holds a secret is published as."""
 
@@ -111,73 +62,12 @@ def said_of_withheld(withheld: Finding) -> str:
     return f"{withheld.label} looks like it holds {withheld.what}: published as a note saying so"
 
 
-def secrets_in(data: bytes) -> list[tuple[str, int, bytes]]:
-    """What of ``data`` looks like a secret: the first match of each kind, as what it looks like,
-    its offset and the matched bytes."""
-    found = []
-    for what, pattern in _SECRETS:
-        match = pattern.search(data)
-        if match is not None:
-            found.append((what, match.start(), match[0]))
-    return found
-
-
-def credentials_named(name: str) -> bool:
-    """Whether a file's ``name`` (a path relative to what it is in) says it holds credentials."""
-    return _CREDENTIAL_NAMES.search(name) is not None
-
-
-def _texts(value: object, path: str = "") -> Iterator[tuple[str, str]]:
-    """Each text of the JSON-like ``value``, keys included, with where it is in it (``a.b[0]``)."""
-    if isinstance(value, str):
-        yield path, value
-    elif isinstance(value, Mapping):
-        for key, item in value.items():
-            yield path, str(key)
-            yield from _texts(item, f"{path}.{key}" if path else str(key))
-    elif isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            yield from _texts(item, f"{path}[{index}]")
-
-
-def _entries(value: object, path: str = "") -> Iterator[tuple[str, str, object]]:
-    """Each entry of every mapping in the JSON-like ``value``: where its value is, its key and its
-    value."""
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            at = f"{path}.{key}" if path else str(key)
-            yield at, str(key), item
-            yield from _entries(item, at)
-    elif isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            yield from _entries(item, f"{path}[{index}]")
-
-
-def _keyed(key: str, item: object) -> bool:
-    """Whether ``item`` is a credential by the ``key`` it is under: a key that names one, as an
-    assignment in text does (:data:`_CREDENTIAL`), and a value that is one
-    (:data:`_CREDENTIAL_VALUE`)."""
-    if isinstance(item, bool) or not isinstance(item, (str, int)):
-        return False
-    return bool(_CREDENTIAL_KEY.search(key)) and bool(_CREDENTIAL_VALUE.fullmatch(str(item)))
-
-
-def _line(text: bytes, offset: int) -> int:
-    return text.count(b"\n", 0, offset) + 1
-
-
 def _found(value: object, owner: str, snapshot: bool) -> Iterator[tuple[Finding, bytes]]:
     """What of ``value`` looks like a secret, labeled by ``owner`` and the field
     (``the study's problem.definition.x``), with what matched: in each text, and each value whose
     key names a credential, which no text of it says alone."""
-    for path, text in _texts(value):
-        data = text.encode()
-        for what, offset, matched in secrets_in(data):
-            label = f"{owner} {path}" if path else owner
-            yield Finding(label, _line(data, offset), what, snapshot), matched
-    for path, key, item in _entries(value):
-        if _keyed(key, item):
-            yield Finding(f"{owner} {path}", 1, KEYED, snapshot), str(item).encode()
+    for path, line, what, matched in suspected(value):
+        yield Finding(f"{owner} {path}" if path else owner, line, what, snapshot), matched
 
 
 def exposed(value: object, owner: str) -> list[Finding]:
@@ -230,7 +120,7 @@ def _withheld_text(text: str | None, where: str, withheld: list[Finding]) -> str
     found = secrets_in(data)
     if not found:
         return text
-    withheld.extend(Finding(where, _line(data, offset), what, True) for what, offset, _ in found)
+    withheld.extend(Finding(where, line_of(data, offset), what, True) for what, offset, _ in found)
     return WITHHELD.format(what=" and ".join(what for what, _, _ in found))
 
 
@@ -283,7 +173,7 @@ def local_paths(results: StudyResults) -> list[tuple[str, str]]:
     named: set[str] = set()  # of study.json, at any level
 
     def scan(value: object, where: str, join: str = " ", once: bool = False) -> None:
-        for path, text in _texts(value):
+        for path, text in texts(value):
             for local in _ABSOLUTE.findall(text):
                 if local.startswith(PUBLIC_PREFIXES) or (once and local in named):
                     continue

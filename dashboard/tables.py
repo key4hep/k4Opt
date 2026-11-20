@@ -315,10 +315,14 @@ def provenance(results: StudyResults) -> list[Row]:
 
 
 def _strategy(strategy: object) -> str:
-    """The strategy a study records, for a person: Optuna's version, sampler and seed, or how
-    many points its grid has."""
+    """The strategy a study records, for a person: Optuna's version, sampler and seed, how many
+    points its grid has, or the class of a strategy of its own and the start of its source's
+    SHA-256."""
     if _get(strategy, "name") == "grid":
         return f"grid of {_get(strategy, 'points')} points"
+    if _get(strategy, "name") == "custom":
+        sha256 = str(_get(_get(strategy, "source"), "sha256"))[:12]
+        return f"{_get(strategy, 'class')}, a strategy of its own (source {sha256})"
     sampler = _get(strategy, "sampler")
     return (
         f"{_get(strategy, 'name')} {_get(strategy, 'version')}, {_get(sampler, 'name')}, "

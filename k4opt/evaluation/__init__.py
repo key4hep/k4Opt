@@ -53,7 +53,7 @@ from k4opt.evaluation.errors import (
     EvaluationInvalid,
     EvaluatorLoadError,
 )
-from k4opt.evaluation.loader import evaluator_source, load_evaluator
+from k4opt.evaluation.loader import load_evaluator
 from k4opt.evaluation.models import (
     ARTIFACT_NAME,
     Artifact,
@@ -102,7 +102,6 @@ __all__ = [
     "declared_artifacts",
     "declared_collections",
     "declared_roles",
-    "evaluator_source",
     "load_evaluator",
     "metric_units",
     "read_collection",

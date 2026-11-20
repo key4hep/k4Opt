@@ -102,10 +102,7 @@ def test_a_grid_is_previewed_run_in_order_and_ends_when_exhausted(
     assert lines[2] == f"grid: 3 points: {RADIUS} 200.0, 300.5, 400.0"
     for line, value in zip(lines[3:6], ("200", "300.5", "400"), strict=True):
         assert line.startswith("trial ") and f"{RADIUS}={value} " in line
-    assert lines[-1] == (
-        "strategy: exhausted: it has nothing more to propose (a grid all of whose points were "
-        "proposed)"
-    )
+    assert lines[-1] == "strategy: exhausted: it has nothing more to propose"
     code, out, err = optimize(str(problem), "--trials", "1", "--resume", "--output", str(output))
     assert code == 0 and not out.startswith("trial ")  # nothing is left to propose
     code, out, err = optimize(

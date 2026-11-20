@@ -1,10 +1,11 @@
 """Internal: Optuna's TPE sampler as a strategy, and the only module of k4opt that imports Optuna.
 
-Optuna keeps nothing on disk: its study is made in memory when a study of k4opt opens
-(:class:`TPE`), with every trial the study's ledger holds, in number order, as Optuna would have
-held them (COMPLETE with their objective values and constraint values, FAIL, or RUNNING for one
-still under way), so that its trials and the study's have the same numbers; then the sampler is
-seeded for the session (:func:`session_seed`). TPE learns from the trials alone, so a session
+Optuna keeps nothing on disk: its study is made in memory at the first proposal of a session of
+a study of k4opt (:class:`TPE`), with every trial the study's ledger holds, which it was told as
+the study opened, in number order, as Optuna would have held them (COMPLETE with their objective
+values and constraint values, FAIL, or RUNNING for one still under way), so that its trials and
+the study's have the same numbers; then the sampler is seeded for the session
+(:func:`session_seed`). TPE learns from the trials alone, so a session
 proposes what one that kept Optuna's study on disk would have proposed, and a session stopped
 anywhere loses nothing of it. ``study.json`` records the sampler, its seed and the distributions
 (:func:`config`); a resume needs the same, and the same version of Optuna.
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping
 from typing import Any, Literal, cast
 
 import optuna
@@ -33,7 +34,7 @@ from optuna.distributions import (
 from optuna.trial import Trial, TrialState, create_trial
 
 from k4opt.frozen import same_json
-from k4opt.optimization._proposal import Answer, Feedback, Past, Proposal
+from k4opt.optimization._proposal import Answer, Feedback, Proposal
 from k4opt.optimization._scope import StudyScope
 from k4opt.optimization._strategy import session_seed
 from k4opt.optimization.errors import OptimizationError
@@ -160,37 +161,47 @@ def _quiet() -> Iterator[None]:
 
 
 class TPE:
-    """Optuna's TPE sampler for one study, in an Optuna study in memory made from the study's
-    trials so far (``history``), each as Optuna holds a trial that ended so, or as a RUNNING
-    trial for one still under way."""
+    """Optuna's TPE sampler for one study, in an Optuna study in memory. What it is told before
+    its first proposal of the session (the study's trials so far, as the study opens) is
+    collected; that proposal makes the Optuna study of them, in number order, each as Optuna holds
+    a trial that ended so, or as a RUNNING trial for one still under way, and seeds the sampler
+    for the session from the trials so far."""
 
-    def __init__(
-        self, scope: StudyScope, recorded: Mapping[str, Any], history: Sequence[Past]
-    ) -> None:
+    def __init__(self, scope: StudyScope, recorded: Mapping[str, Any]) -> None:
         self._space = search_space(scope.spec, scope.searched)
+        self._directions = cast(list[Literal["minimize", "maximize"]], scope.directions)
+        self._seed = _seed(recorded)
+        # until its first proposal: each trial it was told, its values and how it ended
+        self._before: dict[int, tuple[dict[str, Any], Feedback | None]] = {}
+        self._study: optuna.Study | None = None
         self._running: dict[int, Trial] = {}
+        self.seed: int | None = None
+
+    def _open(self, number: int) -> optuna.Study:
+        """The Optuna study of the trials told so far, the next to ask being trial ``number``."""
         with _quiet():
             # filled by a sampler that draws nothing, so that TPE's draws are those of a study
             # that held these trials all along
-            self._study = optuna.create_study(
-                directions=cast(list[Literal["minimize", "maximize"]], scope.directions),
-                sampler=optuna.samplers.RandomSampler(seed=0),
+            self._study = study = optuna.create_study(
+                directions=self._directions, sampler=optuna.samplers.RandomSampler(seed=0)
             )
-            for past in history:
-                if past.feedback is None:
-                    self._study.enqueue_trial(dict(past.values))
-                    self._running[past.number] = self._take(past.number)
+            for told, (values, feedback) in sorted(self._before.items()):
+                if feedback is None:
+                    study.enqueue_trial(values)
+                    self._running[told] = self._take(told)
                     continue
-                self._study.add_trial(self._frozen(past))
-        self.seed = session_seed(_seed(recorded), len(history))
-        self._study.sampler = optuna.samplers.TPESampler(
+                study.add_trial(self._frozen(values, feedback))
+        self._before = {}
+        self.seed = session_seed(self._seed, number)
+        study.sampler = optuna.samplers.TPESampler(
             seed=self.seed, n_startup_trials=STARTUP_TRIALS, constant_liar=CONSTANT_LIAR
         )
+        return study
 
-    def _frozen(self, past: Past) -> optuna.trial.FrozenTrial:
-        feedback = past.feedback
-        assert feedback is not None
-        params = dict(past.values)
+    def _frozen(self, values: Mapping[str, Any], feedback: Feedback) -> optuna.trial.FrozenTrial:
+        if feedback.status == "malformed":  # no candidate: a failure without parameters
+            return create_trial(state=TrialState.FAIL, params={}, distributions={})
+        params = dict(values)
         distributions = {key: self._space[key] for key in params}
         if feedback.status != "valid":
             return create_trial(state=TrialState.FAIL, params=params, distributions=distributions)
@@ -204,6 +215,7 @@ class TPE:
 
     def _take(self, number: int) -> Trial:
         """Ask Optuna for trial ``number``, which must be the next of its study too."""
+        assert self._study is not None
         trial = self._study.ask(fixed_distributions=dict(self._space))
         if trial.number != number:
             raise OptimizationError(
@@ -217,12 +229,25 @@ class TPE:
         return False
 
     def propose(self, number: int) -> Proposal | Answer:
+        if self._study is None:
+            self._open(number)
         with _quiet():
             trial = self._take(number)
         self._running[number] = trial
         return Proposal({key: trial.params[key] for key in self._space}, {"seed": self.seed})
 
+    def proposed(self, number: int, proposal: Proposal) -> None:
+        """Before its first proposal, a trial of the study so far; after it, one it asked Optuna
+        for itself."""
+        if self._study is None:
+            self._before[number] = (dict(proposal.values), None)
+        elif number not in self._running:
+            raise OptimizationError(f"trial {number} is none that Optuna's TPE proposed")
+
     def tell(self, number: int, feedback: Feedback) -> None:
+        if self._study is None:
+            self._before[number] = (self._before[number][0], feedback)
+            return
         trial = self._running.pop(number)
         with _quiet():
             if feedback.status != "valid":
