@@ -4,7 +4,9 @@ and no deployment without its credentials."""
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +62,7 @@ def test_the_manifests_name_one_service_on_one_port_with_its_health_probes() -> 
 def test_the_image_serves_the_port_with_graphviz_without_optuna_and_as_any_user() -> None:
     dockerfile = (ROOT / "dashboard" / "Dockerfile").read_text()
     assert f"EXPOSE {PORT}" in dockerfile and f'"--server.port={PORT}"' in dockerfile
-    assert re.search(r"^FROM \S+:3\.13-slim@sha256:[0-9a-f]{64}$", dockerfile, re.MULTILINE)
+    assert re.search(r"^FROM \S+:3\.\d+-slim@sha256:[0-9a-f]{64}$", dockerfile, re.MULTILINE)
     assert re.search(r"^USER 1001$", dockerfile, re.MULTILINE)
     assert "chmod -R g=u /app" in dockerfile and "HOME=/tmp" in dockerfile
     assert "apt-get install -y --no-install-recommends graphviz" in dockerfile  # lays graphs out
@@ -70,6 +72,21 @@ def test_the_image_serves_the_port_with_graphviz_without_optuna_and_as_any_user(
     names = {line.split("==")[0].lower() for line in pinned}
     assert {"streamlit", "plotly", "lxml", "pyyaml"} <= names
     assert not names & {"optuna", "optuna-dashboard", "podio", "sqlalchemy"}
+
+
+def test_the_dashboard_job_tests_on_the_python_the_image_runs(tmp_path: Path) -> None:
+    # read from the image's FROM line, never written twice: a bump of the image moves the tests
+    dockerfile = (ROOT / "dashboard" / "Dockerfile").read_text()
+    (python,) = re.findall(r"^FROM \S+/python:(3\.\d+)-slim@", dockerfile, re.MULTILINE)
+    steps = workflow("ci.yml")["jobs"]["dashboard"]["steps"]
+    (read,) = (step for step in steps if step.get("id") == "image")
+    output = tmp_path / "output"
+    environment = {**os.environ, "GITHUB_OUTPUT": str(output)}
+    subprocess.run(["bash", "-e", "-c", read["run"]], cwd=ROOT, env=environment, check=True)
+    assert output.read_text() == f"python={python}\n"
+    (setup,) = (step for step in steps if step.get("uses", "").startswith("actions/setup-python@"))
+    assert setup["with"] == {"python-version": "${{ steps.image.outputs.python }}"}
+    assert steps.index(read) < steps.index(setup)
 
 
 def test_the_deployment_runs_the_exact_image_built_and_only_once_provisioned() -> None:
