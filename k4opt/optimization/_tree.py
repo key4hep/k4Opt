@@ -233,7 +233,7 @@ class Tree:
         held = study.scope.level > 0 and _shares(study.scope)
         node = _Node(study, budget, held=held)
         # a strategy whose last proposal an interrupted session kept, but not that it was the last
-        _exhausted(node)
+        self._exhausted(node)
         self._nodes[study.document["id"]] = node
         for result in results:
             if result.status == "running":  # it stands for a study of the level below
@@ -343,7 +343,7 @@ class Tree:
                 f"{type(exc).__name__}: {exc}"
             ) from exc
         if answer is EXHAUSTED:
-            _exhausted(node, asked=True)
+            self._exhausted(node, asked=True)
             return None
         if answer is WAITING:
             if not node.in_flight and not node.open:
@@ -371,13 +371,13 @@ class Tree:
             values = checked(study.scope, given)
         except MalformedError as exc:
             result = malform(study, number, given, note, str(exc))
-            _exhausted(node)
+            self._exhausted(node)
             if node is self._root:
                 self._progress(result)
             return None
         study.ledger.proposed(number, values, note)
         told_proposed(study, number)
-        _exhausted(node)  # its last proposal: kept as such at once, whatever the budget
+        self._exhausted(node)  # its last proposal: kept as such at once, whatever the budget
         if study.scope.nested:
             self._open(node, number)
             return self._next(node)
@@ -408,7 +408,7 @@ class Tree:
                 )
             told = unscore(parent, number, no_best_trial(results))
             self._release(node, number)
-            _exhausted(node)
+            self._exhausted(node)
             if node is self._root:
                 self._progress(told)
             return None
@@ -450,7 +450,7 @@ class Tree:
             above.held, above = False, above.parent
         told = settle(node.study, number, output, result)
         self._release(node, number)
-        _exhausted(node)  # what it was told may end its search: kept, whether or not it is asked
+        self._exhausted(node)  # what it was told may end its search: kept, asked again or not
         if node is self._root:
             self._progress(told)
 
@@ -463,6 +463,41 @@ class Tree:
         del self._nodes[opened.study.document["id"]]
         opened.study.ledger.close()
 
+    def _exhausted(self, node: _Node, asked: bool = False) -> None:
+        """Keep that the strategy of ``node`` has nothing more to propose, once it says so: it
+        answered so when ``asked``, or says it after a proposal or an ending it was told (its
+        last proposal, or a result that ends its search), whether or not it is asked again; once
+        only. Asked after every call that tells a strategy of one's own something, it is where
+        what it runs and reads is checked again (:meth:`_unchanged`), before anything it decided
+        from them is kept."""
+        study = node.study
+        assert study.strategy is not None
+        try:
+            said = asked or exhausted(study.strategy)
+        except OptimizationError as exc:
+            raise OptimizationError(f"{study.document['name']}: {exc}") from exc
+        self._unchanged(study)
+        if not said:
+            node.exhausted = study.ledger.exhausted
+            return
+        if not study.ledger.exhausted:
+            study.ledger.exhaust()
+        node.exhausted = True
+
+    def _unchanged(self, study: OpenStudy) -> None:
+        """Refuse to go on with a strategy of one's own whose code or files changed since the
+        session began (:meth:`~._custom.Custom.changed`): what it decided from them (that it is
+        exhausted, what it learnt as it was told a trial) is no part of the study. The trials the
+        ledger kept stay; a resume with what the study was made with goes on from them."""
+        changed = [] if self._custom is None else self._custom.changed()
+        if changed:
+            raise OptimizationError(
+                f"{study.document['name']}: the strategy is asked nothing more: "
+                f"{', '.join(changed)} changed since the session began, so what it decides from "
+                "them would be no part of the study; resume the study with the strategy it was "
+                "made with"
+            )
+
     def close(self) -> None:
         """Nothing runs any more: end the trials still under way as interrupted, in number order
         (one that cannot be is left running for a resume, as a parent trial is), and close the
@@ -474,24 +509,6 @@ class Tree:
         for node in self._nodes.values():
             if node is not self._root:
                 node.study.ledger.close()
-
-
-def _exhausted(node: _Node, asked: bool = False) -> None:
-    """Keep that the strategy of ``node`` has nothing more to propose, once it says so: it
-    answered so when ``asked``, or says it after a proposal or an ending it was told (its last
-    proposal, or a result that ends its search), whether or not it is asked again; once only."""
-    study = node.study
-    assert study.strategy is not None
-    try:
-        said = asked or exhausted(study.strategy)
-    except OptimizationError as exc:
-        raise OptimizationError(f"{study.document['name']}: {exc}") from exc
-    if not said:
-        node.exhausted = study.ledger.exhausted
-        return
-    if not study.ledger.exhausted:
-        study.ledger.exhaust()
-    node.exhausted = True
 
 
 def _quiet(result: TrialResult) -> None:

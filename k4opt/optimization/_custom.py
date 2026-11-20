@@ -14,8 +14,9 @@ where it runs and which a study records nowhere: settings that look like they ho
 records the strategy (:meth:`Custom.record`) by the name of its class, its source as an
 evaluator's is identified (without where it is), its settings but files and its files by content;
 a resume is given the same class and settings again, and refused if anything of them differs
-(:func:`differences`). A session refuses to keep a proposal once its code or a file changed
-(:meth:`Custom.changed`).
+(:func:`differences`). A session checks its code and files again (:meth:`Custom.changed`) after
+each call whose outcome the study keeps (a proposal, an ending it was told, an answer that it is
+exhausted), and stops once they changed: nothing it decided from them is kept.
 """
 
 from __future__ import annotations

@@ -337,8 +337,10 @@ What a strategy is given has three roles, which a study records differently:
 
 `--strategy-settings FILE` is a YAML mapping, read strictly (a key given twice is refused), and a
 file a setting names is relative to it; from Python, `strategy_settings` is a JSON object, and a
-relative file is relative to the current directory. A file setting is checked again before each
-proposal is kept, as the strategy's code is: one that changed stops the study.
+relative file is relative to the current directory. The files and the strategy's code are checked
+again after each call whose outcome the study keeps: a proposal, a trial it was told (it may read
+its prompt then), an answer that it is exhausted. One that changed stops the study, and nothing
+the strategy decided from it is kept: neither the proposal nor that its search ended.
 
 A credential belongs where the strategy runs, not in its settings: read it from an environment
 variable, or from a file the strategy opens itself. Settings that look like they hold one (an

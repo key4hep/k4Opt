@@ -107,6 +107,8 @@ PROMPTED = """
         def propose(self, trial):
             if self.count >= 3:
                 return EXHAUSTED
+            if self.edit == "propose":  # as it decides
+                self.prompt.write_text(self.prompt.read_text() + " and more")
             return Proposal({"radius": steps.STEP + self.length * self.scale + self.count})
 
         def proposed(self, trial, proposal):
@@ -372,17 +374,28 @@ def test_a_file_a_setting_names_is_identified_by_its_content_and_watched(
 
 
 @pytest.mark.parametrize(
-    ("edit", "changed"), [("prompt", "its prompt"), ("helper", "steps_helper")]
+    ("edit", "message", "kept"),
+    [
+        # changed as it was told its first trial: stopped right then, before anything else
+        ("prompt", r"asked nothing more: its prompt .* changed since", ["recorded"]),
+        ("helper", r"asked nothing more: .*steps_helper.* changed since", ["recorded"]),
+        # changed as it proposed: the proposal is not kept
+        ("propose", r"proposal for trial 0 is not kept: its prompt .* changed since", []),
+    ],
 )
-def test_a_strategy_whose_code_or_file_changes_during_a_session_stops_before_its_next_proposal(
-    tmp_path: Path, write_problem: Callable[..., Path], edit: str, changed: str
+def test_a_strategy_whose_code_or_file_changes_during_a_session_is_asked_nothing_more(
+    tmp_path: Path,
+    write_problem: Callable[..., Path],
+    edit: str,
+    message: str,
+    kept: list[str],
 ) -> None:
     code = prompted_file(tmp_path / "code", f"steps_{edit}")
     prompt = tmp_path / "prompt.md"
     prompt.write_text("propose wisely")
     prompted = load_strategy(f"{code}:Prompted")
     output = tmp_path / "s"
-    with pytest.raises(OptimizationError, match=rf"is not kept: .*{changed}.* changed since"):
+    with pytest.raises(OptimizationError, match=message):
         optimize(
             write_problem(),
             [trade_off()],
@@ -391,7 +404,7 @@ def test_a_strategy_whose_code_or_file_changes_during_a_session_stops_before_its
             strategy=prompted,
             strategy_settings={"prompt": str(prompt), "edit": edit},
         )
-    assert endings(output) == ["recorded"]  # what it proposed before is kept, nothing after
+    assert endings(output) == kept  # what it proposed before is kept, nothing after
 
 
 DEFAULTED = """
@@ -807,6 +820,84 @@ def test_a_search_that_ends_with_its_last_result_is_kept_exhausted(
     assert events[-2:] == ["recorded", "exhausted"]
     resumed = optimize(problem, [trade_off()], output, trials=1, resume=True, strategy=stopping)
     assert resumed.exhausted and len(resumed.trials) == 1  # nothing more is proposed
+
+
+READING = """
+    from pathlib import Path
+
+    from k4opt.optimization import EXHAUSTED, Proposal
+
+
+    class Reading:
+        \"\"\"Proposes one radius, and reads its prompt as it learns how the trial ended: the
+        prompt says whether the search is done.\"\"\"
+
+        files = ("prompt",)
+
+        def __init__(self, study, *, prompt):
+            self.prompt, self.asked, self.exhausted = Path(prompt), False, False
+
+        def propose(self, trial):
+            return EXHAUSTED if self.asked else Proposal({"radius": 300.0})
+
+        def proposed(self, trial, proposal):
+            self.asked = True
+
+        def tell(self, trial, feedback):
+            self.exhausted = "stop" in self.prompt.read_text()
+"""
+
+EDITING = """
+    import os
+    from pathlib import Path
+
+    from k4opt.evaluation import Evaluator
+
+
+    class Probe(Evaluator):
+        \"\"\"test.trade_off, which rewrites the file PYTEST_EDITED names as it evaluates.\"\"\"
+
+        name, version = "test.trade_off", "1"
+        settings = {"x": float}
+        metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
+
+        def evaluate(self, request):
+            Path(os.environ["PYTEST_EDITED"]).write_text("go on, then stop")
+            x = request.settings["x"]
+            return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
+"""
+
+
+def test_a_strategy_told_a_trial_after_its_prompt_changed_is_asked_nothing_more(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("go on")
+    monkeypatch.setenv("PYTEST_EDITED", str(prompt))  # edited while the trial runs
+    reading = load_strategy(f"{strategy_file(tmp_path / 'code', READING)}:Reading")
+    editing = evaluator_from(tmp_path / "evaluators", "editing", EDITING)
+    problem, output = write_problem(), tmp_path / "s"
+    settings = {"prompt": str(prompt)}
+    with pytest.raises(OptimizationError, match=r"asked nothing more: its prompt .* changed since"):
+        optimize(problem, [editing], output, trials=1, strategy=reading, strategy_settings=settings)
+    # the trial is kept as it ended; that the search ended, decided from another prompt, is not
+    assert endings(output) == ["recorded"]
+    events = [
+        json.loads(line)["event"] for line in (output / "trials.jsonl").read_text().splitlines()
+    ]
+    assert "exhausted" not in events and not load_study(output).exhausted
+    # with the prompt the study was made with, a resume goes on from the trial
+    prompt.write_text("go on")
+    resumed = optimize(
+        problem,
+        [editing],
+        output,
+        trials=0,
+        resume=True,
+        strategy=reading,
+        strategy_settings=settings,
+    )
+    assert [t.status for t in resumed.trials] == ["valid"] and not resumed.exhausted
 
 
 # --- reading back ------------------------------------------------------------------------------
