@@ -3,7 +3,8 @@
 It measures the middle of the domain, then all its neighbors one step away along each parameter
 at once (a batch: it waits until every one of them ended), moves to the best of them if it
 improves on the center, and halves the step otherwise; once the step is below ``min_step`` it has
-nothing more to propose. Steps are fractions of each parameter's range. It learns only from
+nothing more to propose. Steps are fractions of each parameter's range, and an integer parameter
+moves by one integer at least, so that a narrow range is searched whole. It learns only from
 measured values: a trial without one (invalid, failed, rejected, malformed, interrupted) or one
 that misses a limit (infeasible) is never compared, and a point measured once is not proposed
 again.
@@ -101,11 +102,12 @@ class CompassSearch:
         found = []
         for parameter in self.parameters:
             low, high = parameter.bounds
+            step = self.step * (high - low)
+            if parameter.kind == "integer":  # at least to the next integer, however small the step
+                step = max(round(step), 1)
             for sign in (-1, 1):
                 moved = dict(self.center)
-                moved[parameter.name] = min(
-                    max(moved[parameter.name] + sign * self.step * (high - low), low), high
-                )
+                moved[parameter.name] = min(max(moved[parameter.name] + sign * step, low), high)
                 point = self._point(moved)
                 if point != self.center and point not in found:
                     found.append(point)

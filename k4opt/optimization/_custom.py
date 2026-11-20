@@ -19,6 +19,7 @@ a resume is given the same class and settings again, and refused if anything of 
 
 from __future__ import annotations
 
+import inspect
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ from typing import Any
 
 from k4opt.credentials import suspected
 from k4opt.errors import CodeLoadError
-from k4opt.frozen import FrozenMap, Json, freeze, thaw
+from k4opt.frozen import FrozenMap, Json, freeze, same_json, thaw
 from k4opt.hashing import file_identity
 from k4opt.optimization._proposal import Strategy, StudyContext
 from k4opt.optimization.errors import OptimizationError
@@ -68,7 +69,13 @@ def resolved(
     strategy: type, settings: Mapping[str, Any], base: str | os.PathLike[str]
 ) -> dict[str, Any]:
     """``settings`` with each setting ``strategy`` says names a file (:func:`declared_files`) as
-    an absolute path, a relative one being relative to ``base``."""
+    an absolute path, a relative one being relative to ``base``; :class:`OptimizationError` for
+    settings that are no mapping by name."""
+    if not isinstance(settings, Mapping) or not all(isinstance(key, str) for key in settings):
+        raise OptimizationError(
+            f"strategy {strategy.__name__}: its settings are a JSON object by name, not "
+            f"{settings!r}"
+        )
     given = dict(settings)
     for name in declared_files(strategy):
         value = given.get(name)
@@ -102,8 +109,9 @@ class Custom:
         """``strategy``, which :func:`load_strategy` loaded, with ``settings`` (a JSON object; a
         relative path of a file setting is relative to ``base``). Raises
         :class:`OptimizationError` for a class whose source is not known to be the code that
-        runs, settings that are no JSON object or look like they hold a credential, and a file
-        setting that names no readable file."""
+        runs, settings that are no JSON object or look like they hold a credential, a file
+        setting that names no readable file, and one not given whose default in the class names
+        one, which the study would not identify."""
         source = source_of(strategy)
         name = _name(strategy)
         if not source.get("reference") or not source.get("sha256"):
@@ -116,9 +124,8 @@ class Custom:
                 f"strategy {name}: the code it runs is not known to be the source its hash names "
                 "(an import hook imported it, or a module it imports); load it as FILE.py:Class"
             )
-        plain = freeze(
-            dict(resolved(strategy, settings or {}, base)), "settings", OptimizationError
-        )
+        given = resolved(strategy, {} if settings is None else settings, base)
+        plain = freeze(given, "settings", OptimizationError)
         if not isinstance(plain, Mapping):
             raise OptimizationError(f"strategy {name}: its settings are no JSON object")
         for where, _, what, _ in suspected(plain):
@@ -136,6 +143,13 @@ class Custom:
         for key, path in files.items():
             if not path.is_file():
                 raise OptimizationError(f"strategy setting {key}: {path} is no file")
+        for key in names:
+            default = None if key in plain else _default(strategy, key)
+            if default is not None:
+                raise OptimizationError(
+                    f"strategy {name}: its file setting {key} is not given, so the file it reads "
+                    f"by default ({default!r}) would not be identified; give it in its settings"
+                )
         identities = FrozenMap(
             {key: FrozenMap(_identity(key, path)) for key, path in files.items()}
         )
@@ -208,6 +222,19 @@ class Custom:
         return []
 
 
+def _default(strategy: type, key: str) -> object:
+    """What the class ``strategy`` makes the setting ``key`` without it: its default, ``None`` for
+    none (a setting it must be given is refused as it is made, one it does not take reads
+    nothing); something, if its signature cannot be read."""
+    try:
+        parameter = inspect.signature(strategy).parameters.get(key)
+    except (TypeError, ValueError):
+        return "not known: its signature cannot be read"
+    if parameter is None or parameter.default is inspect.Parameter.empty:
+        return None
+    return parameter.default
+
+
 def _name(strategy: type) -> str:
     """The name a strategy class was loaded by: the attribute its reference names."""
     reference = source_of(strategy).get("reference")
@@ -243,7 +270,7 @@ def differences(recorded: Mapping[str, Any], custom: Custom) -> list[str]:
             if then_helpers.get(module) != helpers.get(module)
         ]
         found.append(f"the modules the strategy's file imports changed: {', '.join(changed)}")
-    if thaw(recorded.get("settings")) != now["settings"]:
+    if not same_json(recorded.get("settings"), now["settings"]):  # 1, 1.0 and true differ
         found.append(
             f"its strategy's settings are {thaw(recorded.get('settings'))!r}, not "
             f"{now['settings']!r} (give the same --strategy-settings)"
@@ -251,7 +278,7 @@ def differences(recorded: Mapping[str, Any], custom: Custom) -> list[str]:
     then_files = thaw(recorded.get("files"))
     then_files = then_files if isinstance(then_files, Mapping) else {}
     for key in dict.fromkeys([*then_files, *now["files"]]):
-        if then_files.get(key) != now["files"].get(key):
+        if not same_json(then_files.get(key), now["files"].get(key)):
             path = custom.files.get(key)
             found.append(
                 f"its strategy's {key} is not the file the study read"
@@ -266,7 +293,7 @@ def revision_warnings(recorded: Mapping[str, Any], custom: Custom) -> list[str]:
     source = recorded.get("source")
     then = source.get("revision") if isinstance(source, Mapping) else None
     now = source_of(custom.strategy).get("revision")
-    if thaw(then) == thaw(now):
+    if same_json(then, now):
         return []
     return [
         f"strategy {custom.name}: the checkout of its file is at {now} now, at {thaw(then)} when "

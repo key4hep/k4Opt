@@ -47,7 +47,7 @@ def ended(number: int, radius: float, measure: Measure) -> Feedback:
     if value is None:
         return Feedback("invalid", TrialResult(number, "invalid", {RADIUS: radius}))
     result = TrialResult(number, "valid", {RADIUS: radius})
-    return Feedback("valid", result, (value, 1 / radius), feasible=True)
+    return Feedback("valid", result, (value, -radius), feasible=True)
 
 
 def drive(
@@ -126,3 +126,10 @@ def test_an_integer_parameter_takes_integers_and_a_categorical_one_is_refused(
     assert all(float(radius).is_integer() for radius in proposed) and max(proposed) == 9
     with pytest.raises(ValueError, match="numeric parameters only"):
         compass(context(type="categorical", choices=[100.0, 200.0]))
+
+
+@pytest.mark.parametrize("bounds", [[0, 1], [1, 2], [0, 2], [5, 6], [-1, 1]])
+def test_a_narrow_integer_range_is_searched_whole(compass: Any, bounds: list[int]) -> None:
+    # a step of a quarter of the range rounds to no move at all: it moves by one integer at least
+    proposed = radii(drive(compass(context(type="integer", bounds=bounds)), lambda r: r))
+    assert sorted(set(proposed)) == list(range(bounds[0], bounds[1] + 1))

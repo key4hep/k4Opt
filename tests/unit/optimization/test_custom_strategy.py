@@ -394,6 +394,58 @@ def test_a_strategy_whose_code_or_file_changes_during_a_session_stops_before_its
     assert endings(output) == ["recorded"]  # what it proposed before is kept, nothing after
 
 
+DEFAULTED = """
+    from pathlib import Path
+
+    from k4opt.optimization import EXHAUSTED, Proposal
+
+
+    class Defaulted:
+        files = ("prompt",)
+
+        def __init__(self, study, *, prompt=PROMPT):
+            self.text = "" if prompt is None else Path(prompt).read_text()
+            self.done = False
+
+        def propose(self, trial):
+            return EXHAUSTED if self.done else Proposal({"radius": 300.0})
+
+        def proposed(self, trial, proposal):
+            self.done = True
+
+        def tell(self, trial, feedback): ...
+"""
+
+
+def test_a_file_a_strategy_reads_by_default_must_be_given_to_be_identified(
+    tmp_path: Path, write_problem: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "prompt.md").write_text("propose wisely")
+    source = DEFAULTED.replace("PROMPT", repr("prompt.md"))
+    defaulted = load_strategy(f"{strategy_file(tmp_path / 'code', source)}:Defaulted")
+    problem, output = write_problem(), tmp_path / "s"
+    message = r"its file setting prompt is not given, so the file it reads by default \('prompt"
+    with pytest.raises(OptimizationError, match=message):
+        optimize(problem, [trade_off()], output, trials=1, strategy=defaulted)
+    assert not output.exists()
+    # given, it is identified; given as null, or none by default, there is no file to identify
+    report = optimize(
+        problem,
+        [trade_off()],
+        output,
+        trials=1,
+        strategy=defaulted,
+        strategy_settings={"prompt": "prompt.md"},
+    )
+    assert report.trials[0].status == "valid"
+    assert list(json.loads((output / "study.json").read_text())["strategy"]["files"]) == ["prompt"]
+    optional = strategy_file(tmp_path / "optional", DEFAULTED.replace("PROMPT", "None"), "opt")
+    loaded = load_strategy(f"{optional}:Defaulted")
+    assert Custom.of(loaded, None).files == {}
+    assert Custom.of(defaulted, {"prompt": None}).files == {}
+
+
 def test_settings_that_look_like_a_credential_are_refused_before_anything_is_created(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
@@ -502,6 +554,8 @@ def test_what_cannot_run_a_strategy_of_ones_own_is_refused_before_anything_is_cr
             {"strategy": recorder, "strategy_settings": {"radii": object()}},
             "no plain JSON|unsupported",
         ),
+        ({"strategy": recorder, "strategy_settings": [("radii", [1])]}, "a JSON object by name"),
+        ({"strategy": recorder, "strategy_settings": False}, "a JSON object by name"),
         (
             {"strategy": recorder, "strategy_settings": {"radii": [1]}, "seed": 3},
             "--seed seeds Optuna's sampler; a strategy of one's own takes a seed in its settings",
@@ -602,6 +656,37 @@ def test_a_resume_is_given_the_same_strategy_and_settings_or_refused(
     assert [t.candidate[RADIUS] for t in report.trials] == [200.0, 300.0]
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"radii": [200.0, 300.0], "batch": 1.0},  # a float where an integer was
+        {"radii": [200.0, 300.0], "batch": True},  # a boolean, which Python takes for 1
+        {"radii": [200, 300], "batch": 1},  # integers deep in where floats were
+    ],
+)
+def test_a_resume_with_settings_of_other_json_types_is_refused(
+    tmp_path: Path, write_problem: Callable[..., Path], changed: dict[str, Any]
+) -> None:
+    recorder = load_strategy(f"{strategy_file(tmp_path / 'code', RECORDER)}:Recorder")
+    problem, output = write_problem(), tmp_path / "s"
+    settings = {"radii": [200.0, 300.0], "batch": 1}
+    optimize(
+        problem, [trade_off()], output, trials=1, strategy=recorder, strategy_settings=settings
+    )
+    assert changed == settings  # equal to Python, other JSON: another strategy's settings
+    with pytest.raises(OptimizationError, match="its strategy's settings are"):
+        optimize(
+            problem,
+            [trade_off()],
+            output,
+            trials=1,
+            resume=True,
+            strategy=recorder,
+            strategy_settings=changed,
+        )
+    assert endings(output) == ["recorded"]
+
+
 def test_a_study_of_the_grid_is_not_resumed_with_a_strategy_of_ones_own(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
@@ -619,6 +704,46 @@ def test_a_study_of_the_grid_is_not_resumed_with_a_strategy_of_ones_own(
             resume=True,
             strategy=recorder,
             strategy_settings={"radii": [500.0]},
+        )
+
+
+FAILING = """
+    from k4opt.optimization import Proposal
+
+
+    class Failing:
+        def __init__(self, study, *, error="ValueError"):
+            self.error = error
+
+        def propose(self, trial):
+            return Proposal({"radius": 300.0})
+
+        def proposed(self, trial, proposal): ...
+
+        def tell(self, trial, feedback): ...
+
+        @property
+        def exhausted(self):
+            raise {"ValueError": ValueError, "AttributeError": AttributeError}[self.error](
+                "invalid optimizer state"
+            )
+"""
+
+
+@pytest.mark.parametrize("error", ["ValueError", "AttributeError"])
+def test_a_strategy_that_cannot_say_whether_it_is_exhausted_stops_the_study(
+    tmp_path: Path, write_problem: Callable[..., Path], error: str
+) -> None:
+    failing = load_strategy(f"{strategy_file(tmp_path / 'code', FAILING)}:Failing")
+    message = rf"could not say whether it is exhausted: {error}: invalid optimizer state"
+    with pytest.raises(OptimizationError, match=message):  # an error, not "nothing said"
+        optimize(
+            write_problem(),
+            [trade_off()],
+            tmp_path / "s",
+            trials=2,
+            strategy=failing,
+            strategy_settings={"error": error},
         )
 
 

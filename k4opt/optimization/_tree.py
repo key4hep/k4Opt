@@ -479,7 +479,11 @@ def _exhausted(node: _Node, asked: bool = False) -> None:
     answered so when ``asked``, or tells it after its last proposal; once only."""
     study = node.study
     assert study.strategy is not None
-    if not (asked or exhausted(study.strategy)):
+    try:
+        said = asked or exhausted(study.strategy)
+    except OptimizationError as exc:
+        raise OptimizationError(f"{study.document['name']}: {exc}") from exc
+    if not said:
         node.exhausted = study.ledger.exhausted
         return
     if not study.ledger.exhausted:

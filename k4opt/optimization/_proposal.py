@@ -28,6 +28,7 @@ credential) is no trial at all: :func:`recordable` refuses it, and the study sto
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -156,8 +157,20 @@ class Strategy(Protocol):
 
 
 def exhausted(strategy: object) -> bool:
-    """Whether ``strategy`` says it will never propose again."""
-    return bool(getattr(strategy, "exhausted", False))
+    """Whether ``strategy`` says it will never propose again: ``False`` for one that says nothing
+    of it (no ``exhausted``); :class:`OptimizationError` if asking it fails, also with an
+    ``AttributeError``, which would otherwise pass for saying nothing."""
+    if inspect.getattr_static(strategy, "exhausted", _NOTHING) is _NOTHING:
+        return False
+    try:
+        return bool(strategy.exhausted)  # type: ignore[attr-defined]  # it has one
+    except Exception as exc:
+        raise OptimizationError(
+            f"the strategy could not say whether it is exhausted: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+_NOTHING = object()
 
 
 class MalformedError(Exception):
