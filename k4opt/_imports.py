@@ -1,12 +1,12 @@
-"""Internal: which local modules evaluator code imports, and importing them from their source.
+"""Internal: which local modules a user's code imports, and importing them from their source.
 
-Which modules an evaluator imports from beside it, or from its own package, is read from the
-source, not found by running it (:func:`local_modules`); which file each is, Python's path finder
-says on the current ``sys.path``, without importing anything (:func:`locate`), so packages come
-before modules and earlier path entries before later ones, as in any import. The modules
-:func:`serve` is given are imported from the bytes of their source, never from a cached ``.pyc``,
-which a same-sized edit that keeps the timestamp leaves stale (:class:`SourceLoader`), but only
-where Python would import that same file: the finder never redirects an import.
+Which modules a class of the user's code imports from beside it, or from its own package, is
+read from the source, not found by running it (:func:`local_modules`); which file each is, Python's
+path finder says on the current ``sys.path``, without importing anything (:func:`locate`), so
+packages come before modules and earlier path entries before later ones, as in any import. The
+modules :func:`serve` is given are imported from the bytes of their source, never from a cached
+``.pyc``, which a same-sized edit that keeps the timestamp leaves stale (:class:`SourceLoader`), but
+only where Python would import that same file: the finder never redirects an import.
 :func:`executed` says which bytes were executed.
 """
 
@@ -23,7 +23,7 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from types import CodeType, ModuleType
 
-from k4opt.evaluation.errors import EvaluatorLoadError
+from k4opt.errors import CodeLoadError
 
 # the modules imported from their source, by name
 _SERVED: dict[str, Path] = {}
@@ -37,8 +37,8 @@ def prefixes(name: str) -> list[str]:
 
 def _imported(node: ast.AST, name: str | None, package: bool) -> list[str]:
     """The modules an import statement ``node`` imports, absolute; ``name`` is the module the
-    statement is in (``None`` for an evaluator file, which has no package to be relative to),
-    ``package`` whether that module is a package's ``__init__``. ``from a import b`` imports
+    statement is in (``None`` for a file named as ``FILE.py``, which has no package to be relative
+    to), ``package`` whether that module is a package's ``__init__``. ``from a import b`` imports
     ``a`` and, if it is one, the submodule ``a.b``."""
     if isinstance(node, ast.Import):
         return [alias.name for alias in node.names]
@@ -71,16 +71,17 @@ def _beside(root: Path, name: str) -> Path | None:
 
 def resolve(root: Path, name: str) -> Path | None:
     """The source file Python imports the module ``name`` from, if it is under ``root``: its
-    top-level package, or itself, directly in ``root``. Raises :class:`EvaluatorLoadError` if a
-    module of that name is there but Python imports another file (one earlier on ``sys.path``)."""
+    top-level package, or itself, directly in ``root``. Raises
+    :class:`~k4opt.errors.CodeLoadError` if a module of that name is there but Python imports
+    another file (one earlier on ``sys.path``)."""
     found = locate(name)
     here = _beside(root, name)
     if here is not None and found.get(name, Path()).resolve() != here.resolve():
         elsewhere = found.get(name)
         taken = f"from {elsewhere}" if elsewhere is not None else "no source file of it"
-        raise EvaluatorLoadError(
+        raise CodeLoadError(
             f"{name!r} is {here}, but Python imports {taken} (earlier on sys.path); rename one "
-            "of them, or put the evaluator in a package of its own (package.module:Class)"
+            "of them, or put the code in a package of its own (package.module:Class)"
         )
     return here
 
@@ -94,10 +95,11 @@ def local_modules(
 ) -> dict[str, Path]:
     """The modules under ``root`` that ``path`` imports, directly or through one another, by
     name; with ``packages``, only the modules of those top-level packages, and ``name`` is the
-    module ``path`` defines (``None`` for an evaluator file). ``executed`` are other modules
-    Python executes to reach it (the packages it is in): they count, and what they import too.
+    module ``path`` defines (``None`` for a file named as ``FILE.py``). ``executed`` are other
+    modules Python executes to reach it (the packages it is in): they count, and what they import
+    too.
 
-    Found in the source, not by running it, so whatever order evaluators are loaded in and
+    Found in the source, not by running it, so whatever order classes are loaded in and
     whether a function that imports has run yet, the same modules are found; a file that
     cannot be read or parsed imports nothing here (importing it says why)."""
     found = {module: file for module, file in (executed or {}).items() if file != path}
@@ -138,7 +140,7 @@ def package_root(path: Path, name: str) -> Path:
 
 def installed(directory: Path) -> bool:
     """Whether ``directory`` holds installed distributions or the standard library, whose
-    modules are not an evaluator's own."""
+    modules are not the user's own."""
     if directory.name in ("site-packages", "dist-packages"):
         return True
     paths = sysconfig.get_paths()

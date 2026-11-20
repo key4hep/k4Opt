@@ -21,9 +21,10 @@ import yaml
 
 pytest.importorskip("optuna")
 
-from k4opt.evaluation import evaluator_source, load_evaluator
+from k4opt.evaluation import load_evaluator
 from k4opt.optimization import OptimizationError, _trials, load_study, optimize
 from k4opt.optimization._ledger import LEDGER_NAME, LedgerWriter
+from k4opt.usercode import source_of
 from tests.support import simulation
 from tests.support.common import git, git_checkout, requires_git, tree_digest
 from tests.support.evaluators import TRADE_OFF, cell_count, toy_significance, trade_off, yields
@@ -425,7 +426,7 @@ def test_a_study_refuses_an_evaluator_whose_executed_code_is_not_known(
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setattr(sys, "meta_path", [FromFile(module, file), *sys.meta_path])
     evaluator = load_evaluator(f"{module}:TradeOff")
-    source = evaluator_source(evaluator)
+    source = source_of(evaluator)
     assert source["sha256"] is not None and source["executed"] is False
     with pytest.raises(OptimizationError, match="the code it runs is not known to be the source"):
         run(write_problem(), tmp_path / "s", 1, seed=1, evaluators=[evaluator])

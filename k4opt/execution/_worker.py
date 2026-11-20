@@ -41,7 +41,7 @@ from pathlib import Path
 from types import FrameType
 
 from k4opt.errors import K4OptError
-from k4opt.evaluation import evaluator_source, load_evaluator
+from k4opt.evaluation import load_evaluator
 from k4opt.execution._instances import _Bound
 from k4opt.execution._tasks import Observations, SessionContext, TaskSpec
 from k4opt.execution._work import execute_task
@@ -51,6 +51,7 @@ from k4opt.hashing import Known, known, learn
 from k4opt.problem.plan import Kind, TaskId
 from k4opt.revision import code_fingerprint
 from k4opt.software import Software, compared_variables
+from k4opt.usercode import source_of
 
 LOG_NAME = "evaluator.log"
 """The file in an evaluation's own directory that holds what its evaluator printed."""
@@ -63,7 +64,7 @@ _IDENTITY = ("path", "bytes", "sha256", "helpers", "executed")
 class Implementation:
     """An evaluator implementation as a worker loads it again: its ``reference``
     (``/abs/path/file.py:Class`` or ``package.module:Class``) and the ``source`` identity the
-    session recorded (:func:`~k4opt.evaluation.evaluator_source`)."""
+    session recorded (:func:`~k4opt.usercode.source_of`)."""
 
     reference: str
     source: Mapping[str, Json]
@@ -108,7 +109,7 @@ def session_spec(
         cls = bound.implementation
         if cls in implementations:
             continue
-        source = evaluator_source(cls)
+        source = source_of(cls)
         reference = source.get("reference")
         if (
             not isinstance(reference, str)
@@ -232,7 +233,7 @@ class Session:
             raise ProvenanceError(f"a worker process does not run as the session: {changed}")
         variables = _variables()  # what a task could change of it, looked at after each one
         for implementation in spec.implementations:
-            loaded = evaluator_source(load_evaluator(implementation.reference))
+            loaded = source_of(load_evaluator(implementation.reference))
             then = {key: implementation.source.get(key) for key in _IDENTITY}
             if {key: loaded.get(key) for key in _IDENTITY} != then:
                 raise ProvenanceError(

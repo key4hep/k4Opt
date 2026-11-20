@@ -17,9 +17,10 @@ from typing import Any
 
 import pytest
 
+from k4opt import _imports
 from k4opt.errors import K4OptError
-from k4opt.evaluation import EvaluatorLoadError, _imports, evaluator_source, load_evaluator
-from k4opt.evaluation.loader import changed_code
+from k4opt.evaluation import EvaluatorLoadError, load_evaluator
+from k4opt.usercode import changed_code, source_of
 from tests.support.common import git_checkout, requires_git
 from tests.support.imports import FromFile
 
@@ -99,8 +100,8 @@ def test_a_loaded_class_keeps_the_identity_of_the_executed_bytes(evaluator_file:
     data = evaluator_file.read_bytes()
     first = load_evaluator(f"{evaluator_file}:Good")
     assert (
-        evaluator_source(first)
-        == evaluator_source(load_evaluator(f"{evaluator_file}:Good"))
+        source_of(first)
+        == source_of(load_evaluator(f"{evaluator_file}:Good"))
         == {
             "path": str(evaluator_file),
             "bytes": len(data),
@@ -112,7 +113,7 @@ def test_a_loaded_class_keeps_the_identity_of_the_executed_bytes(evaluator_file:
         }
     )
     evaluator_file.unlink()
-    assert evaluator_source(first)["sha256"] == hashlib.sha256(data).hexdigest()
+    assert source_of(first)["sha256"] == hashlib.sha256(data).hexdigest()
 
 
 def test_a_file_edited_since_it_was_executed_is_not_loaded_again(evaluator_file: Path) -> None:
@@ -171,7 +172,7 @@ def test_the_modules_a_file_imports_beside_it_are_hashed(with_helpers: Path) -> 
         if path != with_helpers
     }
     assert len(expected) == 5  # the helper, the package's three files, the late import
-    assert evaluator_source(cls)["helpers"] == dict(sorted(expected.items()))
+    assert source_of(cls)["helpers"] == dict(sorted(expected.items()))
 
 
 def test_an_edited_helper_is_not_loaded_again(with_helpers: Path) -> None:
@@ -214,7 +215,7 @@ def test_a_module_imported_by_the_loader_is_identified_by_the_bytes_it_executed(
     try:
         cls = load_evaluator("my_evaluator:Good")
         evaluator_file.write_text("# edited after the import\n")
-        assert evaluator_source(cls) == {
+        assert source_of(cls) == {
             "path": str(evaluator_file),
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
@@ -237,13 +238,13 @@ def test_a_reloaded_module_does_not_keep_the_identity_of_the_code_it_replaced(
         importlib.reload(sys.modules["my_evaluator"])
         second = load_evaluator("my_evaluator:Good")
         assert second().evaluate(None).measurements[0].value == 12345  # type: ignore[arg-type]
-        assert evaluator_source(second) == {
+        assert source_of(second) == {
             "path": str(evaluator_file),
             "reference": "my_evaluator:Good",
         }
         # the class loaded before the reload still runs, and names, the original code
         assert first().evaluate(None).measurements[0].value == 42  # type: ignore[arg-type]
-        assert evaluator_source(first)["sha256"] == hashlib.sha256(GOOD.encode()).hexdigest()
+        assert source_of(first)["sha256"] == hashlib.sha256(GOOD.encode()).hexdigest()
     finally:
         sys.modules.pop("my_evaluator", None)
 
@@ -259,7 +260,7 @@ def test_a_class_a_package_re_exports_is_identified_by_the_package_and_its_own_f
     (package / "impl.py").write_text(GOOD)
     monkeypatch.syspath_prepend(str(tmp_path))
     try:
-        source = evaluator_source(load_evaluator("study:Good"))
+        source = source_of(load_evaluator("study:Good"))
         assert source["path"] == str(package / "__init__.py")  # what the reference names
         assert source["sha256"] == hashlib.sha256(init.encode()).hexdigest()
         assert source["helpers"] == {"study/impl.py": hashlib.sha256(GOOD.encode()).hexdigest()}
@@ -279,7 +280,7 @@ def test_a_top_level_module_that_re_exports_a_class_is_identified_by_its_own_fil
     (tmp_path / f"{wrapper}.py").write_text(text)
     monkeypatch.syspath_prepend(str(tmp_path))
     try:
-        source = evaluator_source(load_evaluator(f"{wrapper}:Good"))
+        source = source_of(load_evaluator(f"{wrapper}:Good"))
         assert (source["path"], source["sha256"], source["executed"]) == (
             str(tmp_path / f"{wrapper}.py"),
             hashlib.sha256(text.encode()).hexdigest(),
@@ -305,7 +306,7 @@ def test_a_module_is_identified_with_the_modules_of_its_package_it_imports(
     (tmp_path / "json.py").write_text("")  # beside the package, not of it: not its module
     monkeypatch.syspath_prepend(str(tmp_path))
     try:
-        source = evaluator_source(load_evaluator("campaign.impl:Good"))
+        source = source_of(load_evaluator("campaign.impl:Good"))
         assert sorted(source["helpers"]) == [  # type: ignore[arg-type]
             "campaign/__init__.py",
             "campaign/physics/__init__.py",
@@ -325,7 +326,7 @@ def test_a_top_level_module_is_identified_with_the_modules_beside_it(
     (tmp_path / f"{module}.py").write_text(f"import {helper}\n" + GOOD)
     monkeypatch.syspath_prepend(str(tmp_path))
     try:
-        source = evaluator_source(load_evaluator(f"{module}:Good"))
+        source = source_of(load_evaluator(f"{module}:Good"))
         assert source["helpers"] == {f"{helper}.py": hashlib.sha256(b"scale = 1.0\n").hexdigest()}
     finally:
         for name in (module, helper):
@@ -343,7 +344,7 @@ def test_an_installed_top_level_module_does_not_count_other_distributions(
     (site / f"{module}.py").write_text(f"import {other}\n" + GOOD)
     monkeypatch.syspath_prepend(str(site))
     try:
-        assert evaluator_source(load_evaluator(f"{module}:Good"))["helpers"] == {}
+        assert source_of(load_evaluator(f"{module}:Good"))["helpers"] == {}
     finally:
         for name in (module, other):
             sys.modules.pop(name, None)
@@ -366,7 +367,7 @@ def test_a_helper_edited_after_python_imported_it_is_refused_for_another_evaluat
         load_evaluator(f"{tmp_path / 'second.py'}:Good")
     (tmp_path / f"{helper}.py").write_text("value = 1\n")  # what runs: then it is that code
     second = load_evaluator(f"{tmp_path / 'second.py'}:Good")
-    assert evaluator_source(second)["helpers"] == {
+    assert source_of(second)["helpers"] == {
         f"{helper}.py": hashlib.sha256(b"value = 1\n").hexdigest()
     }
 
@@ -380,7 +381,7 @@ def test_a_helper_imported_before_the_loader_read_it_is_refused(
     (tmp_path / "late.py").write_text(f"import {helper}\n" + GOOD)
     monkeypatch.syspath_prepend(str(tmp_path))
     importlib.import_module(helper)  # which bytes ran is not known to k4opt
-    with pytest.raises(EvaluatorLoadError, match="was imported before load_evaluator read it"):
+    with pytest.raises(EvaluatorLoadError, match="was imported before k4opt read it"):
         load_evaluator(f"{tmp_path / 'late.py'}:Good")
 
 
@@ -401,7 +402,7 @@ def test_a_module_imported_before_does_not_claim_an_unverified_source_hash(
     try:
         importlib.import_module("my_evaluator")
         cls = load_evaluator("my_evaluator:Good")
-        assert evaluator_source(cls) == {
+        assert source_of(cls) == {
             "path": str(evaluator_file),
             "reference": "my_evaluator:Good",
         }
@@ -418,7 +419,7 @@ def test_a_stale_bytecode_cache_cannot_disagree_with_the_source_hash(evaluator_f
     assert evaluator_file.stat().st_size == original.st_size
     cls = load_evaluator(f"{evaluator_file}:Good")
     assert cls().evaluate(None).measurements[0].value == 99  # type: ignore[arg-type]
-    assert evaluator_source(cls)["sha256"] == hashlib.sha256(data).hexdigest()
+    assert source_of(cls)["sha256"] == hashlib.sha256(data).hexdigest()
 
 
 def test_a_stale_bytecode_cache_of_a_helper_cannot_disagree_with_its_hash(
@@ -439,7 +440,7 @@ def test_a_stale_bytecode_cache_of_a_helper_cannot_disagree_with_its_hash(
     )
     cls = load_evaluator(f"{evaluator}:Good")
     assert cls().evaluate(None).measurements[0].value == 22  # type: ignore[arg-type]
-    assert evaluator_source(cls)["helpers"] == {
+    assert source_of(cls)["helpers"] == {
         f"{helper}.py": hashlib.sha256(b"value = 22\n").hexdigest()
     }
 
@@ -474,7 +475,7 @@ def test_a_stale_bytecode_cache_of_a_module_cannot_disagree_with_its_hash(
     try:
         cls = load_evaluator("my_evaluator:Good")
         assert cls().evaluate(None).measurements[0].value == 99  # type: ignore[arg-type]
-        source = evaluator_source(cls)
+        source = source_of(cls)
         assert (source["sha256"], source["executed"]) == (hashlib.sha256(data).hexdigest(), True)
     finally:
         sys.modules.pop("my_evaluator", None)
@@ -508,7 +509,7 @@ def test_a_file_that_re_exports_a_class_identifies_it_by_what_it_executed(
     wrapper = tmp_path / "wrapper.py"
     text = f"from {helper} import Good\n\nGood.scale = 2  # changes what it measures\n"
     wrapper.write_text(text)
-    source = evaluator_source(load_evaluator(f"{wrapper}:Good"))
+    source = source_of(load_evaluator(f"{wrapper}:Good"))
     assert (source["path"], source["sha256"]) == (
         str(wrapper),
         hashlib.sha256(text.encode()).hexdigest(),
@@ -530,7 +531,7 @@ def test_a_package_beside_a_module_of_its_name_is_imported_as_python_does(
     )
     cls = load_evaluator(f"{evaluator}:Good")
     assert cls().evaluate(None).measurements[0].value == 1  # type: ignore[arg-type]
-    assert list(evaluator_source(cls)["helpers"]) == [f"{helper}/__init__.py"]  # type: ignore[arg-type]
+    assert list(source_of(cls)["helpers"]) == [f"{helper}/__init__.py"]  # type: ignore[arg-type]
 
 
 def test_a_helper_python_takes_from_earlier_on_the_path_is_refused(
@@ -590,7 +591,7 @@ def test_a_module_of_a_namespace_package_is_imported_from_its_source(
     monkeypatch.syspath_prepend(str(tmp_path))
     cls = load_evaluator(f"{package}.evaluator:Good")
     assert cls().evaluate(None).measurements[0].value == 99  # type: ignore[arg-type]
-    source = evaluator_source(cls)
+    source = source_of(cls)
     assert (source["sha256"], source["executed"]) == (hashlib.sha256(data).hexdigest(), True)
 
 
@@ -646,7 +647,7 @@ def test_a_module_in_a_zip_archive_is_imported_by_python_and_not_identified(
     cls = load_evaluator(f"{module}:Good")  # as Python imports it
     assert cls().evaluate(None).measurements[0].value == 42  # type: ignore[arg-type]
     # no file on disk to read: which bytes ran is not established, so no hash is claimed
-    assert evaluator_source(cls) == {
+    assert source_of(cls) == {
         "path": f"{archive}/{module}.py",
         "reference": f"{module}:Good",
     }
@@ -668,7 +669,7 @@ def test_a_lazy_helper_another_import_hook_runs_is_reported(
     ).replace('"answer", 42', f'"answer", {helper}.value')
     (tmp_path / "lazy.py").write_text(lazy)
     cls = load_evaluator(f"{tmp_path / 'lazy.py'}:Good")  # identified with value = 22
-    assert evaluator_source(cls)["executed"] is True
+    assert source_of(cls)["executed"] is True
     hook = FromFile(helper, path)  # comes first, and imports as Python's own loader does
     monkeypatch.setattr(sys, "meta_path", [hook, *sys.meta_path])
     assert cls().evaluate(None).measurements[0].value == 11  # type: ignore[arg-type]
@@ -699,15 +700,15 @@ def test_the_revision_of_the_checkout_is_taken_when_the_file_is_loaded(tmp_path:
     files = {"tracked_good.py": GOOD, "later_good.py": GOOD, "helper.py": ""}
     commit = git_checkout(tmp_path / "study", files)
     clean = load_evaluator(f"{tmp_path / 'study' / 'tracked_good.py'}:Good")
-    assert evaluator_source(clean)["revision"] == {"commit": commit, "dirty": False}
+    assert source_of(clean)["revision"] == {"commit": commit, "dirty": False}
     # a helper module of the checkout changes, which the evaluator's own hash cannot see
     (tmp_path / "study" / "helper.py").write_text("changed = True\n")
     later = load_evaluator(f"{tmp_path / 'study' / 'later_good.py'}:Good")
-    assert evaluator_source(later)["revision"] == {"commit": commit, "dirty": True}
-    assert evaluator_source(clean)["revision"] == {"commit": commit, "dirty": False}  # as loaded
+    assert source_of(later)["revision"] == {"commit": commit, "dirty": True}
+    assert source_of(clean)["revision"] == {"commit": commit, "dirty": False}  # as loaded
     untracked = tmp_path / "study" / "untracked_good.py"
     untracked.write_text(GOOD)  # in the checkout's directory, but in none of its commits
-    assert evaluator_source(load_evaluator(f"{untracked}:Good"))["revision"] is None
+    assert source_of(load_evaluator(f"{untracked}:Good"))["revision"] is None
 
 
 def test_an_importable_module_name_works(
@@ -726,7 +727,7 @@ def test_a_home_relative_path_is_expanded(
     monkeypatch.setenv("HOME", str(evaluator_file.parent))
     cls = load_evaluator("~/my_evaluator.py:Good")
     assert cls.version == "3"
-    assert evaluator_source(cls)["reference"] == f"{evaluator_file}:Good"  # loadable anywhere
+    assert source_of(cls)["reference"] == f"{evaluator_file}:Good"  # loadable anywhere
 
 
 @pytest.mark.parametrize(

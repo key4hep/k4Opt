@@ -30,7 +30,6 @@ from pathlib import Path
 
 from k4opt import __version__
 from k4opt.errors import K4OptError
-from k4opt.evaluation.loader import changed_code, evaluator_source
 from k4opt.execution._binding import _Binding, _implementations
 from k4opt.execution._work import content
 from k4opt.execution.errors import ProvenanceError, RunError
@@ -43,6 +42,7 @@ from k4opt.record.results import TaskResult
 from k4opt.revision import code_identity, code_unchanged
 from k4opt.software import Build, Footprint, Software, SoftwareError, System, compared_variables
 from k4opt.software.observe import changed_inputs, findable, load
+from k4opt.usercode import changed_code, source_of
 
 
 def check_code() -> None:
@@ -328,13 +328,13 @@ class Baseline:
         """Each implementation is still identified as when the session opened: loading another
         file that imports its class (and may change it) in this process identifies it by that
         file, and the class the session evaluates with may have changed. And the code each runs
-        is what its identity says (:func:`~k4opt.evaluation.loader.changed_code`): the module its
+        is what its identity says (:func:`~k4opt.usercode.changed_code`): the module its
         reference names, not reloaded since, and the modules it imports from beside it, one it
         imports only when it evaluates (inside a function) too."""
         for name, implementation in self.classes.items():
             source = self.taken[name]["source"]
             assert isinstance(source, Mapping)
-            now = evaluator_source(implementation)
+            now = source_of(implementation)
             if any(now.get(key) != source.get(key) for key in ("path", "sha256", "helpers")):
                 raise ProvenanceError(
                     f"evaluator {name!r}: its class was loaded again in this process, through "
