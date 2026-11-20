@@ -336,7 +336,8 @@ class Tree:
         try:
             values, note = checked(study.scope, answer)
         except MalformedError as exc:
-            result = malform(study, number, _note(answer), str(exc))
+            given = _given(answer, "values"), _given(answer, "note")
+            result = malform(study, number, *given, str(exc))
             _exhausted(node)
             if node is self._root:
                 self._progress(result)
@@ -456,11 +457,12 @@ def _quiet(result: TrialResult) -> None:
     """The trials a resume recovers in a study below the top are not reported one by one."""
 
 
-def _note(answer: object) -> Mapping[str, Json]:
-    """What a malformed proposal noted, if it is plain JSON; nothing otherwise."""
-    note = getattr(answer, "note", None)
+def _given(answer: object, attribute: str) -> Mapping[str, Json]:
+    """What a malformed proposal gave as its ``attribute`` (``values``, ``note``), if it is a plain
+    JSON object; nothing otherwise."""
+    given = getattr(answer, attribute, None)
     try:
-        frozen = freeze(note, "note", OptimizationError)
+        frozen = freeze(given, attribute, OptimizationError)
     except OptimizationError:
         return FrozenMap({})
     return frozen if isinstance(frozen, Mapping) else FrozenMap({})

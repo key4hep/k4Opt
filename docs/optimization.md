@@ -589,7 +589,8 @@ A study owns its trials; its strategy only proposes.
 strategy it was made with by the SHA-256 of what `study.json` records under `strategy`; a study
 whose `study.json` records another one is refused, read back or resumed), `session` (a session
 opened the study), `proposed` (trial `N` with the values its strategy proposed, checked, and
-what the strategy noted of them), `malformed` (a proposal that is no candidate, with why),
+what the strategy noted of them), `malformed` (a proposal that is no candidate, with the values
+it gave, as given, and why),
 `selected` (the trial of the study below that a trial selected), one ending of a trial
 (`recorded` with the status, id and SHA-256 of its record; `rejected`, by what and why;
 `unscored`; `interrupted`; `error`, why) and `exhausted` (the strategy has nothing more to
@@ -599,8 +600,9 @@ is written. A line is written once it ends in a newline: a line a killed process
 the last one and was never written, so a reader leaves it out and the next session removes it.
 A write that fails may or may not have reached the disk, so nothing more is written after it:
 the next session settles what was being written from what is on disk. A trial a later session
-ends is `recovered`. Trials are numbered from 0, in order; a trial is proposed once and ends
-once; a ledger that holds anything else (a line that is not the next event, a trial ended
+ends is `recovered`. Trials are numbered from 0, in order, and the `seq` of a trial's proposal
+and of its ending say in which order trials were proposed and ended, which their numbers do not
+when several run at once; a trial is proposed once and ends once; a ledger that holds anything else (a line that is not the next event, a trial ended
 twice, a gap, another study's first line) is refused, by `load_study` and by a resume alike.
 
 **The order of writes.** A trial goes through these steps, each of which an interruption can be

@@ -178,8 +178,8 @@ def _end(study: OpenStudy, number: int, kind: str, **told: str) -> TrialResult:
     """End trial ``number`` without a record, as ``kind`` (an event of the ledger) with ``told``
     (``by``, ``message``), checked first as a reader reads it back."""
     entry = study.ledger.entry(number)
-    session = study.ledger.session_number
-    ending = Ending(kind, session, by=told.get("by"), message=told.get("message"))
+    session, seq = study.ledger.session_number, study.ledger.next_seq
+    ending = Ending(kind, session, seq, by=told.get("by"), message=told.get("message"))
     result, _ = trial_result(
         study.directory, study.document, study.scope, replace(entry, ending=ending), {}
     )
@@ -200,14 +200,19 @@ def unscore(study: OpenStudy, number: int, message: str) -> TrialResult:
 
 
 def malform(
-    study: OpenStudy, number: int, proposal: Mapping[str, Json], message: str
+    study: OpenStudy,
+    number: int,
+    values: Mapping[str, Json],
+    proposal: Mapping[str, Json],
+    message: str,
 ) -> TrialResult:
-    """Trial ``number`` is a proposal that is no candidate of the study (``message`` says why):
-    nothing of it is evaluated."""
-    ending = Ending("malformed", study.ledger.session_number, message=message)
-    entry = Entry(number, study.ledger.session_number, {}, proposal, None, ending)
+    """Trial ``number`` is a proposal of ``values`` that is no candidate of the study (``message``
+    says why): nothing of it is evaluated, and the ledger keeps the values as given."""
+    session, seq = study.ledger.session_number, study.ledger.next_seq
+    ending = Ending("malformed", session, seq, message=message)
+    entry = Entry(number, session, values, proposal, seq, None, ending)  # type: ignore[arg-type]
     result, _ = trial_result(study.directory, study.document, study.scope, entry, {})
-    study.ledger.malformed(number, proposal, message)
+    study.ledger.malformed(number, values, proposal, message)
     _tell(study, result)
     return result
 

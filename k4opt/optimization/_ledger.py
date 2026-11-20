@@ -17,8 +17,8 @@ The events, each with exactly these keys besides ``seq`` and ``event``:
 - ``proposed`` (``trial``, ``values``, ``proposal``): trial ``trial`` (numbered from 0, in
   order) with the values the strategy proposed for the searched parameters, checked, and what the
   strategy noted of it; the trial runs from here on;
-- ``malformed`` (``trial``, ``proposal``, ``message``): a proposal that is no candidate of the
-  study, ended as it is made;
+- ``malformed`` (``trial``, ``values``, ``proposal``, ``message``): a proposal that is no
+  candidate of the study, with the values it gave (plain JSON, as given), ended as it is made;
 - ``selected`` (``trial``, ``selected``): the best trial of the study of the level below that a
   running trial stands for (``study``, ``trial``, the ``values`` it adds), once;
 - one ending of a running trial: ``recorded`` (``trial``, ``status`` of its record, ``record``:
@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from k4opt.evaluation import Scalar
-from k4opt.frozen import FrozenMap, Json, freeze
+from k4opt.frozen import Json, freeze
 from k4opt.optimization.errors import OptimizationError
 
 LEDGER_NAME = "trials.jsonl"
@@ -57,7 +57,7 @@ _KEYS: Mapping[str, tuple[str, ...]] = {
     "study": ("study", "strategy"),
     "session": ("started",),
     "proposed": ("trial", "values", "proposal"),
-    "malformed": ("trial", "proposal", "message"),
+    "malformed": ("trial", "values", "proposal", "message"),
     "selected": ("trial", "selected"),
     "recorded": ("trial", "status", "record"),
     "rejected": ("trial", "by", "message"),
@@ -78,11 +78,13 @@ class NotSetUpError(OptimizationError):
 @dataclass(frozen=True, slots=True)
 class Ending:
     """How a trial ended: ``kind`` is an event of :data:`ENDINGS`, or ``malformed``, in the
-    session numbered ``session``; ``status`` and ``record`` (``id``, ``sha256``) are those of a
-    ``recorded`` one, ``by`` names the task that rejected a ``rejected`` one."""
+    session numbered ``session``, as event ``seq`` of the ledger; ``status`` and ``record``
+    (``id``, ``sha256``) are those of a ``recorded`` one, ``by`` names the task that rejected a
+    ``rejected`` one."""
 
     kind: str
     session: int
+    seq: int
     status: str | None = None
     record: Mapping[str, str] | None = None
     by: str | None = None
@@ -91,15 +93,18 @@ class Ending:
 
 @dataclass(frozen=True, slots=True)
 class Entry:
-    """One trial as the ledger holds it: proposed in the session numbered ``session`` with the
-    ``values`` of the searched parameters (none for a malformed proposal) and what the strategy
-    noted of it (``proposal``); the trial of the study below it ``selected``, and its
-    ``ending``, ``None`` while it runs."""
+    """One trial as the ledger holds it: proposed in the session numbered ``session``, as event
+    ``seq`` of the ledger, with the ``values`` of the searched parameters (for a malformed
+    proposal, the values it gave, which are no candidate) and what the strategy noted of it
+    (``proposal``); the trial of the study below it ``selected``, and its ``ending``, ``None``
+    while it runs. The ``seq`` of its proposal and of its ending say in which order a study's
+    trials were proposed and ended, which their numbers do not when several run at once."""
 
     number: int
     session: int
     values: Mapping[str, Scalar]
     proposal: Mapping[str, Json]
+    seq: int
     selected: Mapping[str, Json] | None = None
     ending: Ending | None = None
 
@@ -174,15 +179,18 @@ class _State:
                     f"{where} proposes a trial after the strategy was exhausted"
                 )
             proposal = _object(event["proposal"], f"{where}'s proposal")
+            values = _object(event["values"], f"{where}'s values")
+            seq = event["seq"]
             if kind == "malformed":
-                ending = Ending("malformed", session, message=_text(event["message"], where))
-                self.entries.append(Entry(number, session, FrozenMap({}), proposal, None, ending))
-            else:
-                values = _object(event["values"], f"{where}'s values")
-                bad = [k for k, v in values.items() if isinstance(v, (Mapping, tuple)) or v is None]
-                if bad:
-                    raise OptimizationError(f"{where}: {', '.join(bad)} have no scalar values")
-                self.entries.append(Entry(number, session, values, proposal))  # type: ignore[arg-type]
+                message = _text(event["message"], where)
+                ending = Ending("malformed", session, seq, message=message)
+                entry = Entry(number, session, values, proposal, seq, None, ending)  # type: ignore[arg-type]
+                self.entries.append(entry)
+                return
+            bad = [k for k, v in values.items() if isinstance(v, (Mapping, tuple)) or v is None]
+            if bad:
+                raise OptimizationError(f"{where}: {', '.join(bad)} have no scalar values")
+            self.entries.append(Entry(number, session, values, proposal, seq))  # type: ignore[arg-type]
             return
         if not 0 <= number < len(self.entries):
             raise OptimizationError(f"{where}: there is no trial {number}")
@@ -197,7 +205,8 @@ class _State:
                 raise OptimizationError(f"{where}: {selected!r} is no selection")
             self.entries[number] = replace(entry, selected=selected)
             return
-        ending = Ending(str(kind), session)
+        seq = event["seq"]
+        ending = Ending(str(kind), session, seq)
         if kind == "recorded":
             status, record = event["status"], _object(event["record"], f"{where}'s record")
             if status not in RECORDED:
@@ -209,12 +218,12 @@ class _State:
                 or not _SHA256.fullmatch(record["sha256"])
             ):
                 raise OptimizationError(f"{where}: {record!r} names no record")
-            ending = Ending(kind, session, status=status, record=record)  # type: ignore[arg-type]
+            ending = Ending(kind, session, seq, status=status, record=record)  # type: ignore[arg-type]
         elif kind == "rejected":
             by, message = _text(event["by"], where), _text(event["message"], where)
-            ending = Ending(kind, session, by=by, message=message)
+            ending = Ending(kind, session, seq, by=by, message=message)
         elif kind in ("unscored", "error"):
-            ending = Ending(kind, session, message=_text(event["message"], where))
+            ending = Ending(kind, session, seq, message=_text(event["message"], where))
         self.entries[number] = replace(entry, ending=ending)
 
     def snapshot(self) -> Ledger:
@@ -363,6 +372,11 @@ class LedgerWriter:
         return self._state.snapshot()
 
     @property
+    def next_seq(self) -> int:
+        """The ``seq`` the next event written gets."""
+        return self._state.seq
+
+    @property
     def next_number(self) -> int:
         """The number the next trial proposed gets."""
         return len(self._state.entries)
@@ -393,8 +407,20 @@ class LedgerWriter:
         event = {"event": "proposed", "trial": number, "values": dict(values), "proposal": proposal}
         self._append(event)
 
-    def malformed(self, number: int, proposal: Mapping[str, Json], message: str) -> None:
-        event = {"event": "malformed", "trial": number, "proposal": proposal, "message": message}
+    def malformed(
+        self,
+        number: int,
+        values: Mapping[str, Json],
+        proposal: Mapping[str, Json],
+        message: str,
+    ) -> None:
+        event = {
+            "event": "malformed",
+            "trial": number,
+            "values": values,
+            "proposal": proposal,
+            "message": message,
+        }
         self._append(event)
 
     def selected(self, number: int, selected: Mapping[str, Json]) -> None:

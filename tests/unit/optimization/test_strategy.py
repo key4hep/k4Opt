@@ -174,7 +174,7 @@ def test_a_resumed_strategy_is_made_from_every_trial_of_the_study(
         (p.number, dict(p.values), dict(p.note), p.feedback.status) for p in resumed.history
     ] == [
         (0, {RADIUS: 150.0}, {"why": "low"}, "valid"),
-        (1, {}, {}, "malformed"),
+        (1, {RADIUS: 50.0}, {}, "malformed"),  # as it was given
     ]
     assert resumed.history[0].feedback == first.told[0][1]  # as it was told live
 

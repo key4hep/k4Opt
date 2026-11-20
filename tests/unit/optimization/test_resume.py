@@ -1202,8 +1202,8 @@ def test_a_rejected_trial_is_read_strictly(
     problem, output = rejecting(write_problem, diagnostic="spare"), tmp_path / "s"
     run(problem, output, 1, seed=1, evaluators=[_checking()])
     document = read_study(output)
-    ending = Ending("rejected", 0, by=by, message="cannot measure 250")
-    entry = Entry(0, 0, FrozenMap({RADIUS: 250}), FrozenMap({}), None, ending)
+    ending = Ending("rejected", 0, 3, by=by, message="cannot measure 250")
+    entry = Entry(0, 0, FrozenMap({RADIUS: 250}), FrozenMap({}), 2, None, ending)
     shutil.rmtree(output / "trial-000000", ignore_errors=True)
     if by == "test.candidate_check":  # all as k4opt keeps it, but a directory: it has none
         (output / "trial-000000").mkdir()
