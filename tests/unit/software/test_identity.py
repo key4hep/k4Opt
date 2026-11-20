@@ -146,6 +146,19 @@ def test_a_variable_known_to_be_irrelevant_is_not_compared(name: str) -> None:
     assert software(**{name: "one"}).id == software(**{name: "two"}).id == software().id
 
 
+@pytest.mark.parametrize(
+    "name", ["ANTHROPIC_API_KEY", "HF_TOKEN", "DB_PASSWORD", "GITHUB_TOKEN", "client_secret"]
+)
+def test_a_credential_is_not_compared_so_a_rotated_key_is_the_same_software(name: str) -> None:
+    assert software(**{name: "sk-one-1234"}).id == software(**{name: "sk-two-5678"}).id
+    assert software(**{name: "sk-one-1234"}).id == software().id
+
+
+@pytest.mark.parametrize("name", ["TOKENIZER", "MAX_TOKENS", "PUBLIC_KEY", "KEY_PATH"])
+def test_a_variable_whose_last_word_names_no_credential_is_compared(name: str) -> None:
+    assert software(**{name: "one"}).id != software(**{name: "two"}).id
+
+
 def test_an_exported_shell_function_is_code_and_compared() -> None:
     # bash -c myhelper prints first in one, second in the other
     first = software(**{"BASH_FUNC_myhelper%%": "() {  printf first\n}"})

@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from k4opt.cli import main
+from k4opt.credentials import KEYED, secrets_in
 from k4opt.frozen import thaw
 from k4opt.optimization import StudyResults, load_study, optimize
 from k4opt.publication import (
@@ -24,7 +25,7 @@ from k4opt.publication import (
     open_publication,
     publish,
 )
-from k4opt.publication.exposure import KEYED, WITHHELD, exposed, public_snapshot, secrets_in
+from k4opt.publication.exposure import WITHHELD, exposed, public_snapshot
 from tests.support.common import tree_digest
 from tests.support.evaluators import trade_off
 from tests.support.software import LABEL

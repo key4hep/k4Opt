@@ -56,7 +56,8 @@ of it or not. `LD_LIBRARY_PATH`, `PYTHONPATH`, `MARLIN_DLL`, `GAUDI_PLUGIN_PATH`
 `G4LEDATA`, `LC_ALL` and a user's own `MY_SCALE` are all compared. Values are kept as digests, so a
 difference names a variable and cannot show its old value.
 
-These are not compared (`IGNORED` in `k4opt/software/identity.py`; `*` stands for any ending):
+These are not compared (`IGNORED` in `k4opt/software/identity.py`, `*` standing for any ending,
+and the names of credentials):
 
 | Why | Names |
 | --- | --- |
@@ -66,6 +67,7 @@ These are not compared (`IGNORED` in `k4opt/software/identity.py`; `*` stands fo
 | Bookkeeping of other tools, or what only a person at a terminal sees | `MODULEPATH`, `CONDA_SHLVL`, `CONDA_BACKUP_*`, `VSCODE_*`, `GIT_PAGER`, `GIT_EDITOR`, `GIT_ASKPASS`, `PYTEST_*` |
 | Set by ROOT's Python in whatever process imports it, from the build: an evaluator that reads a file through `podio` sets them in the middle of a session | `CPPYY_API_PATH`, `CPPYY_NO_ROOT_FILTER` |
 | Identified by what they lead to: the geometry by its fingerprint, the stack by its build | `K4GEO`, `KEY4HEP_STACK` |
+| A credential, by its name, as publication recognizes one (`k4opt.credentials`): it decides whether a program may read something, never what it computes from what it reads, which is identified by its content; a key rotated between two sessions does not change the software | a name ending in `password`, `passwd`, `passphrase`, `pwd`, `secret`, `token`, `credential(s)`, or `api`, `access`, `private`, `secret`, `signing` or `encryption` followed by `key` (with `_` or `-` between, in any case): `ANTHROPIC_API_KEY`, `HF_TOKEN`, `DB_PASSWORD` |
 
 `PATH`, `BASH_FUNC_*`, `HOME`, `LANG`, `LC_*`, `TZ`, `CONDA_PREFIX`, `XDG_CONFIG_HOME` and `GIT_DIR`
 stay compared: ROOT runs `g++` through `PATH` and an evaluator may run any program, an exported

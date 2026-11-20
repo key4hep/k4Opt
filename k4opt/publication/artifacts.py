@@ -35,10 +35,11 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
+from k4opt.credentials import credentials_named, secrets_in
 from k4opt.frozen import FrozenMap, Json, freeze, thaw
 from k4opt.optimization import StudyResults
 from k4opt.publication.errors import PublicationError
-from k4opt.publication.exposure import Finding, credentials_named, public_snapshot, secrets_in
+from k4opt.publication.exposure import Finding, public_snapshot
 from k4opt.publication.sheet import (
     Access,
     Group,
