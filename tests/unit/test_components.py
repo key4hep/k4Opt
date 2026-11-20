@@ -92,3 +92,16 @@ def imports_any(path: Path) -> list[str]:
         elif isinstance(node, ast.Import):
             found += [alias.name for alias in node.names]
     return found
+
+
+def test_only_the_optuna_strategy_imports_optuna() -> None:
+    """Optuna is one strategy of the optimization component: running a study of another, reading
+    any study back, publishing and drawing it need none of it."""
+    wrong = [
+        f"{path.relative_to(PACKAGE)}: {name}"
+        for path in sorted(PACKAGE.rglob("*.py"))
+        for name in imports_any(path)
+        if name.split(".")[0] == "optuna"
+        and path.relative_to(PACKAGE).as_posix() != "optimization/_optuna.py"
+    ]
+    assert wrong == []

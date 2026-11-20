@@ -33,7 +33,6 @@ REPOSITORY = Path(__file__).resolve().parents[3]
 @pytest.fixture(scope="module")
 def published(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A publication of one real study whose trials ended every way a record can."""
-    pytest.importorskip("optuna")
     from k4opt.optimization import load_study
     from k4opt.publication import publish
     from tests.support.studies import mixed_study

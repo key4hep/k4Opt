@@ -13,11 +13,10 @@ from pathlib import Path
 import pytest
 
 from k4opt.cli import main
-from k4opt.problem import load_problem
 from tests.support import simulation
 from tests.support.common import tree_digest
 from tests.support.evaluators import TRADE_OFF
-from tests.unit.optimization.conftest import RADIUS, evaluator_from, optuna_study
+from tests.unit.optimization.conftest import RADIUS, evaluator_from, left_running
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 
@@ -79,14 +78,12 @@ def test_failed_candidates_are_reported_and_the_command_succeeds(
 def test_a_resume_prints_the_trials_it_recovers_first(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
-    pytest.importorskip("optuna")
-    from k4opt.optimization._optuna.space import search_space
-
     problem, output = write_problem(), tmp_path / "s"
-    code, _, _ = optimize(str(problem), "--trials", "1", "--seed", "1", "--output", str(output))
+    grid = ("--strategy", "grid", "--grid", f"{RADIUS}=200,300,400")
+    code, _, _ = optimize(str(problem), "--trials", "1", *grid, "--output", str(output))
     assert code == 0
-    # a trial asked for and left running, as a session killed just after asking leaves it
-    optuna_study(output).ask(fixed_distributions=search_space(load_problem(problem)))
+    # as a session killed just after the grid proposed its second point leaves it
+    left_running(output, problem, values={RADIUS: 300.0}, note={"point": 1})
     code, out, _ = optimize(str(problem), "--trials", "1", "--resume", "--output", str(output))
     assert code == 0
     recovered, new, *_ = out.splitlines()
@@ -94,10 +91,37 @@ def test_a_resume_prints_the_trials_it_recovers_first(
     assert new.startswith("trial 2:   valid ") and not new.endswith("(recovered)")
 
 
+def test_a_grid_is_previewed_run_in_order_and_ends_when_exhausted(
+    tmp_path: Path, write_problem: Callable[..., Path]
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    grid = ("--strategy", "grid", "--grid", f"{RADIUS}=200,300.5,400")
+    code, out, err = optimize(str(problem), "--trials", "5", *grid, "--output", str(output))
+    assert code == 0, err
+    lines = out.splitlines()
+    assert lines[2] == f"grid: 3 points: {RADIUS} 200.0, 300.5, 400.0"
+    for line, value in zip(lines[3:6], ("200", "300.5", "400"), strict=True):
+        assert line.startswith("trial ") and f"{RADIUS}={value} " in line
+    assert lines[-1] == (
+        "strategy: exhausted: it has nothing more to propose (a grid all of whose points were "
+        "proposed)"
+    )
+    code, out, err = optimize(str(problem), "--trials", "1", "--resume", "--output", str(output))
+    assert code == 0 and not out.startswith("trial ")  # nothing is left to propose
+    code, out, err = optimize(
+        str(problem), "--trials", "1", *grid, "--resume", "--output", str(output)
+    )
+    assert code == 1 and "keeps the strategy it was made with" in err
+    code, out, err = optimize(
+        str(problem), "--trials", "1", "--strategy", "grid", "--output", str(tmp_path / "t")
+    )
+    assert code == 1 and f"{RADIUS} is continuous, so the grid needs the values it takes" in err
+    assert not (tmp_path / "t").exists()
+
+
 def test_a_study_that_cannot_start_or_go_on_exits_1(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
-    pytest.importorskip("optuna")
     problem, output = write_problem(), tmp_path / "s"
     code, out, err = optimize(str(problem), "--trials", "1", "--resume", "--output", str(output))
     assert (code, out) == (1, "")
@@ -182,22 +206,26 @@ def test_the_command_line_does_not_import_optuna() -> None:
     assert (run.returncode, run.stdout.strip()) == (0, "False"), run.stderr
 
 
-def test_without_optuna_only_optimize_and_study_need_it(
+def test_without_optuna_only_its_strategy_needs_it(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
     problem = write_problem()
     blocked = "import sys; sys.modules['optuna'] = None; from k4opt.cli import main; "
-    run = _python(
-        blocked
-        + f"sys.exit(main(['optimize', '{problem}', '--evaluator', '{TRADE_OFF}', '--trials', '1', "
-        f"'--output', '{tmp_path / 's'}']))"
-    )
+    command = f"'optimize', '{problem}', '--evaluator', '{TRADE_OFF}', '--trials', '2'"
+    run = _python(blocked + f"sys.exit(main([{command}, '--output', '{tmp_path / 's'}']))")
     assert run.returncode == 1
-    assert "k4opt optimize needs Optuna, which is not installed: pip install" in run.stderr
+    assert "the strategy optuna needs Optuna, which is not installed: pip install" in run.stderr
+    assert "--strategy grid needs no Optuna" in run.stderr
     assert not (tmp_path / "s").exists()
-    run = _python(blocked + f"sys.exit(main(['study', 'show', '{tmp_path}']))")
-    assert run.returncode == 1
-    assert "reading a study needs Optuna, which is not installed: pip install" in run.stderr
+    grid = f"'--strategy', 'grid', '--grid', '{RADIUS}=200,300'"
+    run = _python(blocked + f"sys.exit(main([{command}, {grid}, '--output', '{tmp_path / 'g'}']))")
+    assert run.returncode == 0, run.stderr
+    for action in ("'show', ", "'trial', ", "'export', '--format', 'json', "):
+        run = _python(blocked + f"sys.exit(main(['study', {action}'{tmp_path / 'g'}', '1']))")
+        if "trial" in action:  # the number
+            assert run.returncode == 0, run.stderr
+    run = _python(blocked + f"sys.exit(main(['study', 'show', '{tmp_path / 'g'}']))")
+    assert run.returncode == 0 and "strategy:   grid of 2 points" in run.stdout, run.stderr
     for argv in (
         ["--help"],
         ["evaluate", "--help"],
@@ -237,13 +265,19 @@ ODD = """
 def test_study_show_trial_and_export_read_a_study_and_change_nothing(
     tmp_path: Path, write_problem: Callable[..., Path]
 ) -> None:
-    pytest.importorskip("optuna")
     from k4opt.optimization import optimize as run
 
     constraints = [{"stage": "analysis", "metric": "a", "max": 400, "unit": "mm"}]
     problem, output = write_problem(constraints=constraints), tmp_path / "s"
     odd = evaluator_from(tmp_path / "evaluators", "odd", ODD)
-    run(problem, [odd], output, trials=6, seed=1)
+    run(
+        problem,
+        [odd],
+        output,
+        trials=6,
+        strategy="grid",
+        grid={RADIUS: [150.0, 250.0, 350.0, 450.0, 500.0, 600.0]},
+    )
     # a session at work on the study, elsewhere: reading needs no lock and takes none
     (output / ".lock").write_text('{"host": "elsewhere", "pid": 1, "started": "now"}\n')
     before = tree_digest(output)
@@ -253,20 +287,21 @@ def test_study_show_trial_and_export_read_a_study_and_change_nothing(
     lines = out.splitlines()
     assert lines[0].startswith("study:      trade-")
     assert lines[1].startswith("id:         ")
-    assert lines[2] == f"directory:  {output} (trials in study.journal)"
-    assert lines[3] == (
+    assert lines[2] == f"directory:  {output}"
+    assert lines[3] == "strategy:   grid of 6 points, exhausted: it has nothing more to propose"
+    assert lines[4] == (
         f"parameters: {RADIUS}  continuous [100.0, 600.0]  "
         "(geometry constants.InnerTracker_Barrel_radius_1, evaluator test.trade_off: x)"
     )
-    assert lines[4:6] == [
+    assert lines[5:7] == [
         "objectives: test.trade_off/analysis/a  minimize  (mm)",
         "            test.trade_off/analysis/b  minimize  (1/mm)",
     ]
-    assert lines[6] == "limits:     test.trade_off/analysis/a:max  <= 400 mm"
-    assert lines[7].startswith("trials:     6: ") and "invalid" in lines[7]
-    assert lines[8].startswith("pareto:     ")
+    assert lines[7] == "limits:     test.trade_off/analysis/a:max  <= 400 mm"
+    assert lines[8].startswith("trials:     6: ") and "invalid" in lines[8]
+    assert lines[9].startswith("pareto:     ")
     rerun = next(i for i, line in enumerate(lines) if line.startswith("rerun:"))
-    assert all(line.startswith("            trial ") for line in lines[9:rerun])
+    assert all(line.startswith("            trial ") for line in lines[10:rerun])
     # what a rerun needs, checked just now: the test stack's build, k4opt, the evaluator
     assert lines[rerun].startswith("rerun:      Not rerun · ")
     needs = "\n".join(lines[rerun + 1 :])

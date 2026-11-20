@@ -17,6 +17,7 @@ from typing import Any, TextIO, cast
 
 from k4opt.optimization._render import _counts, _paint, _value
 from k4opt.optimization._results import StudyResults, TrialResult
+from k4opt.optimization._strategy import describe
 from k4opt.optimization._study import INNER_NAME, trial_directory
 from k4opt.problem import MetricRef, Parameter, ProblemSpec
 from k4opt.record import observed_stages, unused_local
@@ -140,14 +141,14 @@ def render_results(results: StudyResults, out: TextIO, *, color: bool = False) -
     """Print what the study optimizes, how its trials ended and its Pareto front."""
     style = Style(color)
     spec, units = results.problem, _units(results)
-    storage = results.document.get("optimizer")
-    kept = storage.get("storage") if isinstance(storage, Mapping) else None
-    where = next(iter(kept.values()), None) if isinstance(kept, Mapping) else None
     name, created = printable(results.name), printable(results.created)
     _print(out, style, "study", [f"{style.bold(name)}, created {created}"])
     _print(out, style, "id", [printable(results.id)])
-    directory = f"{printable(results.directory)} (trials in {printable(where)})"
-    _print(out, style, "directory", [directory])
+    _print(out, style, "directory", [printable(results.directory)])
+    strategy = printable(describe(results.document.get("strategy")))
+    if results.exhausted:
+        strategy += ", exhausted: it has nothing more to propose"
+    _print(out, style, "strategy", [strategy])
     fixed = results.scope.fixed
     parameters = [
         f"{printable(p.name)}  "
@@ -227,7 +228,8 @@ def _rerun(results: StudyResults, out: TextIO, style: Style) -> None:
 
 
 _NO_RECORD = {
-    "running": "none yet: the optimizer has not been told the trial's result",
+    "running": "none yet: the study has not kept the trial's result",
+    "malformed": "none: the strategy's proposal is no candidate of the study",
     "unscored": "none: the study of the level below it stands for has no feasible trial",
     "interrupted": "none: the trial ended before its record was written",
     "error": "none: the trial stopped the study before its record was written",
@@ -331,8 +333,6 @@ def render_trial(
             printable(results.record_path(trial)),
             printable(f"id {trial.record}, sha256 {trial.sha256}"),
         ]
-        if trial.status == "error":
-            record.append("not taken: its values never reached the optimizer")
         _print(out, style, "record", record)
     used = _used(results.record_path(trial))
     if used:

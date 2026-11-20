@@ -1,6 +1,6 @@
 """Command-line interface of the publication component: ``k4opt publish``.
 
-    k4opt publish DIR --output PUBLICATION [--storage URL] [--yes] [--include-inputs NAME ...]
+    k4opt publish DIR --output PUBLICATION [--yes] [--include-inputs NAME ...]
                       [--include NAME ...] [--exclude NAME ...] [--include-large]
 
 A thin wrapper over :func:`k4opt.optimization.load_study`, :func:`k4opt.publication.offer` and
@@ -52,11 +52,6 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         help="the publication directory, made if it does not exist; not inside the study",
     )
     parser.add_argument(
-        "--storage",
-        metavar="URL",
-        help="the database URL of a study made with --storage, as for k4opt study",
-    )
-    parser.add_argument(
         "--yes",
         action="store_true",
         help="approve the code listed without asking; inputs still need --include-inputs",
@@ -91,7 +86,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 
 
 def cmd_publish(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
-    results = load_study(args.study, storage=args.storage)
+    results = load_study(args.study)
     for warning in results.warnings:
         print(f"k4opt: warning: {printable(warning)}", file=err)
 

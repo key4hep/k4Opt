@@ -51,7 +51,7 @@ def test_the_json_form_names_no_location_and_keeps_the_identity(
     assert digest(data["study"]) == document["identity"]  # locations are no part of it
     assert set(data["study"]) == set(PORTABLE)
     assert set(data["study"]["software"]) == {"id", "build", "system"}  # variables can be private
-    assert "storage" not in data["study"]["optimizer"]
+    assert data["study"]["strategy"] == document["strategy"]  # it names no location
     assert all("path" not in entry["source"] for entry in data["study"]["implementations"].values())
     assert all(set(trial["record"] or {}) <= {"id", "sha256"} for trial in data["trials"])
 

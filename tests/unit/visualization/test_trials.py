@@ -235,7 +235,6 @@ def test_a_categorical_parameter_is_a_category_axis() -> None:
 
 
 def test_a_real_study_is_drawn_from_its_published_snapshot_without_optuna(tmp_path: Path) -> None:
-    pytest.importorskip("optuna")
     from k4opt.optimization import load_study
     from k4opt.publication import publish
     from tests.support.studies import mixed_study
@@ -327,7 +326,6 @@ def test_a_highlight_leaves_the_other_trials_faint_and_rings_the_reference() -> 
 def test_a_study_of_a_level_below_is_drawn_by_the_objective_it_is_judged_by(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pytest.importorskip("optuna")
     from k4opt.optimization import load_study
     from k4opt.visualization import axis_choices, default_axes, history_figure
     from tests.support.studies import nested_study
@@ -350,7 +348,6 @@ def test_a_study_of_a_level_below_is_drawn_by_the_objective_it_is_judged_by(
 def test_the_analysis_of_a_study_of_a_level_below_is_over_what_it_searches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pytest.importorskip("optuna")
     from k4opt.optimization import load_study
     from k4opt.visualization import VisualizationError, parallel_figure, rank_figure, slice_figure
     from tests.support.studies import nested_study
@@ -367,7 +364,6 @@ def test_the_analysis_of_a_study_of_a_level_below_is_over_what_it_searches(
 def test_the_model_of_a_study_of_a_level_below_is_what_that_level_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pytest.importorskip("optuna")
     from k4opt.optimization import load_study
     from k4opt.visualization import task_graph
     from tests.support.studies import nested_study

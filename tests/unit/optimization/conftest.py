@@ -201,31 +201,153 @@ def summary(study: Path, number: int) -> dict[str, Any]:
     return data
 
 
-def optuna_study(study: Path) -> Any:
-    """The Optuna study of a study directory, read from its journal."""
-    import optuna
-    from optuna.storages import JournalStorage
-    from optuna.storages.journal import JournalFileBackend, JournalFileOpenLock
-
-    document = json.loads((study / "study.json").read_text(encoding="utf-8"))
-    path = str(study / "study.journal")
-    storage = JournalStorage(JournalFileBackend(path, lock_obj=JournalFileOpenLock(path)))
-    return optuna.load_study(study_name=document["optimizer"]["study"], storage=storage)
+def document(study: Path) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads((study / "study.json").read_text(encoding="utf-8"))
+    return data
 
 
-def left_running(output: Path, problem: Path, directory: bool = False) -> int:
-    """A trial asked for and left RUNNING, as a session killed just after asking leaves it."""
-    from k4opt.optimization._optuna.space import search_space
+def ledger(study: Path) -> Any:
+    """The ledger of a study directory, read as ``load_study`` reads it."""
+    from k4opt.optimization._ledger import read_ledger
+    from k4opt.optimization._study import strategy_digest
+
+    held = document(study)
+    return read_ledger(study, held["id"], strategy_digest(held["strategy"]))
+
+
+def endings(study: Path) -> list[str | None]:
+    """How each trial of a study ended, by number, as its ledger holds it (``None``: running)."""
+    return [None if e.ending is None else e.ending.kind for e in ledger(study).entries]
+
+
+def proposal(problem: Path) -> dict[str, Any]:
+    """Values of every parameter of ``problem``, each in its domain: a midpoint, the lower
+    integer bound, the first choice."""
     from k4opt.problem import load_problem
 
-    study = optuna_study(output)
-    trial = study.ask(fixed_distributions=search_space(load_problem(problem)))
+    values: dict[str, Any] = {}
+    for parameter in load_problem(problem).parameters:
+        if parameter.choices is not None:
+            values[parameter.name] = parameter.choices[0]
+        else:
+            assert parameter.bounds is not None
+            low, high = parameter.bounds
+            values[parameter.name] = low if parameter.kind == "integer" else (low + high) / 2
+    return values
+
+
+def left_running(
+    output: Path,
+    problem: Path,
+    directory: bool = False,
+    values: dict[str, Any] | None = None,
+    note: dict[str, Any] | None = None,
+) -> int:
+    """A trial proposed and left running, as a session killed just after its proposal leaves it:
+    with ``values`` (those of :func:`proposal` by default) and what the strategy noted of them,
+    its directory partly made if ``directory``."""
+    from k4opt.optimization._ledger import LedgerWriter
+    from k4opt.optimization._study import strategy_digest
+
+    held = document(output)
+    writer, _ = LedgerWriter.open(output, held["id"], strategy_digest(held["strategy"]))
+    try:
+        number = writer.next_number
+        searched = document(output)["scope"]["searched"]
+        if values is None:
+            values = {k: v for k, v in proposal(problem).items() if k in searched}
+        writer.session("2026-11-19T00:00:00+00:00")
+        writer.proposed(number, values, note or {})
+    finally:
+        writer.close()
     if directory:
-        name = f"trial-{trial.number:06d}"
-        trial.set_user_attr("k4opt.dir", name)
+        name = f"trial-{number:06d}"
         (output / name / "geometry").mkdir(parents=True)
         (output / name / "geometry" / "partial.xml").write_text("<lccdd>")
-    return int(trial.number)
+    return number
+
+
+GRID = {RADIUS: [150.0, 250.0, 350.0, 450.0, 550.0, 600.0]}
+"""Grid values of the radius of :func:`problem_document`'s problem."""
+
+STRATEGY_KWARGS: dict[str, dict[str, Any]] = {
+    "optuna": {"seed": 1},
+    "grid": {"strategy": "grid", "grid": GRID},
+}
+"""How ``optimize`` runs a new study of :func:`problem_document`'s problem with each strategy."""
+
+
+@pytest.fixture(params=list(STRATEGY_KWARGS))
+def strategy(request: pytest.FixtureRequest) -> str:
+    """Each strategy in turn; Optuna's only where Optuna is installed."""
+    if request.param == "optuna":
+        pytest.importorskip("optuna")
+    name: str = request.param
+    return name
+
+
+@dataclass
+class Told:
+    """What every strategy opened while it is installed proposed and was told: each proposal and
+    each feedback as ``(level, study, number, ...)``, where ``study`` is ``top``, or for a study
+    below it ``<parent study id>:<parent trial>``; ``events`` holds both in the order they came,
+    as ``(proposed|told, level, study, number)``."""
+
+    events: list[tuple[str, int, str, int]] = field(default_factory=list)
+    proposed: list[tuple[int, str, int, Any]] = field(default_factory=list)
+    told: list[tuple[int, str, int, Any]] = field(default_factory=list)
+    # each strategy opened, with the trials it was made from
+    opened: list[tuple[int, str, list[Any]]] = field(default_factory=list)
+
+    def order(self, study: str) -> list[tuple[int, int]]:
+        """When each trial of ``study`` was proposed and told, as positions in :attr:`events`,
+        in number order."""
+        at: dict[tuple[str, int], int] = {}
+        for index, (kind, _, name, number) in enumerate(self.events):
+            if name == study:
+                at.setdefault((kind, number), index)
+        numbers = sorted({number for _, number in at})
+        return [(at[("proposed", n)], at.get(("told", n), len(self.events))) for n in numbers]
+
+    def feedback(self, level: int = 0) -> dict[int, Any]:
+        """The feedback of each trial of the studies of ``level``, by number (of the last)."""
+        return {number: told for at, _, number, told in self.told if at == level}
+
+
+@pytest.fixture
+def told(monkeypatch: pytest.MonkeyPatch) -> Told:
+    """Record what every strategy a study opens from now on proposes and is told."""
+    from k4opt.optimization import _tree
+
+    log, real = Told(), _tree.open_strategy
+
+    class Recording:
+        def __init__(self, inner: Any, level: int, study: str) -> None:
+            self.inner, self.level, self.study = inner, level, study
+
+        def propose(self, number: int) -> Any:
+            answer = self.inner.propose(number)
+            log.proposed.append((self.level, self.study, number, answer))
+            log.events.append(("proposed", self.level, self.study, number))
+            return answer
+
+        def tell(self, number: int, feedback: Any) -> None:
+            log.told.append((self.level, self.study, number, feedback))
+            log.events.append(("told", self.level, self.study, number))
+            self.inner.tell(number, feedback)
+
+        @property
+        def exhausted(self) -> bool:
+            return bool(self.inner.exhausted)
+
+    def opening(recorded: Any, scope: Any, history: Any) -> Any:
+        parent = scope.parent
+        study = "top" if parent is None else f"{parent['study']}:{parent['trial']}"
+        log.opened.append((scope.level, study, list(history)))
+        return Recording(real(recorded, scope, history), scope.level, study)
+
+    monkeypatch.setattr(_tree, "open_strategy", opening)
+    return log
 
 
 def evaluator_from(directory: Path, name: str, source: str) -> Any:

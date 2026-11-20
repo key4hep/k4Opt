@@ -13,8 +13,6 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("optuna")
-
 from k4opt.cli import main
 from k4opt.optimization import StudyResults, load_study
 from k4opt.publication import (

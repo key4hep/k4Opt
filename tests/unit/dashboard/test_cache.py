@@ -35,12 +35,11 @@ def test_a_software_sheet_is_kept_for_the_snapshot_it_was_read_for(
 ) -> None:
     from dataclasses import replace
 
-    import data
-
-    pytest.importorskip("optuna")
     from k4opt.optimization import load_study
     from k4opt.publication import PublicationError, Snapshot, publish
     from tests.support.studies import mixed_study
+
+    import data
 
     entry = publish(load_study(mixed_study(tmp_path / "s", 2)), tmp_path / "pub")
     assert data.software(str(tmp_path / "pub"), entry) is not None

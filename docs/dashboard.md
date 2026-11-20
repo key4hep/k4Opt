@@ -12,9 +12,9 @@ CERN OpenShift at `k4opt-dashboard.app.cern.ch`, after the pattern of
 ```text
  study directory          publication (a directory, served or copied)         dashboard
  ───────────────          ───────────────────────────────────────────         ─────────
- study.json, journal ──►  k4opt publish ──► catalog.json                 ──►  k4opt.publication
+ study.json, ledger  ──►  k4opt publish ──► catalog.json                 ──►  k4opt.publication
  trial-*/summary.json     (load_study:      studies/<id>/snapshots/*.json      (directory or URL)
-                           Optuna, checks)                                         │
+                           checks)                                                 │
                                                                            StudyResults.from_dict
                                                                                    │
                                                                      k4opt.visualization (Plotly)
@@ -35,9 +35,10 @@ The scientific results stay those of k4opt: a published study reads back as the 
 feasibility, the Pareto front, values with units and uncertainties) without judging anything
 again. Nothing in the dashboard depends on Optuna or on where a publication is kept:
 
-- **No optimizer in it.** Optuna is k4opt's first optimizer, not its data model. The figures are
-  built from `StudyResults` with Plotly, never with `optuna.visualization` or Optuna Dashboard,
-  so a study made by another optimizer draws alike, and the container has no Optuna. A unit test
+- **No optimizer in it.** Optuna is one of k4opt's strategies, not its data model. The figures
+  are built from `StudyResults` with Plotly, never with `optuna.visualization` or Optuna
+  Dashboard, so a study of any strategy (a grid, say) draws alike, and the container has no
+  Optuna. A unit test
   (`tests/unit/test_components.py`) refuses an import of Optuna in `dashboard/`, of Streamlit
   anywhere in k4opt and of Plotly outside `k4opt.visualization`.
 - **No storage in it.** The dashboard reads a publication through `open_publication`: a
@@ -86,7 +87,8 @@ studies are read from. The pages:
     task for what the problem says of it and its time or failures in each trial; *Full screen*
     shows it across the screen, where the wheel zooms it); its parameters, objectives and
     constraints; and, folded away, what it was made with (k4opt, the Key4hep stack, the
-    geometry, each evaluator's version, source hash and commit, the optimizer and its seed).
+    geometry, each evaluator's version, source hash and commit, the strategy: Optuna's sampler
+    and seed, or how many points a grid has).
   - **Results**: [`trials_figure`](visualization.md) with its axes and what colors it, and the
     trials on the Pareto front.
   - **Trade-offs**: asks of each objective that it improve by at least, worsen by at most (in

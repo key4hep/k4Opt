@@ -222,7 +222,7 @@ def test_the_json_export_holds_the_study_and_each_record_as_it_is(
     run(mixed_problem, output, 6)
     study = load_study(output)
     data = json.loads(study.to_json())
-    assert list(data) == ["format", "study", "outcomes", "pareto", "trials"]
+    assert list(data) == ["format", "study", "outcomes", "exhausted", "pareto", "trials"]
     assert data["format"] == "k4opt.study-results/1"
     assert data["study"] == portable(json.loads((output / "study.json").read_text()))
     assert (data["pareto"], data["outcomes"]) == (list(study.pareto), dict(study.outcomes))

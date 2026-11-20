@@ -9,7 +9,6 @@ import pytest
 
 pytest.importorskip("streamlit")
 pytest.importorskip("plotly")
-pytest.importorskip("optuna")
 
 from streamlit.testing.v1 import AppTest
 
