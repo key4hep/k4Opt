@@ -1,62 +1,25 @@
 """What a study and its strategy say to each other, whatever the strategy: scripted strategies
-that propose what a study must not trust (malformed proposals), wait for trials, or are
-exhausted; and Optuna's TPE, which proposes what a sampler holding the study all along would."""
+that propose what a study must not trust (malformed proposals, and proposals it cannot keep), wait
+for trials, or are exhausted, and are made again from the ledger as they were told it live; and
+Optuna's TPE, which proposes what a sampler holding the study all along would."""
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from k4opt.optimization import OptimizationError, StudyResults, _tree, load_study, optimize
-from k4opt.optimization._proposal import EXHAUSTED, WAITING, Answer, Feedback, Past, Proposal
+from k4opt.optimization import OptimizationError, StudyResults, load_study, optimize
+from k4opt.optimization._proposal import EXHAUSTED, LIMIT, WAITING, Proposal
 from tests.support.evaluators import candidate_check, trade_off
 from tests.unit.optimization.conftest import RADIUS, endings, ledger
 
 GRID = {"strategy": "grid", "grid": {RADIUS: [300.0]}}
-"""What ``study.json`` records; the scripted strategies below take its place when it runs."""
-
-
-class Scripted:
-    """A strategy that answers ``script`` in turn, each an answer, a proposal, or a callable of
-    what it was told so far; it keeps what it was made with and what it is told."""
-
-    def __init__(self, script: list[Any], history: list[Past]) -> None:
-        self.script, self.history = iter(script), history
-        self.told: list[tuple[int, Feedback]] = []
-        self.proposed: list[tuple[int, int]] = []  # each number, with how many were told then
-        self.exhausted = False  # it says so by answering EXHAUSTED
-
-    def propose(self, number: int) -> Proposal | Answer:
-        answer = next(self.script, EXHAUSTED)
-        answer = answer(self.told) if callable(answer) else answer
-        if isinstance(answer, Proposal):
-            self.proposed.append((number, len(self.told)))
-        return answer
-
-    def tell(self, number: int, feedback: Feedback) -> None:
-        self.told.append((number, feedback))
-
-
-@pytest.fixture
-def scripted(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[Any]], list[Scripted]]:
-    """Run the studies made from now on with :class:`Scripted` strategies of a script; the
-    strategies made, in turn."""
-    made: list[Scripted] = []
-
-    def install(script: list[Any]) -> list[Scripted]:
-        def opening(recorded: Any, scope: Any, history: Any) -> Scripted:
-            strategy = Scripted(list(script), list(history))
-            made.append(strategy)
-            return strategy
-
-        monkeypatch.setattr(_tree, "open_strategy", opening)
-        return made
-
-    return install
+"""What ``study.json`` records; the scripted strategies take its place when it runs."""
 
 
 def run(problem: Path, output: Path, trials: int, **kwargs: Any) -> StudyResults:
@@ -72,12 +35,24 @@ MALFORMED = [
     ),
     (Proposal({RADIUS: "far"}), "radius: expected a number, got 'far'"),
     (Proposal({RADIUS: True}), "expected a number, got True"),
+    (Proposal({RADIUS: [300.0]}), r"expected a number, got \(300\.0,\)"),
     (Proposal({}), "no value of radius"),
     (Proposal({RADIUS: 300.0, "depth": 1}), "'depth', which the study does not search"),
-    (Proposal({RADIUS: 300.0}, {"model": object()}), "note of its proposal is not plain JSON"),
-    ({RADIUS: 300.0}, r"proposed \{'radius': 300\.0\}, not a proposal"),
-    (None, "the strategy proposed None, not a proposal"),
 ]
+"""Proposals the ledger keeps as given, which are no candidate of the study, and why."""
+
+UNKEPT = [
+    (None, "it proposed None, neither a Proposal nor WAITING or EXHAUSTED"),
+    ({RADIUS: 300.0}, r"it proposed \{'radius': 300\.0\}, neither a Proposal"),
+    (Proposal({RADIUS: float("nan")}), "its values .* are no plain JSON: .*non-finite number nan"),
+    (Proposal({RADIUS: 300.0}, {"model": object()}), "its note .* are no plain JSON"),
+    (Proposal({RADIUS: 300.0}, {"blob": "x" * LIMIT}), "more than a study keeps of a proposal"),
+    (
+        Proposal({RADIUS: 300.0}, {"api_key": "sk-ant-0123456789abcdef"}),
+        r"its note\.api_key \(line 1\) looks like it holds a secret, by the key it is under",
+    ),
+]
+"""Proposals the ledger cannot keep as given, and why: the study stops, and keeps nothing."""
 
 
 def test_a_malformed_proposal_ends_its_trial_unevaluated_and_the_study_goes_on(
@@ -91,17 +66,41 @@ def test_a_malformed_proposal_ends_its_trial_unevaluated_and_the_study_goes_on(
     assert right.status == "valid"
     for trial, (_, message) in zip(wrong, MALFORMED, strict=True):
         assert trial.message is not None
-        assert __import__("re").search(message, trial.message), trial.message
+        assert re.search(message, trial.message), trial.message
         # nothing of it was made: no directory, no record, no value of what it proposed
         assert not (output / f"trial-{trial.number:06d}").exists()
         assert (trial.record, trial.assessment, dict(trial.candidate)) == (None, None, {})
     (strategy,) = made
-    statuses = [(n, f.status, f.values, f.record) for n, f in strategy.told]
-    assert statuses[: len(MALFORMED)] == [(n, "malformed", None, None) for n in range(8)]
+    # it was told each proposal kept as given, then at once that it is no candidate
+    for number, (proposal, _) in enumerate(MALFORMED):
+        kept, ended = strategy.calls[2 * number : 2 * number + 2]
+        assert kept[:2] == ("proposed", number) and ended[:2] == ("told", number)
+        assert json.dumps(kept[2].values, default=dict) == json.dumps(proposal.values)
+        assert (ended[2].status, ended[2].values, ended[2].record) == ("malformed", None, None)
+        assert ended[2].result.assessment is None
     assert report.outcomes["malformed"] == len(MALFORMED) and report.outcomes["rejected"] == 0
     assert load_study(output).to_dict() == report.to_dict()
     assert StudyResults.from_dict(json.loads(report.to_json())).to_dict() == report.to_dict()
     assert endings(output) == ["malformed"] * len(MALFORMED) + ["recorded"]
+    assert dict(ledger(output).entries[0].values) == {RADIUS: 700.0}  # as it was given
+
+
+@pytest.mark.parametrize(("proposal", "message"), UNKEPT)
+def test_a_proposal_the_ledger_cannot_keep_stops_the_study_and_keeps_nothing(
+    tmp_path: Path, write_problem: Callable[..., Path], scripted: Any, proposal: Any, message: str
+) -> None:
+    problem, output = write_problem(), tmp_path / "s"
+    scripted([Proposal({RADIUS: 300.0}), proposal])
+    with pytest.raises(
+        OptimizationError, match="the strategy's proposal for trial 1 cannot"
+    ) as info:
+        run(problem, output, 3)
+    assert re.search(message, str(info.value)), str(info.value)
+    assert endings(output) == ["recorded"]  # no trial of it, no number spent on it
+    assert not (output / ".lock").exists()
+    scripted([Proposal({RADIUS: 400.0})])
+    report = run(problem, output, 1, resume=True)  # the study goes on
+    assert [t.status for t in report.trials] == ["valid", "valid"]
 
 
 def test_a_malformed_proposal_is_not_a_rejected_candidate(
@@ -147,7 +146,7 @@ def test_a_strategy_that_waits_is_asked_again_once_a_trial_ended(
     assert [t.status for t in report.trials] == ["valid"] * 4
     (strategy,) = made
     # the first two proposed before anything was told, the others once both had been
-    assert strategy.proposed == [(0, 0), (1, 0), (2, 2), (3, 2)]
+    assert strategy.asked == [(0, 0), (1, 0), (2, 2), (3, 2)]
     assert sorted(n for n, _ in strategy.told) == [0, 1, 2, 3]
     assert not report.exhausted  # its budget ended first
 
@@ -161,7 +160,7 @@ def test_a_strategy_exhausted_at_once_runs_no_trial(
     assert ledger(tmp_path / "s").exhausted
 
 
-def test_a_resumed_strategy_is_made_from_every_trial_of_the_study(
+def test_a_resumed_strategy_is_told_every_trial_as_the_live_one_was(
     tmp_path: Path, write_problem: Callable[..., Path], scripted: Any
 ) -> None:
     problem, output = write_problem(), tmp_path / "s"
@@ -169,14 +168,18 @@ def test_a_resumed_strategy_is_made_from_every_trial_of_the_study(
     run(problem, output, 2)
     run(problem, output, 0, resume=True)
     first, resumed = made
-    assert first.history == []
-    assert [
-        (p.number, dict(p.values), dict(p.note), p.feedback.status) for p in resumed.history
-    ] == [
-        (0, {RADIUS: 150.0}, {"why": "low"}, "valid"),
-        (1, {RADIUS: 50.0}, {}, "malformed"),  # as it was given
+    # the same calls, in the same order, with the same proposals and feedback: what the live
+    # strategy was told, the resumed one is told as it is made
+    assert resumed.calls == first.calls
+    assert [(kind, number) for kind, number, _ in first.calls] == [
+        ("proposed", 0),
+        ("told", 0),
+        ("proposed", 1),
+        ("told", 1),
     ]
-    assert resumed.history[0].feedback == first.told[0][1]  # as it was told live
+    assert dict(first.calls[0][2].note) == {"why": "low"}
+    assert dict(first.calls[2][2].values) == {RADIUS: 50.0}  # malformed, as it was given
+    assert first.calls[1][2].result == load_study(output).trial(0)  # as the study reads it
 
 
 # --- Optuna's TPE ----------------------------------------------------------------------------

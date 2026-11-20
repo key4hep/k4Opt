@@ -19,7 +19,7 @@ from typing import Any
 
 from k4opt.evaluation import Scalar
 from k4opt.frozen import same_json
-from k4opt.optimization._proposal import EXHAUSTED, Answer, Feedback, Past, Proposal
+from k4opt.optimization._proposal import EXHAUSTED, Answer, Feedback, Proposal
 from k4opt.optimization._scope import StudyScope
 from k4opt.optimization.errors import OptimizationError
 from k4opt.problem import CandidateError, Parameter, ProblemSpec
@@ -168,25 +168,15 @@ def size(spec: ProblemSpec, values: Mapping[str, Sequence[Scalar]], level: int) 
 
 
 class Grid:
-    """The grid of one study, made from its recorded ``config`` and its trials so far, which must
-    be its first points, in order: it goes on from the next one."""
+    """The grid of one study, made from its recorded ``config``: told the study's trials so far,
+    which must be its first points, in order, it goes on from the next one."""
 
-    def __init__(
-        self, scope: StudyScope, recorded: Mapping[str, Any], history: Sequence[Past]
-    ) -> None:
+    def __init__(self, scope: StudyScope, recorded: Mapping[str, Any]) -> None:
         values = recorded_values(recorded, scope)
         self._names = scope.searched
         self._axes = [values[name] for name in self._names]
         self._points = math.prod(len(axis) for axis in self._axes)
-        self._next = 0
-        for past in history:
-            if past.note != {"point": self._next} or not _same(past.values, self.point(self._next)):
-                raise OptimizationError(
-                    f"trial {past.number} of the study is not point {self._next} of its grid "
-                    f"({self.point(self._next) if self._next < self._points else 'none left'}), "
-                    "so the grid cannot go on from it"
-                )
-            self._next += 1
+        self._next = 0  # the point of the next trial
 
     def point(self, index: int) -> dict[str, Scalar]:
         """The values of point ``index`` (from 0), the last parameter varying fastest."""
@@ -204,8 +194,20 @@ class Grid:
     def propose(self, number: int) -> Proposal | Answer:
         if self._next >= self._points:
             return EXHAUSTED
-        index, self._next = self._next, self._next + 1
-        return Proposal(self.point(index), {"point": index})
+        return Proposal(self.point(self._next), {"point": self._next})
+
+    def proposed(self, number: int, proposal: Proposal) -> None:
+        """Trial ``number`` is the next point, whose trial a study proposed: the grid goes on
+        from the one after it. Refused for any other, which the grid cannot go on from."""
+        if proposal.note != {"point": self._next} or not _same(
+            proposal.values, self.point(self._next) if self._next < self._points else {}
+        ):
+            raise OptimizationError(
+                f"trial {number} of the study is not point {self._next} of its grid "
+                f"({self.point(self._next) if self._next < self._points else 'none left'}), "
+                "so the grid cannot go on from it"
+            )
+        self._next += 1
 
     def tell(self, number: int, feedback: Feedback) -> None:
         """The grid learns nothing from how a trial ended."""

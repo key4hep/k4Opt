@@ -12,8 +12,8 @@ study's ledger first, its strategy told after.
 A strategy may answer that it waits for a trial under way to end, which holds no slot, or that it
 is exhausted, or say so itself after its last proposal (a grid all of whose points were
 proposed): its study keeps that in its ledger, asks for no more trials, and is done once those
-under way ended. A proposal that is no candidate of the study is a
-``malformed`` trial, and the study asks again.
+under way ended. A proposal that is no candidate of the study is a ``malformed`` trial, and the
+study asks again; one its ledger cannot keep as given stops the study.
 
 A study below the top whose trials share a stage (:func:`_shares`) asks for one trial, then
 holds back until something it started ended: the others would only wait for that stage, and their
@@ -54,9 +54,16 @@ from pathlib import Path
 from typing import Any
 
 from k4opt.execution import WAIT, EvaluationSession, Rejected, RunOutcome, RunRequest, Wait
-from k4opt.frozen import FrozenMap, Json, freeze, same_json
+from k4opt.frozen import same_json
 from k4opt.optimization._ledger import LEDGER_NAME, LedgerWriter, NotSetUpError
-from k4opt.optimization._proposal import EXHAUSTED, WAITING, MalformedError, Past, checked
+from k4opt.optimization._proposal import (
+    EXHAUSTED,
+    WAITING,
+    MalformedError,
+    checked,
+    exhausted,
+    recordable,
+)
 from k4opt.optimization._read import inner_id, results_of, trial_result
 from k4opt.optimization._results import TrialResult, best_trial, no_best_trial
 from k4opt.optimization._scope import StudyScope
@@ -79,10 +86,11 @@ from k4opt.optimization._trials import (
     Warn,
     check_trials,
     close_interrupted,
-    feedback,
     malform,
     recover,
+    replay,
     settle,
+    told_proposed,
     unscore,
 )
 from k4opt.optimization.errors import OptimizationError
@@ -185,8 +193,9 @@ class Tree:
         or go on counted (those an interruption stopped not). A resumed study is read first, so
         that nothing changes on a tree that does not hold up: every trial and its study of the
         level below, checked to their records. Then the session begins in its ledger, the trials
-        it left running are recovered (``progress``), and each that stands for a study of the
-        level below is opened again."""
+        it left running are recovered (``progress``), the strategy is made and told every
+        proposal and ending the ledger holds, in order (:func:`~._trials.replay`), and each trial
+        that stands for a study of the level below is opened again."""
         results: list[TrialResult] = []
         if resume:
             if study.scope.nested:
@@ -196,19 +205,8 @@ class Tree:
         study.ledger.session(now())
         if resume:
             results = recover(study, results, progress)
-        entries = study.ledger.ledger.entries
-        history = [
-            Past(
-                entry.number,
-                entry.values,
-                entry.proposal,
-                None
-                if result.status == "running"
-                else feedback(result, study.record(entry.number) if result.record else None),
-            )
-            for entry, result in zip(entries, results, strict=True)
-        ]
-        study.strategy = open_strategy(study.document["strategy"], study.scope, history)
+        study.strategy = open_strategy(study.document["strategy"], study.scope)
+        replay(study, results)
         # resumed too: what its trials share may never have been made, or be gone since
         held = study.scope.level > 0 and _shares(study.scope)
         node = _Node(study, budget, held=held)
@@ -332,17 +330,24 @@ class Tree:
                     "of the study's trials is under way"
                 )
             return WAIT
+        try:
+            given, note = recordable(answer)
+        except OptimizationError as exc:
+            raise OptimizationError(
+                f"{study.document['name']}: the strategy's proposal for trial {number} cannot be "
+                f"kept: {exc}"
+            ) from None
         node.budget -= 1
         try:
-            values, note = checked(study.scope, answer)
+            values = checked(study.scope, given)
         except MalformedError as exc:
-            given = _given(answer, "values"), _given(answer, "note")
-            result = malform(study, number, *given, str(exc))
+            result = malform(study, number, given, note, str(exc))
             _exhausted(node)
             if node is self._root:
                 self._progress(result)
             return None
         study.ledger.proposed(number, values, note)
+        told_proposed(study, number)
         _exhausted(node)  # its last proposal: kept as such at once, whatever the budget
         if study.scope.nested:
             self._open(node, number)
@@ -445,7 +450,7 @@ def _exhausted(node: _Node, asked: bool = False) -> None:
     answered so when ``asked``, or tells it after its last proposal; once only."""
     study = node.study
     assert study.strategy is not None
-    if not (asked or study.strategy.exhausted):
+    if not (asked or exhausted(study.strategy)):
         node.exhausted = study.ledger.exhausted
         return
     if not study.ledger.exhausted:
@@ -455,14 +460,3 @@ def _exhausted(node: _Node, asked: bool = False) -> None:
 
 def _quiet(result: TrialResult) -> None:
     """The trials a resume recovers in a study below the top are not reported one by one."""
-
-
-def _given(answer: object, attribute: str) -> Mapping[str, Json]:
-    """What a malformed proposal gave as its ``attribute`` (``values``, ``note``), if it is a plain
-    JSON object; nothing otherwise."""
-    given = getattr(answer, attribute, None)
-    try:
-        frozen = freeze(given, attribute, OptimizationError)
-    except OptimizationError:
-        return FrozenMap({})
-    return frozen if isinstance(frozen, Mapping) else FrozenMap({})

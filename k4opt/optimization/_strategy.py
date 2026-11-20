@@ -18,7 +18,7 @@ from typing import Any
 
 from k4opt.frozen import same_json, thaw
 from k4opt.optimization import _grid
-from k4opt.optimization._proposal import Past, Strategy
+from k4opt.optimization._proposal import Strategy
 from k4opt.optimization._scope import StudyScope
 from k4opt.optimization.errors import OptimizationError
 
@@ -149,15 +149,14 @@ def derived(parent: object, child: object, scope: StudyScope, number: int) -> li
     return []
 
 
-def open_strategy(
-    recorded: Mapping[str, Any], scope: StudyScope, history: Sequence[Past]
-) -> Strategy:
-    """The recorded strategy of the study of ``scope``, made from its trials so far."""
+def open_strategy(recorded: Mapping[str, Any], scope: StudyScope) -> Strategy:
+    """The recorded strategy of the study of ``scope``, made anew, to be told the study's trials
+    so far (:func:`~k4opt.optimization._trials.replay`)."""
     if _name(recorded) == _grid.NAME:
-        return _grid.Grid(scope, recorded, history)
+        return _grid.Grid(scope, recorded)
     with needs_optuna("the strategy optuna"):
         from k4opt.optimization import _optuna
-    return _optuna.TPE(scope, recorded, history)
+    return _optuna.TPE(scope, recorded)
 
 
 def describe(recorded: object) -> str:

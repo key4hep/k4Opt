@@ -811,10 +811,10 @@ def test_a_trial_left_running_with_its_record_is_kept_with_it(
     (entry, _) = ledger(output).entries
     assert entry.ending.kind == "recorded" and entry.ending.record["id"] == record["id"]
     # the strategy of the resumed session was made with it as a live trial is told it
-    (_, _, history) = told.opened[-1]
-    (past,) = history
-    assert past.feedback.values == (metrics["a"], metrics["b"])
-    assert past.feedback.constraints == {"test.trade_off/analysis/a:max": metrics["a"] - 350}
+    (_, _, replayed) = told.opened[-1]
+    (feedback,) = [feedback for kind, _, feedback in replayed if kind == "told"]
+    assert feedback.values == (metrics["a"], metrics["b"])
+    assert feedback.constraints == {"test.trade_off/analysis/a:max": metrics["a"] - 350}
     assert report.trials[0].recovered and report.trials[0].status == "valid"
 
 

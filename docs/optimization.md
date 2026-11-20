@@ -609,11 +609,11 @@ twice, a gap, another study's first line) is refused, by `load_study` and by a r
 the last:
 
 1. the strategy proposes (nothing is kept);
-2. the ledger keeps the proposal, checked: the trial is running;
+2. the ledger keeps the proposal, checked: the trial is running; the strategy is told it was kept;
 3. the candidate is evaluated into its directory;
 4. its `summary.json` is published, whole;
 5. the record is read back and checked, and the ledger keeps the trial with it;
-6. the strategy is told.
+6. the strategy is told how it ended.
 
 Stopped after 1, the next session proposes again; after 2 or 3, the trial is `interrupted`;
 after 4, the next session keeps it with its record as a live one would have been kept; after 5
@@ -627,13 +627,18 @@ resume.
 **The strategy boundary.** A strategy is asked for a proposal for trial `N` when the study has a
 slot for it and answers with values for the parameters the study searches (and a small note,
 recorded with the trial), with *waiting* (nothing until a trial under way ended) or with
-*exhausted*, and says after each proposal whether it is exhausted. It is told each trial's status, and for a valid one its objective values, the
-normalized margin of each limit and its feasibility, all from the checked record, and where the
-record is. When a study opens, it is made from the study's trials so far, by number, each with
-its proposal and how it ended. It executes nothing, changes no objective or limit, and keeps no
-trial; k4opt checks every proposal against the parameters' domains before anything is made of
-it. This contract is internal for now: Optuna's TPE and the grid are its two users, and a
-public interface for strategies of one's own will follow from them.
+*exhausted*, and may say after each proposal whether it is exhausted. It is told each proposal
+the ledger kept (*proposed*: the values as the ledger holds them, also those of a malformed one)
+and how each trial ended (*tell*): the trial's status, and for a valid one its objective values,
+the normalized margin of each limit and its feasibility, all from the checked record, the trial
+as `load_study` reads it back, and where the record is. When a study opens, the strategy is made
+anew and told every proposal and ending the ledger holds, in the order they were written (by
+`seq`): the very calls a strategy that ran all along got, also when trials ended in another order
+than their numbers. A proposal the ledger cannot keep as given (no proposal at all, values or a
+note that are no plain JSON object, more than 64 KiB of them, or something that looks like a
+credential) is no trial: it stops the study, and `--resume` goes on. A strategy executes nothing,
+changes no objective or limit, and keeps no trial; k4opt checks every proposal against the
+parameters' domains before anything is made of it.
 
 ## Inspecting and exporting a study
 

@@ -182,8 +182,13 @@ def test_the_grid_proposes_in_order_whatever_the_order_trials_end_in() -> None:
     spec = parse_problem(two_parameters(bounds=[1, 2]))
     scope = StudyScope.of(spec)
     recorded = {"name": "grid", "values": {RADIUS: [200.0, 300.0], "world": [1, 2]}, "points": 4}
-    grid = Grid(scope, recorded, [])
-    proposals = [grid.propose(n) for n in range(4)]
+    grid = Grid(scope, recorded)
+    proposals = []
+    for number in range(4):
+        proposal = grid.propose(number)
+        assert grid.propose(number) == proposal  # asked again before it is kept: the same
+        grid.proposed(number, proposal)  # type: ignore[arg-type]
+        proposals.append(proposal)
     for number in (3, 0, 2):  # ended in another order: it learns nothing
         grid.tell(number, None)  # type: ignore[arg-type]
     assert [p.values for p in proposals] == [  # type: ignore[union-attr]
@@ -194,7 +199,7 @@ def test_the_grid_proposes_in_order_whatever_the_order_trials_end_in() -> None:
     ]
     from k4opt.optimization._proposal import EXHAUSTED
 
-    assert grid.propose(4) is EXHAUSTED and grid.propose(5) is EXHAUSTED
+    assert grid.exhausted and grid.propose(4) is EXHAUSTED and grid.propose(5) is EXHAUSTED
 
 
 def _python(code: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
