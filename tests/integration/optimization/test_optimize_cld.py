@@ -130,6 +130,42 @@ def test_the_documented_grid_scans_the_cell_size_in_order_without_optuna(
     assert "strategy:   grid of 2 points, exhausted" in shown.getvalue()
 
 
+def test_the_documented_compass_search_runs_on_cld_resumes_and_reads_back_without_it(
+    problem: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+    import subprocess
+    import sys
+
+    monkeypatch.setitem(sys.modules, "optuna", None)  # a strategy of one's own needs no Optuna
+    code = tmp_path / "strategies"
+    shutil.copytree(EXAMPLE.parents[1] / "strategies", code)  # moved away once the study ran
+    output = tmp_path / "compass"
+    compass = (
+        *("--strategy", f"{code / 'compass.py'}:CompassSearch"),
+        *("--strategy-settings", str(code / "compass.yaml")),
+    )
+    first = optimize(problem, output, "--trials", "3", "--workers", "2", *compass)
+    assert "trials:   3: 3 valid" in first
+    resumed = optimize(problem, output, "--trials", "1", "--resume", *compass)
+    assert resumed.startswith("trial 3:") and "trials:   4: 4 valid" in resumed
+    sizes = [
+        json.loads((output / f"trial-{n:06d}" / "summary.json").read_text())["candidate"]
+        for n in range(4)
+    ]
+    # the middle of [2.5, 20], then its neighbors a quarter of the range away, then on
+    assert [s["ecal_cell_size"] for s in sizes[:3]] == [11.25, 6.875, 15.625]
+    shutil.rmtree(code)  # the strategy is nowhere any more: the study reads back without it
+    shown = subprocess.run(
+        [sys.executable, "-m", "k4opt", "study", "show", str(output)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert shown.returncode == 0, shown.stderr
+    assert "CompassSearch, a strategy of its own" in shown.stdout
+
+
 def test_a_study_runs_trials_at_once_and_resumes_with_another_number_of_workers(
     problem: Path, tmp_path: Path
 ) -> None:
