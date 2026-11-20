@@ -40,7 +40,7 @@ from k4opt.evaluation import Scalar
 from k4opt.frozen import FrozenMap, Json, freeze
 from k4opt.optimization._scope import StudyScope
 from k4opt.optimization.errors import OptimizationError
-from k4opt.problem import CandidateError
+from k4opt.problem import CandidateError, Constraint, Objective, Parameter
 from k4opt.problem.candidate import validate_value
 
 if TYPE_CHECKING:
@@ -98,6 +98,39 @@ class Feedback:
     feasible: bool | None = None
     record: Path | None = None
     message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StudyContext:
+    """What a strategy of one's own is made with of the study it proposes for: the study's
+    ``study`` id (the same whenever it opens: to name what the strategy keeps elsewhere, or to
+    derive a seed), the ``parameters`` it searches, in problem order, as the problem declares them
+    (kind, bounds or choices, unit, title, what each sets), the values every trial has
+    (``fixed``: ``k4opt optimize --fix``), the ``objectives`` its trials are judged by (label,
+    direction, title), in the order of :attr:`Feedback.values`, its ``constraints`` and the name of
+    each of their limits, as :attr:`Feedback.constraints` names them (``limits``). Read-only: the
+    problem is the study's, not the strategy's."""
+
+    study: str
+    parameters: tuple[Parameter, ...]
+    fixed: Mapping[str, Scalar]
+    objectives: tuple[Objective, ...]
+    constraints: tuple[Constraint, ...]
+    limits: tuple[str, ...]
+
+    @classmethod
+    def of(cls, scope: StudyScope, study: str) -> StudyContext:
+        """The context of the study ``study`` of ``scope``."""
+        declared = {parameter.name: parameter for parameter in scope.spec.parameters}
+        criteria = scope.criteria
+        return cls(
+            study,
+            tuple(declared[name] for name in scope.searched),
+            scope.fixed,
+            criteria.objectives,
+            criteria.constraints,
+            tuple(scope.limit_names),
+        )
 
 
 class Strategy(Protocol):

@@ -55,11 +55,13 @@ from typing import Any
 
 from k4opt.execution import WAIT, EvaluationSession, Rejected, RunOutcome, RunRequest, Wait
 from k4opt.frozen import same_json
+from k4opt.optimization._custom import Custom
 from k4opt.optimization._ledger import LEDGER_NAME, LedgerWriter, NotSetUpError
 from k4opt.optimization._proposal import (
     EXHAUSTED,
     WAITING,
     MalformedError,
+    Strategy,
     checked,
     exhausted,
     recordable,
@@ -164,7 +166,9 @@ class Tree:
     """The studies of a run under ``root`` (its study, opened by the caller), evaluated in
     ``session``. ``identity`` is the session's, ``check`` refuses to resume a study of the level
     below with it; ``progress`` is told each trial of the root as it ends, those a resume
-    recovers first."""
+    recovers first. ``custom`` is the strategy of one's own the session is given, if any, and
+    ``strategy`` the root's, if the caller made it already (a new study's, made before anything
+    of it was created)."""
 
     def __init__(
         self,
@@ -176,17 +180,27 @@ class Tree:
         progress: Progress,
         warn: Warn,
         resume: bool = False,
+        *,
+        custom: Custom | None = None,
+        strategy: Strategy | None = None,
     ) -> None:
         self._session = session
         self._identity = identity
         self._check = check
         self._progress = progress
         self._warn = warn
+        self._custom = custom
         self._nodes: dict[str, _Node] = {}
-        self._root = self._node(root, trials, resume, progress)
+        self._root = self._node(root, trials, resume, progress, made=strategy)
 
     def _node(
-        self, study: OpenStudy, budget: int, resume: bool, progress: Progress, total: bool = False
+        self,
+        study: OpenStudy,
+        budget: int,
+        resume: bool,
+        progress: Progress,
+        total: bool = False,
+        made: Strategy | None = None,
     ) -> _Node:
         """The node of ``study``, whose strategy is made from its trials, with ``budget`` trials
         to ask for: new ones, or with ``total`` as many as the study runs in all, those that ran
@@ -195,7 +209,8 @@ class Tree:
         level below, checked to their records. Then the session begins in its ledger, the trials
         it left running are recovered (``progress``), the strategy is made and told every
         proposal and ending the ledger holds, in order (:func:`~._trials.replay`), and each trial
-        that stands for a study of the level below is opened again."""
+        that stands for a study of the level below is opened again. ``made`` is its strategy,
+        if it was made already."""
         results: list[TrialResult] = []
         if resume:
             if study.scope.nested:
@@ -205,7 +220,14 @@ class Tree:
         study.ledger.session(now())
         if resume:
             results = recover(study, results, progress)
-        study.strategy = open_strategy(study.document["strategy"], study.scope)
+        if made is None:
+            made = open_strategy(
+                study.document["strategy"],
+                study.scope,
+                study=study.document["id"],
+                custom=self._custom,
+            )
+        study.strategy = made
         replay(study, results)
         # resumed too: what its trials share may never have been made, or be gone since
         held = study.scope.level > 0 and _shares(study.scope)
@@ -337,6 +359,13 @@ class Tree:
                 f"{study.document['name']}: the strategy's proposal for trial {number} cannot be "
                 f"kept: {exc}"
             ) from None
+        changed = [] if self._custom is None else self._custom.changed()
+        if changed:  # what proposed it is no longer what the study records
+            raise OptimizationError(
+                f"{study.document['name']}: the strategy's proposal for trial {number} is not "
+                f"kept: {', '.join(changed)} changed since the session began; resume the study "
+                "with the strategy it was made with"
+            )
         node.budget -= 1
         try:
             values = checked(study.scope, given)

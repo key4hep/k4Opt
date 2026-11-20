@@ -2,10 +2,12 @@
 each under ``strategy``.
 
 ``optuna`` (the default) is Optuna's TPE sampler (:mod:`._optuna`), imported only when a study
-runs with it; ``grid`` (:mod:`._grid`) needs nothing besides k4opt. The recorded strategy is the
-study's: a resume runs with it, and refuses one this k4opt would not run alike
-(:func:`differences`); each study of the level below gets its own from it (:func:`child`).
-Reading a study back needs no strategy.
+runs with it; ``grid`` (:mod:`._grid`) needs nothing besides k4opt; ``custom`` is a strategy of
+one's own (:mod:`._custom`), a class of the user's code, which a session is given and k4opt never
+loads by itself. The recorded strategy is the study's: a resume runs with it, and refuses one
+this k4opt would not run alike (:func:`differences`); each study of the level below gets its own
+from it (:func:`child`), which a strategy of one's own does not run yet. Reading a study back
+needs no strategy.
 """
 
 from __future__ import annotations
@@ -17,8 +19,9 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from k4opt.frozen import same_json, thaw
-from k4opt.optimization import _grid
-from k4opt.optimization._proposal import Strategy
+from k4opt.optimization import _custom, _grid
+from k4opt.optimization._custom import Custom
+from k4opt.optimization._proposal import Strategy, StudyContext
 from k4opt.optimization._scope import StudyScope
 from k4opt.optimization.errors import OptimizationError
 
@@ -76,20 +79,33 @@ def new_strategy(
 
 def _name(recorded: object) -> str:
     name = recorded.get("name") if isinstance(recorded, Mapping) else None
-    if name not in STRATEGIES:
+    if name not in (*STRATEGIES, _custom.NAME):
         raise OptimizationError(f"study.json records no strategy k4opt runs: {recorded!r}")
     assert isinstance(name, str)
     return name
 
 
-def differences(recorded: object, scope: StudyScope) -> list[str]:
+def differences(recorded: object, scope: StudyScope, custom: Custom | None = None) -> list[str]:
     """Why the recorded strategy cannot go on with the study of ``scope``: it is not the one this
-    k4opt would run it with. Each said for a person; none if it can."""
+    k4opt would run it with, or for a strategy of one's own, not ``custom``, the one the session
+    is given (none for another strategy). Each said for a person; none if it can."""
     try:
         name = _name(recorded)
     except OptimizationError as exc:
         return [str(exc)]
     assert isinstance(recorded, Mapping)
+    if name == _custom.NAME:
+        if custom is None:
+            return [
+                f"it was made with a strategy of its own, {recorded.get('class')}: give it again, "
+                "with its settings (--strategy FILE.py:Class --strategy-settings FILE)"
+            ]
+        return _custom.differences(recorded, custom)
+    if custom is not None:
+        return [
+            f"it was made with the strategy {name}, not one of its own: leave out --strategy and "
+            "--strategy-settings"
+        ]
     if name == _grid.NAME:
         return _grid.differences(recorded, scope)
     with needs_optuna("resuming a study of the strategy optuna"):
@@ -100,7 +116,10 @@ def differences(recorded: object, scope: StudyScope) -> list[str]:
 def child(recorded: Mapping[str, Any], scope: StudyScope, number: int) -> dict[str, Any]:
     """The strategy of the study of ``scope`` of the level below, started for trial ``number`` of
     the study whose strategy is ``recorded``."""
-    if _name(recorded) == _grid.NAME:
+    name = _name(recorded)
+    if name == _custom.NAME:
+        raise OptimizationError("a strategy of one's own runs no study of a level below")
+    if name == _grid.NAME:
         return _grid.child(recorded, scope)
     from k4opt.optimization import _optuna  # imported to run the study the child belongs to
 
@@ -123,6 +142,8 @@ def derived(parent: object, child: object, scope: StudyScope, number: int) -> li
     given: dict[str, Any] = {key: thaw(value) for key, value in child.items()}
     if theirs != name:
         return [f"its strategy {theirs!r} is not the strategy its parent's gives it ({name!r})"]
+    if name == _custom.NAME:
+        return ["a strategy of one's own runs no study of a level below"]
     if name == _grid.NAME:
         try:
             expected: Any = _grid.child(parent, scope)
@@ -149,10 +170,22 @@ def derived(parent: object, child: object, scope: StudyScope, number: int) -> li
     return []
 
 
-def open_strategy(recorded: Mapping[str, Any], scope: StudyScope) -> Strategy:
-    """The recorded strategy of the study of ``scope``, made anew, to be told the study's trials
-    so far (:func:`~k4opt.optimization._trials.replay`)."""
-    if _name(recorded) == _grid.NAME:
+def open_strategy(
+    recorded: Mapping[str, Any],
+    scope: StudyScope,
+    *,
+    study: str = "",
+    custom: Custom | None = None,
+) -> Strategy:
+    """The recorded strategy of the study ``study`` of ``scope``, made anew, to be told the
+    study's trials so far (:func:`~k4opt.optimization._trials.replay`); a strategy of one's own
+    is ``custom``, which the session is given."""
+    name = _name(recorded)
+    if name == _custom.NAME:
+        if custom is None:
+            raise OptimizationError(f"the study's strategy {recorded.get('class')} was not given")
+        return custom.make(StudyContext.of(scope, study))
+    if name == _grid.NAME:
         return _grid.Grid(scope, recorded)
     with needs_optuna("the strategy optuna"):
         from k4opt.optimization import _optuna
@@ -166,6 +199,10 @@ def describe(recorded: object) -> str:
         return "not recorded"
     if recorded.get("name") == _grid.NAME:
         return f"grid of {recorded.get('points')} points"
+    if recorded.get("name") == _custom.NAME:
+        source = recorded.get("source")
+        sha256 = source.get("sha256") if isinstance(source, Mapping) else None
+        return f"{recorded.get('class')}, a strategy of its own (source {str(sha256)[:12]})"
     sampler = recorded.get("sampler")
     sampler = sampler if isinstance(sampler, Mapping) else {}
     return (

@@ -162,7 +162,7 @@ class StudyResults:
     the directory, without its locations when read from the JSON form. ``trials`` holds every
     trial of the study, from all its sessions, by number; ``pareto`` the numbers of the trials on
     the Pareto front of the feasible ``valid`` ones; ``exhausted`` whether its strategy had
-    nothing more to propose (a grid all of whose points were proposed).
+    nothing more to propose (a grid all of whose points were proposed, a search that ended).
     ``directory`` is the study directory it was read from, ``None`` for a study read from its JSON
     form; ``warnings`` says what the records leave open (evaluator checkouts at another revision)
     and what the study directory holds besides its trials. Nothing in it is mutable or shared

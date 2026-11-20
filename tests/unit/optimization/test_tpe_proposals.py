@@ -21,7 +21,7 @@ from k4opt.optimization import load_study, optimize
 from k4opt.problem import load_problem
 from tests.support.evaluators import trade_off
 from tests.support.stack import alive, eventually
-from tests.unit.optimization.conftest import evaluator_from
+from tests.unit.optimization.conftest import PROBE, evaluator_from
 
 optuna = pytest.importorskip("optuna")
 
@@ -29,37 +29,6 @@ REPOSITORY = Path(__file__).resolve().parents[3]
 
 A_MAX = {"stage": "analysis", "metric": "a", "max": 400, "unit": "mm"}
 """A limit some candidates keep and others do not: TPE is told every constraint value."""
-
-PROBE = """
-    import json
-    import os
-    import time
-    from pathlib import Path
-    from k4opt.evaluation import Evaluator
-
-    class Probe(Evaluator):
-        name, version = "test.trade_off", "1"
-        settings = {"x": float}  # the candidate's value, which it sets
-        metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
-
-        def evaluate(self, request):
-            told = json.loads(os.environ["PYTEST_K4OPT_PROBE"])
-            run = request.workdir.parents[1].name  # <trial>/evaluators/test.trade_off
-            marks = Path(told["marks"])
-            (marks / f"{run}.started").write_text(str(os.getpid()))
-            waiting = told.get("await", {}).get(run)
-            deadline = time.monotonic() + 60
-            while waiting is not None and not Path(waiting).exists():
-                if time.monotonic() > deadline:
-                    raise TimeoutError(f"{run} still waits")
-                time.sleep(0.01)
-            if run in told.get("invalid", []):
-                self.invalid(f"{run} is invalid")
-            x = request.settings["x"]
-            return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
-"""
-"""``test.trade_off`` that marks its start, waits for a file as the environment says (``await``,
-by trial directory) and is invalid for the trials it names (``invalid``)."""
 
 
 def events(output: Path) -> list[dict[str, Any]]:

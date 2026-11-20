@@ -1,0 +1,4 @@
+# The settings of examples/strategies/compass.py:CompassSearch (--strategy-settings): recorded with
+# the study, and given again to resume it.
+step: 0.25      # the first step, a fraction of each parameter's range
+min_step: 0.02  # nothing more to propose once the step is below this

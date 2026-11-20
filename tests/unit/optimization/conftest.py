@@ -351,10 +351,10 @@ def told(monkeypatch: pytest.MonkeyPatch) -> Told:
         def exhausted(self) -> bool:
             return exhausted(self.inner)
 
-    def opening(recorded: Any, scope: Any) -> Any:
+    def opening(recorded: Any, scope: Any, **given: Any) -> Any:
         parent = scope.parent
         study = "top" if parent is None else f"{parent['study']}:{parent['trial']}"
-        return Recording(real(recorded, scope), scope.level, study)
+        return Recording(real(recorded, scope, **given), scope.level, study)
 
     def replay(study: Any, results: Any) -> None:
         strategy, calls = study.strategy, []
@@ -410,7 +410,7 @@ def scripted(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[Any]], list[Scri
     made: list[Scripted] = []
 
     def install(script: list[Any]) -> list[Scripted]:
-        def opening(recorded: Any, scope: Any) -> Scripted:
+        def opening(recorded: Any, scope: Any, **given: Any) -> Scripted:
             strategy = Scripted(list(script))
             made.append(strategy)
             return strategy
@@ -419,6 +419,38 @@ def scripted(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[Any]], list[Scri
         return made
 
     return install
+
+
+PROBE = """
+    import json
+    import os
+    import time
+    from pathlib import Path
+    from k4opt.evaluation import Evaluator
+
+    class Probe(Evaluator):
+        name, version = "test.trade_off", "1"
+        settings = {"x": float}  # the candidate's value, which it sets
+        metrics = {("analysis", "a"): "mm", ("analysis", "b"): "1/mm"}
+
+        def evaluate(self, request):
+            told = json.loads(os.environ["PYTEST_K4OPT_PROBE"])
+            run = request.workdir.parents[1].name  # <trial>/evaluators/test.trade_off
+            marks = Path(told["marks"])
+            (marks / f"{run}.started").write_text(str(os.getpid()))
+            waiting = told.get("await", {}).get(run)
+            deadline = time.monotonic() + 60
+            while waiting is not None and not Path(waiting).exists():
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"{run} still waits")
+                time.sleep(0.01)
+            if run in told.get("invalid", []):
+                self.invalid(f"{run} is invalid")
+            x = request.settings["x"]
+            return {("analysis", "a"): x, ("analysis", "b"): 1 / x}
+"""
+"""``test.trade_off`` that marks its start, waits for a file as the environment says (``await``,
+by trial directory) and is invalid for the trials it names (``invalid``)."""
 
 
 def evaluator_from(directory: Path, name: str, source: str) -> Any:
