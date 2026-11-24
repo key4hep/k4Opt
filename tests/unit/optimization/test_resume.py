@@ -21,6 +21,8 @@ import yaml
 
 pytest.importorskip("optuna")
 
+import optuna
+
 from k4opt.evaluation import load_evaluator
 from k4opt.optimization import OptimizationError, _trials, load_study, optimize
 from k4opt.optimization._ledger import LEDGER_NAME, LedgerWriter
@@ -689,7 +691,8 @@ def _edit_study(output: Path, change: Callable[[dict[str, Any]], None]) -> None:
     [
         (
             lambda d: d["strategy"].update(version="4.9.0"),
-            r"made with Optuna 4\.9\.0, this is Optuna 5\.0\.0: install optuna==4\.9\.0",
+            rf"made with Optuna 4\.9\.0, this is Optuna {re.escape(optuna.__version__)}: "
+            r"install optuna==4\.9\.0",
         ),
         (lambda d: d["k4opt"].update(sha256="0" * 64), "k4opt's code changed"),
         (lambda d: d.update(identity="0" * 64), "does not hold together"),

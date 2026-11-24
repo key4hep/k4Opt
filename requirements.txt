@@ -15,7 +15,7 @@ codespell==2.4.3
 pyyaml==6.0.3
 # The default strategy of k4opt optimize, Optuna's TPE sampler. Its dependencies (numpy, PyYAML,
 # packaging, tqdm, colorlog) come from the Key4hep stack.
-optuna==5.0.0
+optuna==5.1.0
 # The tests run on every available core: python -m pytest -p xdist -n auto (plugins are named,
 # not autoloaded, see pyproject.toml), with execnet, which xdist starts its workers with.
 pytest-xdist==3.8.0
