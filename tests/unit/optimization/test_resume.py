@@ -19,7 +19,9 @@ from typing import Any
 import pytest
 import yaml
 
-optuna = pytest.importorskip("optuna")
+pytest.importorskip("optuna")
+
+import optuna
 
 from k4opt.evaluation import load_evaluator
 from k4opt.optimization import OptimizationError, _trials, load_study, optimize
